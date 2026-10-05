@@ -1,3 +1,6 @@
+// Copyright 2026 Google LLC
+// SPDX-License-Identifier: Apache-2.0
+
 package formats
 
 // detail is a fixed phrase that can be added to a verdict message. It is an enumeration and not a string on purpose: a message can
@@ -99,6 +102,7 @@ const (
 	dExtensionsNotObject
 	dGivenTwice
 	dInQueryString
+	dOperationSelection
 
 	// Form.
 	dTruncatedEscape
@@ -226,8 +230,9 @@ var detailText = [dCount]string{
 	dVariablesNotObject:     "the variables are not an object",
 	dOperationNameNotString: "the operation name is not a string",
 	dExtensionsNotObject:    "the extensions are not an object",
-	dGivenTwice:             "the query is given twice",
+	dGivenTwice:             "a GraphQL protocol parameter is given twice",
 	dInQueryString:          "in the query string",
+	dOperationSelection:     "the operation name does not select one uniquely named operation",
 
 	dTruncatedEscape: "a percent sign at the end with fewer than two digits after it",
 	dBadHexEscape:    "a percent sign that is not followed by two hex digits",

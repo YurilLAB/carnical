@@ -1,3 +1,6 @@
+// Copyright 2026 Google LLC
+// SPDX-License-Identifier: Apache-2.0
+
 package formats
 
 import (
@@ -262,7 +265,8 @@ type gqlSel struct {
 type gqlDef struct {
 	fragment bool
 	name     string
-	dirs     int // on the definition and on its variable definitions
+	opType   string // query, mutation or subscription; retained for HTTP method enforcement
+	dirs     int    // on the definition and on its variable definitions
 	sel      []gqlSel
 }
 
@@ -366,12 +370,14 @@ func (p *gqlParser) operation(shorthand bool) bool {
 	if p.doc.ops > p.lim.MaxOperations {
 		return p.limit(rGQLLimit, dTooManyOperations, p.lim.MaxOperations)
 	}
-	var def gqlDef
+	def := gqlDef{opType: "query"}
 	if !shorthand {
+		def.opType = string(p.l.src[p.l.start:p.l.end])
 		if !p.advance() {
 			return false
 		}
 		if p.l.kind == gName {
+			def.name = string(p.l.src[p.l.start:p.l.end])
 			if !p.advance() {
 				return false
 			}

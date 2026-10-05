@@ -1,3 +1,6 @@
+// Copyright 2026 Google LLC
+// SPDX-License-Identifier: Apache-2.0
+
 package formats
 
 import (
@@ -40,7 +43,7 @@ func looksLikeGraphQL(src []byte) bool {
 // graphQLDocument checks one document. With mustParse a document that does not parse is refused; without it, a document that does
 // not look like GraphQL, or does not parse, is not GraphQL and is left alone. It returns whether the text was GraphQL and whether to
 // go on.
-func (in *Inspector) graphQLDocument(f *finder, src []byte, mustParse bool) (isGQL, cont bool) {
+func (in *Inspector) graphQLDocument(f *finder, src []byte, mustParse bool, operationName string) (isGQL, cont bool) {
 	lim := &in.pol.GraphQL
 	if !mustParse && !looksLikeGraphQL(src) {
 		return false, true
@@ -85,7 +88,35 @@ func (in *Inspector) graphQLDocument(f *finder, src []byte, mustParse bool) (isG
 			return true, false
 		}
 	}
+	op, valid := selectedOperation(doc, operationName)
+	if !valid {
+		return true, !f.hit(rGQLShape, -1, dOperationSelection)
+	}
+	if f.get && op.opType == "mutation" && f.hit(rGQLGetMutation, -1, dNone) {
+		return true, false
+	}
 	return true, true
+}
+
+// selectedOperation follows GraphQL's operation selection rules without executing the document.
+// Duplicate names and an anonymous operation beside another operation are invalid regardless of the selected name.
+func selectedOperation(doc *gqlDoc, name string) (*gqlDef, bool) {
+	var selected *gqlDef
+	names := make(map[string]bool, doc.ops)
+	for i := range doc.defs {
+		op := &doc.defs[i]
+		if op.fragment {
+			continue
+		}
+		if names[op.name] || op.name == "" && doc.ops != 1 {
+			return nil, false
+		}
+		names[op.name] = true
+		if name == op.name || name == "" && doc.ops == 1 {
+			selected = op
+		}
+	}
+	return selected, selected != nil
 }
 
 // checkGraphQLBody checks an application/graphql body: the whole body is the document.
@@ -97,7 +128,7 @@ func (in *Inspector) checkGraphQLBody(f *finder, ci ctInfo, body []byte) bool {
 	if !ok {
 		return false
 	}
-	_, cont := in.graphQLDocument(f, body[start:], true)
+	_, cont := in.graphQLDocument(f, body[start:], true, "")
 	return cont
 }
 
@@ -160,32 +191,40 @@ func (in *Inspector) queryLooksGraphQL(body []byte, members []jsonMember) bool {
 // graphQLRequest checks one request object: its query, and that variables, operationName and extensions have the types the
 // protocol gives them (a server that reads variables sent as a string, and one that does not, see different requests).
 func (in *Inspector) graphQLRequest(f *finder, body []byte, members []jsonMember, mustParse bool) bool {
-	var vars, opn, ext *jsonMember
+	var query, vars, opn, ext *jsonMember
 	isGQL := mustParse
 	for i := range members {
 		m := &members[i]
 		switch m.key {
 		case "query":
-			switch m.kind {
-			case 'n':
-			case '"':
-				src := []byte(decodeJSONString(body[m.start+1:m.end-1], true))
-				g, cont := in.graphQLDocument(f, src, mustParse)
-				if !cont {
-					return false
-				}
-				isGQL = isGQL || g
-			default:
-				if mustParse && f.hit(rGQLShape, m.start, dQueryNotString) {
-					return false
-				}
-			}
+			query = m
 		case "variables":
 			vars = m
 		case "operationName":
 			opn = m
 		case "extensions":
 			ext = m
+		}
+	}
+	// Read operationName before the query: JSON member order cannot change which operation is selected.
+	var name string
+	if opn != nil && opn.kind == '"' {
+		name = decodeJSONString(body[opn.start+1:opn.end-1], true)
+	}
+	if query != nil {
+		switch query.kind {
+		case 'n':
+		case '"':
+			src := []byte(decodeJSONString(body[query.start+1:query.end-1], true))
+			g, cont := in.graphQLDocument(f, src, mustParse, name)
+			if !cont {
+				return false
+			}
+			isGQL = isGQL || g
+		default:
+			if mustParse && f.hit(rGQLShape, query.start, dQueryNotString) {
+				return false
+			}
 		}
 	}
 	if !isGQL {
@@ -206,28 +245,36 @@ func (in *Inspector) graphQLRequest(f *finder, body []byte, members []jsonMember
 // graphQLParams checks a GraphQL request that arrived as parameters (a query string or a form): a query, and variables as a JSON
 // string. mustParse is true for a GraphQL endpoint.
 func (in *Inspector) graphQLParams(f *finder, g *gqlParams, mustParse bool) bool {
-	if g.dupQuery {
-		if mustParse && f.hit(rGQLShape, -1, dGivenTwice) {
+	if g.duplicate {
+		if (mustParse || g.looksGQL) && f.hit(rGQLShape, -1, dGivenTwice) {
 			return false
 		}
+	}
+	isGQL := mustParse
+	if g.hasQuery {
+		gql, cont := in.graphQLDocument(f, []byte(g.query), mustParse, g.operationName)
+		if !cont {
+			return false
+		}
+		isGQL = isGQL || gql
+	}
+	if !isGQL {
 		return true
 	}
-	if !g.hasQuery {
-		return true
-	}
-	isGQL, cont := in.graphQLDocument(f, []byte(g.query), mustParse)
-	if !cont {
-		return false
-	}
-	if !isGQL || !g.hasVars || g.variables == "" {
-		return true
-	}
-	c := &jsonCapture{max: 1}
-	if !scanJSON(f, []byte(g.variables), &in.pol.JSON, c, false) {
-		return false
-	}
-	if c.kind != '{' && c.kind != 'n' && f.hit(rGQLShape, -1, dVariablesNotObject) {
-		return false
+	for _, param := range []struct {
+		value string
+		wrong detail
+	}{{g.variables, dVariablesNotObject}, {g.extensions, dExtensionsNotObject}} {
+		if param.value == "" {
+			continue
+		}
+		c := &jsonCapture{max: 1}
+		if !scanJSON(f, []byte(param.value), &in.pol.JSON, c, false) {
+			return false
+		}
+		if c.kind != '{' && c.kind != 'n' && f.hit(rGQLShape, -1, param.wrong) {
+			return false
+		}
 	}
 	return true
 }
@@ -241,7 +288,7 @@ func (in *Inspector) queryCheck(f *finder, r *inspect.Request, gqlPath bool) boo
 	}
 	raw := r.RawQuery
 	// A parameter named query must contain "query" unless its name is percent-encoded.
-	if !strings.Contains(raw, "query") && strings.IndexByte(raw, '%') < 0 {
+	if !gqlPath && !strings.Contains(raw, "query") && strings.IndexByte(raw, '%') < 0 {
 		return true
 	}
 	var g gqlParams
@@ -250,7 +297,7 @@ func (in *Inspector) queryCheck(f *finder, r *inspect.Request, gqlPath bool) boo
 		pair, raw, _ = strings.Cut(raw, "&")
 		name, value, _ := strings.Cut(pair, "=")
 		dn, ok := unescapeQuery(name)
-		if !ok || dn != "query" && dn != "variables" {
+		if !ok || dn != "query" && dn != "variables" && dn != "operationName" && dn != "extensions" {
 			continue
 		}
 		dv, ok := unescapeQuery(value)

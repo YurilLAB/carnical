@@ -1,3 +1,6 @@
+// Copyright 2026 Google LLC
+// SPDX-License-Identifier: Apache-2.0
+
 package formats
 
 import (
@@ -13,21 +16,28 @@ import (
 
 // gqlParams collects, from a form body or a query string, the parameters a GraphQL request is made of.
 type gqlParams struct {
-	query, variables string
-	hasQuery         bool
-	hasVars          bool
-	dupQuery         bool
+	query, variables, operationName, extensions string
+	hasQuery, hasVars, hasOp, hasExt            bool
+	duplicate, looksGQL                         bool
 }
 
 func (g *gqlParams) set(name, value string) {
 	switch name {
 	case "query":
 		if g.hasQuery {
-			g.dupQuery = true
+			g.duplicate = true
 		}
 		g.query, g.hasQuery = value, true
+		g.looksGQL = g.looksGQL || looksLikeGraphQL([]byte(value))
 	case "variables":
+		g.duplicate = g.duplicate || g.hasVars
 		g.variables, g.hasVars = value, true
+	case "operationName":
+		g.duplicate = g.duplicate || g.hasOp
+		g.operationName, g.hasOp = value, true
+	case "extensions":
+		g.duplicate = g.duplicate || g.hasExt
+		g.extensions, g.hasExt = value, true
 	}
 }
 
@@ -127,7 +137,7 @@ func (fs *formScanner) pair(pair []byte, at int) bool {
 			fs.seen[string(fs.fold)] = struct{}{}
 		}
 	}
-	if fs.capture != nil && (string(fs.name) == "query" || string(fs.name) == "variables") {
+	if fs.capture != nil && (string(fs.name) == "query" || string(fs.name) == "variables" || string(fs.name) == "operationName" || string(fs.name) == "extensions") {
 		fs.capture.set(string(fs.name), string(fs.val))
 	}
 	return true

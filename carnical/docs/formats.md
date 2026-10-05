@@ -70,6 +70,10 @@ A request to a GraphQL path must be a GraphQL request: its query must parse. A r
 
 ## Verdicts
 
+Operation selection follows the [GraphQL execution rules](https://spec.graphql.org/September2025/#sec-Executing-Operations): multiple operations require a matching `operationName`, operation names must be unique, and an anonymous operation must be alone. JSON member order does not affect selection. A selected mutation in a GET query string is refused with 403, as permitted by the [GraphQL-over-HTTP draft](https://http-spec.graphql.org/draft/#sec-GET); a selected query beside a mutation remains valid. All four protocol parameters (`query`, `variables`, `operationName`, `extensions`) are checked for repetition in query strings and GraphQL forms. Nonempty GET/form `variables` and `extensions` must be JSON objects or null. Empty optional parameters mean absent. Persisted queries without a document remain supported; the proxy cannot establish their operation type without the application's persisted-query registry, so the application must enforce method safety for them.
+
+These protections complement the depth, alias, field and batch limits used by commercial products such as [F5 WAF for NGINX](https://docs.nginx.com/waf/policies/graphql-protection/) and [Fastly Next-Gen WAF](https://www.fastly.com/blog/introducing-graphql-inspection-for-the-fastly-next-gen-waf). They do not validate GraphQL fields against a schema or replace application authorization.
+
 Identifiers 5002000 to 5002999. The table is the one the code holds; a test (`TestDocumentationMatchesRules`) fails if this table and `Rules()` differ in any column. A message looks like `json-duplicate-key: an object key given twice (compared after decoding escapes, ignoring case) at byte 17`, or `graphql-fields: a GraphQL query that selects more fields than the limit (limit 500)`, or, for NDJSON, `... in line 3 at byte 9`.
 
 Default is what happens when the policy does not say. Status is what the visitor gets for a refusal.
@@ -132,6 +136,7 @@ Default is what happens when the policy does not say. Status is what the visitor
 | 5002307 | `graphql-fragment` | block | 400 | high | a GraphQL fragment that is cyclic, unknown or defined twice |
 | 5002308 | `graphql-request-shape` | block | 400 | high | a GraphQL request whose parts are not the types the protocol uses |
 | 5002309 | `graphql-limit` | block | 400 | high | a GraphQL document over a size or count limit |
+| 5002310 | `graphql-get-mutation` | block | 403 | high | a GraphQL mutation selected for execution using GET |
 | 5002400 | `ndjson-lines` | block | 400 | high | more lines than the limit |
 | 5002401 | `ndjson-blank-line` | block | 400 | medium | a blank line between records |
 | 5002500 | `yaml-syntax` | block | 400 | high | YAML that cannot be parsed |

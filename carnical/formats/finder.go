@@ -1,3 +1,6 @@
+// Copyright 2026 Google LLC
+// SPDX-License-Identifier: Apache-2.0
+
 package formats
 
 import (
@@ -20,6 +23,7 @@ type finder struct {
 	verdicts []inspect.Verdict
 	seen     [maxRules / 64]uint64
 	blocked  bool
+	get      bool // method safety applies to every GraphQL envelope, including an explicitly permitted GET body
 	// line is the number of the NDJSON line being checked, 0 when none is.
 	line int
 }

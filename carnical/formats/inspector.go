@@ -1,3 +1,6 @@
+// Copyright 2026 Google LLC
+// SPDX-License-Identifier: Apache-2.0
+
 // Package formats is Carnical's strict reader for request bodies. A firewall and the application behind it each parse the same body,
 // and where their parsers differ (which of two equal JSON keys wins, whether a DOCTYPE is read, how a multipart body without a
 // final boundary ends, whether a UTF-16 body is decoded) an attacker writes the body that one reads as harmless and the other
@@ -81,6 +84,7 @@ func (in *Inspector) Inspect(r *inspect.Request) (res inspect.Result) {
 			res = inspect.Result{Verdicts: f.verdicts}
 		}
 	}()
+	f.get = r.Method == "GET"
 	if in.err != nil {
 		if len(r.Body) > 0 {
 			f.hit(rPolicyInvalid, -1, dNone)

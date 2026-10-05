@@ -1,3 +1,6 @@
+// Copyright 2026 Google LLC
+// SPDX-License-Identifier: Apache-2.0
+
 package formats
 
 import "sort"
@@ -94,16 +97,17 @@ var (
 	rXMLTextSplit = reg(5002213, "xml-text-split", 400, "high", Block, "text split by a comment or CDATA section")
 
 	// GraphQL.
-	rGQLSyntax  = reg(5002300, "graphql-syntax", 400, "high", Block, "a GraphQL document that cannot be parsed")
-	rGQLDepth   = reg(5002301, "graphql-depth", 400, "high", Block, "a GraphQL query nested deeper than the limit")
-	rGQLFields  = reg(5002302, "graphql-fields", 400, "high", Block, "a GraphQL query that selects more fields than the limit")
-	rGQLAliases = reg(5002303, "graphql-aliases", 400, "high", Block, "a GraphQL query with more aliases than the limit")
-	rGQLDirs    = reg(5002304, "graphql-directives", 400, "high", Block, "a GraphQL query with more directives than the limit")
-	rGQLBatch   = reg(5002305, "graphql-batch", 400, "high", Block, "a GraphQL batch larger than the limit")
-	rGQLIntro   = reg(5002306, "graphql-introspection", 403, "high", Block, "a GraphQL introspection query")
-	rGQLFrag    = reg(5002307, "graphql-fragment", 400, "high", Block, "a GraphQL fragment that is cyclic, unknown or defined twice")
-	rGQLShape   = reg(5002308, "graphql-request-shape", 400, "high", Block, "a GraphQL request whose parts are not the types the protocol uses")
-	rGQLLimit   = reg(5002309, "graphql-limit", 400, "high", Block, "a GraphQL document over a size or count limit")
+	rGQLSyntax      = reg(5002300, "graphql-syntax", 400, "high", Block, "a GraphQL document that cannot be parsed")
+	rGQLDepth       = reg(5002301, "graphql-depth", 400, "high", Block, "a GraphQL query nested deeper than the limit")
+	rGQLFields      = reg(5002302, "graphql-fields", 400, "high", Block, "a GraphQL query that selects more fields than the limit")
+	rGQLAliases     = reg(5002303, "graphql-aliases", 400, "high", Block, "a GraphQL query with more aliases than the limit")
+	rGQLDirs        = reg(5002304, "graphql-directives", 400, "high", Block, "a GraphQL query with more directives than the limit")
+	rGQLBatch       = reg(5002305, "graphql-batch", 400, "high", Block, "a GraphQL batch larger than the limit")
+	rGQLIntro       = reg(5002306, "graphql-introspection", 403, "high", Block, "a GraphQL introspection query")
+	rGQLFrag        = reg(5002307, "graphql-fragment", 400, "high", Block, "a GraphQL fragment that is cyclic, unknown or defined twice")
+	rGQLShape       = reg(5002308, "graphql-request-shape", 400, "high", Block, "a GraphQL request whose parts are not the types the protocol uses")
+	rGQLLimit       = reg(5002309, "graphql-limit", 400, "high", Block, "a GraphQL document over a size or count limit")
+	rGQLGetMutation = reg(5002310, "graphql-get-mutation", 403, "high", Block, "a GraphQL mutation selected for execution using GET")
 
 	// NDJSON.
 	rNDLines = reg(5002400, "ndjson-lines", 400, "high", Block, "more lines than the limit")

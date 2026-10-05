@@ -1,3 +1,6 @@
+// Copyright 2026 Google LLC
+// SPDX-License-Identifier: Apache-2.0
+
 package formats
 
 import (
@@ -9,17 +12,18 @@ import (
 )
 
 const (
-	idGQLSyntax  = 5002300
-	idGQLDepth   = 5002301
-	idGQLFields  = 5002302
-	idGQLAliases = 5002303
-	idGQLDirs    = 5002304
-	idGQLBatch   = 5002305
-	idGQLIntro   = 5002306
-	idGQLFrag    = 5002307
-	idGQLShape   = 5002308
-	idGQLLimit   = 5002309
-	appJSON      = "application/json"
+	idGQLSyntax      = 5002300
+	idGQLDepth       = 5002301
+	idGQLFields      = 5002302
+	idGQLAliases     = 5002303
+	idGQLDirs        = 5002304
+	idGQLBatch       = 5002305
+	idGQLIntro       = 5002306
+	idGQLFrag        = 5002307
+	idGQLShape       = 5002308
+	idGQLLimit       = 5002309
+	idGQLGetMutation = 5002310
+	appJSON          = "application/json"
 )
 
 // jq returns query as a JSON string.
@@ -204,6 +208,30 @@ var graphqlRows = register("graphql", []row{
 	{name: "a control character in the query", path: "/graphql", ct: appJSON, body: `{"query":"{ a` + u("0001") + ` }"}`, want: idControl},
 
 	// The request envelope.
+	{name: "get mutation in an explicitly permitted body", method: "GET", path: "/graphql", ct: appJSON, body: gqlReq(`mutation { deleteUser }`), want: idGQLGetMutation,
+		tweak: func(p *Policy) { p.Rules["body-on-get"] = Off }},
+	{name: "get mutation", method: "GET", path: "/graphql", query: "query=mutation%7BdeleteUser%7Bid%7D%7D", want: idGQLGetMutation},
+	{name: "get selected mutation after a query", method: "GET", path: "/graphql", query: "query=query+Read%7Ba%7D+mutation+Write%7Bb%7D&operationName=Write", want: idGQLGetMutation},
+	{name: "get selected query beside a mutation", method: "GET", path: "/graphql", query: "query=query+Read%7Ba%7D+mutation+Write%7Bb%7D&operationName=Read"},
+	{name: "mutation word in a get argument", method: "GET", path: "/graphql", query: "query=%7Ba%28name%3A%22mutation%22%29%7D"},
+	{name: "get mutation on a discovered endpoint", method: "GET", path: "/api/gql", query: "query=mutation%7BdeleteUser%7D", want: idGQLGetMutation},
+	{name: "post selected mutation", path: "/graphql", ct: appJSON, body: `{"query":"query Read { a } mutation Write { b }","operationName":"Write"}`},
+	{name: "operation name preceding query", path: "/graphql", ct: appJSON, body: `{"operationName":"Read","query":"query Read { a } mutation Write { b }"}`},
+	{name: "empty name for one named query", path: "/graphql", ct: appJSON, body: `{"query":"query Q { a }","operationName":""}`},
+	{name: "multiple operations without a name", path: "/graphql", ct: appJSON, body: gqlReq(`query A { a } query B { b }`), want: idGQLShape},
+	{name: "unknown operation name", path: "/graphql", ct: appJSON, body: `{"query":"query Q { a }","operationName":"Other"}`, want: idGQLShape},
+	{name: "duplicate operation names", path: "/graphql", ct: appJSON, body: `{"query":"query Q { a } mutation Q { b }","operationName":"Q"}`, want: idGQLShape},
+	{name: "anonymous operation beside named operation", path: "/graphql", ct: appJSON, body: `{"query":"{ a } query Q { b }","operationName":"Q"}`, want: idGQLShape},
+	{name: "fragments without an operation", path: "/graphql", ct: appJSON, body: gqlReq(`fragment F on T { a }`), want: idGQLShape},
+	{name: "variables parameter repeated", method: "GET", path: "/graphql", query: "query=%7Ba%7D&variables=%7B%7D&variables=null", want: idGQLShape},
+	{name: "operation name parameter repeated", method: "GET", path: "/graphql", query: "query=query+Q%7Ba%7D&operationName=Q&operationName=Q", want: idGQLShape},
+	{name: "extensions repeated with an escaped name", method: "GET", path: "/graphql", query: "query=%7Ba%7D&extensions=%7B%7D&%65xtensions=%7B%7D", want: idGQLShape},
+	{name: "extensions by get are not an object", method: "GET", path: "/graphql", query: "query=%7Ba%7D&extensions=%5B1%5D", want: idGQLShape},
+	{name: "persisted query extensions checked without a query", method: "GET", path: "/graphql", query: "extensions=1", want: idGQLShape},
+	{name: "get extensions object", method: "GET", path: "/graphql", query: "query=%7Ba%7D&extensions=%7B%22trace%22%3Atrue%7D"},
+	{name: "empty optional get parameters", method: "GET", path: "/graphql", query: "query=query+Q%7Ba%7D&variables=&operationName=&extensions="},
+	{name: "duplicate protocol field by form", path: "/graphql", ct: form, body: "query=%7Ba%7D&operationName=&operationName=Q", want: idGQLShape},
+	{name: "selected operation by form", path: "/graphql", ct: form, body: "query=query+Read%7Ba%7D+mutation+Write%7Bb%7D&operationName=Write"},
 	{name: "variables as a string", path: "/graphql", ct: appJSON, body: `{"query":"{a}","variables":"{\"x\":1}"}`, want: idGQLShape},
 	{name: "variables as an array", path: "/graphql", ct: appJSON, body: `{"query":"{a}","variables":[1]}`, want: idGQLShape},
 	{name: "operation name as a number", path: "/graphql", ct: appJSON, body: `{"query":"{a}","operationName":7}`, want: idGQLShape},

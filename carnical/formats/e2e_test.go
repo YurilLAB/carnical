@@ -1,3 +1,6 @@
+// Copyright 2026 Google LLC
+// SPDX-License-Identifier: Apache-2.0
+
 package formats_test
 
 import (
@@ -229,6 +232,10 @@ func TestARefusedBodyNeverReachesTheApplication(t *testing.T) {
 		{"two layers of gzip", post("/api", "application/json", []string{"Content-Encoding: gzip, gzip"}, gzipped(gzipped(`{}`))), 415, 0, true},
 		{"a graphql batch of fifty", post("/graphql", "application/json", nil, batch), 400, 5002305, false},
 		{"a graphql introspection query", post("/graphql", "application/json", nil, `{"query":"{ __schema { types { name } } }"}`), 403, 5002306, false},
+		{"a graphql mutation by GET", "GET /graphql?query=mutation%7BdeleteUser%7Bid%7D%7D HTTP/1.1\r\n" + preamble + "\r\n", 403, 5002310, false},
+		{"a selected graphql mutation by GET", "GET /graphql?query=query+Read%7Ba%7D+mutation+Write%7Bb%7D&operationName=Write HTTP/1.1\r\n" + preamble + "\r\n", 403, 5002310, false},
+		{"an ambiguous graphql operation", post("/graphql", "application/json", nil, `{"query":"query Read { a } mutation Write { b }"}`), 400, 5002308, false},
+		{"repeated graphql operationName", "GET /graphql?query=query+Q%7Ba%7D&operationName=Q&operationName=Q HTTP/1.1\r\n" + preamble + "\r\n", 400, 5002308, false},
 		{"a multipart body with base64 inside", post("/upload", "multipart/form-data; boundary=B", nil, mpBase64), 400, 5002709, false},
 		{"a form with five thousand parameters", post("/api", "application/x-www-form-urlencoded", nil, strings.Join(manyParams, "&")), 400, 5002603, false},
 		{"a form with a semicolon", post("/api", "application/x-www-form-urlencoded", nil, "a=1;b=2"), 400, 5002605, false},
@@ -275,10 +282,21 @@ func TestAcceptedBodiesReachTheApplicationUnchanged(t *testing.T) {
 		{"multipart", "multipart/form-data; boundary=B", mp},
 		{"xml", "text/xml; charset=utf-8", `<?xml version="1.0"?><methodCall><methodName>x</methodName></methodCall>`},
 		{"graphql", "application/json", `{"query":"query Q($id: ID!) { user(id: $id) { name } }","variables":{"id":"1"}}`},
+		{"graphql selected mutation", "application/json", `{"query":"query Read { a } mutation Write { b }","operationName":"Write"}`},
 		{"ndjson", "application/x-ndjson", "{\"a\":1}\n{\"a\":2}\n"},
 		{"plain text", "text/plain", "just some text"},
 	}
 	e := startEdge(t, formats.Policy{}, true)
+	t.Run("selected GET query beside a mutation", func(t *testing.T) {
+		query := "query=query+Read%7Ba%7D+mutation+Write%7Bb%7D&operationName=Read"
+		before := len(e.app.requests())
+		if status := e.send(t, "GET /graphql?"+query+" HTTP/1.1\r\n"+preamble+"\r\n"); status != 200 {
+			t.Fatalf("GET query status %d", status)
+		}
+		if n := len(e.app.requests()); n != before+1 {
+			t.Fatalf("accepted GET query did not reach the application: %d requests", n-before)
+		}
+	})
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			before := len(e.app.requests())
