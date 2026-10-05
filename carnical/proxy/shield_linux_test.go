@@ -63,7 +63,7 @@ func flood(t *testing.T, monitor bool) floodResult {
 		// The per-network limit would stop this flood on its own (its bots share four /24s); it is set out of the way so
 		// that the attack detection and mitigation are what is measured.
 		SubnetRate: 1e6, SubnetBurst: 1e6, ConnRate: 1000, ConnBurst: 1000, MaxConns: 10000,
-		Detector: shield.DetectorConfig{Warmup: 4 * time.Second, Tau: time.Minute, MinAttackRate: 50, Confirm: 2,
+		Detector: shield.DetectorConfig{Warmup: 4 * time.Second, MinHistory: 3 * time.Second, Tau: time.Minute, MinAttackRate: 50, Confirm: 2,
 			MinAttack: 30 * time.Second, ExitQuiet: 5 * time.Second},
 	})
 	if err != nil {

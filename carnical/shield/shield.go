@@ -28,6 +28,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"net/netip"
@@ -98,6 +99,15 @@ type Config struct {
 	// for clients the shield knows, so that a connection flood cannot lock out the site's regular visitors.
 	MaxConns      int
 	ReservedShare float64
+	// MaxConnsCeiling is the most MaxConns can be raised to as the site's average number of connections grows (default
+	// 250,000, and in any case 80% of the process's file-descriptor limit where that is known).
+	MaxConnsCeiling int
+	// ClusterShare makes the budget for look-alike requests during an attack at least this share of the site's usual
+	ClusterShare float64
+	// The limits above and below are floors for a site with little traffic. Each one is raised, while traffic is ordinary,
+	// to follow the site's own busiest addresses, networks and connection count (see DetectorConfig.LimitMargin and
+	// MaxScale, and MaxConnsCeiling), so a busy site with many visitors behind one company or carrier address is not
+	// limited as if every address were one person.
 	// SubnetConns is the most connections one /24 or /48 may hold (default 1,024).
 	SubnetConns int
 	// ConnRate and ConnBurst limit new connections from each address (default 20 a second, bursts of 60).
@@ -184,6 +194,8 @@ func (c *Config) defaults() {
 	d(&c.DeferAccept, 10*time.Second)
 	d(&c.UserTimeout, 30*time.Second)
 	f(&c.ClusterRate, 5)
+	f(&c.ClusterShare, 0.02)
+	i(&c.MaxConnsCeiling, 250000)
 	f(&c.UnknownFactor, 1)
 	f(&c.MinUnknownRate, 10)
 	i(&c.BanAfter, 30)
@@ -217,6 +229,10 @@ func (c Config) Validate() error {
 		return errors.New("shield: ClearanceFor and KnownFor must be at least a minute, KnownAfter at least 1, MaxSources at least 1024")
 	case c.Detector.RateFactor < 1.5 || c.Detector.ExitFactor < 1 || c.Detector.ExitFactor > c.Detector.RateFactor:
 		return errors.New("shield: the detector's RateFactor must be at least 1.5 and ExitFactor between 1 and RateFactor")
+	case c.Detector.Sigmas < 3 || c.Detector.LimitMargin < 1 || c.Detector.MaxScale < 1 || c.ClusterShare < 0 || c.ClusterShare > 0.5 || c.MaxConnsCeiling < c.MaxConns:
+		return errors.New("shield: Sigmas must be at least 3, LimitMargin and MaxScale at least 1, ClusterShare at most 0.5 and MaxConnsCeiling at least MaxConns")
+	case c.Detector.EvidenceTimeout < time.Minute || c.Detector.MinHistory < time.Second:
+		return errors.New("shield: the detector's EvidenceTimeout must be at least a minute and MinHistory at least a second")
 	case c.Detector.MinAttackRate < 1 || c.Detector.Confirm < 1 || c.Detector.Tau < time.Minute:
 		return errors.New("shield: the detector's MinAttackRate and Confirm must be at least 1 and Tau at least a minute")
 	}
@@ -230,13 +246,15 @@ func (c Config) Validate() error {
 
 // Shield is one site's protection. It is safe for concurrent use.
 type Shield struct {
-	cfg      Config
-	key      []byte
-	det      *detector
-	sources  *table[netip.Addr, source]
-	subnets  *table[netip.Prefix, subnet]
-	conns    atomic.Int64
-	reserved int64
+	cfg     Config
+	key     []byte
+	det     *detector
+	sources *table[netip.Addr, source]
+	subnets *table[netip.Prefix, subnet]
+	conns   atomic.Int64
+	connAvg atomic.Uint64 // float64 bits: the moving average of the number of open connections
+	connN   atomic.Int64
+	fdLimit int64
 
 	budgetMu sync.Mutex
 	epoch    uint32
@@ -271,11 +289,12 @@ func New(cfg Config) (*Shield, error) {
 	cfg.defaults()
 	cfg.Trusted = append([]netip.Prefix(nil), cfg.Trusted...)
 	s := &Shield{cfg: cfg, key: newKey(), det: newDetector(cfg.Detector), stop: make(chan struct{}), bans: make(chan banReq, 256)}
-	s.reserved = int64(float64(cfg.MaxConns) * cfg.ReservedShare)
 	s.sources = newTable[netip.Addr, source](cfg.MaxSources, sourceIdle, sourceLast)
 	s.subnets = newTable[netip.Prefix, subnet](cfg.MaxSources/4, subnetIdle, subnetLast)
 	s.det.labeler, s.det.onEvent = cfg.Labeler, cfg.OnEvent
-	s.det.clusterRate = cfg.ClusterRate
+	s.det.clusterRate, s.det.clusterShare = cfg.ClusterRate, cfg.ClusterShare
+	s.det.refSrc, s.det.refNet = cfg.RequestRate, cfg.SubnetRate
+	s.fdLimit = fdLimit()
 	s.det.unknownRate = func(base float64) float64 { return max(base*cfg.UnknownFactor, cfg.MinUnknownRate) }
 	if cfg.Now == nil {
 		s.wg.Add(1)
@@ -312,13 +331,40 @@ func (s *Shield) ticker() {
 		case <-s.stop:
 			return
 		case now := <-t.C:
-			s.det.tick(now.UnixNano())
+			s.tick(now.UnixNano())
 		}
 	}
 }
 
 // Tick moves the detector on to now. Only needed with Config.Now set.
-func (s *Shield) Tick() { s.det.tick(s.now().UnixNano()) }
+func (s *Shield) Tick() { s.tick(s.now().UnixNano()) }
+
+// tick advances the detector and samples the number of connections, which is learnt like the rest of the baseline: only
+// while traffic is ordinary.
+func (s *Shield) tick(ns int64) {
+	s.det.tick(ns)
+	if !s.det.learning.Load() {
+		return
+	}
+	n := s.connN.Add(1)
+	alpha := 1 / math.Min(float64(n), float64(s.cfg.Detector.Tau/time.Second))
+	avg := math.Float64frombits(s.connAvg.Load())
+	s.connAvg.Store(math.Float64bits(avg + alpha*(float64(s.conns.Load())-avg)))
+}
+
+// maxConns is the number of connections allowed at once: the configured number, or twice the moving average of the number
+// open if the site normally holds more, up to the ceiling and the file-descriptor limit.
+func (s *Shield) maxConns() int64 {
+	limit := int64(s.cfg.MaxConns)
+	if grown := int64(2 * math.Float64frombits(s.connAvg.Load())); grown > limit {
+		ceiling := int64(s.cfg.MaxConnsCeiling)
+		if s.fdLimit > 0 {
+			ceiling = min(ceiling, s.fdLimit*8/10)
+		}
+		limit = max(limit, min(grown, ceiling))
+	}
+	return limit
+}
 
 func (s *Shield) trusted(a netip.Addr) bool {
 	for _, p := range s.cfg.Trusted {
@@ -342,9 +388,16 @@ func (s *Shield) Admit(r *http.Request, client netip.Addr) Decision {
 	isNew := s.det.observe(ns, client, fp, fpLabel, pt, ptLabel)
 	info := s.det.info.Load()
 
+	scaleSrc, scaleNet := s.det.scales()
 	var banned, known, rateOK, engaged bool
+	var srcN, netN uint32
 	s.sources.do(key, ns, func(src *source) {
 		src.last = ns
+		if sec := ns / 1e9; src.winSec != sec {
+			src.winSec, src.winN = sec, 0
+		}
+		src.winN++
+		srcN = src.winN
 		switch {
 		case isNew:
 			src.newAt, src.lastTpl, src.distinct = ns, pt, 1
@@ -353,7 +406,7 @@ func (s *Shield) Admit(r *http.Request, client netip.Addr) Decision {
 		}
 		banned = src.bannedUntil > ns
 		known = s.isKnown(src, ns, info)
-		rateOK = trusted || src.req.take(ns, s.cfg.RequestRate, s.cfg.RequestBurst)
+		rateOK = trusted || src.req.take(ns, s.cfg.RequestRate*scaleSrc, s.cfg.RequestBurst*scaleSrc)
 	})
 	if engaged {
 		s.det.count(ns, func(w *window) { w.engaged++ })
@@ -369,12 +422,18 @@ func (s *Shield) Admit(r *http.Request, client netip.Addr) Decision {
 		subOK := true
 		s.subnets.do(netOf(client), ns, func(n *subnet) {
 			n.last = ns
-			subOK = n.req.take(ns, s.cfg.SubnetRate, s.cfg.SubnetBurst)
+			if sec := ns / 1e9; n.winSec != sec {
+				n.winSec, n.winN = sec, 0
+			}
+			n.winN++
+			netN = n.winN
+			subOK = n.req.take(ns, s.cfg.SubnetRate*scaleNet, s.cfg.SubnetBurst*scaleNet)
 		})
 		if !subOK {
 			return s.refuse(ns, d, info, idSubnetRate, http.StatusTooManyRequests, 1)
 		}
 	}
+	s.det.notePeaks(srcN, netN)
 	if r.URL.Path == VerifyPath {
 		return s.verify(r, key, now)
 	}
@@ -580,7 +639,8 @@ type Snapshot struct {
 	Rate, BaselineRate                      float64
 	Sources, NewShare, Engagement, ErrRatio float64
 	Reasons                                 []string
-	Connections                             int64
+	Connections, MaxConnections             int64
+	RequestScale, NetworkScale              float64 // how far the per-address and per-network limits are raised above their configured values
 	Remembered                              int
 	Allowed, Refused, Challenged, Solved    uint64
 	Banned, ConnsRefused, Evicted           uint64
@@ -601,7 +661,8 @@ func (s *Shield) Snapshot() Snapshot {
 		snap.Current = &inc
 	}
 	d.mu.Unlock()
-	snap.Connections = s.conns.Load()
+	snap.Connections, snap.MaxConnections = s.conns.Load(), s.maxConns()
+	snap.RequestScale, snap.NetworkScale = s.det.scales()
 	snap.Remembered = s.sources.len()
 	c := &s.counters
 	snap.Allowed, snap.Refused, snap.Challenged = c.allowed.Load(), c.refused.Load(), c.challenged.Load()

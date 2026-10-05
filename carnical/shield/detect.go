@@ -62,9 +62,27 @@ type DetectorConfig struct {
 	// Tau is the time constant of the baseline's moving average (default 10 minutes): long enough that an attack that
 	// ramps up over a minute stands out, short enough to follow a site's ordinary daily rise and fall.
 	Tau time.Duration
-	// MinAttackRate is the lowest request rate, per second, that can be an attack (default 50). A small site that goes
-	// from 1 to 10 requests a second is not under attack.
+	// MinAttackRate is an absolute floor, in requests a second, under which traffic is never an attack (default 20): a
+	// small site that goes from 1 to 10 requests a second is not under attack. It only matters to small sites. What
+	// decides for every other site is the site's own average and variation: the traffic must exceed the larger of
+	// RateFactor times the moving average and the average plus Sigmas standard deviations of the site's own recent rates.
 	MinAttackRate float64
+	// Sigmas is how many standard deviations above the moving average the rate must be (default 8). The deviation is the
+	// site's own, measured on the same ten-second rates and learnt the same way, so a site whose traffic is bursty has to
+	// exceed more than a site whose traffic is steady.
+	Sigmas float64
+	// LimitMargin and MaxScale make the per-address and per-network limits follow the site's own traffic: each limit is
+	// raised to LimitMargin (default 4) times the moving average of the busiest address's (or network's) request rate
+	// when that is higher than the configured limit, up to MaxScale (default 20) times the configured limit. A busy site
+	// with many visitors behind one company or mobile-carrier address is not limited as if each address were one person.
+	LimitMargin, MaxScale float64
+	// EvidenceTimeout ends an attack that has gone on this long (default 5 minutes) without any of the evidence that
+	// declared it (concentration, spread, harm), even if the traffic has not fallen: a baseline that stopped learning
+	// when the attack began must never be able to hold a site in "attack" for ever.
+	EvidenceTimeout time.Duration
+	// MinHistory is how long the detector must have been running before it can declare an attack (default 60 seconds): with
+	// less data nothing is known about what is usual. Until Warmup has passed, only a rise of 2.5 times RateFactor counts.
+	MinHistory time.Duration
 	// RateFactor is how many times the baseline rate the traffic must be for there to be an attack (default 4).
 	RateFactor float64
 	// ExitFactor is how far the rate must fall, relative to the baseline at the start of the attack, before the attack
@@ -102,8 +120,13 @@ func (c *DetectorConfig) defaults() {
 	def(&c.Tau, 10*time.Minute)
 	def(&c.MinAttack, time.Minute)
 	def(&c.ExitQuiet, 30*time.Second)
+	def(&c.EvidenceTimeout, 5*time.Minute)
+	def(&c.MinHistory, time.Minute)
 	def(&c.SeenPeriod, 12*time.Hour)
-	deff(&c.MinAttackRate, 50)
+	deff(&c.MinAttackRate, 20)
+	deff(&c.Sigmas, 8)
+	deff(&c.LimitMargin, 4)
+	deff(&c.MaxScale, 20)
 	deff(&c.RateFactor, 4)
 	deff(&c.ExitFactor, 2)
 	if c.Confirm == 0 {
@@ -127,6 +150,7 @@ type window struct {
 	done, errs, latN                    uint32
 	refused, challenged, solved, banned uint32
 	connsIn, connsRefused               uint32
+	maxSrc, maxNet                      uint32  // the most requests one address, and one network, sent in this second
 	lat                                 float64 // milliseconds, summed over latN
 	srcs, nets                          hll
 	fps, paths                          topK
@@ -156,12 +180,16 @@ type aggregate struct {
 	errRatio, lat                       float64 // -1 when nothing completed
 	connRate, connRefused               float64
 	refused, challenged                 float64
+	peakSrc, peakNet                    float64 // the busiest address's and network's requests a second, averaged over the ten seconds
 	fps, paths                          []share
 }
 
 type baseline struct {
-	rate, srcs, newShare, errRatio, lat, connRate float64
-	fps, paths                                    map[uint64]float64
+	rate, rateVar, srcs, newShare, errRatio, lat, connRate float64
+	peakSrc, peakNet                                       float64
+	lastSample                                             float64
+	sampled                                                bool
+	fps, paths                                             map[uint64]float64
 }
 
 // attackInfo is what the request path needs to know during an attack. It is replaced as a whole and read without a lock.
@@ -178,38 +206,48 @@ type attackInfo struct {
 type detector struct {
 	cfg DetectorConfig
 
-	mu       sync.Mutex
-	ring     [ringSeconds]window
-	cur      int
-	curSec   int64
-	started  bool
-	seen     seenFilter
-	rotated  int64
-	base     baseline
-	age      int
-	state    State
-	run      int // consecutive seconds of evidence
-	since    int64
-	quiet    int
-	frozen   baseline // the baseline when the attack began
-	epoch    uint32
-	last     aggregate
-	reasons  []string
-	scratchS hll
-	scratchN hll
-	incident *incidentAcc
-	history  []Incident
+	mu         sync.Mutex
+	ring       [ringSeconds]window
+	cur        int
+	curSec     int64
+	started    bool
+	seen       seenFilter
+	rotated    int64
+	base       baseline
+	age        int
+	state      State
+	run        int // consecutive seconds of evidence
+	since      int64
+	quiet      int
+	noEvidence int      // consecutive seconds of attack without evidence
+	frozen     baseline // the baseline when the attack began
+	epoch      uint32
+	last       aggregate
+	reasons    []string
+	scratchS   hll
+	scratchN   hll
+	incident   *incidentAcc
+	history    []Incident
 
 	info atomic.Pointer[attackInfo]
 	// learning is true while traffic is ordinary: no attack, no traffic above the usual, no evidence building up. Clients
 	// earn their standing only then.
 	learning atomic.Bool
+	// winMaxSrc and winMaxNet are the most requests one address, and one network, has sent in the current second; the
+	// request path raises them without a lock and the detector takes them when the second ends.
+	winMaxSrc, winMaxNet atomic.Uint32
+	// scaleSrc and scaleNet (float64 bits) are how far the per-address and per-network limits are raised to follow the
+	// site's traffic: 1 for the configured limit.
+	scaleSrc, scaleNet atomic.Uint64
+	// refSrc and refNet are the configured per-address and per-network request rates the scales apply to.
+	refSrc, refNet float64
 
 	// set by the Shield
-	labeler     Labeler
-	onEvent     func(Event)
-	unknownRate func(base float64) float64
-	clusterRate float64
+	labeler      Labeler
+	onEvent      func(Event)
+	unknownRate  func(base float64) float64
+	clusterRate  float64
+	clusterShare float64
 }
 
 func newDetector(cfg DetectorConfig) *detector {
@@ -323,6 +361,8 @@ func (d *detector) advance(ns int64) {
 		steps = ringSeconds
 	}
 	for i := int64(0); i < steps; i++ {
+		closing := &d.ring[d.cur]
+		closing.maxSrc, closing.maxNet = d.winMaxSrc.Swap(0), d.winMaxNet.Swap(0)
 		d.evaluate((d.curSec + 1) * 1e9)
 		d.cur = (d.cur + 1) % ringSeconds
 		d.curSec++
@@ -337,7 +377,7 @@ func (d *detector) advance(ns int64) {
 // aggregate sums the last aggSeconds closed windows (the current, open one is not included).
 func (d *detector) aggregate() aggregate {
 	var a aggregate
-	var reqs, newSrcs, engaged, done, errs, latN, conns, connsRef, refused, challenged float64
+	var reqs, newSrcs, engaged, done, errs, latN, conns, connsRef, refused, challenged, maxSrc, maxNet float64
 	var lat float64
 	d.scratchS.reset()
 	d.scratchN.reset()
@@ -372,6 +412,8 @@ func (d *detector) aggregate() aggregate {
 		conns += float64(w.connsIn)
 		connsRef += float64(w.connsRefused)
 		refused += float64(w.refused)
+		maxSrc += float64(w.maxSrc)
+		maxNet += float64(w.maxNet)
 		challenged += float64(w.challenged)
 		d.scratchS.merge(&w.srcs)
 		d.scratchN.merge(&w.nets)
@@ -379,6 +421,7 @@ func (d *detector) aggregate() aggregate {
 		merge(paths, &w.paths)
 	}
 	a.rate = reqs / aggSeconds
+	a.peakSrc, a.peakNet = maxSrc/aggSeconds, maxNet/aggSeconds
 	a.connRate = conns / aggSeconds
 	a.connRefused = connsRef / aggSeconds
 	a.refused = refused / aggSeconds
@@ -431,7 +474,13 @@ func (d *detector) evaluate(ns int64) {
 		b = &d.frozen
 	}
 	rateBase := math.Max(b.rate, 0)
-	gate := a.rate >= math.Max(d.cfg.RateFactor*rateBase, d.cfg.MinAttackRate)
+	warming := d.age < int(d.cfg.Warmup/time.Second)
+	trained := d.age >= int(d.cfg.MinHistory/time.Second) || d.state == Attack // too little data tells nothing about what is usual
+	thr := d.threshold(rateBase, b.rateVar)
+	if warming { // still learning what is usual: only a far larger rise counts
+		thr = math.Max(thr, 2.5*d.cfg.RateFactor*rateBase)
+	}
+	gate := a.rate >= thr
 
 	var reasons []string
 	strongFP, pathConc := false, false
@@ -471,6 +520,7 @@ func (d *detector) evaluate(ns int64) {
 		reasons = append(reasons, "connections are opened without requests ("+itoa(a.connRate)+" a second)")
 	}
 	evidence := gate && (strongFP || pathConc && spread && lowEngage || pain && spread) || connFlood
+	evidence = evidence && trained
 	if gate {
 		reasons = append([]string{"about " + itoa(a.rate) + " requests a second, the usual is " + itoa(rateBase)}, reasons...)
 	}
@@ -502,13 +552,19 @@ func (d *detector) evaluate(ns int64) {
 		} else {
 			d.quiet = 0
 		}
+		if evidence {
+			d.noEvidence = 0
+		} else {
+			d.noEvidence++
+		}
 		inc := d.incident
 		if a.rate > inc.peak {
 			inc.peak = a.rate
 		}
 		inc.addReasons(reasons)
 		d.widen(a, strongFP, pathConc && spread && lowEngage)
-		if time.Duration(ns-d.since) >= d.cfg.MinAttack && time.Duration(d.quiet)*time.Second >= d.cfg.ExitQuiet {
+		if time.Duration(ns-d.since) >= d.cfg.MinAttack && (time.Duration(d.quiet)*time.Second >= d.cfg.ExitQuiet ||
+			time.Duration(d.noEvidence)*time.Second >= d.cfg.EvidenceTimeout) {
 			d.endAttack(ns)
 		} else if (ns/1e9-d.since/1e9)%10 == 0 {
 			ev := d.incidentEvent("attack_update", ns)
@@ -530,10 +586,29 @@ func (d *detector) learn(a aggregate) {
 	b := &d.base
 	ew := func(x *float64, v float64) { *x += alpha * (v - *x) }
 	rate := a.rate
-	if d.age > 1 {
+	warming := float64(d.age) <= float64(d.cfg.Warmup/time.Second)
+	if !warming { // while warming up the baseline is the plain average of what was seen, whatever it is
 		rate = math.Min(rate, math.Max(2*b.rate, d.cfg.MinAttackRate/2))
 	}
+	// The spread of the site's rate is measured between ten-second rates that do not overlap, so that a steady rise or
+	// fall (a day's ramp, or the baseline still catching up) is not mistaken for noise.
+	if d.age%10 == 0 {
+		if b.sampled {
+			diff := rate - b.lastSample
+			b.rateVar += math.Min(1, 10*alpha) * (diff*diff/2 - b.rateVar)
+		}
+		b.lastSample, b.sampled = rate, true
+	}
 	ew(&b.rate, rate)
+	ps, pn := a.peakSrc, a.peakNet
+	if !warming { // a sudden rise in the busiest address is not learnt at once either
+		ps = math.Min(ps, math.Max(2*b.peakSrc, d.refSrc/2))
+		pn = math.Min(pn, math.Max(2*b.peakNet, d.refNet/2))
+	}
+	ew(&b.peakSrc, ps)
+	ew(&b.peakNet, pn)
+	d.scaleSrc.Store(math.Float64bits(d.scale(b.peakSrc, d.refSrc)))
+	d.scaleNet.Store(math.Float64bits(d.scale(b.peakNet, d.refNet)))
 	ew(&b.srcs, a.srcs)
 	ew(&b.newShare, a.newShare)
 	ew(&b.connRate, a.connRate)
@@ -575,9 +650,9 @@ func learnShares(m map[uint64]float64, now []share, alpha float64) {
 }
 
 func (d *detector) startAttack(ns int64, a aggregate, reasons []string, fpAttack, pathAttack bool) {
-	d.state, d.since, d.quiet, d.run = Attack, ns, 0, 0
+	d.state, d.since, d.quiet, d.noEvidence, d.run = Attack, ns, 0, 0, 0
 	d.epoch++
-	d.frozen = baseline{rate: d.base.rate, srcs: d.base.srcs, newShare: d.base.newShare, errRatio: d.base.errRatio, lat: d.base.lat,
+	d.frozen = baseline{rate: d.base.rate, rateVar: d.base.rateVar, peakSrc: d.base.peakSrc, peakNet: d.base.peakNet, srcs: d.base.srcs, newShare: d.base.newShare, errRatio: d.base.errRatio, lat: d.base.lat,
 		connRate: d.base.connRate, fps: cloneMap(d.base.fps), paths: cloneMap(d.base.paths)}
 	d.incident = &incidentAcc{start: ns, peak: a.rate, baseRate: d.base.rate, srcs: newHLL(14), nets: newHLL(12),
 		labels: newTopK(32), labelSet: newHLL(10)}
@@ -586,7 +661,8 @@ func (d *detector) startAttack(ns int64, a aggregate, reasons []string, fpAttack
 	if d.unknownRate != nil {
 		unknown = d.unknownRate(d.base.rate)
 	}
-	d.info.Store(&attackInfo{epoch: d.epoch, since: ns, fps: map[uint64]bool{}, paths: map[uint64]bool{}, unknownRate: unknown, clusterRate: d.clusterRate})
+	cluster := math.Max(d.clusterRate, d.clusterShare*d.base.rate) // look-alike requests may be a small share of a big site
+	d.info.Store(&attackInfo{epoch: d.epoch, since: ns, fps: map[uint64]bool{}, paths: map[uint64]bool{}, unknownRate: unknown, clusterRate: cluster})
 	d.widen(a, fpAttack, pathAttack)
 	d.emit(d.incidentEvent("attack_start", ns))
 }
@@ -660,4 +736,55 @@ func cloneSet(m map[uint64]bool) map[uint64]bool {
 		out[k] = v
 	}
 	return out
+}
+
+// threshold is the request rate, in a second of ten, above which traffic is more than the site's own normal: the largest
+// of RateFactor times the moving average, the average plus Sigmas standard deviations of the site's own rates, and the
+// absolute floor. A steady site is held to the first; a bursty one, whose ordinary rate swings widely, to the second.
+func (d *detector) threshold(mean, variance float64) float64 {
+	return math.Max(math.Max(d.cfg.RateFactor*mean, mean+d.cfg.Sigmas*math.Sqrt(math.Max(variance, 0))), d.cfg.MinAttackRate)
+}
+
+// rateThreshold is threshold for the detector's own baseline.
+func (d *detector) rateThreshold() float64 {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.threshold(d.base.rate, d.base.rateVar)
+}
+
+// scale is the factor a limit configured as ref is multiplied by, given the moving average of the busiest address's (or
+// network's) rate: LimitMargin times that average if it is above the configured limit, at most MaxScale, never below 1.
+func (d *detector) scale(peak, ref float64) float64 {
+	if ref <= 0 {
+		return 1
+	}
+	return math.Min(math.Max(d.cfg.LimitMargin*peak/ref, 1), d.cfg.MaxScale)
+}
+
+// scales returns the current factors for the per-address and the per-network limits.
+func (d *detector) scales() (src, net float64) {
+	src, net = math.Float64frombits(d.scaleSrc.Load()), math.Float64frombits(d.scaleNet.Load())
+	if src < 1 {
+		src = 1
+	}
+	if net < 1 {
+		net = 1
+	}
+	return src, net
+}
+
+// notePeaks raises the second's record of the busiest address and network.
+func (d *detector) notePeaks(src, net uint32) {
+	for {
+		cur := d.winMaxSrc.Load()
+		if src <= cur || d.winMaxSrc.CompareAndSwap(cur, src) {
+			break
+		}
+	}
+	for {
+		cur := d.winMaxNet.Load()
+		if net <= cur || d.winMaxNet.CompareAndSwap(cur, net) {
+			break
+		}
+	}
 }

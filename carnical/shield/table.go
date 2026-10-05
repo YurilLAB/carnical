@@ -106,6 +106,8 @@ type source struct {
 	strikes     uint16
 	strikeEpoch uint32
 	bannedUntil int64
+	winSec      int64 // the second winN counts requests in
+	winN        uint32
 }
 
 func sourceIdle(s *source, now int64) bool {
@@ -116,9 +118,11 @@ func sourceLast(s *source) int64 { return s.last }
 
 // subnet is what the shield remembers about one /24 (IPv4) or /48 (IPv6).
 type subnet struct {
-	req   bucket
-	conns int32
-	last  int64
+	req    bucket
+	conns  int32
+	last   int64
+	winSec int64
+	winN   uint32
 }
 
 func subnetIdle(s *subnet, now int64) bool { return s.conns <= 0 && now-s.last > 60e9 }

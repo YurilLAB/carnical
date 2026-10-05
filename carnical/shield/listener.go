@@ -94,19 +94,20 @@ func (s *Shield) admitConn(c net.Conn) net.Conn {
 	}
 	attack := s.det.info.Load() != nil && !s.cfg.MonitorOnly
 	refused := false
+	scaleSrc, scaleNet := s.det.scales()
 	s.sources.do(sc.key, ns, func(src *source) {
 		src.last = ns
 		sc.known = s.isKnown(src, ns, s.det.info.Load())
-		rate, burst := s.cfg.ConnRate, s.cfg.ConnBurst
+		rate, burst := s.cfg.ConnRate*scaleSrc, s.cfg.ConnBurst*scaleSrc
 		if attack && !sc.known {
 			rate, burst = rate/4, max(burst/4, 1) // strangers open connections more slowly during an attack
 		}
 		refused = src.bannedUntil > ns || !src.conn.take(ns, rate, burst)
 	})
 	if !refused {
-		limit := int64(s.cfg.MaxConns)
+		limit := s.maxConns()
 		if !sc.known {
-			limit -= s.reserved
+			limit -= int64(float64(limit) * s.cfg.ReservedShare)
 		}
 		if s.conns.Load() >= limit {
 			s.evictIdle(ns, 16)
@@ -116,7 +117,7 @@ func (s *Shield) admitConn(c net.Conn) net.Conn {
 	if !refused {
 		s.subnets.do(sc.subnet, ns, func(n *subnet) {
 			n.last = ns
-			if refused = n.conns >= int32(s.cfg.SubnetConns); !refused {
+			if refused = float64(n.conns) >= float64(s.cfg.SubnetConns)*scaleNet; !refused {
 				n.conns++
 			}
 		})
