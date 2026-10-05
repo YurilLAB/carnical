@@ -10,7 +10,10 @@ rewritten: Coraza is the engine and the OWASP Core Rule Set (CRS) is the rule se
 | `proxy/` | A reverse proxy: every request goes through Coraza and the CRS, clean ones are forwarded to one upstream. |
 | `cmd/carnical/` | The program: `carnical -upstream http://127.0.0.1:8081 -mode block`. |
 | `tools/update-crs/` | Fetches a CRS release, checks its GPG signature against the CRS project's pinned key, and replaces the embedded copy. |
-| `docs/backend-integration.md` | What it takes to connect this to our backend and web UI. Read this next. |
+| `audit/`, `cmd/carnical-audit/` | The segmentation checks: the walls between zones and between customers, run a few times a day. `carnical-audit -zones zones.json`. |
+| `docs/backend-integration.md` | What it takes to connect this to our backend and web UI. |
+| `docs/segmentation.md` | Zones, who may talk to whom, how customers are kept apart, and the checks and their schedule. Read this next. |
+| `docs/backend-compat.md` | The contracts the existing backend expects (feed, events, policy, updates, advice) and the defects in it that matter for hosting. |
 
 ## Versions
 
@@ -51,6 +54,7 @@ These come from bugs found in our own earlier gateway, where what the firewall i
 - Trailers are not forwarded, protocol upgrades (WebSocket, h2c) are refused, and `CONNECT` is refused.
 - A request takes an upstream place only after its body has been read, so a stalled upload cannot use them up.
 - The visitor's address comes from `X-Forwarded-For` only when the connection is from a trusted proxy, read from the right; a `/0` trusted range is refused.
+- A customer's origin is not trusted: connections to loopback, private, link-local and cloud-metadata addresses, and to this machine's own addresses, are refused at the moment they are made, on the address actually used (`-origin-allow` names ranges an operator permits).
 - Rule matches are logged with the rule's id, severity and fixed message; the client address, URI and matched data (which hold what the visitor sent) only with `-log-details`.
 
 ## Known limits
