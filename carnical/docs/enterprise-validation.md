@@ -115,6 +115,12 @@ API/virtual-patch inspectors in a deployed site's proxy are separate deployment 
 
 ## Environment and baseline limitations
 
+The [live load report](loadtest-2026-10-06.md) records a final 500,000-request run with corrected URL/framing fidelity:
+5,282.34 requests/second, p99 10.620 ms, zero transport/availability errors, 86.92% labelled-attack refusal and 2.34%
+labelled-benign refusal. All 8,888 added bypass regression requests are refused before the counted origin. The report
+preserves the 34 admitted attack templates and 11 refused benign templates, the precise standalone configuration and
+the boundary between request admission and exploitation. It does not measure the uninstalled integration APIs.
+
 `go test ./...` in the upstream module fails on existing Windows filesystem expectations and open audit/debug log handles (auditlog, operators, seclang, testing). The changed code is confined to Carnical's separate module; no upstream engine files are changed.
 
 An earlier broader Carnical race run encountered Windows audit-file recovery/truncation failures in the then-untracked
