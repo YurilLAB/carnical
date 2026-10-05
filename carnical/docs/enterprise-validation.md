@@ -76,6 +76,16 @@ Normal format/proxy/executable tests and the scoped race suite pass, with the tw
 
 Review covered atomic counter storage sized only by the registry, independent snapshots, unchanged stop/reporting caps, reporter cancellation/joining, stable labels and the opt-in boundary for expanded messages/panic details. Counters describe emitted findings, reset with a new inspector and are local to one process. A forced kill cannot flush a final summary. Default Coraza summaries require rule-ID lookup; existing log consumers must adopt rule_msg and the API quota's corrected ID. These are monitoring boundaries, not evidence of production deployment or complete application authorization.
 
+## Layered GraphQL transport protection (2026-10-05)
+
+Fifteen additional live executable reproductions first returned 200: a HEAD mutation with its primary rule disabled, a PUT form operation, URL/body operation selection conflicts, a lowercase method token, URL/form/JSON method overrides, three discovered-endpoint body-only protocol envelopes, three protocol-name case aliases, and two batches hiding operations after an empty prefix or beyond retained elements. They now return 400 or 403 with no origin request. The executable suite has 100 cases, including valid GET queries/POST mutations, ordinary metadata/preflights, application `_method` fields inside variables, escaped/bracket aliases, extension-only HEAD requests, monitor forwarding and hard header refusals with CRS/formats off.
+
+Rules 5002315, 5002316 and 5002317 provide independent method, mixed-envelope and metadata layers. The live suite verifies repeated fallback blocks increment 5002315 even with the mutation rule off; monitored mixed envelopes increment 5002316; repeated method metadata increments 5002317. A combined protocol alias/override HEAD request emits four separate findings (5002314, 5002315, 5002308 and 5002317), with monitored outcomes and per-rule totals. Default logs and aggregates exclude the secret marker. Blocking mode stops at its first refusal rather than claiming all latent findings were inspected.
+
+Normal format/proxy/executable tests pass. Scoped race checks pass, excluding the same two existing format throughput tests noted above; those pass normally. CLI race checks instrument the test/reporter harness, while its live child executable is built normally. The final GraphQL fuzz run passes 12,989 executions with a 30-second budget. Vet, govulncheck of the CLI dependency graph, and the Linux/amd64 cross-build pass. No upstream engine files or unrelated untracked API-policy work are included.
+
+Review covered decoded protocol aliases, bounded JSON/form capture, batch discovery across all scanned elements, request-local URL identification, body-only protocol fields, independent policy exceptions, mutation selection before coarse guards, per-rule deduplication, fixed log text and admission before hop-header stripping. The GET/POST restriction is an explicit local policy, since the HTTP draft permits additional server methods. Legacy HEAD/PUT transports and header tunneling can require integration changes. Custom override names/getters and document-free persisted-query operation types still need explicit endpoint/origin policy. Format enforcement requires `-formats-mode block`; default monitor mode intentionally forwards. Monitored/disabled batch caps still limit retained operation analysis.
+
 ## Environment and baseline limitations
 
 `go test ./...` in the upstream module fails on existing Windows filesystem expectations and open audit/debug log handles (auditlog, operators, seclang, testing). The changed code is confined to Carnical's separate module; no upstream engine files are changed.
@@ -84,6 +94,6 @@ The broader Carnical race run encounters Windows audit-file recovery/truncation 
 
 That broad run also times out after ten minutes in the untracked virtual-patch brute-force comparison test (`TestIndexedMatchEqualsBruteForce`). It is not represented as a passing full-module race run.
 
-`go run mage.go adr` rejects 60 pre-existing ADRs as lacking the exact technical-discussion section marker. The new ADRs 0061–0068 produce no diagnostics. The Windows checkout has CRLF in older documents, which the validator's exact marker comparison does not normalize. This check is not claimed to pass globally.
+`go run mage.go adr` rejects 60 pre-existing ADRs as lacking the exact technical-discussion section marker. The new ADRs 0061–0069 produce no diagnostics. The Windows checkout has CRLF in older documents, which the validator's exact marker comparison does not normalize. This check is not claimed to pass globally.
 
 WSL's Ubuntu environment first reported a read-only home when creating the Go cache and subsequently failed to start. Linux confinement and the full Linux CI matrix have not been verified by these runs.

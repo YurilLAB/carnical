@@ -111,6 +111,9 @@ var (
 	rGQLRequestAliases = reg(5002312, "graphql-request-aliases", 400, "high", Block, "a GraphQL request whose selected operations exceed the total alias limit")
 	rGQLRequestDirs    = reg(5002313, "graphql-request-directives", 400, "high", Block, "a GraphQL request whose selected operations exceed the total directive limit")
 	rGQLSafeMutation   = reg(5002314, "graphql-safe-method-mutation", 403, "high", Block, "a GraphQL mutation selected for execution using HEAD, OPTIONS or TRACE")
+	rGQLHTTPMethod     = reg(5002315, "graphql-http-method", 403, "high", Block, "a GraphQL operation transported using a method other than GET or POST")
+	rGQLMixedTransport = reg(5002316, "graphql-mixed-transport", 400, "high", Block, "GraphQL protocol parameters split between the URL and request body")
+	rGQLMethodOverride = reg(5002317, "graphql-method-override", 400, "high", Block, "method-override metadata in a GraphQL transport")
 
 	// NDJSON.
 	rNDLines = reg(5002400, "ndjson-lines", 400, "high", Block, "more lines than the limit")

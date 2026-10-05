@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package formats
 
 import (
@@ -25,10 +27,12 @@ type jsonElem struct {
 }
 
 // jsonCapture collects, from the root object (or from each object in a root array), the members that make up a GraphQL request:
-// query, variables, operationName and extensions. Nothing else is kept.
+// query, variables, operationName, extensions and reserved method-override metadata. Nothing else is kept.
 type jsonCapture struct {
 	kind    byte
 	members []jsonMember
+	// graphQLPossible observes query documents in every root-array object, even beyond retained elements.
+	graphQLPossible bool
 	// elems holds the first max elements of a root array, and nelems how many there were.
 	elems  []jsonElem
 	nelems int
@@ -427,6 +431,8 @@ func (p *jsonParser) object(depth int, ctor bool) bool {
 				switch string(fk) {
 				case "query", "variables", "operationname", "extensions":
 					isGQL = true
+				default:
+					isGQL = methodOverrideParam(string(fk))
 				}
 			}
 		}
@@ -445,6 +451,9 @@ func (p *jsonParser) object(depth int, ctor bool) bool {
 		}
 		if isGQL {
 			m := jsonMember{key: decodeJSONString(p.b[ks:ke], esc), kind: kind, start: vstart, end: p.i}
+			if p.rootArray && graphQLParamName(m.key) == "query" && kind == '"' {
+				p.capture.graphQLPossible = p.capture.graphQLPossible || looksLikeGraphQL([]byte(decodeJSONString(p.b[vstart+1:p.i-1], true)))
+			}
 			if rootObj {
 				p.capture.members = append(p.capture.members, m)
 			} else if p.curElem >= 0 {

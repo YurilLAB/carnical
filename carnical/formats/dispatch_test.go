@@ -377,7 +377,7 @@ func TestRuleCountersAreBoundedAndConcurrent(t *testing.T) {
 		{"disabled mutation rule", Off, row{method: "HEAD", path: "/graphql", query: "query=mutation%7BSECRET_ACCOUNT%7D"}, idGQLSafeMutation},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			in := New(Policy{Rules: map[string]Action{ruleName(tc.id): tc.mode}})
+			in := New(Policy{Rules: map[string]Action{ruleName(tc.id): tc.mode, "graphql-http-method": Off}})
 			if len(in.Stats()) != 0 {
 				t.Fatal("a new inspector has counters")
 			}

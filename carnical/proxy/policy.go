@@ -32,6 +32,8 @@ const (
 	idTooManyConns    = 5000030
 	idAPIRateLimited  = 5000042
 	idRateStateFull   = 5000041
+	idMethodNotCanon  = 5000043
+	idMethodOverride  = 5000044
 )
 
 // PathPolicy says how plain the request path must be. The zero value is the strict default.
@@ -125,14 +127,18 @@ func normHost(h string) string {
 }
 
 // headersThatSteerTheApplication are control headers some frameworks trust. A client may send them to skip a
-// middleware or choose a route or method; they are removed whatever the rule set says (it blocks a few of them
-// in blocking mode only).
+// middleware or choose a route or method. Method overrides are refused at admission; the rest are removed on forwarding,
+// whatever the rule set says.
 func isInternalHeader(key string) bool {
 	switch key {
 	case "x-matched-path", "x-now-route-matches", "x-http-method-override", "x-method-override", "x-http-method":
 		return true
 	}
 	return strings.HasPrefix(key, "x-middleware-") || strings.HasPrefix(key, "x-invoke-") || strings.HasPrefix(key, "x-nextjs-")
+}
+
+func isMethodOverrideHeader(key string) bool {
+	return key == "x-http-method-override" || key == "x-method-override" || key == "x-http-method"
 }
 
 // refuse answers a request the proxy itself will not forward, and records why in the same form as a rule match.
@@ -149,6 +155,11 @@ func (e *Edge) refuse(w http.ResponseWriter, r *http.Request, status int, id int
 
 // checkRequest applies the request-side policy that does not need the body. It reports whether the request may go on.
 func (e *Edge) checkRequest(w http.ResponseWriter, r *http.Request, client netip.Addr) bool {
+	// HTTP methods are case-sensitive, but some origins normalize them. Refuse that ambiguity before any inspector runs.
+	if r.Method != strings.ToUpper(r.Method) {
+		e.refuse(w, r, http.StatusBadRequest, idMethodNotCanon, "a noncanonical HTTP method token")
+		return false
+	}
 	if len(e.hosts) > 0 && !e.hosts[normHost(r.Host)] {
 		e.refuse(w, r, http.StatusMisdirectedRequest, idHostNotAllowed, "the Host header is not one of this site's names")
 		return false
@@ -176,6 +187,10 @@ func (e *Edge) checkRequest(w http.ResponseWriter, r *http.Request, client netip
 	}
 	for name := range r.Header {
 		key := strings.ReplaceAll(strings.ToLower(name), "_", "-")
+		if isMethodOverrideHeader(key) {
+			e.refuse(w, r, http.StatusBadRequest, idMethodOverride, "a header that overrides the HTTP method")
+			return false
+		}
 		if e.deny[key] {
 			e.refuse(w, r, http.StatusBadRequest, idInternalHeader, "a header this site does not accept: "+key)
 			return false

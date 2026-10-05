@@ -142,17 +142,31 @@ func TestRefusalsHoldWithTheRuleSetOffAndAreRecorded(t *testing.T) {
 }
 
 func TestFrameworkControlHeadersNeverReachTheApplication(t *testing.T) {
-	names := []string{"X-Middleware-Subrequest", "X_Middleware_Subrequest", "X-Middleware-Prefetch", "X-Invoke-Path", "X-Invoke-Status",
-		"X-Matched-Path", "X-Now-Route-Matches", "X-HTTP-Method-Override", "X-Method-Override", "X-Nextjs-Data"}
-	for _, name := range names {
-		t.Run(name, func(t *testing.T) {
-			s := start(t, ruleSetOff)
-			status, _ := s.raw(t, get("/page", name+": middleware:middleware:middleware\r\n", "X-Application-Token: keep\r\n"))
+	names := []struct {
+		name     string
+		override bool
+	}{
+		{"X-Middleware-Subrequest", false}, {"X_Middleware_Subrequest", false}, {"X-Middleware-Prefetch", false},
+		{"X-Invoke-Path", false}, {"X-Invoke-Status", false}, {"X-Matched-Path", false}, {"X-Now-Route-Matches", false},
+		{"X-HTTP-Method-Override", true}, {"X_HTTP_Method_Override", true}, {"X-Method-Override", true},
+		{"X-HTTP-Method", true}, {"X_HTTP_Method", true}, {"X-Nextjs-Data", false},
+	}
+	for _, tc := range names {
+		t.Run(tc.name, func(t *testing.T) {
+			var seen matches
+			s := start(t, func(c *Config) { ruleSetOff(c); c.OnMatch = seen.record })
+			status, _ := s.raw(t, get("/page", tc.name+": middleware:middleware:middleware\r\n", "X-Application-Token: keep\r\n"))
 			got := s.up.requests()
+			if tc.override {
+				if status != 400 || len(got) != 0 || len(seen.all()) != 1 || seen.all()[0].RuleID != idMethodOverride {
+					t.Fatalf("override refusal: status %d, origin %d, findings %+v", status, len(got), seen.all())
+				}
+				return
+			}
 			if status != 200 || len(got) != 1 {
 				t.Fatalf("status %d, %d requests", status, len(got))
 			}
-			dashed := strings.ReplaceAll(strings.ToLower(name), "_", "-")
+			dashed := strings.ReplaceAll(strings.ToLower(tc.name), "_", "-")
 			for header := range got[0].Header {
 				if strings.ReplaceAll(strings.ToLower(header), "_", "-") == dashed {
 					t.Fatalf("%s reached the application", header)

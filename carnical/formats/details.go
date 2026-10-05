@@ -102,6 +102,7 @@ const (
 	dGivenTwice
 	dInQueryString
 	dOperationSelection
+	dProtocolCaseAlias
 
 	// Form.
 	dTruncatedEscape
@@ -232,6 +233,7 @@ var detailText = [dCount]string{
 	dGivenTwice:             "a GraphQL protocol parameter is given twice",
 	dInQueryString:          "in the query string",
 	dOperationSelection:     "the operation name does not select one uniquely named operation",
+	dProtocolCaseAlias:      "a GraphQL protocol parameter uses noncanonical case",
 
 	dTruncatedEscape: "a percent sign at the end with fewer than two digits after it",
 	dBadHexEscape:    "a percent sign that is not followed by two hex digits",

@@ -22,7 +22,11 @@ type finder struct {
 	verdicts     []inspect.Verdict
 	seen         [maxRules / 64]uint64
 	blocked      bool
-	mutationRule *rule    // method safety applies to every GraphQL envelope, including explicitly permitted GET/HEAD bodies
+	mutationRule *rule // method safety applies to every GraphQL envelope, including explicitly permitted GET/HEAD bodies
+	method       string
+	urlGraphQL   bool     // the URL parameters identify this request as GraphQL
+	urlOverride  bool     // reserved method-override metadata in URL parameters
+	urlProtocol  bool     // GraphQL protocol parameters were present in the URL, independently of body fields
 	graphql      gqlStats // selected-operation totals belong to this request, never the shared Inspector
 	// line is the number of the NDJSON line being checked, 0 when none is.
 	line int

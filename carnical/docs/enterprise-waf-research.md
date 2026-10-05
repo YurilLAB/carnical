@@ -18,7 +18,8 @@ Research date: 2026-10-05. Sources below are vendor documentation or standards. 
 5. Strict policy loading: duplicate/nullable settings and case aliases fail before startup, with exact JSON tags and a shared size bound.
 6. URL query validation: all endpoints and methods use bounded parameter parsing with independent query limits and rules, preserving valid forwarded bytes. Malformed escapes, raw semicolons, invalid UTF-8, NULs and prototype names are refused in enforcement mode; ordinary duplicates remain monitored unless the operator selects blocking.
 7. Bypass monitoring: bounded per-rule blocked/monitored counters and changed process-level summaries complement every-attempt finding logs. Stable labels contain no request values. Expanded CRS messages and inspector panic details are explicit opt-in; event/rule messages have distinct JSON keys and API quota/inspector failure identities are distinct.
-8. Complete and review the pre-existing API-policy/control work independently: OpenAPI import fidelity, strict authorization/credential validation, signed updates, origin-observed learning and policy rollback. These untracked files were preserved and are not included in these commits.
+8. Layer GraphQL transport protection: an independent GET/POST policy guards other transports even with a mutation rule disabled; URL/body protocol mixing and top-level method-override metadata are refused. Protocol-name case aliases are inspected and rejected, including in discovered batch envelopes. Header method tunneling and noncanonical method tokens are also rejected independently of format/CRS mode. Each format layer has a separate rule identity and bounded counters. Legacy method transports require explicit policy exceptions; custom middleware override getters require origin-specific enforcement.
+9. Complete and review the pre-existing API-policy/control work independently: OpenAPI import fidelity, strict authorization/credential validation, signed updates, origin-observed learning and policy rollback. These untracked files were preserved and are not included in these commits.
 
 The proxy cannot enforce object-level application authorization or deduce a persisted GraphQL query's operation without the origin's registry. Schema-aware gRPC, streaming WebSockets, distributed rate-limit state and TLS client authentication on application routes remain distinct projects. Listing them as gaps avoids silently representing opaque passthrough as inspected traffic.
 
@@ -28,5 +29,6 @@ The proxy cannot enforce object-level application authorization or deduce a pers
 - [GraphQL over HTTP: GET method safety and parameter encoding](https://http-spec.graphql.org/draft/#sec-GET)
 - [HTTP safe methods](https://httpwg.org/specs/rfc9110.html#safe.methods)
 - [Express automatic HEAD dispatch to GET handlers](https://expressjs.com/en/4x/api/router/#router-method)
+- [Express method-override header, query and body getters](https://expressjs.com/en/resources/middleware/method-override/)
 
 See [validation](enterprise-validation.md) for observed behavior and environment limitations.

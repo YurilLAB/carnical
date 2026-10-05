@@ -113,6 +113,7 @@ func (in *Inspector) Inspect(r *inspect.Request) (res inspect.Result) {
 		}
 	}()
 	f.mutationRule = mutationRuleForMethod(r.Method)
+	f.method = r.Method
 	if in.err != nil {
 		if len(r.Body) > 0 {
 			f.hit(rPolicyInvalid, -1, dNone)
@@ -236,15 +237,15 @@ func (in *Inspector) checkBody(f *finder, ci ctInfo, body []byte, gqlPath bool) 
 	}
 	switch ci.kind {
 	case kindForm:
-		var capture *gqlParams
-		if gqlPath {
-			capture = &gqlParams{}
-		}
+		capture := &gqlParams{}
 		if !in.checkForm(f, body, ci.charsetIsUTF8(), capture) {
 			return
 		}
-		if capture != nil {
-			in.graphQLParams(f, capture, true)
+		if !in.graphQLParams(f, capture, gqlPath || f.urlGraphQL) {
+			return
+		}
+		if capture.isGraphQL && capture.present() {
+			f.hitIfMixedGraphQL()
 		}
 	case kindMultipart:
 		boundary, _ := ci.mt.param("boundary")

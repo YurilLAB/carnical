@@ -18,10 +18,19 @@ type gqlParams struct {
 	query, variables, operationName, extensions string
 	hasQuery, hasVars, hasOp, hasExt            bool
 	duplicate, looksGQL                         bool
+	isGraphQL, override, caseAlias              bool
 }
 
+func (g *gqlParams) present() bool { return g.hasQuery || g.hasVars || g.hasOp || g.hasExt }
+
 func (g *gqlParams) set(name, value string) {
-	switch name {
+	if methodOverrideParam(name) {
+		g.override = true
+		return
+	}
+	canonical := graphQLParamName(name)
+	g.caseAlias = g.caseAlias || canonical != "" && name != canonical
+	switch canonical {
 	case "query":
 		if g.hasQuery {
 			g.duplicate = true
@@ -146,7 +155,7 @@ func (fs *formScanner) pair(pair []byte, at int) bool {
 			fs.seen[string(fs.fold)] = struct{}{}
 		}
 	}
-	if fs.capture != nil && (string(fs.name) == "query" || string(fs.name) == "variables" || string(fs.name) == "operationName" || string(fs.name) == "extensions") {
+	if fs.capture != nil && (graphQLParamName(string(fs.name)) != "" || methodOverrideParam(string(fs.name))) {
 		fs.capture.set(string(fs.name), string(fs.val))
 	}
 	return true

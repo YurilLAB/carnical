@@ -3,6 +3,8 @@
 package formats
 
 import (
+	"strings"
+
 	"github.com/YurilLAB/coraza/carnical/inspect"
 )
 
@@ -92,6 +94,9 @@ func (in *Inspector) graphQLDocument(f *finder, src []byte, mustParse bool, oper
 	if f.mutationRule != nil && op.opType == "mutation" && f.hit(f.mutationRule, -1, dNone) {
 		return true, false
 	}
+	if f.hitGraphQLMethod() {
+		return true, false
+	}
 	f.graphql.add(rep.ops[index])
 	switch {
 	case f.graphql.fields > lim.MaxRequestFields && f.hitLimit(rGQLRequestFields, dNone, lim.MaxRequestFields, -1):
@@ -138,7 +143,7 @@ func (in *Inspector) checkGraphQLBody(f *finder, ci ctInfo, body []byte) bool {
 		return false
 	}
 	_, cont := in.graphQLDocument(f, body[start:], true, "")
-	return cont
+	return cont && !f.hitGraphQLOverride(false) && !f.hitIfMixedGraphQL()
 }
 
 // checkJSONBody checks a JSON body, and as GraphQL if it is a GraphQL request.
@@ -150,7 +155,7 @@ func (in *Inspector) checkJSONBody(f *finder, ci ctInfo, body []byte, gqlPath bo
 	if !scanJSON(f, body, &in.pol.JSON, c, true) {
 		return false
 	}
-	return in.graphQLEnvelope(f, body, c, gqlPath)
+	return in.graphQLEnvelope(f, body, c, gqlPath || f.urlGraphQL)
 }
 
 // graphQLEnvelope checks what a JSON body says about GraphQL: one request or a batch.
@@ -160,10 +165,8 @@ func (in *Inspector) graphQLEnvelope(f *finder, body []byte, c *jsonCapture, gql
 	case '{':
 		return in.graphQLRequest(f, body, c.members, gqlPath)
 	case '[':
-		if !gqlPath {
-			if len(c.elems) == 0 || c.elems[0].kind != '{' || !in.queryLooksGraphQL(body, c.elems[0].members) {
-				return true
-			}
+		if !gqlPath && !c.graphQLPossible {
+			return true
 		}
 		if c.nelems > lim.MaxBatch && f.hitLimit(rGQLBatch, dNone, lim.MaxBatch, -1) {
 			return false
@@ -187,24 +190,18 @@ func (in *Inspector) graphQLEnvelope(f *finder, body []byte, c *jsonCapture, gql
 	return true
 }
 
-// queryLooksGraphQL reports whether the "query" member of a request is a string that starts like a GraphQL document.
-func (in *Inspector) queryLooksGraphQL(body []byte, members []jsonMember) bool {
-	for i := range members {
-		if m := &members[i]; m.key == "query" && m.kind == '"' && m.end-m.start >= 2 {
-			return looksLikeGraphQL([]byte(decodeJSONString(body[m.start+1:m.end-1], true)))
-		}
-	}
-	return false
-}
-
 // graphQLRequest checks one request object: its query, and that variables, operationName and extensions have the types the
 // protocol gives them (a server that reads variables sent as a string, and one that does not, see different requests).
 func (in *Inspector) graphQLRequest(f *finder, body []byte, members []jsonMember, mustParse bool) bool {
 	var query, vars, opn, ext *jsonMember
+	var override, caseAlias bool
 	isGQL := mustParse
 	for i := range members {
 		m := &members[i]
-		switch m.key {
+		override = override || methodOverrideParam(m.key)
+		canonical := graphQLParamName(m.key)
+		caseAlias = caseAlias || canonical != "" && m.key != canonical
+		switch canonical {
 		case "query":
 			query = m
 		case "variables":
@@ -239,6 +236,15 @@ func (in *Inspector) graphQLRequest(f *finder, body []byte, members []jsonMember
 	if !isGQL {
 		return true
 	}
+	if caseAlias && f.hit(rGQLShape, -1, dProtocolCaseAlias) {
+		return false
+	}
+	if f.hitGraphQLOverride(override) {
+		return false
+	}
+	if (query != nil || vars != nil || opn != nil || ext != nil) && (f.hitGraphQLMethod() || f.hitIfMixedGraphQL()) {
+		return false
+	}
 	if vars != nil && vars.kind != '{' && vars.kind != 'n' && f.hit(rGQLShape, vars.start, dVariablesNotObject) {
 		return false
 	}
@@ -270,6 +276,16 @@ func (in *Inspector) graphQLParams(f *finder, g *gqlParams, mustParse bool) bool
 	if !isGQL {
 		return true
 	}
+	if g.present() && f.hitGraphQLMethod() {
+		return false
+	}
+	if g.caseAlias && f.hit(rGQLShape, -1, dProtocolCaseAlias) {
+		return false
+	}
+	if f.hitGraphQLOverride(g.override) {
+		return false
+	}
+	g.isGraphQL = true
 	for _, param := range []struct {
 		value string
 		wrong detail
@@ -301,7 +317,39 @@ func mutationRuleForMethod(method string) *rule {
 	}
 }
 
-// queryCheck validates all query strings and discovers GraphQL on safe HTTP methods, or any method at a GraphQL endpoint.
+// hitGraphQLMethod is a separate transport guard: disabling a mutation-specific rule must not enable nonstandard transports.
+// This is a local policy, not a claim that GraphQL forbids servers from implementing other HTTP methods.
+func (f *finder) hitGraphQLMethod() bool {
+	return f.method != "GET" && f.method != "POST" && f.hit(rGQLHTTPMethod, -1, dNone)
+}
+
+func (f *finder) hitIfMixedGraphQL() bool {
+	return f.urlProtocol && f.hit(rGQLMixedTransport, -1, dNone)
+}
+
+// Recognize protocol case aliases during inspection, then refuse their ambiguous spelling.
+// Forwarding never rewrites a name or depends on the origin doing the same folding.
+func graphQLParamName(name string) string {
+	for _, canonical := range [...]string{"query", "variables", "operationName", "extensions"} {
+		if strings.EqualFold(name, canonical) {
+			return canonical
+		}
+	}
+	return ""
+}
+
+// Only top-level transport metadata is reserved; variables remain application data.
+// Bracket forms are covered because frameworks can turn them into an override parameter.
+func methodOverrideParam(name string) bool {
+	return strings.EqualFold(name, "_method") || len(name) > len("_method") &&
+		strings.EqualFold(name[:len("_method")], "_method") && name[len("_method")] == '['
+}
+
+func (f *finder) hitGraphQLOverride(bodyOverride bool) bool {
+	return (bodyOverride || f.urlOverride) && f.hit(rGQLMethodOverride, -1, dNone)
+}
+
+// queryCheck validates all query strings and discovers GraphQL on every method.
 // It returns false when the caller should stop.
 func (in *Inspector) queryCheck(f *finder, r *inspect.Request, gqlPath bool) bool {
 	raw := r.RawQuery
@@ -310,15 +358,13 @@ func (in *Inspector) queryCheck(f *finder, r *inspect.Request, gqlPath bool) boo
 		return !f.blocked // retain the scan bound in monitor/off, then continue inspecting the body
 	}
 	var g gqlParams
-	var capture *gqlParams
-	if f.mutationRule != nil || gqlPath {
-		capture = &g
-	}
-	if !checkParameters(f, []byte(raw), &in.pol.Query, true, capture, queryParameterRules) {
+	ok := checkParameters(f, []byte(raw), &in.pol.Query, true, &g, queryParameterRules)
+	f.urlProtocol = g.present()
+	f.urlOverride = g.override
+	if !ok {
 		return !f.blocked // a parser limit must not skip body inspection in monitor/off
 	}
-	if capture == nil {
-		return true
-	}
-	return in.graphQLParams(f, &g, gqlPath)
+	cont := in.graphQLParams(f, &g, gqlPath)
+	f.urlGraphQL = g.isGraphQL
+	return cont
 }

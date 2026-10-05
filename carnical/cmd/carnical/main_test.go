@@ -85,6 +85,7 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 		return "--B\r\nContent-Disposition: form-data; name=\"file\"; filename=\"" + name + "\"\r\nContent-Type: text/plain\r\n\r\n" + content + "\r\n--B--\r\n"
 	}
 	tests := []struct {
+		headers                                                                     map[string]string
 		alsoRules                                                                   []int
 		statsRule                                                                   int
 		statsBlocked, statsMonitored                                                uint64
@@ -100,10 +101,42 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 		{name: "default monitor logs a GET mutation", method: "GET", target: "/graphql?query=mutation%7BdeleteUser%7D", status: 200, logRule: `"rule":5002310`},
 		{name: "block GET mutation with CRS off", mode: "block", method: "GET", target: "/graphql?query=mutation%7BdeleteUser%7D", status: 403, logRule: `"rule":5002310`},
 		{name: "block HEAD mutation with CRS off", mode: "block", method: "HEAD", target: "/graphql?query=mutation%7BdeleteUser%7D", status: 403, logRule: "\"rule\":5002314"},
+		{name: "HEAD protocol name case alias", mode: "block", method: "HEAD", target: "/graphql?%51uery=mutation%7BdeleteUser%7D", status: 403, logRule: "\"rule\":5002314"},
+		{name: "HEAD protocol alias independent transport guard", mode: "block", policy: "{\"rules\":{\"graphql-safe-method-mutation\":\"off\"}}", method: "HEAD", target: "/api/gql?QUERY=mutation%7BdeleteUser%7D", status: 403, logRule: "\"rule\":5002315"},
+		{name: "POST JSON protocol name case alias", mode: "block", target: "/graphql", ct: "application/json", body: "{\"Query\":\"mutation{deleteUser}\"}", status: 400, logRule: "\"rule\":5002308"},
+		{name: "independent transport guard with mutation rule off", mode: "block", policy: "{\"rules\":{\"graphql-safe-method-mutation\":\"off\"}}", method: "HEAD", target: "/api/gql?query=mutation%7BdeleteUser%7D", status: 403, logRule: "\"rule\":5002315", repeat: 3,
+			extraArgs: []string{"-formats-stats-interval", "100ms"}, statsRule: 5002315, statsBlocked: 3},
+		{name: "protocol alias method override multiple detection totals", mode: "monitor", method: "HEAD", target: "/api/gql?%51uery=mutation%7BSECRET_TOKEN_CLI_TEST%7D&_method=POST", status: 200,
+			logRule: "\"rule\":5002314", alsoRules: []int{5002315, 5002308, 5002317}, repeat: 2,
+			extraArgs: []string{"-formats-stats-interval", "100ms"}, statsRule: 5002315, statsMonitored: 2},
+		{name: "discovered GraphQL through PUT form", mode: "block", method: "PUT", target: "/api/gql", ct: "application/x-www-form-urlencoded", body: "query=mutation%7BdeleteUser%7D", status: 403, logRule: "\"rule\":5002315"},
+		{name: "discovered GraphQL after an empty batch prefix", mode: "block", method: "PUT", target: "/api/gql", ct: "application/json", body: "[{}, {\"query\":\"mutation{deleteUser}\"}]", status: 403, logRule: "\"rule\":5002315"},
+		{name: "GraphQL discovery beyond retained batch elements", mode: "block", target: "/api/gql", ct: "application/json", body: "[" + strings.Repeat("{},", 12) + "{\"query\":\"mutation{deleteUser}\"}]", status: 400, logRule: "\"rule\":5002305"},
+		{name: "conflicting URL and body selection", mode: "block", method: "POST", target: "/graphql?operationName=Read", ct: "application/json", body: "{\"query\":\"query Read{a} mutation Write{b}\",\"operationName\":\"Write\"}", status: 400, logRule: "\"rule\":5002316"},
+		{name: "discovered URL operation with body-only selection", mode: "block", target: "/api/gql?query=query+Read%7Ba%7D+mutation+Write%7Bb%7D&operationName=Read", ct: "application/json", body: "{\"operationName\":\"Write\"}", status: 400, logRule: "\"rule\":5002316"},
+		{name: "discovered URL operation with body-only form selection", mode: "block", target: "/api/gql?query=query+Read%7Ba%7D+mutation+Write%7Bb%7D&operationName=Read", ct: "application/x-www-form-urlencoded", body: "operationName=Write", status: 400, logRule: "\"rule\":5002316"},
+		{name: "discovered URL operation with body-only variables", mode: "block", target: "/api/gql?query=%7Ba%7D", ct: "application/json", body: "{\"variables\":{\"admin\":true}}", status: 400, logRule: "\"rule\":5002316"},
+		{name: "noncanonical HEAD token", mode: "off", method: "head", target: "/api/gql?query=mutation%7BdeleteUser%7D", status: 400, logRule: "\"rule\":5000043"},
+		{name: "GraphQL method override URL metadata", mode: "block", target: "/graphql?%5Fmethod=HEAD", ct: "application/json", body: "{\"query\":\"mutation{deleteUser}\"}", status: 400, logRule: "\"rule\":5002317"},
+		{name: "GraphQL method override form metadata", mode: "block", target: "/api/gql", ct: "application/x-www-form-urlencoded", body: "_method=GET&query=mutation%7BdeleteUser%7D", status: 400, logRule: "\"rule\":5002317"},
+		{name: "GraphQL method override JSON metadata", mode: "block", target: "/graphql", ct: "application/json", body: "{\"_method\":\"HEAD\",\"query\":\"mutation{deleteUser}\"}", status: 400, logRule: "\"rule\":5002317"},
+		{name: "GraphQL variables method field remains valid", mode: "block", target: "/graphql", ct: "application/json", body: "{\"query\":\"mutation($x:Input){update(x:$x)}\",\"variables\":{\"x\":{\"_method\":\"GET\"}}}", status: 200},
+		{name: "method override metadata monitoring totals", mode: "monitor", target: "/graphql?%5Fmethod=GET", ct: "application/json", body: "{\"query\":\"mutation{deleteUser}\"}", status: 200, logRule: "\"rule\":5002317", repeat: 2,
+			extraArgs: []string{"-formats-stats-interval", "100ms"}, statsRule: 5002317, statsMonitored: 2},
+		{name: "method override header hard refusal", mode: "off", method: "POST", ct: "application/json", body: good, headers: map[string]string{"X-HTTP-Method-Override": "GET"}, status: 400, logRule: "\"rule\":5000044"},
+		{name: "underscore method override hard refusal", mode: "off", headers: map[string]string{"X_HTTP_METHOD_OVERRIDE": "GET"}, status: 400, logRule: "\"rule\":5000044"},
+		{name: "method override connection token hard refusal", mode: "off", headers: map[string]string{"X-Method-Override": "GET", "Connection": "close, X-Method-Override"}, status: 400, logRule: "\"rule\":5000044"},
+		{name: "mixed variables and form transport", mode: "block", target: "/graphql?variables=%7B%7D", ct: "application/x-www-form-urlencoded", body: "%71uery=mutation%7BdeleteUser%7D", status: 400, logRule: "\"rule\":5002316"},
+		{name: "mixed raw GraphQL and URL transport", mode: "block", target: "/api/gql?%65xtensions=%7B%7D", ct: "application/graphql", body: "mutation{deleteUser}", status: 400, logRule: "\"rule\":5002316"},
+		{name: "mixed transport monitor logs both layers", mode: "monitor", method: "HEAD", target: "/graphql?operationName=Write", ct: "application/json", body: "{\"query\":\"mutation Write{deleteUser}\"}", status: 200,
+			logRule: "\"rule\":5002316", alsoRules: []int{5002009, 5002314, 5002315},
+			extraArgs: []string{"-formats-stats-interval", "100ms"}, statsRule: 5002316, statsMonitored: 1},
+		{name: "ordinary metadata with POST mutation", mode: "block", target: "/graphql?locale=en", ct: "application/json", body: "{\"query\":\"mutation{deleteUser}\"}", status: 200},
+		{name: "HEAD extension-only request transport refused", mode: "block", method: "HEAD", target: "/graphql?extensions=%7B%22persistedQuery%22%3A%7B%22sha256Hash%22%3A%22abc%22%7D%7D", status: 403, logRule: "\"rule\":5002315"},
 		{name: "blocked bypass totals", mode: "block", method: "HEAD", target: "/api/gql?%71uery=%6d%75%74%61%74%69%6f%6e%7BSECRET_TOKEN_CLI_TEST%7D", repeat: 3, status: 403, logRule: "\"rule\":5002314",
 			extraArgs: []string{"-formats-stats-interval", "100ms"}, statsRule: 5002314, statsBlocked: 3},
 		{name: "multiple independent bypass detections", mode: "monitor", method: "HEAD", target: "/graphql", ct: "application/json",
-			body: "{\"query\":\"{a}\",\"query\":\"mutation{SECRET_TOKEN_CLI_TEST}\"}", status: 200, logRule: "\"rule\":5002314", alsoRules: []int{5002009, 5002103},
+			body: "{\"query\":\"{a}\",\"query\":\"mutation{SECRET_TOKEN_CLI_TEST}\"}", status: 200, logRule: "\"rule\":5002314", alsoRules: []int{5002009, 5002103, 5002315},
 			extraArgs: []string{"-formats-stats-interval", "100ms"}, statsRule: 5002314, statsMonitored: 1},
 		{name: "monitored related bypass totals", mode: "monitor", method: "OPTIONS", target: "/graphql", ct: "application/x-www-form-urlencoded", body: "%71uery=mutation%7BSECRET_TOKEN_CLI_TEST%7D", repeat: 2, status: 200, logRule: "\"rule\":5002314",
 			extraArgs: []string{"-formats-stats-interval", "100ms"}, statsRule: 5002314, statsMonitored: 2},
@@ -115,10 +148,10 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 		{name: "block TRACE mutation with CRS off", mode: "block", method: "TRACE", target: "/api/gql?query=mutation%7BdeleteUser%7D", status: 403},
 		{name: "monitor HEAD mutation", mode: "monitor", method: "HEAD", target: "/graphql?query=mutation%7BdeleteUser%7D", status: 200, logRule: "\"rule\":5002314"},
 		{name: "ordinary OPTIONS preflight", mode: "block", method: "OPTIONS", target: "/graphql?version=1", status: 200},
-		{name: "selected HEAD query beside mutation", mode: "block", method: "HEAD", target: "/graphql?query=query+Read%7Ba%7D+mutation+Write%7Bb%7D&operationName=Read", status: 200},
+		{name: "selected HEAD query transport refused", mode: "block", method: "HEAD", target: "/graphql?query=query+Read%7Ba%7D+mutation+Write%7Bb%7D&operationName=Read", status: 403, logRule: "\"rule\":5002315"},
 		{name: "HEAD escaped protocol name and operation", mode: "block", method: "HEAD", target: "/api/gql?%71uery=%6d%75%74%61%74%69%6f%6e%7BdeleteUser%7D", status: 403, logRule: "\"rule\":5002314"},
 		{name: "HEAD selected mutation via fragment", mode: "block", method: "HEAD", target: "/api/gql?query=fragment+F+on+User%7Bid%7D+mutation+Write%7BdeleteUser%7B...F%7D%7D&operationName=Write", status: 403, logRule: "\"rule\":5002314"},
-		{name: "HEAD batch mutation in permitted body", mode: "block", policy: "{\"rules\":{\"body-on-get\":\"off\"}}", method: "HEAD", target: "/graphql", ct: "application/json", body: "[{\"query\":\"{a}\"},{\"query\":\"mutation{deleteUser}\"}]", status: 403, logRule: "\"rule\":5002314"},
+		{name: "HEAD batch mutation in permitted body", mode: "block", policy: "{\"rules\":{\"body-on-get\":\"off\",\"graphql-http-method\":\"off\"}}", method: "HEAD", target: "/graphql", ct: "application/json", body: "[{\"query\":\"{a}\"},{\"query\":\"mutation{deleteUser}\"}]", status: 403, logRule: "\"rule\":5002314"},
 		{name: "monitor related OPTIONS form mutation", mode: "monitor", method: "OPTIONS", target: "/graphql", ct: "application/x-www-form-urlencoded", body: "%71uery=mutation%7BdeleteUser%7D", status: 200, logRule: "\"rule\":5002314"},
 		{name: "HEAD duplicate operationName", mode: "block", method: "HEAD", target: "/api/gql?query=query+Read%7Ba%7D+mutation+Write%7Bb%7D&operationName=Read&%6fperationName=Write", status: 400, logRule: "\"rule\":5002308"},
 		{name: "selected GET query beside mutation", mode: "block", method: "GET", target: "/graphql?query=query+Read%7Ba%7D+mutation+Write%7Bb%7D&operationName=Read", status: 200},
@@ -277,6 +310,9 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 					t.Fatal(err)
 				}
 				req.Header.Set("Content-Type", tc.ct)
+				for name, value := range tc.headers {
+					req.Header.Set(name, value)
+				}
 				if len(tc.forwarding) > 0 {
 					req.Header.Set("X-Forwarded-For", tc.forwarding[i])
 				}
