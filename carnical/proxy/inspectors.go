@@ -17,8 +17,8 @@ const idInspectorFailed = 5000040
 //
 // An inspector that panics refuses the request (503) instead of letting it through unchecked or ending the process: a bug in
 // a signature is an outage for one kind of request, not a hole.
-func (e *Edge) runInspectors(w http.ResponseWriter, r *http.Request, rawPath, rawQuery string, body []byte, client netip.Addr) (replaced []byte, ok bool) {
-	req := &inspect.Request{
+func (e *Edge) runInspectors(w http.ResponseWriter, r *http.Request, rawPath, rawQuery string, body []byte, client netip.Addr) (req *inspect.Request, replaced []byte, ok bool) {
+	req = &inspect.Request{
 		Method: r.Method, Host: r.Host, Path: rawPath, RawQuery: rawQuery, Header: r.Header, Body: body, Client: client, TLS: r.TLS != nil,
 	}
 	for _, in := range e.cfg.Inspectors {
@@ -26,7 +26,7 @@ func (e *Edge) runInspectors(w http.ResponseWriter, r *http.Request, rawPath, ra
 		if err != nil {
 			e.log(Match{RuleID: idInspectorFailed, Severity: "CRITICAL", Message: in.Name() + " failed: " + err.Error(), Disruptive: true}, r)
 			http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
-			return nil, false
+			return nil, nil, false
 		}
 		for _, h := range res.DelHeader {
 			r.Header.Del(h)
@@ -55,11 +55,14 @@ func (e *Edge) runInspectors(w http.ResponseWriter, r *http.Request, rawPath, ra
 				status = http.StatusForbidden
 			}
 			http.Error(w, http.StatusText(status), status)
-			return nil, false
+			return nil, nil, false
 		}
 	}
-	return replaced, true
+	return req, replaced, true
 }
+
+// observed is the request as the inspectors last saw it, kept for the observers that are told the application's answer.
+type observedKey struct{}
 
 func safeInspect(in inspect.Inspector, req *inspect.Request) (res inspect.Result, err error) {
 	defer func() {

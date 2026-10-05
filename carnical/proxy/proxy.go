@@ -78,6 +78,12 @@ type Config struct {
 	// MaxConnsPerIP is how many connections one address may hold open (default 128; negative means no limit).
 	// Connections from TrustedProxies are not counted.
 	MaxConnsPerIP int
+	// Observers are told, for every request that was let through, what the application answered. See inspect.Observer.
+	Observers []inspect.Observer
+	// AllowRequestEncoding lets a request body with a gzip or deflate Content-Encoding through to the inspectors, which can
+	// decompress it within limits (package formats). Without it such a request is refused, because nothing could read it. Any
+	// other encoding is always refused.
+	AllowRequestEncoding bool
 	// Inspectors look at every request, in this order, after the proxy's own checks and before the rule set: the virtual-patch
 	// signatures, the body-format checks, the API guard. See package inspect.
 	Inspectors []inspect.Inspector
@@ -269,6 +275,7 @@ func (e *Edge) guard(next http.Handler) http.Handler {
 		if r.Body != nil && r.Body != http.NoBody {
 			capped.rc, r.Body = r.Body, capped
 		}
+		var seen *inspect.Request // what the inspectors saw, for the observers
 		mt, params, mtErr := mime.ParseMediaType(r.Header.Get("Content-Type"))
 		hasBody := r.Body != nil && r.Body != http.NoBody
 		isUpload := mtErr == nil && mt == "multipart/form-data"
@@ -290,9 +297,12 @@ func (e *Edge) guard(next http.Handler) http.Handler {
 					return
 				}
 			}
-			if replaced, ok := e.runInspectors(w, r, rawPath, rawQuery, body, addr); !ok {
+			ireq, replaced, ok := e.runInspectors(w, r, rawPath, rawQuery, body, addr)
+			if !ok {
 				return
-			} else if replaced != nil {
+			}
+			seen = ireq
+			if replaced != nil {
 				body = replaced
 				// The body the application gets is not the one that was sent, so its framing is rewritten to match.
 				r.ContentLength, r.TransferEncoding = int64(len(body)), nil
@@ -300,12 +310,18 @@ func (e *Edge) guard(next http.Handler) http.Handler {
 			}
 			r.Body = io.NopCloser(bytes.NewReader(body))
 		} else if len(e.cfg.Inspectors) > 0 {
-			if _, ok := e.runInspectors(w, r, rawPath, rawQuery, nil, addr); !ok {
+			ireq, _, ok := e.runInspectors(w, r, rawPath, rawQuery, nil, addr)
+			if !ok {
 				return
 			}
+			seen = ireq
 		}
 		tw := &trackWriter{ResponseWriter: w}
-		next.ServeHTTP(tw, r.WithContext(context.WithValue(r.Context(), contextKey{}, addr)))
+		ctx := context.WithValue(r.Context(), contextKey{}, addr)
+		if seen != nil {
+			ctx = context.WithValue(ctx, observedKey{}, seen)
+		}
+		next.ServeHTTP(tw, r.WithContext(ctx))
 		if !tw.wrote {
 			// The engine returns without answering when it could not process the request (the body ended early, a
 			// chunk was malformed, the body went over its limit). net/http would send an empty 200, which tells the
@@ -453,6 +469,13 @@ func (e *Edge) forward() http.Handler {
 			}
 			path, _, _ := strings.Cut(resp.Request.URL.Opaque, "?")
 			e.cfg.Responses.harden(resp, path)
+			if len(e.cfg.Observers) > 0 {
+				if ir, ok := resp.Request.Context().Value(observedKey{}).(*inspect.Request); ok {
+					for _, o := range e.cfg.Observers {
+						o.Observe(ir, resp.StatusCode)
+					}
+				}
+			}
 			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {

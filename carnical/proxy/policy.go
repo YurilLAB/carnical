@@ -161,7 +161,11 @@ func (e *Edge) checkRequest(w http.ResponseWriter, r *http.Request, client netip
 	// A compressed request body is not something the rules can read, and an application that unpacks it would
 	// receive what nothing inspected. Browsers do not compress what they send.
 	for _, v := range r.Header.Values("Content-Encoding") {
-		if enc := strings.ToLower(strings.TrimSpace(v)); enc != "" && enc != "identity" {
+		enc := strings.ToLower(strings.TrimSpace(v))
+		if e.cfg.AllowRequestEncoding && (enc == "gzip" || enc == "deflate") && len(r.Header.Values("Content-Encoding")) == 1 {
+			continue // an inspector decompresses it, within limits
+		}
+		if enc != "" && enc != "identity" {
 			e.refuse(w, r, http.StatusUnsupportedMediaType, idRequestEncoding, "a request body with a content encoding cannot be inspected")
 			return false
 		}

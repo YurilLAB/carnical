@@ -80,6 +80,13 @@ type Result struct {
 	SetHeader map[string]string
 }
 
+// Observer is told what the application answered, for every request that was let through. It is how a component learns what a
+// site's normal traffic looks like. It is not called for a request that was refused, so what it learns comes only from
+// traffic that passed every check. It must not block: it runs in the response path.
+type Observer interface {
+	Observe(r *Request, status int)
+}
+
 // Inspector looks at a request. It must be safe for use by many requests at once, must not keep a reference to the Request after
 // it returns, and must bound the time and memory it uses by the size of the Request.
 type Inspector interface {
