@@ -209,22 +209,43 @@ func TestPolicyValidate(t *testing.T) {
 	}
 }
 
+var policyJSONRows = []struct {
+	name string
+	in   string
+	err  string
+}{
+	{"empty object", `{}`, ""},
+	{"a policy", `{"monitor":true,"rules":{"json-duplicate-key":"monitor"},"json":{"max_depth":10},"allowed_types":["application/json"]}`, ""},
+	{"null policy", `null`, "null"},
+	{"null limit", `{"graphql":{"max_depth":null}}`, "null"},
+	{"null limits object", `{"graphql":null}`, "null"},
+	{"null list entry", `{"graphql_paths":[null]}`, "null"},
+	{"null rules", `{"rules":null}`, "null"},
+	{"duplicate mode", `{"monitor":false,"monitor":true}`, "duplicate"},
+	{"duplicate limit", `{"graphql":{"max_depth":2,"max_depth":12}}`, "duplicate"},
+	{"duplicate limits object", `{"graphql":{"max_depth":2},"graphql":{"max_depth":12}}`, "duplicate"},
+	{"escaped duplicate", `{"monitor":false,"monit\u006fr":true}`, "duplicate"},
+	{"duplicate rule", `{"rules":{"json-duplicate-key":"block","json-duplicate-key":"off"}}`, "duplicate"},
+	{"case alias", `{"Monitor":true}`, "unknown field"},
+	{"case alias after exact field", `{"monitor":false,"MONITOR":true}`, "unknown field"},
+	{"case alias limit", `{"graphql":{"MAX_DEPTH":2}}`, "unknown field"},
+	{"Go field name alias", `{"MaxBodyBytes":1024}`, "unknown field"},
+	{"escaped valid field", `{"monit\u006fr":true}`, ""},
+	{"empty optional lists", `{"allowed_types":[],"graphql_paths":[],"rules":{}}`, ""},
+	{"maximum file size", `{}` + strings.Repeat(" ", (1<<20)-2), ""},
+	{"above file size", `{}` + strings.Repeat(" ", (1<<20)-1), "1 MiB"},
+	{"invalid UTF-8", "{\"graphql_paths\":[\"/\xff\"]}", "UTF-8"},
+	{"extreme unexpected nesting", `{"monitor":` + strings.Repeat("[", 10000) + strings.Repeat("]", 10000) + `}`, "formats policy"},
+	{"an unknown field", `{"monitr":true}`, "unknown field"},
+	{"an unknown limit", `{"json":{"max_deep":1}}`, "unknown field"},
+	{"a wrong type", `{"monitor":"yes"}`, "formats policy"},
+	{"data after the policy", `{} {}`, "data after"},
+	{"an invalid rule", `{"rules":{"nope":"block"}}`, "not a rule name"},
+	{"not json", `monitor: true`, "formats policy"},
+}
+
 func TestParsePolicy(t *testing.T) {
-	tests := []struct {
-		name string
-		in   string
-		err  string
-	}{
-		{"empty object", `{}`, ""},
-		{"a policy", `{"monitor":true,"rules":{"json-duplicate-key":"monitor"},"json":{"max_depth":10},"allowed_types":["application/json"]}`, ""},
-		{"an unknown field", `{"monitr":true}`, "unknown field"},
-		{"an unknown limit", `{"json":{"max_deep":1}}`, "unknown field"},
-		{"a wrong type", `{"monitor":"yes"}`, "formats policy"},
-		{"data after the policy", `{} {}`, "data after"},
-		{"an invalid rule", `{"rules":{"nope":"block"}}`, "not a rule name"},
-		{"not json", `monitor: true`, "formats policy"},
-	}
-	for _, tt := range tests {
+	for _, tt := range policyJSONRows {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := ParsePolicy([]byte(tt.in))
 			switch {
@@ -235,6 +256,50 @@ func TestParsePolicy(t *testing.T) {
 			}
 		})
 	}
+}
+
+func FuzzParsePolicy(f *testing.F) {
+	for _, tt := range policyJSONRows {
+		if len(tt.in) < 4096 {
+			f.Add(tt.in)
+		}
+	}
+	encoded, err := json.Marshal(DefaultPolicy())
+	if err != nil {
+		f.Fatal(err)
+	}
+	f.Add(string(encoded))
+	f.Fuzz(func(t *testing.T, input string) {
+		p, err := ParsePolicy([]byte(input))
+		if err != nil {
+			return
+		}
+		if err := New(p).Err(); err != nil {
+			t.Fatalf("accepted an unusable policy: %v", err)
+		}
+		encoded, err := json.Marshal(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		back, err := ParsePolicy(encoded)
+		if err != nil {
+			t.Fatalf("accepted policy cannot round-trip: %v", err)
+		}
+		encodedBack, err := json.Marshal(back)
+		if err != nil || !bytes.Equal(encoded, encodedBack) {
+			t.Fatal("policy changed on round-trip")
+		}
+		// Even otherwise valid input must fail when contradictory duplicate settings are appended.
+		body := bytes.TrimSpace([]byte(input))
+		body = append([]byte(nil), body[:len(body)-1]...)
+		if len(bytes.TrimSpace(body[1:])) > 0 {
+			body = append(body, ',')
+		}
+		body = append(body, `"monitor":false,"monitor":true}`...)
+		if _, err := ParsePolicy(body); err == nil {
+			t.Fatal("contradictory duplicate configuration accepted")
+		}
+	})
 }
 
 func TestDefaultPolicyRoundTrips(t *testing.T) {

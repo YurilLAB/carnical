@@ -8,9 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
+
+// MaxPolicyBytes bounds JSON policy loading in the library and executable.
+const MaxPolicyBytes = 1 << 20
 
 // Policy is what a site accepts. It is plain data that can be written as JSON; a field left out (or zero) takes the default shown
 // beside it, so a policy only names what differs. Nothing can be switched to "unlimited": a limit is a positive number below a fixed
@@ -319,9 +324,24 @@ func (p Policy) Validate() error {
 	return errors.Join(errs...)
 }
 
-// ParsePolicy reads a policy written as JSON. Unknown fields, trailing data and anything Validate refuses are errors. (This reads the
-// operator's own configuration, which is trusted input; it is not how request bodies are parsed.)
+// ParsePolicy reads one JSON object up to MaxPolicyBytes. Field names must match their JSON tags exactly; duplicate members,
+// null values, invalid UTF-8, unknown fields, trailing data and anything Validate refuses are errors. This reads configuration,
+// not request bodies. Omit a field (or set a numeric limit to zero) to use its default.
 func ParsePolicy(data []byte) (Policy, error) {
+	if len(data) > MaxPolicyBytes {
+		return Policy{}, errors.New("formats policy: exceeds 1 MiB")
+	}
+	if !utf8.Valid(data) {
+		return Policy{}, errors.New("formats policy: invalid UTF-8")
+	}
+	check := json.NewDecoder(bytes.NewReader(data))
+	check.UseNumber()
+	if err := checkPolicyValue(check, reflect.TypeOf(Policy{})); err != nil {
+		return Policy{}, fmt.Errorf("formats policy: %w", err)
+	}
+	if _, err := check.Token(); err != io.EOF {
+		return Policy{}, errors.New("formats policy: data after the policy")
+	}
 	var p Policy
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
@@ -335,6 +355,97 @@ func ParsePolicy(data []byte) (Policy, error) {
 		return Policy{}, fmt.Errorf("formats policy: %w", err)
 	}
 	return p, nil
+}
+
+// The schema follows Policy's Go types, so nesting is bounded by that acyclic schema, not by input-controlled recursion.
+// Reflection is only used when loading configuration; the request path does not use it.
+func checkPolicyValue(dec *json.Decoder, typ reflect.Type) error {
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	if tok == nil {
+		return errors.New("null is not a policy value; omit the field to use its default")
+	}
+	switch typ.Kind() {
+	case reflect.Struct, reflect.Map:
+		if tok != json.Delim('{') {
+			return errors.New("expected an object")
+		}
+		fields := make(map[string]reflect.Type)
+		if typ.Kind() == reflect.Struct {
+			for i := 0; i < typ.NumField(); i++ {
+				field := typ.Field(i)
+				name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+				if name != "" && name != "-" && field.IsExported() {
+					fields[name] = field.Type
+				}
+			}
+		}
+		seen := make(map[string]bool)
+		for dec.More() {
+			key, err := dec.Token()
+			if err != nil {
+				return err
+			}
+			name, ok := key.(string)
+			if !ok {
+				return errors.New("expected an object member name")
+			}
+			if seen[name] {
+				return fmt.Errorf("duplicate member %q", name)
+			}
+			seen[name] = true
+			valueType := fields[name]
+			if typ.Kind() == reflect.Map {
+				valueType = typ.Elem()
+			}
+			if valueType == nil {
+				return fmt.Errorf("unknown field %q", name)
+			}
+			if err := checkPolicyValue(dec, valueType); err != nil {
+				return fmt.Errorf("%s: %w", name, err)
+			}
+		}
+		end, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		if end != json.Delim('}') {
+			return errors.New("expected end of object")
+		}
+	case reflect.Slice:
+		if tok != json.Delim('[') {
+			return errors.New("expected an array")
+		}
+		for dec.More() {
+			if err := checkPolicyValue(dec, typ.Elem()); err != nil {
+				return err
+			}
+		}
+		end, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		if end != json.Delim(']') {
+			return errors.New("expected end of array")
+		}
+	case reflect.Bool:
+		if _, ok := tok.(bool); !ok {
+			return errors.New("expected a boolean")
+		}
+	case reflect.Int:
+		if _, ok := tok.(json.Number); !ok {
+			return errors.New("expected an integer")
+		}
+	case reflect.String:
+		if _, ok := tok.(string); !ok {
+			return errors.New("expected a string")
+		}
+	default:
+		return errors.New("unsupported policy schema type")
+	}
+	return nil
 }
 
 func validTypeEntry(t string) bool {

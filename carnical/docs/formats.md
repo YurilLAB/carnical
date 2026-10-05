@@ -19,7 +19,7 @@ cfg.Inspectors = append(cfg.Inspectors, formats.New(pol))
 cfg.AllowRequestEncoding = true // lets one gzip or deflate layer reach the inspector, which decompresses it
 ```
 
-`formats.New(Policy) *Inspector` keeps nothing between requests, so one value serves any number of them at once. A policy that fails `Validate` is not a way to run with a weaker one: `New` still returns an inspector, and it refuses every request that has a body (5002990) and says why in `Err()`. `ParsePolicy` reads a policy written as JSON, refuses unknown fields and trailing data, and validates. `Rules()` lists every rule with its default, for a console.
+`formats.New(Policy) *Inspector` keeps nothing between requests, so one value serves any number of them at once. A policy that fails `Validate` is not a way to run with a weaker one: `New` still returns an inspector, and it refuses every request that has a body (5002990) and says why in `Err()`. `ParsePolicy` reads one JSON object of at most `formats.MaxPolicyBytes` (1 MiB), refuses unknown fields and trailing data, and validates. Field names must use their exact JSON spelling, including case. Duplicate members at any level, even escaped spellings of the same name, `null` values and invalid UTF-8 bytes are refused. Omit an optional setting, use an empty object/list, or use zero for a numeric limit to take its default; `null` is not a reset operation. This also applies to `-formats-policy`, before a listener opens. `Rules()` lists every rule with its default, for a console.
 
 Start every site with `"monitor": true`, read what is found for a few days, set the rules the site's own clients trip to `monitor` or `off`, then turn monitor mode off.
 

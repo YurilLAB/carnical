@@ -34,6 +34,12 @@ The compiled executable's live suite now has 29 cases, including batch refusal w
 
 Review checked operation-index alignment, saturating arithmetic, per-request state, fixed-content findings, and monitor/off semantics. These are syntax budgets; schema-aware resolver costs and persisted-query registries are not implemented.
 
+## Strict format policy loading (2026-10-05)
+
+New regression cases first reproduced successful startup with a `null` policy/limit, duplicate limits/rules, and case-aliased limits. After strict validation, all five fail before opening a listener. The executable suite now has 34 live cases and passes, along with the full normal format suite, scoped race checks and vet. Valid default and customized policies still round-trip and enforce their configured limits.
+
+`FuzzParsePolicy` passes 16,770 executions in a 30-second run. It checks accepted policies are usable and stable under canonical serialization, and that appending contradictory duplicate settings forces refusal. Unit cases cover escaped duplicate names, nested duplicates, exact case, empty collections, null entries, raw invalid UTF-8, unexpected extreme nesting and both sides of the shared 1 MiB cap. Review confirmed recursion follows the finite policy schema, configuration reflection stays outside the request path, and startup continues to fail closed. Compatibility is intentionally stricter for ambiguous and nullable configuration files.
+
 ## Environment and baseline limitations
 
 `go test ./...` in the upstream module fails on existing Windows filesystem expectations and open audit/debug log handles (auditlog, operators, seclang, testing). The changed code is confined to Carnical's separate module; no upstream engine files are changed.
@@ -42,6 +48,6 @@ The broader Carnical race run encounters Windows audit-file recovery/truncation 
 
 That broad run also times out after ten minutes in the untracked virtual-patch brute-force comparison test (`TestIndexedMatchEqualsBruteForce`). It is not represented as a passing full-module race run.
 
-`go run mage.go adr` rejects 60 pre-existing ADRs as lacking the exact technical-discussion section marker. The new ADRs 0061–0063 produce no diagnostics. The Windows checkout has CRLF in older documents, which the validator's exact marker comparison does not normalize. This check is not claimed to pass globally.
+`go run mage.go adr` rejects 60 pre-existing ADRs as lacking the exact technical-discussion section marker. The new ADRs 0061–0064 produce no diagnostics. The Windows checkout has CRLF in older documents, which the validator's exact marker comparison does not normalize. This check is not claimed to pass globally.
 
 WSL's Ubuntu environment first reported a read-only home when creating the Go cache and subsequently failed to start. Linux confinement and the full Linux CI matrix have not been verified by these runs.

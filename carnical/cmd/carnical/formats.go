@@ -11,7 +11,7 @@ import (
 	"github.com/YurilLAB/coraza/carnical/formats"
 )
 
-const maxFormatsPolicyBytes = 1 << 20
+const maxFormatsPolicyBytes = formats.MaxPolicyBytes
 
 // configureFormats loads everything before the process opens its listener or confines itself.
 // A bad policy or a conflicting flag refuses startup rather than dropping a protection.
