@@ -45,6 +45,8 @@ type testCase struct {
 	Attack      bool
 	Request     request
 	Description string
+	Parent      string `json:"Parent,omitempty"`
+	Variation   string `json:"Variation,omitempty"`
 }
 type result struct {
 	Name                              string
@@ -54,10 +56,13 @@ type result struct {
 	ErrorExamples                     []string "json:\"error_examples,omitempty\""
 	OriginReached                     int64
 	Method, URI, WireURI, Description string
+	Parent, Variation, RequestSHA256  string
 	LatencyUS                         []int64 "json:\"-\""
 }
 type report struct {
 	Suite, SuiteSHA256                                                                       string
+	Scheduling                                                                               string
+	UniqueAttackTemplates, UniqueBenignTemplates                                             int
 	CategoryResults                                                                          []categoryResult
 	AdmittedAttacks                                                                          []admittedAttack
 	BinarySHA256, BenignCorpusSHA256, AttackCorpusSHA256                                     string
@@ -79,10 +84,11 @@ type admittedAttack struct {
 }
 
 type categoryResult struct {
-	Category                                                                          string
-	AttackCases, AdmittedAttackCases, BenignCases                                     int
-	AttackRequests, AttackRefused, BenignRequests, BenignRefused, Errors, Unavailable int
-	AttackOrigin, BenignOrigin                                                        int64
+	Category                                                                             string
+	AttackCases, AdmittedAttackCases, BenignCases                                        int
+	AttackRequests, AttackRefused, BenignRequests, BenignRefused, Errors, Unavailable    int
+	AttackOrigin, BenignOrigin                                                           int64
+	UniqueAttackTemplates, UniqueBenignTemplates, VariantAttackCases, VariantBenignCases int
 }
 
 func main() {
@@ -308,6 +314,7 @@ func run() error {
 	concurrency := flag.Int("concurrency", 16, "concurrent clients")
 	rps := flag.Int("rps", 0, "global requests/second cap (0 = unpaced)")
 	extended := flag.Bool("extended", false, "add six attack families and their benign controls")
+	variants := flag.Bool("variants", false, "vary all attack categories and benign controls; implies -extended and alternates attack/benign requests")
 	flag.Parse()
 	if *binary == "" || *corpus == "" || *output == "" || *count < 1 || *concurrency < 1 || *concurrency > 128 || *rps < 0 {
 		return fmt.Errorf("invalid flags")
@@ -322,12 +329,32 @@ func run() error {
 	}
 	cases := append(append(b, a...), probes()...)
 	suite := "baseline-v1"
-	if *extended {
+	if *extended || *variants {
 		cases = append(cases, extendedCases()...)
 		suite = "extended-v1"
 	}
+	if *variants {
+		cases = append(cases, syntaxCases()...)
+		generated, err := variedCases(cases)
+		if err != nil {
+			return err
+		}
+		cases = append(cases, generated...)
+		suite = "variants-v1"
+	}
 	if len(cases) == 0 {
 		return fmt.Errorf("empty corpus")
+	}
+	var attackIndexes, benignIndexes []int
+	for i, c := range cases {
+		if c.Attack {
+			attackIndexes = append(attackIndexes, i)
+		} else {
+			benignIndexes = append(benignIndexes, i)
+		}
+	}
+	if *variants && (len(attackIndexes) == 0 || len(benignIndexes) == 0 || *count < 2*max(len(attackIndexes), len(benignIndexes))) {
+		return fmt.Errorf("variants require both classes and at least %d requests to exercise every template", 2*max(len(attackIndexes), len(benignIndexes)))
 	}
 	originCounts := make([]atomic.Int64, len(cases))
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -403,10 +430,19 @@ func run() error {
 			return fmt.Errorf("case %s: %w", c.Name, err)
 		}
 	}
-	fmt.Printf("WAF pid=%d loopback=%s suite=%s samples=%d (%d benign corpus, %d attack corpus, %d regressions, %d extended) requests=%d concurrency=%d\n", cmd.Process.Pid, addr, suite, len(cases), len(b), len(a), len(probes()), len(cases)-len(b)-len(a)-len(probes()), *count, *concurrency)
+	fmt.Printf("WAF pid=%d loopback=%s suite=%s samples=%d (%d benign templates, %d attack templates) requests=%d concurrency=%d\n", cmd.Process.Pid, addr, suite, len(cases), len(benignIndexes), len(attackIndexes), *count, *concurrency)
 	results := make([]result, len(cases))
+	wireLabels := map[string]bool{}
 	for i, c := range cases {
-		results[i] = result{Name: c.Name, Attack: c.Attack, Method: c.Request.Method, URI: c.Request.URI, WireURI: templates[i].URL.RequestURI(), Description: c.Description, Statuses: map[int]int{}}
+		key, err := wireFingerprint(templates[i])
+		if err != nil {
+			return err
+		}
+		if label, exists := wireLabels[key]; exists && label != c.Attack {
+			return fmt.Errorf("conflicting labels for constructed request %s", c.Name)
+		}
+		wireLabels[key] = c.Attack
+		results[i] = result{Name: c.Name, Attack: c.Attack, Method: c.Request.Method, URI: c.Request.URI, WireURI: templates[i].URL.RequestURI(), Description: c.Description, Parent: c.Parent, Variation: c.Variation, RequestSHA256: key, Statuses: map[int]int{}}
 	}
 	var next, done atomic.Int64
 	var mu sync.Mutex
@@ -428,6 +464,13 @@ func run() error {
 					}
 				}
 				i := n % len(cases)
+				if *variants {
+					if n%2 == 0 {
+						i = attackIndexes[(n/2)%len(attackIndexes)]
+					} else {
+						i = benignIndexes[(n/2)%len(benignIndexes)]
+					}
+				}
 				tmpl := templates[i]
 				req := tmpl.Clone(context.Background())
 				if tmpl.GetBody != nil {
@@ -481,6 +524,10 @@ func run() error {
 	elapsed := time.Since(start)
 	rep := report{Started: start.UTC().Format(time.RFC3339), Completed: time.Now().UTC().Format(time.RFC3339), OS: runtime.GOOS, Go: runtime.Version(), CPUs: runtime.NumCPU(), Binary: *binary, WAFArgs: args, Count: *count, Concurrency: *concurrency, RPSLimit: *rps, ElapsedSeconds: elapsed.Seconds(), RequestsPerSecond: float64(*count) / elapsed.Seconds(), Results: results, LogRules: map[int]int{}}
 	rep.Suite = suite
+	rep.Scheduling = "cyclic-all-templates"
+	if *variants {
+		rep.Scheduling = "alternating-classes-cyclic-within-class"
+	}
 	suiteBytes, err := json.Marshal(cases)
 	if err != nil {
 		return err
@@ -539,16 +586,26 @@ func run() error {
 	}
 	rep.LatencyP50MS, rep.LatencyP95MS, rep.LatencyP99MS = percentile(.5), percentile(.95), percentile(.99)
 	categories := map[string]*categoryResult{}
+	uniqueAttacks, uniqueBenign := map[string]bool{}, map[string]bool{}
+	categoryUnique := map[string]map[string]bool{}
 	for i, r := range rep.Results {
 		name := strings.SplitN(r.Name, "/", 2)[0]
 		cat := categories[name]
 		if cat == nil {
 			cat = &categoryResult{Category: name}
 			categories[name] = cat
+			categoryUnique[name] = map[string]bool{}
 		}
 		cat.Errors += r.Errors
 		if r.Attack {
 			cat.AttackCases++
+			if r.Variation != "" {
+				cat.VariantAttackCases++
+			}
+			uniqueAttacks[r.RequestSHA256] = true
+			if !categoryUnique[name][r.RequestSHA256] {
+				cat.UniqueAttackTemplates++
+			}
 			cat.AttackRequests += r.Requests
 			cat.AttackOrigin += r.OriginReached
 			if r.OriginReached > 0 {
@@ -557,9 +614,17 @@ func run() error {
 			}
 		} else {
 			cat.BenignCases++
+			if r.Variation != "" {
+				cat.VariantBenignCases++
+			}
+			uniqueBenign[r.RequestSHA256] = true
+			if !categoryUnique[name][r.RequestSHA256] {
+				cat.UniqueBenignTemplates++
+			}
 			cat.BenignRequests += r.Requests
 			cat.BenignOrigin += r.OriginReached
 		}
+		categoryUnique[name][r.RequestSHA256] = true
 		for status, n := range r.Statuses {
 			if status >= 500 && status != 501 {
 				cat.Unavailable += n
@@ -572,6 +637,7 @@ func run() error {
 			}
 		}
 	}
+	rep.UniqueAttackTemplates, rep.UniqueBenignTemplates = len(uniqueAttacks), len(uniqueBenign)
 	for _, cat := range categories {
 		rep.CategoryResults = append(rep.CategoryResults, *cat)
 	}

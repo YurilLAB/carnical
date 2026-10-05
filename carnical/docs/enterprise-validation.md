@@ -132,6 +132,18 @@ normally. Post-run checks reconcile every case and aggregate, verify original-co
 hashes, and confirm child shutdown. This is admission evidence against a fixed origin, not exploitation or production
 deployment validation.
 
+The [variant load report](loadtest-750k-variants-2026-10-06.md) adds variants across all 22 attack categories and exercises
+3,849 distinct attack requests and 1,778 distinct benign requests over 750,000 requests with an even class split. Attack
+refusal is 81.42%, benign refusal is 3.76%, throughput is 4,855.09 requests/second and p99 latency is 11.091 ms, with zero
+transport/availability errors. All original 969 templates retain their outcomes. No generated variant of a refused
+measured parent is admitted; 90 variants of admitted parents are refused. New syntax candidates and variants of already
+admitted inputs produce 716 admitted templates; the [inventory](loadtest-750k-variants-admitted-2026-10-06.md) preserves
+their categories, parents, variation types and payloads. All 5,542 bypass regression requests, including variants, are
+refused. Vet, final normal/race live pilots and the default-workload compatibility check pass. Post-run checks reconcile
+every count, fingerprint total, category, original outcome and parent comparison. Review excludes renamed configuration
+files whose attack interpretation would be lost and preserves duplicate JSON/form/query fields. The WAF pipeline is
+unchanged; workload composition and weights differ, and admitted candidates still require unsafe application behavior.
+
 `go test ./...` in the upstream module fails on existing Windows filesystem expectations and open audit/debug log handles (auditlog, operators, seclang, testing). The changed code is confined to Carnical's separate module; no upstream engine files are changed.
 
 An earlier broader Carnical race run encountered Windows audit-file recovery/truncation failures in the then-untracked
