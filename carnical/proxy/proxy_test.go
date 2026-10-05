@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/YurilLAB/coraza/edge/crs"
+	"github.com/YurilLAB/coraza/carnical/crs"
 )
 
 // seen is what the application behind the proxy received.

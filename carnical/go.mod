@@ -1,4 +1,4 @@
-module github.com/YurilLAB/coraza/edge
+module github.com/YurilLAB/coraza/carnical
 
 go 1.25.0
 

@@ -1,4 +1,4 @@
-# Connecting the edge to our backend and web UI
+# Connecting Carnical to our backend and web UI
 
 Status: proposal for decision, 5 October 2026. Nothing here changes Coraza or the CRS. It lists what is left to build around them.
 
@@ -10,7 +10,7 @@ that may change it, whether weakening it asks for the password, and whether the 
 and restore, export and import, the audit trail, the events and traffic pages, the advice table, and the signed feed that Harbourline
 reads (feed version 1, HMAC-signed; `docs/firewall-monitoring-plan.md`).
 
-So the work is not to design a new control model. It is to make the Coraza edge **another engine behind that model**: it reads the same
+So the work is not to design a new control model. It is to make Carnical **another engine behind that model**: it reads the same
 site policy, writes the same events, answers the same feed. Then the owner console, the fleet reader, the monthly reports and the advice
 table keep working, and customers see the same settings whichever engine protects their site.
 
@@ -92,9 +92,9 @@ engine are obsolete; its proxy, hub, certificate and origin parts still describe
 
 Each step is small, ships on its own, and leaves Coraza and the CRS alone.
 
-1. **Site policy compiler** (`edge/policy`): the site's policy in, a `crs.Settings` and directives out, with the checks the PHP schema
+1. **Site policy compiler** (`carnical/policy`): the site's policy in, a `crs.Settings` and directives out, with the checks the PHP schema
    makes. Covers mode, sensitivity presets, rule groups, exclusions, lists, disabled ids and custom rules, and the "try a request" check.
-2. **Site registry** (`edge/site`): sites chosen by hostname, atomic swap, a local signed file as the first config source.
+2. **Site registry** (`carnical/site`): sites chosen by hostname, atomic swap, a local signed file as the first config source.
 3. **Events, traffic and the feed**: the proxy driving the transaction API, the event and minute records, the version 1 feed. After this
    the existing owner console reads the edge.
 4. **Lists, bans and IDS/IPS**: the points and ban model, with Coraza's matches as the signals.
@@ -110,7 +110,7 @@ Each step is small, ships on its own, and leaves Coraza and the CRS alone.
    paranoia level directly?
 3. **Per-rule scores.** Drop them for CRS rules (offer on, log only, off), or rewrite rules to carry a customer's score?
 4. **Our CVE signature library.** Convert it, or keep it out of the edge for now?
-5. **Licence** for the code we add in `edge/`.
+5. **Licence** for the code we add in `carnical/`.
 
 ## Not now
 

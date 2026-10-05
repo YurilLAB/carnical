@@ -1,14 +1,14 @@
-# edge: OWASP CRS on Coraza, as a reverse proxy
+# Carnical: OWASP CRS on Coraza, as a reverse proxy
 
-This folder is our additions to the private copy of [OWASP Coraza](https://github.com/corazawaf/coraza). Nothing upstream is
-rewritten: Coraza is the engine and the OWASP Core Rule Set (CRS) is the rule set. `edge/` is its own Go module
-(`github.com/YurilLAB/coraza/edge`), so upstream releases merge without conflicts.
+Carnical is our web application firewall. This folder is our additions to the private copy of [OWASP Coraza](https://github.com/corazawaf/coraza). Nothing upstream is
+rewritten: Coraza is the engine and the OWASP Core Rule Set (CRS) is the rule set. `carnical/` is its own Go module
+(`github.com/YurilLAB/coraza/carnical`), so upstream releases merge without conflicts.
 
 | Folder | What it is |
 |---|---|
 | `crs/` | The CRS embedded in the binary, with proof of where it came from, and typed settings (mode, paranoia level, thresholds, body limit, allowed methods, exclusions) turned into the directives that configure it. |
 | `proxy/` | A reverse proxy: every request goes through Coraza and the CRS, clean ones are forwarded to one upstream. |
-| `cmd/edge-proxy/` | The program: `edge-proxy -upstream http://127.0.0.1:8081 -mode block`. |
+| `cmd/carnical/` | The program: `carnical -upstream http://127.0.0.1:8081 -mode block`. |
 | `tools/update-crs/` | Fetches a CRS release, checks its GPG signature against the CRS project's pinned key, and replaces the embedded copy. |
 | `docs/backend-integration.md` | What it takes to connect this to our backend and web UI. Read this next. |
 
@@ -21,9 +21,9 @@ rewritten: Coraza is the engine and the OWASP Core Rule Set (CRS) is the rule se
 ## Run it
 
 ```
-go run ./cmd/edge-proxy -upstream http://127.0.0.1:8081 -listen :8080            # detect: log what the rules find, block nothing
-go run ./cmd/edge-proxy -upstream http://127.0.0.1:8081 -mode block              # block at the anomaly threshold
-go run ./cmd/edge-proxy -version                                                  # which CRS is embedded
+go run ./cmd/carnical -upstream http://127.0.0.1:8081 -listen :8080            # detect: log what the rules find, block nothing
+go run ./cmd/carnical -upstream http://127.0.0.1:8081 -mode block              # block at the anomaly threshold
+go run ./cmd/carnical -version                                                  # which CRS is embedded
 ```
 
 Start every new site in `detect`, read the log for a few days, add exclusions for what is wrongly flagged, then switch to `block`.
@@ -72,10 +72,10 @@ throwaway keyring, not yours), extracts only expected regular files, and writes 
 
 ## Our changes to upstream files
 
-- `go.work`: one line adding `./edge`.
+- `go.work`: one line adding `./carnical`.
 - `internal/transformations/normalise_path.go`: `path.Clean` instead of `filepath.Clean`, so the transformation gives the same result on every OS.
 
 ## Licence
 
-Coraza and the CRS are Apache-2.0 (the CRS licence is kept in `crs/owasp_crs/LICENSE`). The licence for code we add in `edge/` is not
+Coraza and the CRS are Apache-2.0 (the CRS licence is kept in `crs/owasp_crs/LICENSE`). The licence for code we add in `carnical/` is not
 decided yet.

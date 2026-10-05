@@ -19,7 +19,7 @@ import (
 	txhttp "github.com/corazawaf/coraza/v3/http"
 	"github.com/corazawaf/coraza/v3/types"
 
-	"github.com/YurilLAB/coraza/edge/crs"
+	"github.com/YurilLAB/coraza/carnical/crs"
 )
 
 // The fingerprint the CRS project publishes for its release key (SECURITY.md in coreruleset/coreruleset). It is

@@ -23,7 +23,7 @@ import (
 	txhttp "github.com/corazawaf/coraza/v3/http"
 	"github.com/corazawaf/coraza/v3/types"
 
-	"github.com/YurilLAB/coraza/edge/crs"
+	"github.com/YurilLAB/coraza/carnical/crs"
 )
 
 // Config describes one protected site.

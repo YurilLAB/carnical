@@ -1,7 +1,7 @@
-// Command edge-proxy puts the OWASP Core Rule Set, run by Coraza, in front of one website.
+// Command carnical puts the OWASP Core Rule Set, run by Coraza, in front of one website.
 //
-//	edge-proxy -upstream http://127.0.0.1:8081 -listen :8080            (logs what the rules find, blocks nothing)
-//	edge-proxy -upstream http://127.0.0.1:8081 -mode block              (blocks at the anomaly threshold)
+//	carnical -upstream http://127.0.0.1:8081 -listen :8080            (logs what the rules find, blocks nothing)
+//	carnical -upstream http://127.0.0.1:8081 -mode block              (blocks at the anomaly threshold)
 //
 // Start in detect mode, read the log for a few days, add exclusions for the false positives, then switch to block.
 package main
@@ -21,13 +21,13 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/YurilLAB/coraza/edge/crs"
-	"github.com/YurilLAB/coraza/edge/proxy"
+	"github.com/YurilLAB/coraza/carnical/crs"
+	"github.com/YurilLAB/coraza/carnical/proxy"
 )
 
 func main() {
 	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, "edge-proxy:", err)
+		fmt.Fprintln(os.Stderr, "carnical:", err)
 		os.Exit(1)
 	}
 }

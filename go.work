@@ -2,7 +2,7 @@ go 1.25.0
 
 use (
 	.
-	./edge
+	./carnical
 	./examples/http-server
 	./testing/coreruleset
 	./testing/modsecurity
