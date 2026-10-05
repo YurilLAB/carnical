@@ -110,6 +110,7 @@ var (
 	rGQLRequestFields  = reg(5002311, "graphql-request-fields", 400, "high", Block, "a GraphQL request whose selected operations exceed the total field limit")
 	rGQLRequestAliases = reg(5002312, "graphql-request-aliases", 400, "high", Block, "a GraphQL request whose selected operations exceed the total alias limit")
 	rGQLRequestDirs    = reg(5002313, "graphql-request-directives", 400, "high", Block, "a GraphQL request whose selected operations exceed the total directive limit")
+	rGQLSafeMutation   = reg(5002314, "graphql-safe-method-mutation", 403, "high", Block, "a GraphQL mutation selected for execution using HEAD, OPTIONS or TRACE")
 
 	// NDJSON.
 	rNDLines = reg(5002400, "ndjson-lines", 400, "high", Block, "more lines than the limit")

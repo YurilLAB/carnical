@@ -83,7 +83,7 @@ func (in *Inspector) Inspect(r *inspect.Request) (res inspect.Result) {
 			res = inspect.Result{Verdicts: f.verdicts}
 		}
 	}()
-	f.get = r.Method == "GET"
+	f.mutationRule = mutationRuleForMethod(r.Method)
 	if in.err != nil {
 		if len(r.Body) > 0 {
 			f.hit(rPolicyInvalid, -1, dNone)

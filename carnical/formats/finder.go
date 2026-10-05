@@ -18,12 +18,12 @@ const maxVerdicts = 32
 // The text of a verdict is built from the rule's fixed sentence, one of the fixed details in details.go, and numbers. There is no
 // way to pass a string from the request into it, so a message cannot quote the body, a key or a name.
 type finder struct {
-	in       *Inspector
-	verdicts []inspect.Verdict
-	seen     [maxRules / 64]uint64
-	blocked  bool
-	get      bool     // method safety applies to every GraphQL envelope, including an explicitly permitted GET body
-	graphql  gqlStats // selected-operation totals belong to this request, never the shared Inspector
+	in           *Inspector
+	verdicts     []inspect.Verdict
+	seen         [maxRules / 64]uint64
+	blocked      bool
+	mutationRule *rule    // method safety applies to every GraphQL envelope, including explicitly permitted GET/HEAD bodies
+	graphql      gqlStats // selected-operation totals belong to this request, never the shared Inspector
 	// line is the number of the NDJSON line being checked, 0 when none is.
 	line int
 }

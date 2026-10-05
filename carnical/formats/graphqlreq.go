@@ -7,7 +7,7 @@ import (
 )
 
 // How a GraphQL request arrives: a JSON object {"query", "variables", "operationName", "extensions"}, an array of those (a batch),
-// the whole body as application/graphql, a form with the same parameters, or a query string on GET. This file finds the query in
+// the whole body as application/graphql, a form with the same parameters, or a query string. This file finds the query in
 // each and hands it to the parser in graphql.go, and checks the parts of the envelope that servers read differently.
 //
 // A request to a path that is a GraphQL endpoint must be a GraphQL request. A request anywhere else is only treated as GraphQL if its
@@ -89,7 +89,7 @@ func (in *Inspector) graphQLDocument(f *finder, src []byte, mustParse bool, oper
 	if !valid {
 		return true, !f.hit(rGQLShape, -1, dOperationSelection)
 	}
-	if f.get && op.opType == "mutation" && f.hit(rGQLGetMutation, -1, dNone) {
+	if f.mutationRule != nil && op.opType == "mutation" && f.hit(f.mutationRule, -1, dNone) {
 		return true, false
 	}
 	f.graphql.add(rep.ops[index])
@@ -288,9 +288,21 @@ func (in *Inspector) graphQLParams(f *finder, g *gqlParams, mustParse bool) bool
 	return true
 }
 
-// queryCheck looks in the query string of a request for a GraphQL query: on a GET request anywhere (a GraphQL query on GET is
-// what the protocol allows, and a browser can send one), and on any method at a GraphQL endpoint. It returns false when the caller
-// should stop.
+// mutationRuleForMethod retains the GET-specific policy rule while protecting the other safe HTTP methods as well.
+// HEAD can be dispatched to an origin's GET handler. Method tokens remain case-sensitive, as in HTTP.
+func mutationRuleForMethod(method string) *rule {
+	switch method {
+	case "GET":
+		return rGQLGetMutation
+	case "HEAD", "OPTIONS", "TRACE":
+		return rGQLSafeMutation
+	default:
+		return nil
+	}
+}
+
+// queryCheck validates all query strings and discovers GraphQL on safe HTTP methods, or any method at a GraphQL endpoint.
+// It returns false when the caller should stop.
 func (in *Inspector) queryCheck(f *finder, r *inspect.Request, gqlPath bool) bool {
 	raw := r.RawQuery
 	if len(raw) > in.pol.MaxQueryBytes {
@@ -299,7 +311,7 @@ func (in *Inspector) queryCheck(f *finder, r *inspect.Request, gqlPath bool) boo
 	}
 	var g gqlParams
 	var capture *gqlParams
-	if r.Method == "GET" || gqlPath {
+	if f.mutationRule != nil || gqlPath {
 		capture = &g
 	}
 	if !checkParameters(f, []byte(raw), &in.pol.Query, true, capture, queryParameterRules) {

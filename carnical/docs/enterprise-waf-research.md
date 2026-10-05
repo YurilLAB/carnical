@@ -11,7 +11,7 @@ Research date: 2026-10-05. Sources below are vendor documentation or standards. 
 
 ## Delivered and next work
 
-1. GraphQL operation/protocol checks: retain operation metadata, reject ambiguous selection and repeated protocol parameters, block selected mutations over GET. Keep legitimate mixed-operation queries and POST mutations working.
+1. GraphQL operation/protocol checks: retain operation metadata, reject ambiguous selection and repeated protocol parameters, block selected mutations over GET, HEAD, OPTIONS and TRACE. Keep legitimate mixed-operation queries, ordinary preflights and POST mutations working.
 2. Executable integration: expose format monitoring/enforcement and validated per-site policy loading; bounded request decompression is explicit. Load policy before listening or confinement. Existing parsing supports JSON, XML/SOAP, GraphQL, URL-encoded forms, multipart, NDJSON, text and optional YAML.
 3. Aggregate GraphQL budgets: total selected-operation fields, aliases and directives across the request have explicit ceilings, preventing a permitted batch from multiplying the individual budget. Defaults are 1000 fields, 40 aliases and 100 directives; each can be configured with a bounded positive limit. These syntax counts do not substitute for schema-weighted resolver cost.
 4. API abuse limits: configurable route prefixes share a verified-client sliding-minute budget before body processing, with separate login quotas, bounded event/identity state, fail-closed saturation and retry/cache headers. This is single-process enforcement; distributed state remains a separate integration.
@@ -25,5 +25,7 @@ The proxy cannot enforce object-level application authorization or deduce a pers
 
 - [GraphQL September 2025: operation selection and validation](https://spec.graphql.org/September2025/)
 - [GraphQL over HTTP: GET method safety and parameter encoding](https://http-spec.graphql.org/draft/#sec-GET)
+- [HTTP safe methods](https://httpwg.org/specs/rfc9110.html#safe.methods)
+- [Express automatic HEAD dispatch to GET handlers](https://expressjs.com/en/4x/api/router/#router-method)
 
 See [validation](enterprise-validation.md) for observed behavior and environment limitations.

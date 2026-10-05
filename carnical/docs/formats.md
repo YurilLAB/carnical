@@ -59,7 +59,7 @@ Query names and values are percent-decoded once for validation and must be UTF-8
 
 ### How GraphQL is found
 
-A request to a GraphQL path must be a GraphQL request: its query must parse. A request anywhere else is treated as GraphQL only if its `query` parses as a GraphQL document, so a search form with a `query` field, or an Elasticsearch body whose `query` is an object, is left alone. The query is looked for in a JSON object, an array of them (a batch), an `application/graphql` body, a form, and the query string (`GET`, and any method on a GraphQL path). Positions in GraphQL messages are bytes of the decoded query text, not of the request.
+A request to a GraphQL path must be a GraphQL request: its query must parse. A request anywhere else is treated as GraphQL only if its `query` parses as a GraphQL document, so a search form with a `query` field, or an Elasticsearch body whose `query` is an object, is left alone. The query is looked for in a JSON object, an array of them (a batch), an `application/graphql` body, a form, and the query string (`GET`, `HEAD`, `OPTIONS`, `TRACE`, and any method on a GraphQL path). Positions in GraphQL messages are bytes of the decoded query text, not of the request.
 
 ## Decisions that are not obvious
 
@@ -77,6 +77,8 @@ A request to a GraphQL path must be a GraphQL request: its query must parse. A r
 ## Verdicts
 
 Operation selection follows the [GraphQL execution rules](https://spec.graphql.org/September2025/#sec-Executing-Operations): multiple operations require a matching `operationName`, operation names must be unique, and an anonymous operation must be alone. JSON member order does not affect selection. A selected mutation in a GET query string is refused with 403, as permitted by the [GraphQL-over-HTTP draft](https://http-spec.graphql.org/draft/#sec-GET); a selected query beside a mutation remains valid. All four protocol parameters (`query`, `variables`, `operationName`, `extensions`) are checked for repetition in query strings and GraphQL forms. Nonempty GET/form `variables` and `extensions` must be JSON objects or null. Empty optional parameters mean absent. Persisted queries without a document remain supported; the proxy cannot establish their operation type without the application's persisted-query registry, so the application must enforce method safety for them.
+
+Selected mutations over `HEAD`, `OPTIONS` or `TRACE` also return 403, using `graphql-safe-method-mutation`. These are [safe HTTP methods](https://httpwg.org/specs/rfc9110.html#safe.methods), and frameworks such as [Express may dispatch HEAD to GET handlers](https://expressjs.com/en/4x/api/router/#router-method). The check applies to URL and body envelopes, including an explicitly permitted HEAD body. The existing GET rule stays independently configurable. Ordinary OPTIONS preflights pass. This safeguard does not expand the GraphQL-over-HTTP protocol's supported methods; the origin still negotiates allowed methods.
 
 These protections complement the depth, alias, field and batch limits used by commercial products such as [F5 WAF for NGINX](https://docs.nginx.com/waf/policies/graphql-protection/) and [Fastly Next-Gen WAF](https://www.fastly.com/blog/introducing-graphql-inspection-for-the-fastly-next-gen-waf). They do not validate GraphQL fields against a schema or replace application authorization.
 
@@ -148,6 +150,7 @@ Default is what happens when the policy does not say. Status is what the visitor
 | 5002311 | `graphql-request-fields` | block | 400 | high | a GraphQL request whose selected operations exceed the total field limit |
 | 5002312 | `graphql-request-aliases` | block | 400 | high | a GraphQL request whose selected operations exceed the total alias limit |
 | 5002313 | `graphql-request-directives` | block | 400 | high | a GraphQL request whose selected operations exceed the total directive limit |
+| 5002314 | `graphql-safe-method-mutation` | block | 403 | high | a GraphQL mutation selected for execution using HEAD, OPTIONS or TRACE |
 | 5002400 | `ndjson-lines` | block | 400 | high | more lines than the limit |
 | 5002401 | `ndjson-blank-line` | block | 400 | medium | a blank line between records |
 | 5002500 | `yaml-syntax` | block | 400 | high | YAML that cannot be parsed |
@@ -264,12 +267,12 @@ The first run killed 356 and left 54. Each survivor was read: 37 were real gaps 
 
 ## What is not done, and what to watch
 
-* **Only GraphQL looks in the query string.** `a=1&a=2`, `%zz` and `;` in a query string are not checked: duplicate query parameters are too common to refuse, and the form rules would need their own settings for it.
+* **Query validation checks grammar and budgets, without an application schema.** Duplicate parameters are monitored by default. Application-specific names/types and collisions between query and body parameters need separate policy.
 * **No Unicode normalisation.** Keys are compared after escape decoding and case folding, not after NFC or NFKC, which a framework could apply.
 * **XML is scanned, not validated.** There is no namespace resolution (a prefix bound to the XInclude or XSLT namespace is found by what it is bound to, so this holds), no attribute-value normalisation and no check of characters above the control range (U+FFFE, U+FFFF). The text-split rule may refuse mixed content with a comment in the middle of a sentence.
 * **GraphQL is read for what it costs, not checked against a schema.** A syntax this parser does not know is refused on a GraphQL path: the nullability operators of the 2025 draft (`field!`, `field?` in a selection), and anything that is not an operation or fragment. Client directives such as `@defer` and `@stream` are ordinary directives and are counted.
 * **YAML** follows the goccy parser, which is not the parser the application uses; differences between YAML parsers are the largest of any format here, and tags and anchors are refused because they are what is dangerous in all of them, not because the rest is equivalent.
 * **A body that names a single-byte charset is refused for JSON, NDJSON, GraphQL and YAML if it has any byte above 127**, because those formats are UTF-8 and a parser that honours the header would read it differently.
 * **A legitimate client may need a rule set to `monitor`**: a single-page application that posts JSON with no Content-Type header (the browser sends `text/plain`), a .NET client that writes a byte order mark in XML, an HTML snippet posted as plain text, a `curl --data @file` whose file ends in a line feed (a raw line feed in a form is refused).
-* **The query-string check for GraphQL on GET reads `query` and `variables` only**; `extensions` and `operationName` are not looked at there.
+* **Persisted GraphQL requests without a document cannot be classified as query or mutation** without access to the origin's persisted-query registry. Origin method safety remains necessary for them.
 * **Not run on a real forge or real traffic.** The rows come from the research and from what the standard library writes. Start every site in monitor mode.

@@ -25,6 +25,7 @@ const (
 	idGQLRequestFields  = 5002311
 	idGQLRequestAliases = 5002312
 	idGQLRequestDirs    = 5002313
+	idGQLSafeMutation   = 5002314
 	appJSON             = "application/json"
 )
 
@@ -234,6 +235,33 @@ var graphqlRows = register("graphql", []row{
 	{name: "get selected query beside a mutation", method: "GET", path: "/graphql", query: "query=query+Read%7Ba%7D+mutation+Write%7Bb%7D&operationName=Read"},
 	{name: "mutation word in a get argument", method: "GET", path: "/graphql", query: "query=%7Ba%28name%3A%22mutation%22%29%7D"},
 	{name: "get mutation on a discovered endpoint", method: "GET", path: "/api/gql", query: "query=mutation%7BdeleteUser%7D", want: idGQLGetMutation},
+	{name: "head mutation", method: "HEAD", path: "/graphql", query: "query=mutation%7BdeleteUser%7D", want: idGQLSafeMutation},
+	{name: "head discovered mutation", method: "HEAD", path: "/api/gql", query: "query=mutation%7BdeleteUser%7D", want: idGQLSafeMutation},
+	{name: "head selected query beside a mutation", method: "HEAD", path: "/graphql", query: "query=query+Read%7Ba%7D+mutation+Write%7Bb%7D&operationName=Read"},
+	{name: "head selected mutation", method: "HEAD", path: "/graphql", query: "query=query+Read%7Ba%7D+mutation+Write%7Bb%7D&operationName=Write", want: idGQLSafeMutation},
+	{name: "head mutation in an explicitly permitted body", method: "HEAD", path: "/graphql", ct: appJSON, body: gqlReq("mutation { deleteUser }"), want: idGQLSafeMutation,
+		tweak: func(p *Policy) { p.Rules["body-on-get"] = Off }},
+	{name: "options discovered mutation", method: "OPTIONS", path: "/api/gql", query: "query=mutation%7BdeleteUser%7D", want: idGQLSafeMutation},
+	{name: "trace discovered mutation", method: "TRACE", path: "/api/gql", query: "query=mutation%7BdeleteUser%7D", want: idGQLSafeMutation},
+	{name: "head escaped parameter name", method: "HEAD", path: "/api/gql", query: "%71uery=mutation%7BdeleteUser%7D", want: idGQLSafeMutation},
+	{name: "head encoded operation keyword", method: "HEAD", path: "/api/gql", query: "query=%6d%75%74%61%74%69%6f%6e%7BdeleteUser%7D", want: idGQLSafeMutation},
+	{name: "head fragment before selected mutation", method: "HEAD", path: "/api/gql", query: "query=fragment+F+on+User%7Bid%7D+mutation+Write%7BdeleteUser%7B...F%7D%7D&operationName=Write", want: idGQLSafeMutation},
+	{name: "head mutation word in a query argument", method: "HEAD", path: "/api/gql", query: "query=%7Ba%28name%3A%22mutation%22%29%7D"},
+	{name: "head batch contains selected mutation", method: "HEAD", path: "/graphql", ct: appJSON,
+		body: "[{\"query\":\"{a}\"},{\"operationName\":\"Write\",\"query\":\"mutation Write { deleteUser }\"}]", want: idGQLSafeMutation,
+		tweak: func(p *Policy) { p.Rules["body-on-get"] = Off }},
+	{name: "options mutation body", method: "OPTIONS", path: "/graphql", ct: appJSON, body: gqlReq("mutation { deleteUser }"), want: idGQLSafeMutation},
+	{name: "options mutation after a comment", method: "OPTIONS", path: "/api/gql", ct: appJSON,
+		body: gqlReq("# Read operation\nmutation Write { deleteUser }"), want: idGQLSafeMutation},
+	{name: "trace raw graphql mutation", method: "TRACE", path: "/graphql", ct: "application/graphql", body: "mutation { deleteUser }", want: idGQLSafeMutation},
+	{name: "options graphql form mutation", method: "OPTIONS", path: "/graphql", ct: form, body: "query=mutation%7BdeleteUser%7D", want: idGQLSafeMutation},
+	{name: "head repeated selected-operation parameter", method: "HEAD", path: "/api/gql",
+		query: "query=query+Read%7Ba%7D+mutation+Write%7Bb%7D&operationName=Read&%6fperationName=Write", want: idGQLShape},
+	{name: "ordinary options preflight", method: "OPTIONS", path: "/graphql", query: "version=1"},
+	{name: "get-specific override still allows get mutations", method: "GET", path: "/graphql", query: "query=mutation%7BdeleteUser%7D",
+		tweak: func(p *Policy) { p.Rules["graphql-get-mutation"] = Off }},
+	{name: "get-specific override does not disable head protection", method: "HEAD", path: "/graphql", query: "query=mutation%7BdeleteUser%7D", want: idGQLSafeMutation,
+		tweak: func(p *Policy) { p.Rules["graphql-get-mutation"] = Off }},
 	{name: "post selected mutation", path: "/graphql", ct: appJSON, body: `{"query":"query Read { a } mutation Write { b }","operationName":"Write"}`},
 	{name: "operation name preceding query", path: "/graphql", ct: appJSON, body: `{"operationName":"Read","query":"query Read { a } mutation Write { b }"}`},
 	{name: "empty name for one named query", path: "/graphql", ct: appJSON, body: `{"query":"query Q { a }","operationName":""}`},
@@ -323,6 +351,8 @@ func FuzzGraphQL(f *testing.F) {
 		fuzzNoPanic(t, in, row{path: "/graphql", ct: appJSON, body: gqlReq(body)})
 		fuzzNoPanic(t, in, row{method: "GET", path: "/graphql", query: query})
 		fuzzNoPanic(t, in, row{method: "GET", path: "/x", query: "query=" + query})
+		fuzzNoPanic(t, in, row{method: "HEAD", path: "/graphql", query: query})
+		fuzzNoPanic(t, in, row{method: "OPTIONS", path: "/x", query: "query=" + query})
 	})
 }
 

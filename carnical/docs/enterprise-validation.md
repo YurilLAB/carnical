@@ -58,6 +58,14 @@ The full normal format suite and scoped race suite pass, with the two existing t
 
 Review covered independent form/query rule selection, bounded scanning and capture, escaped names, parameter counts, fixed-content findings, all-method dispatch and body-inspection continuity. A query beyond a monitored/disabled scan budget is forwarded without complete query analysis; default enforcement refuses it. Application-specific parameter schemas and query/body name collisions remain outside this change.
 
+## GraphQL safe-method bypass variants (2026-10-05)
+
+Two HEAD mutations first returned 200 in the compiled executable, including a discovered endpoint. They now return 403 without reaching the origin. GET keeps its existing rule; HEAD, OPTIONS and TRACE use 5002314. The executable suite now has 68 cases, including escaped protocol names/operation text, fragment-based selection, a batch in an explicitly permitted HEAD body, ambiguous duplicate selection and related monitor forwarding. Findings are structural, rather than matches against one attack string.
+
+The full normal format and executable suites pass. Scoped race checks, vet and the Linux/amd64 cross-build pass. GraphQL fuzzing passes 6,263 executions in 30 seconds, including safe-method envelopes; the run spends much of its time minimizing new inputs. Rows also cover comments, raw GraphQL, form envelopes, selected queries beside unselected mutations, ordinary preflights and independent GET policy overrides. All new refusal rows participate in monitor/off negative controls and concurrent shared-inspector checks. Findings use fixed messages with distinct method, selection and envelope rule identities.
+
+Review confirms method metadata is initialized inside panic recovery, every inspected envelope shares the selected-operation check, and no request rewriting or method expansion occurs. Persisted queries and nonstandard origin method aliases still require origin-specific enforcement. Two obsolete limitations in the format documentation were corrected.
+
 ## Environment and baseline limitations
 
 `go test ./...` in the upstream module fails on existing Windows filesystem expectations and open audit/debug log handles (auditlog, operators, seclang, testing). The changed code is confined to Carnical's separate module; no upstream engine files are changed.
@@ -66,6 +74,6 @@ The broader Carnical race run encounters Windows audit-file recovery/truncation 
 
 That broad run also times out after ten minutes in the untracked virtual-patch brute-force comparison test (`TestIndexedMatchEqualsBruteForce`). It is not represented as a passing full-module race run.
 
-`go run mage.go adr` rejects 60 pre-existing ADRs as lacking the exact technical-discussion section marker. The new ADRs 0061–0066 produce no diagnostics. The Windows checkout has CRLF in older documents, which the validator's exact marker comparison does not normalize. This check is not claimed to pass globally.
+`go run mage.go adr` rejects 60 pre-existing ADRs as lacking the exact technical-discussion section marker. The new ADRs 0061–0067 produce no diagnostics. The Windows checkout has CRLF in older documents, which the validator's exact marker comparison does not normalize. This check is not claimed to pass globally.
 
 WSL's Ubuntu environment first reported a read-only home when creating the Go cache and subsequently failed to start. Linux confinement and the full Linux CI matrix have not been verified by these runs.
