@@ -1,0 +1,329 @@
+{
+    "site_firewall_policy": 1,
+    "exported": "2026-10-05T11:33:20Z",
+    "site": "Alpha Plumbing",
+    "engine": "1.0.0",
+    "rev": 12,
+    "policy": {
+        "mode": "block",
+        "threshold": 6,
+        "sensitivity": "relaxed",
+        "rule_groups": {
+            "sqli": "on",
+            "xss": "log",
+            "lfi": "off",
+            "protocol": "log",
+            "upload": "off",
+            "cve": "log",
+            "wordpress": "off",
+            "ssti": "on",
+            "probe": "log"
+        },
+        "block_oversize": false,
+        "contact": "Call 07 4000 0000 with the incident number",
+        "timezone": "Australia/Brisbane",
+        "disabled": [
+            "CRS-942100",
+            "FW-SQLI-0007"
+        ],
+        "overrides": {
+            "CRS-941100": {
+                "score": 2
+            },
+            "FW-XSS-0003": {
+                "action": "log"
+            }
+        },
+        "exclusions": [
+            {
+                "path": "/editor/",
+                "categories": [
+                    "xss",
+                    "sqli"
+                ],
+                "targets": [
+                    "arg:content",
+                    "cookie:session"
+                ]
+            },
+            {
+                "path": "/api/",
+                "categories": [
+                    "rce"
+                ],
+                "targets": null
+            },
+            {
+                "path": "/upload/",
+                "categories": [
+                    "upload"
+                ],
+                "targets": [
+                    "uploads"
+                ]
+            },
+            {
+                "path": "/mixed/",
+                "categories": [
+                    "xss",
+                    "upload"
+                ],
+                "targets": [
+                    "args"
+                ]
+            },
+            {
+                "path": "/files/",
+                "categories": [
+                    "lfi"
+                ],
+                "targets": [
+                    "uploads",
+                    "filenames"
+                ]
+            },
+            {
+                "path": "/odd path/",
+                "categories": [
+                    "xss"
+                ],
+                "targets": [
+                    "args"
+                ]
+            }
+        ],
+        "allow_ips": [
+            "203.0.113.9",
+            "198.51.100.0/24",
+            "2001:db8::/32",
+            "0.0.0.0/0",
+            "not an address"
+        ],
+        "block_ips": [
+            "192.0.2.0/24",
+            "10.0.0.0/4",
+            "2001:db8:bad::/48"
+        ],
+        "allow_paths": [
+            "/webhook/stripe",
+            "/pay ment/"
+        ],
+        "reputation": {
+            "spamhaus-drop": "log"
+        },
+        "ips": {
+            "enabled": false,
+            "ban_score": 60,
+            "login_paths": [
+                "/login"
+            ]
+        },
+        "outbound": {
+            "inspect": true,
+            "max_kb": 128
+        },
+        "stats": {
+            "keep_days": 30
+        },
+        "log": {
+            "truncate_ip": true
+        },
+        "rules": [
+            {
+                "id": "SITE-0001",
+                "rev": 1,
+                "category": "probe",
+                "severity": "medium",
+                "score": 6,
+                "action": "block",
+                "targets": [
+                    "path"
+                ],
+                "transforms": [
+                    "urldecode",
+                    "lowercase"
+                ],
+                "operator": "rx",
+                "pattern": "^\\/old\\-admin\\/",
+                "description": "Old admin area",
+                "confidence": "high",
+                "sources": [
+                    "site"
+                ],
+                "flags": "i"
+            },
+            {
+                "id": "SITE-0002",
+                "rev": 1,
+                "category": "other",
+                "severity": "low",
+                "score": 2,
+                "action": "block",
+                "targets": [
+                    "header:referer"
+                ],
+                "transforms": [
+                    "urldecode",
+                    "lowercase"
+                ],
+                "operator": "contains",
+                "pattern": "casino",
+                "description": "Bad referrer",
+                "confidence": "high",
+                "sources": [
+                    "site"
+                ]
+            },
+            {
+                "id": "SITE-0003",
+                "rev": 1,
+                "category": "other",
+                "severity": "high",
+                "score": 9,
+                "action": "block",
+                "targets": [
+                    "query",
+                    "cookies"
+                ],
+                "transforms": [
+                    "urldecode",
+                    "lowercase"
+                ],
+                "operator": "rx",
+                "pattern": "(?i)union\\s+select",
+                "description": "Two places",
+                "confidence": "high",
+                "sources": [
+                    "site"
+                ],
+                "flags": "i"
+            },
+            {
+                "id": "SITE-0004",
+                "rev": 1,
+                "category": "other",
+                "severity": "high",
+                "score": 9,
+                "action": "block",
+                "targets": [
+                    "args"
+                ],
+                "transforms": [
+                    "urldecode",
+                    "lowercase"
+                ],
+                "operator": "rx",
+                "pattern": "a++b",
+                "description": "Possessive",
+                "confidence": "high",
+                "sources": [
+                    "site"
+                ],
+                "flags": "i"
+            },
+            {
+                "id": "SITE-0005",
+                "rev": 1,
+                "category": "other",
+                "severity": "low",
+                "score": 1,
+                "action": "log",
+                "targets": [
+                    "uri"
+                ],
+                "transforms": [
+                    "urldecode"
+                ],
+                "operator": "rx",
+                "pattern": "^\\/status\\?debug\\=1$",
+                "description": "Watch",
+                "confidence": "high",
+                "sources": [
+                    "site"
+                ]
+            },
+            {
+                "id": "SITE-0006",
+                "rev": 1,
+                "category": "other",
+                "severity": "high",
+                "score": 8,
+                "action": "block",
+                "targets": [
+                    "args"
+                ],
+                "transforms": [
+                    "urldecode",
+                    "lowercase"
+                ],
+                "operator": "contains",
+                "pattern": "x",
+                "description": "Needs two conditions",
+                "confidence": "high",
+                "sources": [
+                    "site"
+                ],
+                "also": [
+                    {
+                        "targets": [
+                            "path"
+                        ],
+                        "transforms": [
+                            "urldecode"
+                        ],
+                        "operator": "contains",
+                        "pattern": "/admin"
+                    }
+                ]
+            },
+            {
+                "id": "SITE-0007",
+                "rev": 1,
+                "category": "other",
+                "severity": "high",
+                "score": 8,
+                "action": "block",
+                "targets": [
+                    "body"
+                ],
+                "transforms": [
+                    "urldecode",
+                    "base64decode"
+                ],
+                "operator": "contains",
+                "pattern": "evil",
+                "description": "Decodes base64",
+                "confidence": "high",
+                "sources": [
+                    "site"
+                ]
+            },
+            {
+                "id": "SITE-0008",
+                "rev": 1,
+                "category": "other",
+                "severity": "high",
+                "score": 8,
+                "action": "block",
+                "targets": [
+                    "args"
+                ],
+                "transforms": [
+                    "urldecode",
+                    "lowercase"
+                ],
+                "operator": "pm",
+                "pattern": [
+                    "viagra",
+                    "cialis",
+                    "poker"
+                ],
+                "description": "Spam words",
+                "confidence": "high",
+                "sources": [
+                    "site"
+                ]
+            }
+        ]
+    }
+}

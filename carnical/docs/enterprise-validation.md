@@ -86,14 +86,45 @@ Normal format/proxy/executable tests pass. Scoped race checks pass, excluding th
 
 Review covered decoded protocol aliases, bounded JSON/form capture, batch discovery across all scanned elements, request-local URL identification, body-only protocol fields, independent policy exceptions, mutation selection before coarse guards, per-rule deduplication, fixed log text and admission before hop-header stripping. The GET/POST restriction is an explicit local policy, since the HTTP draft permits additional server methods. Legacy HEAD/PUT transports and header tunneling can require integration changes. Custom override names/getters and document-free persisted-query operation types still need explicit endpoint/origin policy. Format enforcement requires `-formats-mode block`; default monitor mode intentionally forwards. Monitored/disabled batch caps still limit retained operation analysis.
 
+## Enterprise package publication (2026-10-06)
+
+The owner authorized publication of the previously untracked API guard, signed configuration, policy, control/feed API,
+virtual-patch engine/importers and offline commands. Normal short checks pass across those packages. Normal policy/control
+checks also pass, including real proxy requests and TLS listeners; the control authentication timing check and policy
+paranoia measurement pass outside short mode. A short race run across all publication packages passes with a 15-minute
+per-package timeout. The virtual-patch package took 890.6 seconds under the race detector, including its reduced short-mode
+index-equivalence workload. This is not the unabridged, non-short index stress run.
+
+Publication testing fixed Windows audit-log torn-tail repair and failed-append rollback. The Windows writer retains append
+semantics, opens a checked writable repair handle, and closes after rollback failure. Scoped race regressions also verify
+that repair cannot truncate a different file. A reopened audit test handle is now closed. Policy tests retain their custom
+rule identity/severity checks while expecting the proxy's privacy-safe summary.
+
+Live virtual-patch command checks exposed replay runs that could load zero scoped signatures and still report success.
+Replay now accepts software scope and rejects empty active sets. Normal/race command rows cover matching, absent and wrong
+scope. A real conversion loads two community-tier Jira fixture signatures, and an offline replay compares their indexed
+and full answers over 468 benign and 247 attack samples with no difference. These two Jira signatures match none of that
+generic corpus; this smoke check is not a detection-rate claim. An unsupported count-comparison fixture is explicitly
+refused by conversion rather than approximated.
+
+Vet, govulncheck over the Carnical module, and Linux/amd64 compilation with CGO disabled pass. The source scan finds no
+deployment credentials; signing/TLS test material is generated locally or uses test vectors. Third-party test fixtures
+retain their upstream notices and bytes, including whitespace; diff whitespace checks pass outside those fixture paths.
+The packages remain integration APIs: production stores, UI/key provisioning, guarded discovery transport and installing
+API/virtual-patch inspectors in a deployed site's proxy are separate deployment work.
+
 ## Environment and baseline limitations
 
 `go test ./...` in the upstream module fails on existing Windows filesystem expectations and open audit/debug log handles (auditlog, operators, seclang, testing). The changed code is confined to Carnical's separate module; no upstream engine files are changed.
 
-The broader Carnical race run encounters Windows audit-file recovery/truncation failures in the pre-existing, untracked `control` package. Those files are outside these commits. The first broad run also ran an intermediate implementation; its format failures were corrected and superseded by the passing scoped runs above.
+An earlier broader Carnical race run encountered Windows audit-file recovery/truncation failures in the then-untracked
+`control` package. The publication fixes and passing control checks above supersede those failures. The first broad run
+also ran an intermediate format implementation; its failures were corrected and superseded by the passing scoped runs.
 
 That broad run also times out after ten minutes in the untracked virtual-patch brute-force comparison test (`TestIndexedMatchEqualsBruteForce`). It is not represented as a passing full-module race run.
 
-`go run mage.go adr` rejects 60 pre-existing ADRs as lacking the exact technical-discussion section marker. The new ADRs 0061–0069 produce no diagnostics. The Windows checkout has CRLF in older documents, which the validator's exact marker comparison does not normalize. This check is not claimed to pass globally.
+`go run mage.go adr` rejects 60 pre-existing ADRs as lacking the exact technical-discussion section marker. The new ADRs
+0061–0070 produce no diagnostics. The Windows checkout has CRLF in older documents, which the validator's exact marker
+comparison does not normalize. This check is not claimed to pass globally.
 
 WSL's Ubuntu environment first reported a read-only home when creating the Go cache and subsequently failed to start. Linux confinement and the full Linux CI matrix have not been verified by these runs.

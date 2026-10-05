@@ -1,0 +1,43 @@
+# Fixture for the Carnical Suricata importer: unmodified rules from the Emerging Threats Open rule set
+# (https://rules.emergingthreats.net/open/suricata-7.0.3/rules/, ruleset version 11303). Licence of the rules, as the files state it:
+#
+# Emerging Threats 
+#
+# This distribution may contain rules under two different licenses. 
+#
+#  Rules with sids 1 through 3464, and 100000000 through 100000908 are under the GPLv2.
+#  A copy of that license is available at http://www.gnu.org/licenses/gpl-2.0.html
+#
+#  Rules with sids 2000000 through 2799999 are from Emerging Threats and are covered under the BSD License 
+#  as follows:
+#
+#*************************************************************
+#  Copyright (c) 2003-2026, Emerging Threats
+#  All rights reserved.
+#  
+#  Redistribution and use in source and binary forms, with or without modification, are permitted provided that the 
+#  following conditions are met:
+#  
+#  * Redistributions of source code must retain the above copyright notice, this list of conditions and the following 
+#    disclaimer.
+#  * Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the 
+#    following disclaimer in the documentation and/or other materials provided with the distribution.
+#  * Neither the name of the nor the names of its contributors may be used to endorse or promote products derived 
+#    from this software without specific prior written permission.
+#  
+#  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS AS IS AND ANY EXPRESS OR IMPLIED WARRANTIES, 
+#  INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE 
+#  DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, 
+#  SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR 
+#  SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, 
+#  WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE 
+#  USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
+#
+#*************************************************************
+#
+#
+#
+#
+#
+
+alert http $EXTERNAL_NET any -> $HTTP_SERVERS any (msg:"ET WEB_SPECIFIC_APPS JoomSocial AvatarUpload RCE"; flow:established,to_server; content:"func="; nocase; content:"photo"; nocase; distance:0; content:"ajaxUploadAvatar"; nocase; fast_pattern; content:"CStringHelper"; nocase; content:"escape"; nocase; distance:0; reference:url,blog.sucuri.net/2014/02/joomla-jomsocial-remote-code-execution-vulnerability.html; classtype:web-application-attack; sid:2018107; rev:9; metadata:created_at 2014_02_11, confidence Medium, signature_severity Major, tag Description_Generated_By_Proofpoint_Nexus, updated_at 2019_10_08;)

@@ -1,0 +1,47 @@
+# Fixture for the Carnical Suricata importer: unmodified rules from the Emerging Threats Open rule set
+# (https://rules.emergingthreats.net/open/suricata-7.0.3/rules/, ruleset version 11303). Licence of the rules, as the files state it:
+#
+# Emerging Threats 
+#
+# This distribution may contain rules under two different licenses. 
+#
+#  Rules with sids 1 through 3464, and 100000000 through 100000908 are under the GPLv2.
+#  A copy of that license is available at http://www.gnu.org/licenses/gpl-2.0.html
+#
+#  Rules with sids 2000000 through 2799999 are from Emerging Threats and are covered under the BSD License 
+#  as follows:
+#
+#*************************************************************
+#  Copyright (c) 2003-2026, Emerging Threats
+#  All rights reserved.
+#  
+#  Redistribution and use in source and binary forms, with or without modification, are permitted provided that the 
+#  following conditions are met:
+#  
+#  * Redistributions of source code must retain the above copyright notice, this list of conditions and the following 
+#    disclaimer.
+#  * Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the 
+#    following disclaimer in the documentation and/or other materials provided with the distribution.
+#  * Neither the name of the nor the names of its contributors may be used to endorse or promote products derived 
+#    from this software without specific prior written permission.
+#  
+#  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS AS IS AND ANY EXPRESS OR IMPLIED WARRANTIES, 
+#  INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE 
+#  DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, 
+#  SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR 
+#  SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, 
+#  WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE 
+#  USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
+#
+#*************************************************************
+#
+#
+#
+#
+#
+
+alert http $EXTERNAL_NET any -> $HOME_NET any (msg:"ET EXPLOIT MS16-009 IE MSHTML Form Element Type Confusion (CVE-2016-0061)"; flow:established,to_client; file.data; content:"opener"; nocase; fast_pattern; pcre:"/^\s*\[\s*[\x22\x27]\\u[a-f0-9]{4}\\u[a-f0-9]{4}/Rsi"; reference:cve,2016-0061; classtype:attempted-user; sid:2022524; rev:5; metadata:created_at 2016_02_16, cve CVE_2016_0061, confidence High, signature_severity Major, updated_at 2024_03_14;)
+alert tcp $EXTERNAL_NET any -> $HOME_NET $ORACLE_PORTS (msg:"ET EXPLOIT Possible Oracle Database Text Component ctxsys.drvxtabc.create_tables Remote SQL Injection Attempt"; flow:established,to_server; content:"ctxsys|2E|drvxtabc|2E|create|5F|tables"; nocase; content:"dbms|5F|sql|2E|execute"; nocase; distance:0; pcre:"/ctxsys\x2Edrvxtabc\x2Ecreate\x5Ftables.+(SELECT|DELETE|CREATE|INSERT|UPDATE|OUTFILE)/si"; reference:url,www.securityfocus.com/bid/36748; reference:cve,2009-1991; classtype:attempted-admin; sid:2010375; rev:2; metadata:affected_product Web_Server_Applications, attack_target Web_Server, created_at 2010_07_30, cve CVE_2009_1991, deployment Datacenter, confidence Medium, signature_severity Major, tag SQL_Injection, updated_at 2019_07_26, mitre_tactic_id TA0001, mitre_tactic_name Initial_Access, mitre_technique_id T1190, mitre_technique_name Exploit_Public_Facing_Application;)
+alert tcp $EXTERNAL_NET any -> $HOME_NET 749 (msg:"GPL EXPLOIT kadmind buffer overflow attempt"; flow:established,to_server; content:"|00 C0 05 08 00 C0 05 08 00 C0 05 08 00 C0 05 08|"; reference:bugtraq,5731; reference:bugtraq,6024; reference:cve,2002-1226; reference:cve,2002-1235; reference:url,www.kb.cert.org/vuls/id/875073; classtype:shellcode-detect; sid:2101894; rev:9; metadata:created_at 2010_09_23, cve CVE_2002_1226, confidence High, signature_severity Major, updated_at 2019_07_26;)
+#alert tcp $EXTERNAL_NET any -> $HOME_NET 2200 (msg:"ET EXPLOIT CA BrightStor ARCserve Mobile Backup LGSERVER.EXE Heap Corruption"; flow:established,to_server; content:"|4e 3d 2c 1b|"; depth:4; isdataat:2891,relative; reference:cve,2007-0449; classtype:attempted-admin; sid:2003369; rev:3; metadata:created_at 2010_07_30, confidence Low, signature_severity Major, tag Description_Generated_By_Proofpoint_Nexus, updated_at 2019_07_26;)
+alert tcp-pkt any any -> [$HTTP_SERVERS,$HOME_NET] 1024: (msg:"ET EXPLOIT Zerologon Phase 3/3 - NetrLogonSamLogonWithFlags Request with 0x00 Client Credentials (CVE-2020-1472)"; flow:established,to_server; flowbits:isset,dcerpc.rpcnetlogon; flowbits:isset,dcerpc.rpcnetlogon.netrsrvrauth.nosignnoseal; content:"|05 00 00|"; startswith; fast_pattern; content:"|2d 00|"; offset:22; depth:2; content:"|00 00 00 00 00 00 00 00 00 00 00 00|"; distance:0; content:!"|00 00 00 00|"; within:4; content:"|00 00 00 00 00 00 00 00 00 00 00 00|"; distance:4; within:12; reference:url,www.secura.com/blog/zero-logon; reference:url,dirkjanm.io/a-different-way-of-abusing-zerologon/; reference:cve,2020-1472; reference:url,thedfirreport.com/2022/02/21/qbot-and-zerologon-lead-to-full-domain-compromise/; classtype:attempted-admin; sid:2035263; rev:2; metadata:attack_target Server, created_at 2022_02_22, cve CVE_2020_1472, deployment Internal, performance_impact Significant, confidence High, signature_severity Major, tag CISA_KEV, tag Description_Generated_By_Proofpoint_Nexus, updated_at 2022_02_22;)

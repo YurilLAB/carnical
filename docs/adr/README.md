@@ -138,5 +138,6 @@ Superseding does not delete the old record. Set its status and let the history s
 | [0067](0067-carnical-graphql-safe-methods.md) | Local private development | 2026-10-05 | unreleased | F | GraphQL mutation protection on all safe HTTP methods |
 | [0068](0068-carnical-bypass-monitoring.md) | Local private development | 2026-10-05 | unreleased | F | Bounded bypass counters and privacy-safe logging |
 | [0069](0069-carnical-graphql-transport-layers.md) | Local private development | 2026-10-05 | unreleased | F | Independent GraphQL transport and method-override guards |
+| [0070](0070-carnical-enterprise-integration-packages.md) | Owner-authorized development | 2026-10-06 | unreleased | F | API, signed-policy, control/feed and virtual-patch integration packages |
 
 Categories: **F**eature · **P**arity · **⚡** Perf · **R**efactor

@@ -1,0 +1,28 @@
+{
+    "site_firewall_policy": 1,
+    "exported": "2026-10-05T11:33:20Z",
+    "site": "Alpha Plumbing",
+    "engine": "1.0.0",
+    "rev": 0,
+    "policy": {
+        "mode": null,
+        "threshold": null,
+        "sensitivity": null,
+        "rule_groups": [],
+        "block_oversize": null,
+        "contact": null,
+        "timezone": null,
+        "disabled": [],
+        "overrides": [],
+        "exclusions": [],
+        "allow_ips": [],
+        "block_ips": [],
+        "allow_paths": [],
+        "reputation": [],
+        "ips": [],
+        "outbound": [],
+        "stats": [],
+        "log": [],
+        "rules": []
+    }
+}

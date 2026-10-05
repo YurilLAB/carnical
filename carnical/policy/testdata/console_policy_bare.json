@@ -1,0 +1,28 @@
+{
+    "schema": 1,
+    "rev": 0,
+    "updated": null,
+    "by": "",
+    "mode": "monitor",
+    "threshold": null,
+    "sensitivity": "strict",
+    "rule_groups": [],
+    "block_oversize": null,
+    "contact": null,
+    "timezone": null,
+    "disabled": [],
+    "overrides": [],
+    "exclusions": [],
+    "allow_ips": [
+        "203.0.113.0/24"
+    ],
+    "block_ips": [],
+    "allow_paths": [],
+    "reputation": [],
+    "ips": [],
+    "outbound": [],
+    "stats": [],
+    "log": [],
+    "rules": [],
+    "compiled": null
+}

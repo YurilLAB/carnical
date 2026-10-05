@@ -19,6 +19,9 @@ rewritten: Coraza is the engine and the OWASP Core Rule Set (CRS) is the rule se
 | `docs/hardening.md` | What stops an attacker who is already on the machine as a service user, what would show it, what was verified and what was not. |
 | `docs/attacks.md` | Modern web attacks researched, what Carnical does about each, what the rule set already covers, and what no proxy can stop. |
 | `docs/backend-compat.md` | The contracts the existing backend expects (feed, events, policy, updates, advice) and the defects in it that matter for hosting. |
+| `apiguard/` | Per-site API schema enforcement, discovery, learning and rate-limit integration; see [API protection](docs/apiguard.md). |
+| `config/`, `policy/`, `control/` | Signed configuration, validated customer policy, authenticated control API and compatible feed; see [configuration and policy](docs/config-and-policy.md) and [control API](docs/control-api.md). |
+| `vpatch/`, `cmd/carnical-sigs/`, `cmd/carnical-vpatch/` | Bounded virtual-patch matching, rule importers and offline pack/corpus tools; see [virtual patches](docs/vpatch.md). External rule libraries are supplied separately. |
 
 ## Versions
 
