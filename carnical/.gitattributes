@@ -2,3 +2,8 @@
 crs/owasp_crs/** -text
 crs/owasp-crs-release-key.asc -text
 crs/provenance.json -text
+
+# Files that are copied to a Linux machine keep Unix line endings whatever the checkout system does: a script with CRLF
+# fails on its first line.
+deploy/** text eol=lf
+*.sh text eol=lf
