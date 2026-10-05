@@ -69,6 +69,13 @@ func run() error {
 	scriptContent := flag.Bool("allow-script-content", false, "allow uploads that contain a PHP, ASP or JSP opening tag; refused by default")
 	keepBanners := flag.Bool("keep-banners", false, "keep X-Powered-By and Server headers from the application")
 	keepCaching := flag.Bool("keep-caching", false, "do not add Cache-Control: private, no-store to responses that set a cookie or look like a stylesheet but are HTML")
+	ddosMode := flag.String("ddos", "on", "flood protection: on (detect attacks, including ones spread over many addresses, and mitigate them), monitor (detect and log only), or off")
+	ddosRate := flag.Float64("ddos-rate", 50, "requests a second one address may make, at all times (bursts of -ddos-burst)")
+	ddosBurst := flag.Float64("ddos-burst", 200, "burst of requests one address may make at once")
+	ddosConns := flag.Int("ddos-max-conns", 20000, "connections held open at once; a fifth are kept for clients that used the site before")
+	ddosChallenge := flag.Bool("ddos-challenge", true, "during an attack, ask unknown browsers to pass a short JavaScript check instead of refusing them")
+	ddosBaseline := flag.Float64("ddos-baseline-rate", 0, "the site's usual requests a second, to start from instead of learning it (so a restart during an attack is not fooled)")
+	ddosRanges := flag.String("ddos-ranges", "", "address-range table (ip2asn TSV) naming the countries and networks an attack comes from, in the attack logs")
 	maxConns := flag.Int("max-conns-per-ip", 128, "connections one address may hold open (negative = no limit)")
 	uploadDir := flag.String("upload-dir", "", "directory for the file parts of uploads while a request runs (default: the system temporary directory; give it a private one)")
 	fromSystemd := flag.Bool("systemd-socket", false, "use the listening socket systemd passes in (socket activation), so the proxy needs no privilege to use port 443")
@@ -138,6 +145,14 @@ func run() error {
 	}
 
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	guard, err := configureShield(log, shieldFlags{mode: *ddosMode, rate: *ddosRate, burst: *ddosBurst, maxConns: *ddosConns,
+		challenge: *ddosChallenge, baseline: *ddosBaseline, ranges: *ddosRanges}, trusted)
+	if err != nil {
+		return err
+	}
+	if guard != nil {
+		defer guard.Close()
+	}
 	edge, err := proxy.New(proxy.Config{
 		Upstream: target, Origin: proxy.OriginPolicy{Allow: origin}, UpstreamHost: *upstreamHost, CRS: settings, TrustedProxies: trusted, AllowUpgrade: *allowUpgrade,
 		MaxUpstreamInFlight: *maxUpstream, LogDetails: *details, EvalBudget: *evalBudget, MaxEvaluations: *maxEval, MaxFormBody: *maxForm,
@@ -146,7 +161,7 @@ func run() error {
 		APIRate:   proxy.APIRatePolicy{PerMinute: *apiRate, Paths: splitList(*apiPaths)},
 		Uploads:   proxy.UploadPolicy{AllowExecutableNames: *scriptNames, AllowScriptContent: *scriptContent},
 		Responses: proxy.ResponsePolicy{KeepBanners: *keepBanners, KeepCaching: *keepCaching}, MaxConnsPerIP: *maxConns,
-		Inspectors: inspectors, AllowRequestEncoding: *requestEncoding,
+		Inspectors: inspectors, AllowRequestEncoding: *requestEncoding, Shield: guard,
 		OnMatch: func(m proxy.Match) {
 			attrs := []any{"rule", m.RuleID, "severity", m.Severity, "rule_msg", m.Message, "tx", m.TransactionID, "disruptive", m.Disruptive}
 			if *details {
@@ -179,6 +194,9 @@ func run() error {
 		return err
 	}
 	defer ln.Close()
+	if guard != nil {
+		ln = guard.Listener(ln)
+	}
 	if *confine {
 		ports, err := parsePorts(*confineConnect)
 		if err != nil {
@@ -202,7 +220,7 @@ func run() error {
 	done := make(chan error, 1)
 	go func() {
 		log.Info("listening", "addr", *listen, "upstream", target.String(), "crs", crs.Version(), "mode", *mode, "paranoia", *paranoia,
-			"inbound_threshold", *inbound, "tls", *certFile != "", "confined", *confine, "formats_mode", *formatsMode, "request_encoding", *requestEncoding)
+			"inbound_threshold", *inbound, "tls", *certFile != "", "confined", *confine, "ddos", *ddosMode, "formats_mode", *formatsMode, "request_encoding", *requestEncoding)
 		if *certFile != "" {
 			done <- server.ServeTLS(ln, "", "")
 		} else {

@@ -21,6 +21,7 @@ rewritten: Coraza is the engine and the OWASP Core Rule Set (CRS) is the rule se
 | `docs/backend-compat.md` | The contracts the existing backend expects (feed, events, policy, updates, advice) and the defects in it that matter for hosting. |
 | `apiguard/` | Per-site API schema enforcement, discovery, learning and rate-limit integration; see [API protection](docs/apiguard.md). |
 | `config/`, `policy/`, `control/` | Signed configuration, validated customer policy, authenticated control API and compatible feed; see [configuration and policy](docs/config-and-policy.md) and [control API](docs/control-api.md). |
+| `shield/` | Flood protection, on by default: connection admission, per-address and per-network limits, detection of attacks spread over many addresses and countries, and mitigation that keeps regular visitors working; see [flood protection](docs/ddos.md). |
 | `vpatch/`, `cmd/carnical-sigs/`, `cmd/carnical-vpatch/` | Bounded virtual-patch matching, rule importers and offline pack/corpus tools; see [virtual patches](docs/vpatch.md). External rule libraries are supplied separately. |
 
 ## Versions

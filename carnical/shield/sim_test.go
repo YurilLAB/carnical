@@ -1,0 +1,352 @@
+// SPDX-License-Identifier: Apache-2.0
+
+package shield
+
+import (
+	"fmt"
+	"math/rand/v2"
+	"net/http"
+	"net/http/httptest"
+	"net/netip"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+)
+
+// A simulation of a small business site under distributed attacks, on a simulated clock, through the real Shield: every
+// request is a real *http.Request through Admit, Write's decisions and Done. The site's application can serve
+// originCapacity requests a second; beyond that, requests fail (503 from the origin), which is what a flood does to an
+// unprotected site. Ordinary traffic is people: returning visitors (who become known before the attack) and new visitors,
+// each visit a page and three assets, from a mix of browsers. Attacks come from tens of thousands of addresses spread
+// over hundreds of networks and dozens of countries.
+
+const originCapacity = 200
+
+var browsers = [][]string{
+	{"User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0 Safari/537.36", "Accept-Language", "en-AU,en;q=0.9", "Accept-Encoding", "gzip, deflate, br, zstd", "Sec-Ch-Ua", `"Chromium";v="141"`},
+	{"User-Agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1", "Accept-Language", "en-AU", "Accept-Encoding", "gzip, deflate, br"},
+	{"User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:143.0) Gecko/20100101 Firefox/143.0", "Accept-Language", "en-GB,en;q=0.5", "Accept-Encoding", "gzip, deflate, br, zstd"},
+	{"User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Safari/605.1.15", "Accept-Language", "en-US", "Accept-Encoding", "gzip, deflate, br"},
+	{"User-Agent", "Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0 Mobile Safari/537.36", "Accept-Language", "en-AU,en;q=0.9", "Accept-Encoding", "gzip, deflate, br, zstd", "Sec-Ch-Ua", `"Chromium";v="141"`},
+	{"User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0 Safari/537.36 Edg/141.0", "Accept-Language", "en-AU,en;q=0.9", "Accept-Encoding", "gzip, deflate, br, zstd", "Sec-Ch-Ua", `"Microsoft Edge";v="141"`},
+}
+
+var countries = strings.Fields("BR US ID VN IN CN RU TR MX AR CO PH TH EG ZA NG PK BD UA PL DE FR IT ES GB KR JP TW MY IR")
+
+// fakeLabeler gives each /8 a country, the way a real table would give each allocation one.
+type fakeLabeler struct{}
+
+func (fakeLabeler) Label(a netip.Addr) string {
+	b := a.As4()
+	return countries[int(b[0])%len(countries)] + " AS" + strconv.Itoa(64500+int(b[0]))
+}
+
+type simVisitor struct {
+	addr    netip.Addr
+	browser int
+	cookie  *http.Cookie
+}
+
+type sim struct {
+	t      *testing.T
+	s      *Shield
+	clock  time.Time
+	r      *rand.Rand
+	served int // requests the origin served this second
+	known  []*simVisitor
+	stats  map[string]*tally
+	nextIP uint32
+}
+
+type tally struct{ sent, ok int }
+
+func (t *tally) rate() float64 {
+	if t.sent == 0 {
+		return 1
+	}
+	return float64(t.ok) / float64(t.sent)
+}
+
+func newSim(t *testing.T, mod func(*Config)) *sim {
+	m := &sim{t: t, clock: time.Date(2026, 10, 6, 0, 0, 0, 0, time.UTC), r: rand.New(rand.NewPCG(7, 11)), stats: map[string]*tally{}, nextIP: 1}
+	cfg := Config{Now: func() time.Time { return m.clock }, ChallengeBits: 8, Labeler: fakeLabeler{}}
+	if mod != nil {
+		mod(&cfg)
+	}
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	m.s = s
+	for i := 0; i < 400; i++ {
+		m.known = append(m.known, &simVisitor{addr: m.legitAddr(), browser: i % len(browsers)})
+	}
+	return m
+}
+
+// legitAddr is a fresh address for a person: the site's audience is mostly in a few countries' networks.
+func (m *sim) legitAddr() netip.Addr {
+	m.nextIP++
+	n := m.nextIP
+	return netip.AddrFrom4([4]byte{byte(100 + n%20), byte(n >> 16), byte(n >> 8), byte(n)})
+}
+
+func (m *sim) tally(name string) *tally {
+	if m.stats[name] == nil {
+		m.stats[name] = &tally{}
+	}
+	return m.stats[name]
+}
+
+// do sends one request and reports whether the visitor got what they asked for (from the origin, within its capacity).
+// A browser that is shown the challenge answers it, as a real one does, and then asks again.
+func (m *sim) do(class string, v *simVisitor, path string, nav bool, headers []string) bool {
+	tl := m.tally(class)
+	tl.sent++
+	for attempt := 0; attempt < 2; attempt++ {
+		r := httptest.NewRequest(http.MethodGet, path, nil)
+		r.Header = http.Header{}
+		for i := 0; i+1 < len(headers); i += 2 {
+			r.Header.Set(headers[i], headers[i+1])
+		}
+		if nav {
+			r.Header.Set("Accept", "text/html,application/xhtml+xml,*/*;q=0.8")
+			r.Header.Set("Sec-Fetch-Mode", "navigate")
+		} else if strings.HasPrefix(class, "legit") {
+			r.Header.Set("Accept", "*/*")
+			r.Header.Set("Sec-Fetch-Mode", "no-cors")
+		}
+		if v.cookie != nil {
+			r.AddCookie(v.cookie)
+		}
+		d := m.s.Admit(r, v.addr)
+		switch d.Action {
+		case Allow:
+			ok := m.served < originCapacity
+			if ok {
+				m.served++
+				m.s.Done(d, 200, true)
+				tl.ok++
+			} else {
+				m.s.Done(d, 503, true)
+			}
+			return ok
+		case Challenge:
+			if !strings.HasPrefix(class, "legit") || attempt > 0 {
+				return false // bots do not run the page; a person who failed twice gives up
+			}
+			tok := m.s.token(sourceKey(v.addr), m.clock)
+			vr := httptest.NewRequest(http.MethodGet, VerifyPath+"?t="+tok+"&n="+solve(tok, 8)+"&to=/", nil)
+			vr.Header.Set("User-Agent", r.Header.Get("User-Agent"))
+			vd := m.s.Admit(vr, v.addr)
+			if vd.Action != Respond || vd.resp.cookie == nil {
+				return false
+			}
+			v.cookie = vd.resp.cookie
+			m.tally(class+" challenged").sent++
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+// visit is a person loading a page and its assets.
+func (m *sim) visit(class string, v *simVisitor) {
+	h := browsers[v.browser]
+	m.do(class, v, "/blog/post-"+strconv.Itoa(m.r.IntN(40)), true, h)
+	for _, a := range []string{"/static/site.css", "/static/site.js", "/img/" + strconv.Itoa(m.r.IntN(60)) + ".jpg"} {
+		m.do(class, v, a, false, h)
+	}
+}
+
+// second runs one simulated second: visits from known and new people, and n attack requests from attack().
+func (m *sim) second(visitsKnown, visitsNew, attackN int, attack func(i int)) {
+	m.served = 0
+	start := m.clock
+	total := visitsKnown + visitsNew + attackN
+	step := time.Second / time.Duration(max(total, 1)+1)
+	order := m.r.Perm(total)
+	for _, k := range order {
+		m.clock = m.clock.Add(step)
+		switch {
+		case k < visitsKnown:
+			m.visit("legit known", m.known[m.r.IntN(len(m.known))])
+		case k < visitsKnown+visitsNew:
+			m.visit("legit new", &simVisitor{addr: m.legitAddr(), browser: m.r.IntN(len(browsers))})
+		default:
+			attack(k - visitsKnown - visitsNew)
+		}
+	}
+	m.clock = start.Add(time.Second)
+	m.s.Tick()
+}
+
+// warm runs ordinary traffic long enough for the baseline to settle and the returning visitors to become known.
+func (m *sim) warm(minutes int) {
+	for i := 0; i < minutes*60; i++ {
+		m.second(4, 4, 0, nil)
+	}
+	if st := m.s.State(); st != Normal {
+		m.t.Fatalf("after warm-up the state is %v", st)
+	}
+	m.stats = map[string]*tally{}
+}
+
+// botnet is n addresses spread over many /8s (countries) and /16s.
+func botnet(n int, r *rand.Rand) []*simVisitor {
+	out := make([]*simVisitor, n)
+	for i := range out {
+		out[i] = &simVisitor{addr: netip.AddrFrom4([4]byte{byte(1 + r.IntN(90)), byte(r.IntN(256)), byte(r.IntN(256)), byte(1 + r.IntN(254))})}
+	}
+	return out
+}
+
+type result struct {
+	detectedAfter  int // seconds; -1 if never
+	attackAdmitted float64
+	known, new     float64
+	inc            *Incident
+	maxState       State
+}
+
+func (r result) String() string {
+	return fmt.Sprintf("detected after %ds, attack admitted %.2f%%, returning visitors served %.1f%%, new visitors served %.1f%%",
+		r.detectedAfter, 100*r.attackAdmitted, 100*r.known, 100*r.new)
+}
+
+// run sends ordinary traffic plus an attack of perSecond requests a second for seconds seconds.
+func (m *sim) run(seconds, perSecond int, attack func(i int)) result {
+	res := result{detectedAfter: -1}
+	var admittedAfter, sentAfter int
+	var knownAt, newAt tally // the visitors' tallies when the attack was detected
+	for sec := 0; sec < seconds; sec++ {
+		before := *m.tally("attack")
+		m.second(4, 4, perSecond, attack)
+		st := m.s.State()
+		if st > res.maxState {
+			res.maxState = st
+		}
+		if st == Attack && res.detectedAfter < 0 {
+			res.detectedAfter = sec + 1
+			knownAt, newAt = *m.tally("legit known"), *m.tally("legit new")
+		}
+		if res.detectedAfter >= 0 && sec >= res.detectedAfter {
+			after := m.tally("attack")
+			admittedAfter += after.ok - before.ok
+			sentAfter += after.sent - before.sent
+		}
+	}
+	if sentAfter > 0 {
+		res.attackAdmitted = float64(admittedAfter) / float64(sentAfter)
+	}
+	// Visitors are counted from the moment of detection: before it, the flood has the origin to itself, which is the
+	// price of not acting on traffic until it is known to be an attack.
+	k, n := m.tally("legit known"), m.tally("legit new")
+	if res.detectedAfter < 0 {
+		knownAt, newAt = tally{}, tally{}
+	}
+	res.known = (&tally{sent: k.sent - knownAt.sent, ok: k.ok - knownAt.ok}).rate()
+	res.new = (&tally{sent: n.sent - newAt.sent, ok: n.ok - newAt.ok}).rate()
+	if snap := m.s.Snapshot(); snap.Current != nil {
+		res.inc = snap.Current
+	}
+	return res
+}
+
+func TestSimulatedAttacks(t *testing.T) {
+	if testing.Short() {
+		t.Skip("simulation")
+	}
+	python := []string{"User-Agent", "python-requests/2.32.3", "Accept", "*/*", "Accept-Encoding", "gzip, deflate", "Connection", "keep-alive"}
+
+	t.Run("a botnet of 20,000 addresses in 30 countries, 5,000 requests a second, cache-busting the home page", func(t *testing.T) {
+		m := newSim(t, nil)
+		m.warm(10)
+		bots := botnet(20_000, m.r)
+		res := m.run(90, 5000, func(i int) {
+			m.do("attack", bots[m.r.IntN(len(bots))], "/?r="+strconv.Itoa(m.r.IntN(1e9)), false, python)
+		})
+		t.Log(res)
+		t.Logf("incident: %d addresses, %d networks, %d countries/networks labelled; refused %d, banned %d; reasons: %q",
+			res.inc.Sources, res.inc.Networks, res.inc.DistinctLabels, res.inc.Refused, res.inc.Banned, res.inc.Reasons)
+		if res.detectedAfter < 0 || res.detectedAfter > 10 || res.attackAdmitted > 0.02 || res.known < 0.98 || res.new < 0.9 {
+			t.Fatal("protection below the bar")
+		}
+		if res.inc.Sources < 17_000 || res.inc.Sources > 23_000 || res.inc.DistinctLabels < 25 {
+			t.Fatalf("the record misjudges the attack's spread: %+v", res.inc)
+		}
+	})
+
+	t.Run("the same botnet with the shield in monitor mode (control: the mitigation is what protects)", func(t *testing.T) {
+		m := newSim(t, func(c *Config) { c.MonitorOnly = true })
+		m.warm(10)
+		bots := botnet(20_000, m.r)
+		res := m.run(60, 5000, func(i int) {
+			m.do("attack", bots[m.r.IntN(len(bots))], "/?r="+strconv.Itoa(m.r.IntN(1e9)), false, python)
+		})
+		t.Log(res)
+		if res.detectedAfter < 0 || res.known > 0.2 {
+			t.Fatal("monitor mode either missed the attack or the simulated origin is not overwhelmed (the test proves nothing)")
+		}
+	})
+
+	t.Run("bots that copy a real browser exactly, loading a search page from 30,000 addresses", func(t *testing.T) {
+		m := newSim(t, nil)
+		m.warm(10)
+		bots := botnet(30_000, m.r)
+		res := m.run(90, 3000, func(i int) {
+			m.do("attack", bots[m.r.IntN(len(bots))], "/search?q="+strconv.Itoa(m.r.IntN(1e9)), true, browsers[0])
+		})
+		t.Log(res)
+		t.Logf("reasons: %q", res.inc.Reasons)
+		if res.detectedAfter < 0 || res.detectedAfter > 12 || res.attackAdmitted > 0.03 || res.known < 0.98 || res.new < 0.85 {
+			t.Fatal("protection below the bar")
+		}
+	})
+
+	t.Run("low and slow: 10,000 addresses, each one request every 20 seconds", func(t *testing.T) {
+		m := newSim(t, nil)
+		m.warm(10)
+		bots := botnet(10_000, m.r)
+		res := m.run(90, 500, func(i int) {
+			m.do("attack", bots[m.r.IntN(len(bots))], "/wp-login.php", false, python)
+		})
+		t.Log(res)
+		if res.detectedAfter < 0 || res.detectedAfter > 12 || res.attackAdmitted > 0.05 || res.known < 0.98 {
+			t.Fatal("protection below the bar")
+		}
+	})
+
+	t.Run("a newsletter sends a crowd to one article whose assets are on another host (taken for an attack, people still served)", func(t *testing.T) {
+		m := newSim(t, nil)
+		m.warm(10)
+		crowd := func(i int) {
+			v := &simVisitor{addr: m.legitAddr(), browser: m.r.IntN(len(browsers))}
+			m.do("legit new", v, "/blog/big-news", true, browsers[v.browser])
+		}
+		res := m.run(90, 150, crowd) // within what the origin can serve: the question is only what the shield does
+		t.Logf("highest state %v; %s; reasons %q", res.maxState, res, m.s.Snapshot().Reasons)
+		if all := m.tally("legit new").rate(); all < 0.95 {
+			t.Fatalf("only %.1f%% of the crowd was served", 100*all)
+		}
+	})
+
+	t.Run("a flash crowd of real people (negative control: not an attack)", func(t *testing.T) {
+		m := newSim(t, nil)
+		m.warm(10)
+		res := result{detectedAfter: -1}
+		for sec := 0; sec < 120; sec++ {
+			m.second(4, 40, 0, nil) // ten times the visits, almost all new, every browser, pages and assets
+			if st := m.s.State(); st > res.maxState {
+				res.maxState = st
+			}
+		}
+		t.Logf("highest state %v; new visitors served %.1f%%", res.maxState, 100*m.tally("legit new").rate())
+		if res.maxState == Attack {
+			t.Fatalf("a crowd of people was taken for an attack: %q", m.s.Snapshot().Reasons)
+		}
+	})
+}

@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"mime"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/netip"
@@ -32,6 +33,7 @@ import (
 
 	"github.com/YurilLAB/coraza/carnical/crs"
 	"github.com/YurilLAB/coraza/carnical/inspect"
+	"github.com/YurilLAB/coraza/carnical/shield"
 )
 
 // Config describes one protected site.
@@ -99,6 +101,9 @@ type Config struct {
 	ResponseHeaderTimeout time.Duration
 	// OnMatch is called for every rule that matches. It must not block.
 	OnMatch func(Match)
+	// Shield, if set, protects the site against floods (package shield): it judges every request first, before any other
+	// check reads it, and its listener and ConnState judge connections. Wrap the listening socket with Shield.Listener.
+	Shield *shield.Shield
 	// LogDetails adds the client address, URI, matched data and expanded message to a Match. They hold what the visitor
 	// sent, which can include personal data and credentials, so they are left out unless asked for.
 	LogDetails bool
@@ -234,6 +239,15 @@ func (e *Edge) Server(addr string) *http.Server {
 		})
 		srv.ConnState = e.conns.state
 	}
+	if sh := e.cfg.Shield; sh != nil {
+		prev := srv.ConnState
+		srv.ConnState = func(c net.Conn, st http.ConnState) {
+			if prev != nil {
+				prev(c, st)
+			}
+			sh.ConnState(c, st)
+		}
+	}
 	return srv
 }
 
@@ -274,6 +288,19 @@ func (e *Edge) guard(next http.Handler) http.Handler {
 		}
 		// Coraza splits RemoteAddr at its last colon, so an IPv6 address is given without brackets.
 		r.RemoteAddr = fmt.Sprintf("%s:%d", addr, port)
+		if sh := e.cfg.Shield; sh != nil {
+			// The flood check comes first and costs a few map lookups: a request it refuses is never read further.
+			d := sh.Admit(r, addr)
+			if d.Action != shield.Allow {
+				sh.Write(w, r, d)
+				return
+			}
+			sw := &shieldWriter{ResponseWriter: w}
+			w = sw
+			fromOrigin := new(bool)
+			r = r.WithContext(context.WithValue(r.Context(), originKey{}, fromOrigin))
+			defer func() { sh.Done(d, sw.code(), *fromOrigin) }()
+		}
 		if !e.checkRequest(w, r, addr) {
 			return
 		}
@@ -485,6 +512,7 @@ func (e *Edge) forward() http.Handler {
 			out.Header.Set("X-Forwarded-Host", in.Host)
 		},
 		ModifyResponse: func(resp *http.Response) error {
+			markOrigin(resp.Request.Context())
 			if resp.StatusCode == http.StatusSwitchingProtocols && !e.cfg.AllowUpgrade {
 				return errors.New("upstream protocol upgrade is not supported")
 			}
@@ -500,6 +528,7 @@ func (e *Edge) forward() http.Handler {
 			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			markOrigin(r.Context())
 			http.Error(w, "upstream unavailable", http.StatusBadGateway)
 		},
 	}
@@ -508,6 +537,7 @@ func (e *Edge) forward() http.Handler {
 		case e.slots <- struct{}{}:
 			defer func() { <-e.slots }()
 		default:
+			markOrigin(r.Context()) // the application has as many requests as it may take: that is its health too
 			w.Header().Set("Retry-After", "1")
 			http.Error(w, "busy", http.StatusServiceUnavailable)
 			return
@@ -529,3 +559,47 @@ func (n noInterim) WriteHeader(code int) {
 }
 
 func (n noInterim) Unwrap() http.ResponseWriter { return n.ResponseWriter }
+
+// originKey marks, for the shield, that a response came from (or was about) the application rather than from a check.
+type originKey struct{}
+
+func markOrigin(ctx context.Context) {
+	if p, ok := ctx.Value(originKey{}).(*bool); ok {
+		*p = true
+	}
+}
+
+// shieldWriter records the status sent, for Shield.Done.
+type shieldWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (s *shieldWriter) WriteHeader(code int) {
+	if s.status == 0 && code >= 200 {
+		s.status = code
+	}
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func (s *shieldWriter) Write(b []byte) (int, error) {
+	if s.status == 0 {
+		s.status = http.StatusOK
+	}
+	return s.ResponseWriter.Write(b)
+}
+
+func (s *shieldWriter) Flush() {
+	if f, ok := s.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (s *shieldWriter) code() int {
+	if s.status == 0 {
+		return http.StatusOK
+	}
+	return s.status
+}
+
+func (s *shieldWriter) Unwrap() http.ResponseWriter { return s.ResponseWriter }
