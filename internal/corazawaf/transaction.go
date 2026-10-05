@@ -337,6 +337,18 @@ func (tx *Transaction) Collection(idx variables.RuleVariable) collection.Collect
 // If On: it immediately interrupts the transaction and generates a response.
 // If DetectionOnly: it keeps track of what the interruption would have been if the engine was "On",
 // allowing consistent logging and visibility of potential disruptions without actually interrupting the transaction.
+// contextDone reports whether the context the transaction was created with has ended.
+func (tx *Transaction) contextDone() bool {
+	return tx.context.Err() != nil
+}
+
+// interruptForContext refuses the transaction because its context ended during rule evaluation. It is the same
+// refusal as a body over the limit: deny, with a status the integrator can map to a response.
+func (tx *Transaction) interruptForContext() {
+	tx.debugLogger.Warn().Msg("Rule evaluation stopped: the transaction's context is done")
+	tx.Interrupt(&types.Interruption{Status: 503, Action: "deny"})
+}
+
 func (tx *Transaction) Interrupt(interruption *types.Interruption) {
 	switch tx.RuleEngine {
 	case types.RuleEngineOn:

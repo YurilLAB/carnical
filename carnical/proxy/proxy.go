@@ -11,10 +11,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"mime"
 	"net/http"
 	"net/http/httputil"
 	"net/netip"
 	"net/url"
+	"runtime"
 	"strings"
 	"time"
 
@@ -47,6 +50,17 @@ type Config struct {
 	// MaxUpstreamInFlight is how many requests may be at the upstream at once (default 256). A request takes a
 	// place only after its body has been read, so a slow upload does not use one up.
 	MaxUpstreamInFlight int
+	// EvalBudget is how long each phase of rule evaluation may take for one request (default 2 seconds). A request
+	// that goes over it is refused with 503. Reading a slow client's body is not counted.
+	EvalBudget time.Duration
+	// MaxEvaluations is how many requests may be in rule evaluation at once (default: the number of CPUs). The rules
+	// cost several milliseconds per KiB of body, so without this a few large requests use every core. Others wait up
+	// to EvalBudget for a place and are then refused with 503. A negative value means no limit.
+	MaxEvaluations int
+	// MaxFormBody is the largest request body that is not a file upload (default 128 KiB). Evaluating a body costs
+	// time in proportion to its size, and the engine does not apply its own limit for bodies without files, so the
+	// proxy does. A multipart/form-data body may be as large as CRS.RequestBodyLimit.
+	MaxFormBody int64
 	// ResponseHeaderTimeout is how long the upstream has to start answering (default 30 seconds).
 	ResponseHeaderTimeout time.Duration
 	// OnMatch is called for every rule that matches. It must not block.
@@ -116,7 +130,21 @@ func New(cfg Config) (*Edge, error) {
 		slots = 256
 	}
 	e.slots = make(chan struct{}, slots)
-	e.handler = e.guard(txhttp.WrapHandler(waf, e.forward()))
+	budget := cfg.EvalBudget
+	if budget == 0 {
+		budget = 2 * time.Second
+	}
+	var evalSlots chan struct{}
+	switch n := cfg.MaxEvaluations; {
+	case n == 0:
+		evalSlots = make(chan struct{}, runtime.GOMAXPROCS(0))
+	case n > 0:
+		evalSlots = make(chan struct{}, n)
+	}
+	if e.cfg.MaxFormBody == 0 {
+		e.cfg.MaxFormBody = 128 << 10
+	}
+	e.handler = e.guard(txhttp.WrapHandler(withEvalBudget(waf, budget, evalSlots), e.forward()))
 	return e, nil
 }
 
@@ -172,9 +200,98 @@ func (e *Edge) guard(next http.Handler) http.Handler {
 		}
 		// Coraza splits RemoteAddr at its last colon, so an IPv6 address is given without brackets.
 		r.RemoteAddr = fmt.Sprintf("%s:%d", addr, port)
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), contextKey{}, addr)))
+
+		limit := e.bodyLimit(r)
+		if r.ContentLength > limit {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		capped := &capReader{left: limit}
+		if r.Body != nil && r.Body != http.NoBody {
+			capped.rc, r.Body = r.Body, capped
+		}
+		tw := &trackWriter{ResponseWriter: w}
+		next.ServeHTTP(tw, r.WithContext(context.WithValue(r.Context(), contextKey{}, addr)))
+		if !tw.wrote {
+			// The engine returns without answering when it could not process the request (the body ended early, a
+			// chunk was malformed, the body went over its limit). net/http would send an empty 200, which tells the
+			// visitor the request was handled when nothing was forwarded.
+			status, msg := http.StatusBadRequest, "the request could not be processed"
+			if capped.tooLarge {
+				status, msg = http.StatusRequestEntityTooLarge, "request body too large"
+			}
+			http.Error(w, msg, status)
+		}
 	})
 }
+
+// bodyLimit is how large this request's body may be: a file upload as much as the rule set's body limit allows, anything
+// else the (much smaller) form limit.
+func (e *Edge) bodyLimit(r *http.Request) int64 {
+	if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err == nil && mt == "multipart/form-data" {
+		return e.cfg.CRS.RequestBodyLimit
+	}
+	return min(e.cfg.MaxFormBody, e.cfg.CRS.RequestBodyLimit)
+}
+
+// capReader stops a body at a limit, so a chunked body (which has no length to check up front) is held to it as well.
+type capReader struct {
+	rc       io.ReadCloser
+	left     int64
+	tooLarge bool
+}
+
+var errTooLarge = errors.New("request body too large")
+
+func (c *capReader) Read(p []byte) (int, error) {
+	if c.tooLarge {
+		return 0, errTooLarge
+	}
+	if int64(len(p)) > c.left+1 {
+		p = p[:c.left+1]
+	}
+	n, err := c.rc.Read(p)
+	if int64(n) > c.left {
+		c.tooLarge = true
+		n = int(c.left)
+		c.left = 0
+		return n, errTooLarge
+	}
+	c.left -= int64(n)
+	return n, err
+}
+
+func (c *capReader) Close() error {
+	if c.rc == nil {
+		return nil
+	}
+	return c.rc.Close()
+}
+
+// trackWriter notes whether anything was written to the response.
+type trackWriter struct {
+	http.ResponseWriter
+	wrote bool
+}
+
+func (t *trackWriter) WriteHeader(code int) {
+	t.wrote = true
+	t.ResponseWriter.WriteHeader(code)
+}
+
+func (t *trackWriter) Write(b []byte) (int, error) {
+	t.wrote = true
+	return t.ResponseWriter.Write(b)
+}
+
+func (t *trackWriter) Flush() {
+	t.wrote = true
+	if f, ok := t.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (t *trackWriter) Unwrap() http.ResponseWriter { return t.ResponseWriter }
 
 // checkTarget requires the target to be a path and query that Go would write back exactly as received. The WAF
 // inspects the parsed form of the target and the application gets the raw one; this makes them the same.

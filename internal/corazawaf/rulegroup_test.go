@@ -4,9 +4,11 @@
 package corazawaf
 
 import (
+	"context"
 	"testing"
 
 	"github.com/corazawaf/coraza/v3/experimental/plugins/macro"
+	"github.com/corazawaf/coraza/v3/types"
 )
 
 func newTestRule(id int) *Rule {
@@ -95,5 +97,41 @@ func TestRuleGroupDeleteByID(t *testing.T) {
 	rg.DeleteByRange(2, 4)
 	if rg.Count() != 1 || rg.GetRules()[0].ID() != 5 {
 		t.Fatal("Unexpected remaining rule in the rulegroup")
+	}
+}
+
+// It is not an engine profile because the profile harness cannot give a transaction a context.
+func TestRuleEvaluationStopsWhenTheTransactionContextIsDone(t *testing.T) {
+	done, cancel := context.WithCancel(context.Background())
+	cancel()
+	tests := []struct {
+		name      string
+		ctx       context.Context
+		engine    types.RuleEngineStatus
+		wantBlock bool
+	}{
+		{"a live context blocks nothing", context.Background(), types.RuleEngineOn, false},
+		{"a done context refuses the transaction", done, types.RuleEngineOn, true},
+		{"a done context in detection-only mode refuses nothing", done, types.RuleEngineDetectionOnly, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			waf := NewWAF()
+			waf.RuleEngine = tt.engine
+			if err := waf.Rules.Add(newTestRule(1)); err != nil {
+				t.Fatal(err)
+			}
+			tx := waf.NewTransactionWithOptions(Options{Context: tt.ctx})
+			defer tx.Close()
+			tx.ProcessConnection("127.0.0.1", 1234, "127.0.0.1", 80)
+			tx.ProcessURI("/", "GET", "HTTP/1.1")
+			it := tx.ProcessRequestHeaders()
+			if tt.wantBlock != (it != nil) {
+				t.Fatalf("interruption %+v, want block=%v", it, tt.wantBlock)
+			}
+			if it != nil && it.Status != 503 {
+				t.Fatalf("status %d, want 503", it.Status)
+			}
+		})
 	}
 }

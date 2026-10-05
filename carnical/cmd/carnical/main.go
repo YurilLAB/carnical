@@ -48,6 +48,9 @@ func run() error {
 	originAllow := flag.String("origin-allow", "", "comma-separated addresses or ranges the upstream may be at even though they are not public (default: public addresses only)")
 	allowUpgrade := flag.Bool("allow-upgrade", false, "let WebSocket upgrades through, uninspected")
 	maxUpstream := flag.Int("max-upstream", 256, "requests allowed at the upstream at once")
+	evalBudget := flag.Duration("eval-budget", 2*time.Second, "most time each phase of rule evaluation may take for one request; a request over it is refused with 503")
+	maxEval := flag.Int("max-evaluations", 0, "requests in rule evaluation at once (0 = the number of CPUs, negative = no limit)")
+	maxForm := flag.Int64("max-form-body", 128<<10, "largest request body that is not a file upload, in bytes; uploads may be as large as -max-body")
 	details := flag.Bool("log-details", false, "log the client address, URI and matched data of each rule match (personal data)")
 	certFile := flag.String("tls-cert", "", "TLS certificate file")
 	keyFile := flag.String("tls-key", "", "TLS key file")
@@ -95,7 +98,7 @@ func run() error {
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	edge, err := proxy.New(proxy.Config{
 		Upstream: target, Origin: proxy.OriginPolicy{Allow: origin}, UpstreamHost: *upstreamHost, CRS: settings, TrustedProxies: trusted, AllowUpgrade: *allowUpgrade,
-		MaxUpstreamInFlight: *maxUpstream, LogDetails: *details,
+		MaxUpstreamInFlight: *maxUpstream, LogDetails: *details, EvalBudget: *evalBudget, MaxEvaluations: *maxEval, MaxFormBody: *maxForm,
 		OnMatch: func(m proxy.Match) {
 			attrs := []any{"rule", m.RuleID, "severity", m.Severity, "msg", m.Message, "tx", m.TransactionID, "disruptive", m.Disruptive}
 			if *details {

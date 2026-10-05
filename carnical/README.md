@@ -55,6 +55,9 @@ These come from bugs found in our own earlier gateway, where what the firewall i
 - A request takes an upstream place only after its body has been read, so a stalled upload cannot use them up.
 - The visitor's address comes from `X-Forwarded-For` only when the connection is from a trusted proxy, read from the right; a `/0` trusted range is refused.
 - A customer's origin is not trusted: connections to loopback, private, link-local and cloud-metadata addresses, and to this machine's own addresses, are refused at the moment they are made, on the address actually used (`-origin-allow` names ranges an operator permits).
+- Rule evaluation is bounded. The rules cost about 6 ms of CPU per KiB of request body (measured: 300 KiB of plain text takes 1.8 s on one core, almost all of it in Go's regular-expression matcher), so a few large requests could use every core. Each phase of evaluation has a budget (`-eval-budget`, 2 s; over it the request is refused with 503, measured at 48 ms against 1.8 s for a 5 ms budget), no more than `-max-evaluations` run at once, and a body that is not a file upload may be at most `-max-form-body` (128 KiB; the engine does not enforce its own no-files limit). Reading a slow client's body does not count against the budget.
+- When the engine returns without answering (a malformed chunk, a body that ended early), the visitor gets 400 or 413 and not the empty 200 that net/http would send.
+- Rules that run programs or change the process environment (`@inspectFile`, `exec`, `setenv`, `@rbl`, `@geoLookup`) are replaced with versions that refuse to compile (`crs/refuse.go`).
 - Rule matches are logged with the rule's id, severity and fixed message; the client address, URI and matched data (which hold what the visitor sent) only with `-log-details`.
 
 ## Known limits
@@ -76,7 +79,8 @@ throwaway keyring, not yours), extracts only expected regular files, and writes 
 
 ## Our changes to upstream files
 
-- `go.work`: one line adding `./carnical`.
+- `go.work`: one line adding `./carnical`, and a `toolchain` line so the workspace builds with a Go release that has the standard-library fixes (go1.26.4 had seven that affect a proxy: HTTP/2 cleartext check, quadratic URL path resolution, XML recursion; `govulncheck ./...` reports none on go1.26.6).
+- `internal/corazawaf/rulegroup.go`, `rule.go`, `transaction.go`: rule evaluation stops when the transaction's context is done, and a blocking engine refuses the transaction (503). Nothing in the engine looked at the context before, so a request that was expensive to inspect could not be cut short. The proxy gives each evaluation phase a budget through it (`proxy/deadline.go`). A test in `rulegroup_test.go` covers the three cases.
 - `internal/transformations/normalise_path.go`: `path.Clean` instead of `filepath.Clean`, so the transformation gives the same result on every OS.
 
 ## Licence

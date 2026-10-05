@@ -172,6 +172,12 @@ RulesLoop:
 		if tx.IsInterrupted() && phase != types.PhaseLogging {
 			break RulesLoop
 		}
+		// A transaction whose context is done has used the time it was given, or its client has gone. Evaluation
+		// stops here, and a blocking engine refuses the transaction instead of letting it through unchecked.
+		if phase != types.PhaseLogging && tx.contextDone() {
+			tx.interruptForContext()
+			break RulesLoop
+		}
 		// Rules with phase 0 will always run
 		if r.Phase_ != 0 && r.Phase_ != phase {
 			// Execute the rule in inferred phases too if multiphase evaluation is enabled
@@ -261,6 +267,10 @@ RulesLoop:
 		r.Evaluate(phase, tx, transformationCache)
 		tx.Capture = false // we reset captures
 		usedRules++
+	}
+	// The last rule of the phase may be the one that ran out the time.
+	if phase != types.PhaseLogging && !tx.IsInterrupted() && tx.contextDone() {
+		tx.interruptForContext()
 	}
 	tx.DebugLogger().Debug().
 		Int("phase", int(phase)).
