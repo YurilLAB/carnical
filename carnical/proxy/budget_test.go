@@ -28,7 +28,7 @@ func TestEvaluationBudgetRefusesARequestThatCostsTooMuch(t *testing.T) {
 	// How long the rules really take for this body when nothing limits them.
 	unlimited := start(t, func(c *Config) { big(c); c.EvalBudget = time.Hour })
 	began := time.Now()
-	status, _ := unlimited.raw(t, post(body))
+	status, _ := unlimited.rawFor(t, 2*time.Minute, post(body))
 	baseline := time.Since(began)
 	if status != http.StatusOK {
 		t.Fatalf("with no limit the request should be inspected and allowed: %d", status)
@@ -39,7 +39,7 @@ func TestEvaluationBudgetRefusesARequestThatCostsTooMuch(t *testing.T) {
 
 	limited := start(t, func(c *Config) { big(c); c.EvalBudget = 5 * time.Millisecond })
 	began = time.Now()
-	status, _ = limited.raw(t, post(body))
+	status, _ = limited.rawFor(t, 2*time.Minute, post(body))
 	took := time.Since(began)
 	if status != http.StatusServiceUnavailable {
 		t.Fatalf("a request that goes over its budget: %d, want 503", status)

@@ -14,7 +14,7 @@ import (
 func stripClaims(h http.Header) {
 	for name := range h {
 		key := strings.ReplaceAll(strings.ToLower(name), "_", "-")
-		remove := strings.HasPrefix(key, "x-forwarded-")
+		remove := strings.HasPrefix(key, "x-forwarded-") || isInternalHeader(key)
 		switch key {
 		case "forwarded", "forwarded-for", "x-forwarded", "x-real-ip", "x-client-ip", "client-ip", "true-client-ip",
 			"cf-connecting-ip", "cf-connecting-ipv6", "cf-pseudo-ipv4", "fastly-client-ip", "x-cluster-client-ip",

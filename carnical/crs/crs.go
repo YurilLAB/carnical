@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -88,9 +89,14 @@ type Settings struct {
 	// OutboundThreshold is the same for a response; it only matters with InspectResponses.
 	OutboundThreshold int
 	// RequestBodyLimit is the most bytes of request body that are inspected, and a larger body is refused.
-	// Default 1 MiB. Bodies are held in memory (nothing is spilled to disk), so memory use is up to this limit
+	// Default 1 MiB. Bodies are held in memory, so memory use is up to this limit
 	// times the number of requests in flight.
 	RequestBodyLimit int64
+	// UploadDir is where the engine writes the file parts of a multipart upload while it reads them. They are
+	// removed when the request ends. Empty means the system's temporary directory, which other programs share: give
+	// it a directory of its own (mode 0700, owned by the service user) so that an upload is never readable by, or
+	// confusable with, anything else.
+	UploadDir string
 	// InspectResponses also runs the CRS response rules (information leaks, web shells). It buffers responses
 	// up to 512 KiB of text, HTML and XML, and costs latency, so it is off by default.
 	InspectResponses bool
@@ -108,6 +114,10 @@ func DefaultSettings() Settings {
 }
 
 var methodShape = regexp.MustCompile(`^[A-Z][A-Z-]{0,19}$`)
+
+// pathShape keeps what is written into a SecLang directive from being able to end it or start another: no space,
+// quote, newline, semicolon or backtick.
+var pathShape = regexp.MustCompile(`^[A-Za-z0-9_./:\\-]+$`)
 
 // Validate reports the first setting that is not usable.
 func (s Settings) Validate() error {
@@ -127,6 +137,9 @@ func (s Settings) Validate() error {
 	}
 	if s.RequestBodyLimit < 1024 || s.RequestBodyLimit > 1<<30 {
 		return fmt.Errorf("request body limit must be 1 KiB to 1 GiB")
+	}
+	if s.UploadDir != "" && (!filepath.IsAbs(s.UploadDir) || !pathShape.MatchString(s.UploadDir)) {
+		return fmt.Errorf("the upload directory must be an absolute path made of letters, digits and . _ - / : and backslash only")
 	}
 	for _, m := range s.AllowedMethods {
 		if !methodShape.MatchString(m) {
@@ -160,7 +173,11 @@ func (s Settings) Directives() (string, error) {
 	line("SecRuleEngine %s", engine)
 	line("SecRequestBodyAccess On")
 	line("SecRequestBodyLimit %d", s.RequestBodyLimit)
-	line("SecRequestBodyInMemoryLimit %d", s.RequestBodyLimit) // never spill a body to disk
+	line("SecRequestBodyInMemoryLimit %d", s.RequestBodyLimit) // a body that is not a file upload stays in memory
+	if s.UploadDir != "" {
+		line("SecUploadDir %s", s.UploadDir)
+	}
+	line("SecUploadKeepFiles Off")
 	line("SecRequestBodyLimitAction Reject")
 	line("SecResponseBodyAccess %s", response)
 	line("SecAuditEngine Off") // matches are reported through the error callback, not an audit file

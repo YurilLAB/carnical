@@ -46,6 +46,19 @@ func run() error {
 	methods := flag.String("allowed-methods", "", "comma-separated HTTP methods to allow (default: the CRS list GET HEAD POST OPTIONS)")
 	trustedList := flag.String("trusted-proxies", "", "comma-separated addresses or ranges that may supply X-Forwarded-For")
 	originAllow := flag.String("origin-allow", "", "comma-separated addresses or ranges the upstream may be at even though they are not public (default: public addresses only)")
+	hosts := flag.String("hosts", "", "comma-separated names this site answers to; any other Host gets 421 (default: any)")
+	encodedSlash := flag.Bool("allow-encoded-slash", false, "allow %2f and %5c in request paths (refused by default)")
+	pathParams := flag.Bool("allow-path-params", false, "allow a semicolon in request paths, as Java's ;jsessionid= needs (refused by default)")
+	denyHeaders := flag.String("deny-headers", "", "comma-separated headers whose presence refuses the request, such as Next-Action on a site with no server actions")
+	wordpress := flag.Bool("wordpress", false, "protect a WordPress site: no scripts from upload and cache directories, xmlrpc.php off, login attempts limited")
+	xmlrpc := flag.Bool("allow-xmlrpc", false, "with -wordpress, leave xmlrpc.php reachable")
+	loginRate := flag.Int("login-per-minute", 10, "with -wordpress, POSTs to wp-login.php one address may make a minute")
+	scriptNames := flag.Bool("allow-script-names", false, "allow uploads named like scripts (shell.php, .htaccess); refused by default")
+	scriptContent := flag.Bool("allow-script-content", false, "allow uploads that contain a PHP, ASP or JSP opening tag; refused by default")
+	keepBanners := flag.Bool("keep-banners", false, "keep X-Powered-By and Server headers from the application")
+	keepCaching := flag.Bool("keep-caching", false, "do not add Cache-Control: private, no-store to responses that set a cookie or look like a stylesheet but are HTML")
+	maxConns := flag.Int("max-conns-per-ip", 128, "connections one address may hold open (negative = no limit)")
+	uploadDir := flag.String("upload-dir", "", "directory for the file parts of uploads while a request runs (default: the system temporary directory; give it a private one)")
 	allowUpgrade := flag.Bool("allow-upgrade", false, "let WebSocket upgrades through, uninspected")
 	maxUpstream := flag.Int("max-upstream", 256, "requests allowed at the upstream at once")
 	evalBudget := flag.Duration("eval-budget", 2*time.Second, "most time each phase of rule evaluation may take for one request; a request over it is refused with 503")
@@ -89,6 +102,7 @@ func run() error {
 	settings.InboundThreshold, settings.OutboundThreshold = *inbound, *outbound
 	settings.RequestBodyLimit = *maxBody
 	settings.InspectResponses = *responses
+	settings.UploadDir = *uploadDir
 	if *methods != "" {
 		for _, m := range strings.Split(*methods, ",") {
 			settings.AllowedMethods = append(settings.AllowedMethods, strings.ToUpper(strings.TrimSpace(m)))
@@ -99,6 +113,10 @@ func run() error {
 	edge, err := proxy.New(proxy.Config{
 		Upstream: target, Origin: proxy.OriginPolicy{Allow: origin}, UpstreamHost: *upstreamHost, CRS: settings, TrustedProxies: trusted, AllowUpgrade: *allowUpgrade,
 		MaxUpstreamInFlight: *maxUpstream, LogDetails: *details, EvalBudget: *evalBudget, MaxEvaluations: *maxEval, MaxFormBody: *maxForm,
+		AllowedHosts: splitList(*hosts), Paths: proxy.PathPolicy{AllowEncodedSlash: *encodedSlash, AllowPathParams: *pathParams},
+		DenyHeaders: splitList(*denyHeaders), WordPress: proxy.WordPressPolicy{Enabled: *wordpress, AllowXMLRPC: *xmlrpc, LoginPerMinute: *loginRate},
+		Uploads:   proxy.UploadPolicy{AllowExecutableNames: *scriptNames, AllowScriptContent: *scriptContent},
+		Responses: proxy.ResponsePolicy{KeepBanners: *keepBanners, KeepCaching: *keepCaching}, MaxConnsPerIP: *maxConns,
 		OnMatch: func(m proxy.Match) {
 			attrs := []any{"rule", m.RuleID, "severity", m.Severity, "msg", m.Message, "tx", m.TransactionID, "disruptive", m.Disruptive}
 			if *details {
@@ -139,4 +157,15 @@ func run() error {
 		defer cancel()
 		return server.Shutdown(shutdown)
 	}
+}
+
+// splitList reads a comma-separated list, ignoring empty items.
+func splitList(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }

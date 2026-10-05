@@ -8,6 +8,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -57,6 +58,24 @@ type Config struct {
 	// cost several milliseconds per KiB of body, so without this a few large requests use every core. Others wait up
 	// to EvalBudget for a place and are then refused with 503. A negative value means no limit.
 	MaxEvaluations int
+	// AllowedHosts, if set, are the only names this site answers to (any other Host gets 421). Compared in lower case,
+	// without a port or a trailing dot. Empty means any name.
+	AllowedHosts []string
+	// Paths says how plain a request path must be (the default is strict: no encoded slashes, dot segments,
+	// semicolons or unnecessary escapes).
+	Paths PathPolicy
+	// DenyHeaders are headers whose presence refuses the request, for a site that does not use the feature they
+	// belong to (Next-Action on a site with no server actions). Compared with - and _ alike.
+	DenyHeaders []string
+	// WordPress switches on the protections for a WordPress site.
+	WordPress WordPressPolicy
+	// Uploads says what is refused in a file upload.
+	Uploads UploadPolicy
+	// Responses says what the proxy changes in the application's responses.
+	Responses ResponsePolicy
+	// MaxConnsPerIP is how many connections one address may hold open (default 128; negative means no limit).
+	// Connections from TrustedProxies are not counted.
+	MaxConnsPerIP int
 	// MaxFormBody is the largest request body that is not a file upload (default 128 KiB). Evaluating a body costs
 	// time in proportion to its size, and the engine does not apply its own limit for bodies without files, so the
 	// proxy does. A multipart/form-data body may be as large as CRS.RequestBodyLimit.
@@ -87,6 +106,10 @@ type Edge struct {
 	waf     coraza.WAF
 	handler http.Handler
 	slots   chan struct{}
+	hosts   map[string]bool
+	deny    map[string]bool
+	limiter rateLimiter
+	conns   *connLimiter
 }
 
 type contextKey struct{}
@@ -119,7 +142,18 @@ func New(cfg Config) (*Edge, error) {
 	if err != nil {
 		return nil, err
 	}
-	e := &Edge{cfg: cfg}
+	e := &Edge{cfg: cfg, hosts: map[string]bool{}, deny: map[string]bool{}}
+	for _, h := range cfg.AllowedHosts {
+		if n := normHost(h); n != "" {
+			e.hosts[n] = true
+		}
+	}
+	if len(cfg.AllowedHosts) > 0 && len(e.hosts) == 0 {
+		return nil, errors.New("AllowedHosts has no usable name")
+	}
+	for _, h := range cfg.DenyHeaders {
+		e.deny[strings.ReplaceAll(strings.ToLower(strings.TrimSpace(h)), "_", "-")] = true
+	}
 	waf, err := coraza.NewWAF(coraza.NewWAFConfig().WithRootFS(crs.FS()).WithDirectives(directives).WithErrorCallback(e.onMatch))
 	if err != nil {
 		return nil, fmt.Errorf("loading the rule set: %w", err)
@@ -161,9 +195,25 @@ func (e *Edge) Close() error {
 
 // Server returns an http.Server with limits on how long a client may take over its headers and body.
 func (e *Edge) Server(addr string) *http.Server {
-	return &http.Server{Addr: addr, Handler: e, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second,
+	srv := &http.Server{Addr: addr, Handler: e, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second,
 		WriteTimeout: 120 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10,
-		DisableGeneralOptionsHandler: true} // so that "OPTIONS *" reaches the guard instead of being answered by net/http
+		DisableGeneralOptionsHandler: true, // so that "OPTIONS *" reaches the guard instead of being answered by net/http
+		// HTTP/2 over TLS. Few concurrent streams, small frames, and a write timeout so that a client that stops
+		// reading cannot hold a connection. (Cleartext HTTP/2 is left off: it is how request smuggling past a front
+		// end that does not speak it is done.)
+		HTTP2: &http.HTTP2Config{MaxConcurrentStreams: 100, MaxReadFrameSize: 16 << 10, WriteByteTimeout: 30 * time.Second}}
+	if limit := e.cfg.MaxConnsPerIP; limit >= 0 {
+		if limit == 0 {
+			limit = 128
+		}
+		e.conns = newConnLimiter(limit, e.cfg.TrustedProxies, func(ip netip.Addr) {
+			if e.cfg.OnMatch != nil {
+				e.cfg.OnMatch(Match{RuleID: idTooManyConns, Severity: "WARNING", Message: "an address holds too many connections open", Disruptive: true})
+			}
+		})
+		srv.ConnState = e.conns.state
+	}
+	return srv
 }
 
 func (e *Edge) onMatch(m types.MatchedRule) {
@@ -200,6 +250,9 @@ func (e *Edge) guard(next http.Handler) http.Handler {
 		}
 		// Coraza splits RemoteAddr at its last colon, so an IPv6 address is given without brackets.
 		r.RemoteAddr = fmt.Sprintf("%s:%d", addr, port)
+		if !e.checkRequest(w, r, addr) {
+			return
+		}
 
 		limit := e.bodyLimit(r)
 		if r.ContentLength > limit {
@@ -209,6 +262,25 @@ func (e *Edge) guard(next http.Handler) http.Handler {
 		capped := &capReader{left: limit}
 		if r.Body != nil && r.Body != http.NoBody {
 			capped.rc, r.Body = r.Body, capped
+		}
+		if mt, params, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err == nil && mt == "multipart/form-data" &&
+			r.Body != nil && r.Body != http.NoBody {
+			// Read the whole upload (it is already capped) so that what is in the files can be looked at, then hand
+			// the same bytes on.
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				status, msg := http.StatusBadRequest, "the request could not be read"
+				if capped.tooLarge {
+					status, msg = http.StatusRequestEntityTooLarge, "request body too large"
+				}
+				http.Error(w, msg, status)
+				return
+			}
+			if id, why := scanUpload(body, params["boundary"], e.cfg.Uploads); id != 0 {
+				e.refuse(w, r, http.StatusForbidden, id, why)
+				return
+			}
+			r.Body = io.NopCloser(bytes.NewReader(body))
 		}
 		tw := &trackWriter{ResponseWriter: w}
 		next.ServeHTTP(tw, r.WithContext(context.WithValue(r.Context(), contextKey{}, addr)))
@@ -334,7 +406,15 @@ func (e *Edge) forward() http.Handler {
 				out.Host = e.cfg.UpstreamHost
 			}
 			stripClaims(out.Header)
+			// The proxy has the whole body before it forwards anything, so the application has nothing to wait for.
+			out.Header.Del("Expect")
 			out.Trailer = nil
+			// A request with a body does not share its connection to the application with the next request. If the
+			// application stops reading a body early (it ignores it, or answers before it is all there), what is
+			// left on a reused connection is read as the start of the next request: the CL.0 / 0.CL desync attacks.
+			if in.ContentLength != 0 {
+				out.Close = true
+			}
 			addr, _ := in.Context().Value(contextKey{}).(netip.Addr)
 			proto := "http"
 			if in.TLS != nil {
@@ -349,6 +429,8 @@ func (e *Edge) forward() http.Handler {
 			if resp.StatusCode == http.StatusSwitchingProtocols && !e.cfg.AllowUpgrade {
 				return errors.New("upstream protocol upgrade is not supported")
 			}
+			path, _, _ := strings.Cut(resp.Request.URL.Opaque, "?")
+			e.cfg.Responses.harden(resp, path)
 			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
@@ -364,6 +446,20 @@ func (e *Edge) forward() http.Handler {
 			http.Error(w, "busy", http.StatusServiceUnavailable)
 			return
 		}
-		rp.ServeHTTP(w, r)
+		rp.ServeHTTP(noInterim{w}, r)
 	})
 }
+
+// noInterim drops interim (1xx) responses from the application. The engine takes the first status it is given for the
+// final one: after a 103 Early Hints it never sees the real response's headers, does not buffer its body, and the
+// response rules are never run on it. Nothing is lost by dropping them: they only let a browser start early.
+type noInterim struct{ http.ResponseWriter }
+
+func (n noInterim) WriteHeader(code int) {
+	if code >= 100 && code < 200 && code != http.StatusSwitchingProtocols {
+		return
+	}
+	n.ResponseWriter.WriteHeader(code)
+}
+
+func (n noInterim) Unwrap() http.ResponseWriter { return n.ResponseWriter }
