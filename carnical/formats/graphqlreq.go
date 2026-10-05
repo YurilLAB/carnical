@@ -1,0 +1,266 @@
+package formats
+
+import (
+	"strings"
+
+	"github.com/YurilLAB/coraza/carnical/inspect"
+)
+
+// How a GraphQL request arrives: a JSON object {"query", "variables", "operationName", "extensions"}, an array of those (a batch),
+// the whole body as application/graphql, a form with the same parameters, or a query string on GET. This file finds the query in
+// each and hands it to the parser in graphql.go, and checks the parts of the envelope that servers read differently.
+//
+// A request to a path that is a GraphQL endpoint must be a GraphQL request. A request anywhere else is only treated as GraphQL if its
+// query parses as a GraphQL document, so that a search form with a "query" field is left alone.
+
+// looksLikeGraphQL reports whether src starts the way an executable document does: a selection set, or an operation or fragment
+// keyword followed by something that can follow it.
+func looksLikeGraphQL(src []byte) bool {
+	l := gqlLexer{src: src}
+	if l.next() != dNone {
+		return false
+	}
+	if l.isPunct('{') {
+		return true
+	}
+	if l.kind != gName {
+		return false
+	}
+	switch string(src[l.start:l.end]) {
+	case "query", "mutation", "subscription", "fragment":
+	default:
+		return false
+	}
+	if l.next() != dNone {
+		return false
+	}
+	return l.kind == gName || l.isPunct('{') || l.isPunct('(') || l.isPunct('@')
+}
+
+// graphQLDocument checks one document. With mustParse a document that does not parse is refused; without it, a document that does
+// not look like GraphQL, or does not parse, is not GraphQL and is left alone. It returns whether the text was GraphQL and whether to
+// go on.
+func (in *Inspector) graphQLDocument(f *finder, src []byte, mustParse bool) (isGQL, cont bool) {
+	lim := &in.pol.GraphQL
+	if !mustParse && !looksLikeGraphQL(src) {
+		return false, true
+	}
+	if len(src) > lim.MaxQueryBytes {
+		return true, !f.hitLimit(rGQLLimit, dQueryTooLarge, lim.MaxQueryBytes, -1)
+	}
+	if r, off := sourceProblem(src); r != nil {
+		if mustParse {
+			return true, !f.hit(r, off, dInGraphQL)
+		}
+		return false, true
+	}
+	doc, fail := parseGraphQL(src, lim)
+	if fail != nil {
+		if fail.r == rGQLSyntax && !mustParse {
+			return false, true
+		}
+		return true, !f.hitLimit(fail.r, fail.d, fail.limit, fail.off)
+	}
+	if doc.intro && !lim.AllowIntrospection && f.hit(rGQLIntro, -1, dNone) {
+		return true, false
+	}
+	rep := analyze(doc)
+	switch {
+	case rep.cycle && f.hit(rGQLFrag, -1, dFragmentCycle):
+		return true, false
+	case rep.unknown && f.hit(rGQLFrag, -1, dUnknownFragment):
+		return true, false
+	case rep.duplicate && f.hit(rGQLFrag, -1, dDuplicateDefinition):
+		return true, false
+	}
+	for _, st := range rep.ops {
+		switch {
+		case st.depth > lim.MaxDepth && f.hitLimit(rGQLDepth, dNone, lim.MaxDepth, -1):
+			return true, false
+		case st.fields > lim.MaxFields && f.hitLimit(rGQLFields, dNone, lim.MaxFields, -1):
+			return true, false
+		case st.aliases > lim.MaxAliases && f.hitLimit(rGQLAliases, dNone, lim.MaxAliases, -1):
+			return true, false
+		case st.dirs > lim.MaxDirectives && f.hitLimit(rGQLDirs, dNone, lim.MaxDirectives, -1):
+			return true, false
+		}
+	}
+	return true, true
+}
+
+// checkGraphQLBody checks an application/graphql body: the whole body is the document.
+func (in *Inspector) checkGraphQLBody(f *finder, ci ctInfo, body []byte) bool {
+	if !in.utf8Charset(f, ci, body) {
+		return false
+	}
+	start, ok := f.textStart(body)
+	if !ok {
+		return false
+	}
+	_, cont := in.graphQLDocument(f, body[start:], true)
+	return cont
+}
+
+// checkJSONBody checks a JSON body, and as GraphQL if it is a GraphQL request.
+func (in *Inspector) checkJSONBody(f *finder, ci ctInfo, body []byte, gqlPath bool) bool {
+	if !in.utf8Charset(f, ci, body) {
+		return false
+	}
+	c := &jsonCapture{max: in.pol.GraphQL.MaxBatch + 1}
+	if !scanJSON(f, body, &in.pol.JSON, c, true) {
+		return false
+	}
+	return in.graphQLEnvelope(f, body, c, gqlPath)
+}
+
+// graphQLEnvelope checks what a JSON body says about GraphQL: one request or a batch.
+func (in *Inspector) graphQLEnvelope(f *finder, body []byte, c *jsonCapture, gqlPath bool) bool {
+	lim := &in.pol.GraphQL
+	switch c.kind {
+	case '{':
+		return in.graphQLRequest(f, body, c.members, gqlPath)
+	case '[':
+		if !gqlPath {
+			if len(c.elems) == 0 || c.elems[0].kind != '{' || !in.queryLooksGraphQL(body, c.elems[0].members) {
+				return true
+			}
+		}
+		if c.nelems > lim.MaxBatch && f.hitLimit(rGQLBatch, dNone, lim.MaxBatch, -1) {
+			return false
+		}
+		for i := range c.elems {
+			if c.elems[i].kind != '{' {
+				if f.hit(rGQLShape, -1, dBatchElement) {
+					return false
+				}
+				continue
+			}
+			if !in.graphQLRequest(f, body, c.elems[i].members, true) {
+				return false
+			}
+		}
+		return true
+	}
+	if gqlPath {
+		return !f.hit(rGQLShape, -1, dRootNotObject)
+	}
+	return true
+}
+
+// queryLooksGraphQL reports whether the "query" member of a request is a string that starts like a GraphQL document.
+func (in *Inspector) queryLooksGraphQL(body []byte, members []jsonMember) bool {
+	for i := range members {
+		if m := &members[i]; m.key == "query" && m.kind == '"' && m.end-m.start >= 2 {
+			return looksLikeGraphQL([]byte(decodeJSONString(body[m.start+1:m.end-1], true)))
+		}
+	}
+	return false
+}
+
+// graphQLRequest checks one request object: its query, and that variables, operationName and extensions have the types the
+// protocol gives them (a server that reads variables sent as a string, and one that does not, see different requests).
+func (in *Inspector) graphQLRequest(f *finder, body []byte, members []jsonMember, mustParse bool) bool {
+	var vars, opn, ext *jsonMember
+	isGQL := mustParse
+	for i := range members {
+		m := &members[i]
+		switch m.key {
+		case "query":
+			switch m.kind {
+			case 'n':
+			case '"':
+				src := []byte(decodeJSONString(body[m.start+1:m.end-1], true))
+				g, cont := in.graphQLDocument(f, src, mustParse)
+				if !cont {
+					return false
+				}
+				isGQL = isGQL || g
+			default:
+				if mustParse && f.hit(rGQLShape, m.start, dQueryNotString) {
+					return false
+				}
+			}
+		case "variables":
+			vars = m
+		case "operationName":
+			opn = m
+		case "extensions":
+			ext = m
+		}
+	}
+	if !isGQL {
+		return true
+	}
+	if vars != nil && vars.kind != '{' && vars.kind != 'n' && f.hit(rGQLShape, vars.start, dVariablesNotObject) {
+		return false
+	}
+	if opn != nil && opn.kind != '"' && opn.kind != 'n' && f.hit(rGQLShape, opn.start, dOperationNameNotString) {
+		return false
+	}
+	if ext != nil && ext.kind != '{' && ext.kind != 'n' && f.hit(rGQLShape, ext.start, dExtensionsNotObject) {
+		return false
+	}
+	return true
+}
+
+// graphQLParams checks a GraphQL request that arrived as parameters (a query string or a form): a query, and variables as a JSON
+// string. mustParse is true for a GraphQL endpoint.
+func (in *Inspector) graphQLParams(f *finder, g *gqlParams, mustParse bool) bool {
+	if g.dupQuery {
+		if mustParse && f.hit(rGQLShape, -1, dGivenTwice) {
+			return false
+		}
+		return true
+	}
+	if !g.hasQuery {
+		return true
+	}
+	isGQL, cont := in.graphQLDocument(f, []byte(g.query), mustParse)
+	if !cont {
+		return false
+	}
+	if !isGQL || !g.hasVars || g.variables == "" {
+		return true
+	}
+	c := &jsonCapture{max: 1}
+	if !scanJSON(f, []byte(g.variables), &in.pol.JSON, c, false) {
+		return false
+	}
+	if c.kind != '{' && c.kind != 'n' && f.hit(rGQLShape, -1, dVariablesNotObject) {
+		return false
+	}
+	return true
+}
+
+// queryCheck looks in the query string of a request for a GraphQL query: on a GET request anywhere (a GraphQL query on GET is
+// what the protocol allows, and a browser can send one), and on any method at a GraphQL endpoint. It returns false when the caller
+// should stop.
+func (in *Inspector) queryCheck(f *finder, r *inspect.Request, gqlPath bool) bool {
+	if r.Method != "GET" && !gqlPath {
+		return true
+	}
+	raw := r.RawQuery
+	// A parameter named query must contain "query" unless its name is percent-encoded.
+	if !strings.Contains(raw, "query") && strings.IndexByte(raw, '%') < 0 {
+		return true
+	}
+	var g gqlParams
+	for raw != "" {
+		var pair string
+		pair, raw, _ = strings.Cut(raw, "&")
+		name, value, _ := strings.Cut(pair, "=")
+		dn, ok := unescapeQuery(name)
+		if !ok || dn != "query" && dn != "variables" {
+			continue
+		}
+		dv, ok := unescapeQuery(value)
+		if !ok {
+			if gqlPath && f.hit(rFormEscape, -1, dInQueryString) {
+				return false
+			}
+			continue
+		}
+		g.set(dn, dv)
+	}
+	return in.graphQLParams(f, &g, gqlPath)
+}
