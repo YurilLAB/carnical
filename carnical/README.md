@@ -44,6 +44,8 @@ The executable enables request-format findings in monitor mode by default. Use `
 go run ./cmd/carnical -upstream http://127.0.0.1:8081 -mode block -formats-mode block -allow-request-encoding
 ```
 
+API rate limits are opt-in: `-api-per-minute 120` gives each verified client address one shared sliding-minute budget across `/api` and `/graphql`. `-api-rate-paths /api,/internal/orders` changes the path prefixes; `/` covers every route. Prefixes match whole path segments and conservatively include case, slash and matrix-parameter variants, while the forwarded target stays unchanged. Every method counts, before body reading and rule evaluation. An exceeded quota returns 429, rule 5000040, `Retry-After: 60` and `Cache-Control: no-store`; exhausted state returns 503 and rule 5000041. Login and API budgets are separate. State is local to one process, capped at 50,000 active identities and 200,000 admitted events across both protections, and expires after one minute. Restarting resets it; a deployment with several edges needs shared enforcement upstream for a fleet-wide quota. Configure `-trusted-proxies` only for the actual proxy peers; visitor-supplied identity headers cannot rotate a direct client's budget.
+
 Paranoia levels on the 715-request corpus from the earlier research (468 deliberately tricky benign requests, 247 attacks):
 
 | Level | Benign requests wrongly blocked | Attacks detected |

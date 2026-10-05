@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package proxy
 
 import (
@@ -8,45 +10,66 @@ import (
 	"time"
 )
 
-// rateLimiter counts events per key in a sliding window. It is memory-bounded: once it holds a lot of keys it forgets
-// the ones whose window has passed, and if that is not enough it refuses to remember more, which means an attacker
-// using very many addresses is let through rather than the process growing without limit.
+// rateLimiter counts admitted attempts in an exact sliding minute. A shared event ring bounds all timestamp storage,
+// including clients with large individual limits. Expiration visits each admitted event once, avoiding full-map scans.
+// Capacity exhaustion refuses admission; it never silently switches a protection off.
 type rateLimiter struct {
-	mu   sync.Mutex
-	hits map[string][]time.Time
+	mu         sync.Mutex
+	hits       map[string]int
+	events     []rateEvent
+	head, size int
+	now        func() time.Time // test clock; nil uses time.Now under the lock
 }
 
 const rateLimiterKeys = 50_000
+const rateLimiterEvents = 200_000
 
-func (l *rateLimiter) allow(key string, n int, window time.Duration) bool {
-	now := time.Now()
+type rateEvent struct {
+	key string
+	at  time.Time
+}
+
+type rateDecision uint8
+
+const (
+	rateAllowed rateDecision = iota
+	rateExceeded
+	rateFull
+)
+
+func (l *rateLimiter) allow(key string, n int) rateDecision {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	now := time.Now()
+	if l.now != nil {
+		now = l.now()
+	}
 	if l.hits == nil {
-		l.hits = map[string][]time.Time{}
+		l.hits = map[string]int{}
+		l.events = make([]rateEvent, rateLimiterEvents)
 	}
-	if len(l.hits) >= rateLimiterKeys {
-		for k, ts := range l.hits {
-			if len(ts) == 0 || now.Sub(ts[len(ts)-1]) > window {
-				delete(l.hits, k)
-			}
+	for l.size > 0 {
+		event := l.events[l.head]
+		if now.Sub(event.at) < time.Minute {
+			break
 		}
-		if _, known := l.hits[key]; !known && len(l.hits) >= rateLimiterKeys {
-			return true
+		if l.hits[event.key]--; l.hits[event.key] == 0 {
+			delete(l.hits, event.key)
 		}
+		l.events[l.head] = rateEvent{} // release the identity as well as the timestamp
+		l.head = (l.head + 1) % len(l.events)
+		l.size--
 	}
-	ts := l.hits[key][:0:0]
-	for _, t := range l.hits[key] {
-		if now.Sub(t) <= window {
-			ts = append(ts, t)
-		}
+	if n <= 0 || l.hits[key] >= n {
+		return rateExceeded
 	}
-	if len(ts) >= n {
-		l.hits[key] = ts
-		return false
+	if l.size >= len(l.events) || l.hits[key] == 0 && len(l.hits) >= rateLimiterKeys {
+		return rateFull
 	}
-	l.hits[key] = append(ts, now)
-	return true
+	l.events[(l.head+l.size)%len(l.events)] = rateEvent{key, now}
+	l.size++
+	l.hits[key]++
+	return rateAllowed
 }
 
 // connLimiter caps how many connections one address may hold open. A client that opens thousands of connections

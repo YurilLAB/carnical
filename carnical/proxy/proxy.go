@@ -73,6 +73,8 @@ type Config struct {
 	DenyHeaders []string
 	// WordPress switches on the protections for a WordPress site.
 	WordPress WordPressPolicy
+	// APIRate limits requests across configured API path prefixes, by the verified client address. Zero disables it.
+	APIRate APIRatePolicy
 	// Uploads says what is refused in a file upload.
 	Uploads UploadPolicy
 	// Responses says what the proxy changes in the application's responses.
@@ -151,6 +153,12 @@ func New(cfg Config) (*Edge, error) {
 			return nil, fmt.Errorf("trusted proxy %s: %w", p, err)
 		}
 	}
+	cfg.TrustedProxies = append([]netip.Prefix(nil), cfg.TrustedProxies...)
+	apiRate, err := cfg.APIRate.normalized()
+	if err != nil {
+		return nil, fmt.Errorf("API rate policy: %w", err)
+	}
+	cfg.APIRate = apiRate
 	directives, err := cfg.CRS.Directives()
 	if err != nil {
 		return nil, err

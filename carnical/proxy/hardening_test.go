@@ -1,12 +1,16 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package proxy
 
 import (
 	"bufio"
 	"crypto/tls"
 	"crypto/x509"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
@@ -418,6 +422,238 @@ func TestWordPressPolicy(t *testing.T) {
 		}
 		if status, _ := s.raw(t, get("/wp-login.php")); status != 200 {
 			t.Fatalf("reading the login page was limited: %d", status)
+		}
+	})
+}
+
+func TestAPIRatePolicy(t *testing.T) {
+	on := func(c *Config) { ruleSetOff(c); c.APIRate = APIRatePolicy{PerMinute: 2} }
+	tests := []struct {
+		name, target string
+		change       func(*Config)
+		want         []int
+	}{
+		{"API namespace", "/api/orders", on, []int{200, 200, 429}},
+		{"case variant shares quota", "/API/ORDERS", on, []int{200, 200, 429}},
+		{"namespace root", "/api", on, []int{200, 200, 429}},
+		{"GraphQL namespace", "/graphql", on, []int{200, 200, 429}},
+		{"query strings share quota", "/api?q=1", on, []int{200, 200, 429}},
+		{"unrelated route", "/page", on, []int{200, 200, 200}},
+		{"prefix requires segment boundary", "/apiary", on, []int{200, 200, 200}},
+		{"explicit custom prefix", "/internal/orders", func(c *Config) { on(c); c.APIRate.Paths = []string{"/internal"} }, []int{200, 200, 429}},
+		{"all routes", "/page", func(c *Config) { on(c); c.APIRate.Paths = []string{"/"} }, []int{200, 200, 429}},
+		{"encoded slash allowed by site", "/api%2forders", func(c *Config) { on(c); c.Paths.AllowEncodedSlash = true }, []int{200, 200, 429}},
+		{"encoded backslash allowed by site", "/api%5corders", func(c *Config) { on(c); c.Paths.AllowEncodedSlash = true }, []int{200, 200, 429}},
+		{"matrix parameters allowed by site", "/api;v=1/orders", func(c *Config) { on(c); c.Paths.AllowPathParams = true }, []int{200, 200, 429}},
+		{"nested matrix parameters", "/api;v=1/orders;v=2", func(c *Config) { on(c); c.Paths.AllowPathParams = true; c.APIRate.Paths = []string{"/api/orders"} }, []int{200, 200, 429}},
+		{"repeated slash normalization", "/api//orders", func(c *Config) { on(c); c.APIRate.Paths = []string{"/api/orders"} }, []int{200, 200, 429}},
+		{"disabled", "/api", ruleSetOff, []int{200, 200, 200}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := start(t, tc.change)
+			accepted := 0
+			for _, want := range tc.want {
+				status, reply := s.raw(t, get(tc.target))
+				if status != want {
+					t.Fatalf("status %d, want %d", status, want)
+				}
+				if want == 200 {
+					accepted++
+				} else if !strings.Contains(reply, "Retry-After: 60\r\n") || !strings.Contains(reply, "Cache-Control: no-store\r\n") {
+					t.Fatal("rate refusal lacks retry or cache policy")
+				}
+			}
+			if len(s.up.requests()) != accepted {
+				t.Fatal("rate refusal reached the origin")
+			}
+		})
+	}
+	t.Run("prefixes share one budget and cannot be changed by the caller", func(t *testing.T) {
+		prefixes := []string{"/api", "/graphql"}
+		s := start(t, func(c *Config) { on(c); c.APIRate.Paths = prefixes })
+		prefixes[0] = "/changed"
+		for i, target := range []string{"/api/orders", "/graphql", "/api/users"} {
+			want := 200
+			if i == 2 {
+				want = 429
+			}
+			if status, _ := s.raw(t, get(target)); status != want {
+				t.Fatalf("status %d, want %d", status, want)
+			}
+		}
+	})
+	t.Run("untrusted forwarding headers cannot rotate identity", func(t *testing.T) {
+		s := start(t, on)
+		for i := 1; i <= 3; i++ {
+			want := 200
+			if i == 3 {
+				want = 429
+			}
+			status, _ := s.raw(t, get("/api", fmt.Sprintf("X-Forwarded-For: 198.51.100.%d\r\nX_Forwarded_For: 203.0.113.%d\r\n", i, i)))
+			if status != want {
+				t.Fatalf("status %d, want %d", status, want)
+			}
+		}
+	})
+	t.Run("trusted chain selects the first untrusted hop", func(t *testing.T) {
+		s := start(t, func(c *Config) { on(c); c.TrustedProxies = []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")} })
+		for i := 1; i <= 3; i++ {
+			want := 200
+			if i == 3 {
+				want = 429
+			}
+			status, _ := s.raw(t, get("/api", fmt.Sprintf("X-Forwarded-For: 203.0.113.%d, 198.51.100.1\r\n", i)))
+			if status != want {
+				t.Fatalf("status %d, want %d", status, want)
+			}
+		}
+		if status, _ := s.raw(t, get("/api", "X-Forwarded-For: 198.51.100.2\r\n")); status != 200 {
+			t.Fatalf("a separate verified client got %d", status)
+		}
+	})
+	t.Run("state saturation refuses live traffic", func(t *testing.T) {
+		s := start(t, on)
+		for i := 0; i < rateLimiterKeys; i++ {
+			if s.edge.limiter.allow(fmt.Sprintf("api:test-%d", i), 2) != rateAllowed {
+				t.Fatal("capacity filled early")
+			}
+		}
+		if status, reply := s.raw(t, get("/api")); status != 503 || !strings.Contains(reply, "Retry-After: 60\r\n") {
+			t.Fatalf("capacity response %d", status)
+		}
+		if len(s.up.requests()) != 0 {
+			t.Fatal("untracked request reached origin")
+		}
+	})
+	t.Run("trusted ranges cannot be changed by the caller after construction", func(t *testing.T) {
+		trusted := []netip.Prefix{netip.MustParsePrefix("192.0.2.1/32")}
+		s := start(t, func(c *Config) { on(c); c.TrustedProxies = trusted })
+		trusted[0] = netip.MustParsePrefix("127.0.0.0/8")
+		for i := 1; i <= 3; i++ {
+			want := 200
+			if i == 3 {
+				want = 429
+			}
+			if status, _ := s.raw(t, get("/api", fmt.Sprintf("X-Forwarded-For: 198.51.100.%d\r\n", i))); status != want {
+				t.Fatalf("status %d, want %d", status, want)
+			}
+		}
+	})
+	t.Run("invalid configuration refuses construction", func(t *testing.T) {
+		for _, p := range []APIRatePolicy{{PerMinute: -1}, {PerMinute: 100001}, {PerMinute: 1, Paths: []string{"api"}}, {PerMinute: 1, Paths: []string{"/api/"}}, {PerMinute: 1, Paths: []string{"/api?x=1"}}, {PerMinute: 1, Paths: []string{"/api%2forders"}}, {PerMinute: 1, Paths: []string{"/api/../"}}, {PerMinute: 1, Paths: []string{"/api;v=1"}}, {PerMinute: 1, Paths: make([]string, 101)}} {
+			if _, err := p.normalized(); err == nil {
+				t.Fatalf("accepted %+v", p)
+			}
+		}
+	})
+}
+
+func TestSlidingRateBudget(t *testing.T) {
+	t.Run("exact boundary and denied attempts do not extend it", func(t *testing.T) {
+		now := time.Now()
+		l := rateLimiter{now: func() time.Time { return now }}
+		for i := 0; i < 2; i++ {
+			if l.allow("a", 2) != rateAllowed {
+				t.Fatal("early refusal")
+			}
+		}
+		now = now.Add(time.Minute - time.Nanosecond)
+		if l.allow("a", 2) != rateExceeded {
+			t.Fatal("expired early")
+		}
+		now = now.Add(time.Nanosecond)
+		if l.allow("a", 2) != rateAllowed {
+			t.Fatal("did not expire at boundary")
+		}
+	})
+	t.Run("concurrent admission does not overshoot", func(t *testing.T) {
+		var l rateLimiter
+		var accepted atomic.Int64
+		var group sync.WaitGroup
+		for i := 0; i < 100; i++ {
+			group.Add(1)
+			go func() {
+				defer group.Done()
+				if l.allow("same", 7) == rateAllowed {
+					accepted.Add(1)
+				}
+			}()
+		}
+		group.Wait()
+		if accepted.Load() != 7 {
+			t.Fatalf("accepted %d", accepted.Load())
+		}
+	})
+	t.Run("event storage is bounded even for one busy client", func(t *testing.T) {
+		now := time.Now()
+		l := rateLimiter{now: func() time.Time { return now }}
+		for i := 0; i < rateLimiterEvents; i++ {
+			if l.allow("same", rateLimiterEvents+1) != rateAllowed {
+				t.Fatal("early capacity refusal")
+			}
+		}
+		if l.allow("same", rateLimiterEvents+1) != rateFull {
+			t.Fatal("event cap bypassed")
+		}
+		if l.size != rateLimiterEvents || len(l.events) != rateLimiterEvents {
+			t.Fatal("event storage grew")
+		}
+		now = now.Add(time.Minute)
+		if l.allow("new", 1) != rateAllowed || len(l.hits) != 1 || l.size != 1 {
+			t.Fatal("expired capacity not reclaimed")
+		}
+	})
+}
+
+func FuzzSlidingRateBudget(f *testing.F) {
+	f.Add([]byte{0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff, 0}, uint8(3))
+	f.Add([]byte(strings.Repeat("0123456", 20)), uint8(7))
+	f.Fuzz(func(t *testing.T, commands []byte, quota uint8) {
+		if len(commands) > 4096 {
+			return
+		}
+		now := time.Now()
+		base := now
+		// A small ring exercises wraparound and capacity under the same algorithm used in production.
+		l := rateLimiter{hits: map[string]int{}, events: make([]rateEvent, 16), now: func() time.Time { return now }}
+		type event struct {
+			key     string
+			seconds int64
+		}
+		var admitted []event
+		var elapsed int64
+		n := int(quota%8) + 1
+		for _, cmd := range commands {
+			elapsed += int64(cmd >> 4)
+			now = base.Add(time.Duration(elapsed) * time.Second)
+			key := string(rune('a' + cmd%7))
+			var active []event
+			hits := 0
+			for _, event := range admitted {
+				if elapsed-event.seconds < 60 {
+					active = append(active, event)
+					if event.key == key {
+						hits++
+					}
+				}
+			}
+			admitted = active
+			want := rateAllowed
+			if hits >= n {
+				want = rateExceeded
+			} else if len(admitted) >= 16 {
+				want = rateFull
+			}
+			if got := l.allow(key, n); got != want {
+				t.Fatalf("decision %d, want %d", got, want)
+			}
+			if want == rateAllowed {
+				admitted = append(admitted, event{key, elapsed})
+			}
+			if l.size != len(admitted) || l.size > len(l.events) {
+				t.Fatal("event accounting differs from reference")
+			}
 		}
 	})
 }

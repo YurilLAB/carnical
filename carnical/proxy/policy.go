@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package proxy
 
 import (
@@ -5,9 +7,9 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"path"
 	"regexp"
 	"strings"
-	"time"
 )
 
 // The checks in this file and the next ones do not depend on the rule set. They hold with the rule set off or in
@@ -28,6 +30,8 @@ const (
 	idXMLRPC          = 5000021
 	idRateLimited     = 5000022
 	idTooManyConns    = 5000030
+	idAPIRateLimited  = 5000040
+	idRateStateFull   = 5000041
 )
 
 // PathPolicy says how plain the request path must be. The zero value is the strict default.
@@ -180,7 +184,71 @@ func (e *Edge) checkRequest(w http.ResponseWriter, r *http.Request, client netip
 	if e.cfg.WordPress.Enabled && !e.checkWordPress(w, r, rawPath, client) {
 		return false
 	}
+	if e.cfg.APIRate.PerMinute > 0 && e.cfg.APIRate.matches(r.URL.Path) {
+		return e.checkRate(w, r, "api:"+client.String(), e.cfg.APIRate.PerMinute, idAPIRateLimited, "too many API requests from one address")
+	}
 	return true
+}
+
+// APIRatePolicy gives one client a shared sliding-minute budget across all matching prefixes and HTTP methods.
+// Paths are plain paths compared without ASCII case distinctions: /api matches /api and /api/... but not /apiary.
+// Empty uses /api and /graphql. Case, slash and matrix normalization are conservative quota matching, not route rewriting.
+// PerMinute is 1..100000 when enabled; zero disables the policy. State is local to one Edge and is lost on restart.
+type APIRatePolicy struct {
+	PerMinute int
+	Paths     []string
+}
+
+func (p APIRatePolicy) normalized() (APIRatePolicy, error) {
+	if p.PerMinute < 0 || p.PerMinute > 100000 {
+		return p, errors.New("PerMinute must be zero (disabled) or between 1 and 100000")
+	}
+	if len(p.Paths) == 0 {
+		p.Paths = []string{"/api", "/graphql"}
+	} else {
+		p.Paths = append([]string(nil), p.Paths...)
+	}
+	if len(p.Paths) > 100 {
+		return p, errors.New("at most 100 path prefixes are allowed")
+	}
+	for i, prefix := range p.Paths {
+		if prefix == "" || len(prefix) > 2048 || prefix[0] != '/' || path.Clean(prefix) != prefix || strings.ContainsAny(prefix, "%?;#\\") || (PathPolicy{}).check(prefix) != nil {
+			return p, errors.New("prefixes must be plain absolute paths without query, encoding, parameters or trailing slashes")
+		}
+		p.Paths[i] = strings.ToLower(prefix)
+	}
+	return p, nil
+}
+
+func (p APIRatePolicy) matches(decoded string) bool {
+	// Account conservatively for application route normalization when a site permits encoded slashes or matrix parameters.
+	parts := strings.Split(strings.ReplaceAll(decoded, "\\", "/"), "/")
+	for i := range parts {
+		parts[i], _, _ = strings.Cut(parts[i], ";")
+	}
+	decoded = strings.ToLower(path.Clean(strings.Join(parts, "/")))
+	for _, prefix := range p.Paths {
+		if prefix == "/" || decoded == prefix || strings.HasPrefix(decoded, prefix+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func (e *Edge) checkRate(w http.ResponseWriter, r *http.Request, key string, n, rule int, message string) bool {
+	switch e.limiter.allow(key, n) {
+	case rateAllowed:
+		return true
+	case rateFull:
+		w.Header().Set("Retry-After", "60")
+		w.Header().Set("Cache-Control", "no-store")
+		e.refuse(w, r, http.StatusServiceUnavailable, idRateStateFull, "rate-limit state capacity exhausted")
+	default:
+		w.Header().Set("Retry-After", "60")
+		w.Header().Set("Cache-Control", "no-store")
+		e.refuse(w, r, http.StatusTooManyRequests, rule, message)
+	}
+	return false
 }
 
 // WordPressPolicy is the protection for a WordPress site. WordPress and its plugins are most of what is hacked:
@@ -216,11 +284,7 @@ func (e *Edge) checkWordPress(w http.ResponseWriter, r *http.Request, rawPath st
 		if perMinute <= 0 {
 			perMinute = 10
 		}
-		if !e.limiter.allow(client.String(), perMinute, time.Minute) {
-			w.Header().Set("Retry-After", "60")
-			e.refuse(w, r, http.StatusTooManyRequests, idRateLimited, "too many login attempts from one address")
-			return false
-		}
+		return e.checkRate(w, r, "login:"+client.String(), perMinute, idRateLimited, "too many login attempts from one address")
 	}
 	return true
 }

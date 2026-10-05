@@ -62,6 +62,8 @@ func run() error {
 	wordpress := flag.Bool("wordpress", false, "protect a WordPress site: no scripts from upload and cache directories, xmlrpc.php off, login attempts limited")
 	xmlrpc := flag.Bool("allow-xmlrpc", false, "with -wordpress, leave xmlrpc.php reachable")
 	loginRate := flag.Int("login-per-minute", 10, "with -wordpress, POSTs to wp-login.php one address may make a minute")
+	apiRate := flag.Int("api-per-minute", 0, "shared API requests per verified client address in a sliding minute (0 = disabled; maximum 100000)")
+	apiPaths := flag.String("api-rate-paths", "/api,/graphql", "plain path prefixes sharing -api-per-minute, matched by path segment; / covers every route")
 	scriptNames := flag.Bool("allow-script-names", false, "allow uploads named like scripts (shell.php, .htaccess); refused by default")
 	scriptContent := flag.Bool("allow-script-content", false, "allow uploads that contain a PHP, ASP or JSP opening tag; refused by default")
 	keepBanners := flag.Bool("keep-banners", false, "keep X-Powered-By and Server headers from the application")
@@ -137,6 +139,7 @@ func run() error {
 		MaxUpstreamInFlight: *maxUpstream, LogDetails: *details, EvalBudget: *evalBudget, MaxEvaluations: *maxEval, MaxFormBody: *maxForm,
 		AllowedHosts: splitList(*hosts), Paths: proxy.PathPolicy{AllowEncodedSlash: *encodedSlash, AllowPathParams: *pathParams},
 		DenyHeaders: splitList(*denyHeaders), WordPress: proxy.WordPressPolicy{Enabled: *wordpress, AllowXMLRPC: *xmlrpc, LoginPerMinute: *loginRate},
+		APIRate:   proxy.APIRatePolicy{PerMinute: *apiRate, Paths: splitList(*apiPaths)},
 		Uploads:   proxy.UploadPolicy{AllowExecutableNames: *scriptNames, AllowScriptContent: *scriptContent},
 		Responses: proxy.ResponsePolicy{KeepBanners: *keepBanners, KeepCaching: *keepCaching}, MaxConnsPerIP: *maxConns,
 		Inspectors: inspectors, AllowRequestEncoding: *requestEncoding,

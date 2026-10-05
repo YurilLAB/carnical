@@ -40,6 +40,16 @@ New regression cases first reproduced successful startup with a `null` policy/li
 
 `FuzzParsePolicy` passes 16,770 executions in a 30-second run. It checks accepted policies are usable and stable under canonical serialization, and that appending contradictory duplicate settings forces refusal. Unit cases cover escaped duplicate names, nested duplicates, exact case, empty collections, null entries, raw invalid UTF-8, unexpected extreme nesting and both sides of the shared 1 MiB cap. Review confirmed recursion follows the finite policy schema, configuration reflection stays outside the request path, and startup continues to fail closed. Compatibility is intentionally stricter for ambiguous and nullable configuration files.
 
+## API volume and bounded rate state (2026-10-05)
+
+The compiled executable suite has 44 live cases and passes. Added cases demonstrate a shared API route budget with CRS/formats off, custom and segment-bounded prefixes, resistance to spoofed forwarding headers, separate verified-client quotas through an explicitly trusted proxy, separate API/login quotas and startup refusal for invalid limits/prefixes. Refusals produce no origin requests and 429 replies include `Retry-After: 60` and `Cache-Control: no-store`.
+
+Live proxy cases additionally exercise encoded slash/backslash, repeated slash, matrix parameters, uppercase routes, a caller changing its original prefix/trusted-range slices, and full identity state. Full state produces 503 without an origin request. Deterministic clock tests check exact minute expiry and rejection not extending the window; 100 concurrent calls admit exactly the seven permitted attempts. Storage is capped at 50,000 active client/budget pairs and 200,000 events, and expired capacity is reclaimed. Clock reads and all counters share one lock.
+
+Normal and race runs of `./proxy ./cmd/carnical` pass, with final focused normal/race tests for the path and trust-copy safeguards. Vet passes, the CLI vulnerability scan reports no vulnerabilities, and the Linux/amd64 cross-build passes. `FuzzSlidingRateBudget` passes 177,583 executions in 30 seconds against a simple independently scanned event-history reference, covering expiry, saturation and ring wraparound.
+
+These quotas apply to one process, use IP identity, and reset on restart. They do not provide distributed or authenticated-principal rate accounting. Capacity exhaustion is an explicit refusal, trading admission availability for bounded enforcement.
+
 ## Environment and baseline limitations
 
 `go test ./...` in the upstream module fails on existing Windows filesystem expectations and open audit/debug log handles (auditlog, operators, seclang, testing). The changed code is confined to Carnical's separate module; no upstream engine files are changed.
@@ -48,6 +58,6 @@ The broader Carnical race run encounters Windows audit-file recovery/truncation 
 
 That broad run also times out after ten minutes in the untracked virtual-patch brute-force comparison test (`TestIndexedMatchEqualsBruteForce`). It is not represented as a passing full-module race run.
 
-`go run mage.go adr` rejects 60 pre-existing ADRs as lacking the exact technical-discussion section marker. The new ADRs 0061–0064 produce no diagnostics. The Windows checkout has CRLF in older documents, which the validator's exact marker comparison does not normalize. This check is not claimed to pass globally.
+`go run mage.go adr` rejects 60 pre-existing ADRs as lacking the exact technical-discussion section marker. The new ADRs 0061–0065 produce no diagnostics. The Windows checkout has CRLF in older documents, which the validator's exact marker comparison does not normalize. This check is not claimed to pass globally.
 
 WSL's Ubuntu environment first reported a read-only home when creating the Go cache and subsequently failed to start. Linux confinement and the full Linux CI matrix have not been verified by these runs.

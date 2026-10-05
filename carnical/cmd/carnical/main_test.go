@@ -7,6 +7,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/base64"
+	"fmt"
 	"io"
 	"math/rand"
 	"net"
@@ -79,6 +80,10 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 	}
 	tests := []struct {
 		repeat                                                                      int
+		apiRate                                                                     int
+		apiPaths                                                                    string
+		statuses                                                                    []int
+		targets, forwarding, extraArgs                                              []string
 		name, mode, policy, method, target, ct, body, encoding, logRule, originBody string
 		allowEncoding, fails, policyDir                                             bool
 		status                                                                      int
@@ -104,6 +109,16 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 		{name: "compressed ordinary upload", mode: "block", ct: "multipart/form-data; boundary=B", body: compress(upload("photo.txt", "ordinary text")), originBody: upload("photo.txt", "ordinary text"), encoding: "gzip", allowEncoding: true, status: 200},
 		{name: "gzip opt-in required", mode: "block", ct: "application/json", body: packed.String(), encoding: "gzip", status: 415},
 		{name: "corrupt gzip refused", mode: "block", ct: "application/json", body: "bad-gzip", encoding: "gzip", allowEncoding: true, status: 400},
+		{name: "API quota holds with CRS and formats off", mode: "off", apiRate: 2, target: "/api/orders", statuses: []int{200, 200, 429}, logRule: `"rule":5000040`},
+		{name: "API prefixes share a budget", mode: "off", apiRate: 2, targets: []string{"/api/orders", "/graphql", "/api/users"}, statuses: []int{200, 200, 429}},
+		{name: "API forwarding spoof cannot rotate identity", mode: "off", apiRate: 1, target: "/api", forwarding: []string{"198.51.100.1", "198.51.100.2"}, statuses: []int{200, 429}},
+		{name: "trusted clients have separate quotas", mode: "off", apiRate: 1, target: "/api", extraArgs: []string{"-trusted-proxies", "127.0.0.0/8"}, forwarding: []string{"198.51.100.1", "198.51.100.1", "198.51.100.2"}, statuses: []int{200, 429, 200}},
+		{name: "custom API prefix", mode: "off", apiRate: 1, apiPaths: "/internal", target: "/internal/orders", statuses: []int{200, 429}},
+		{name: "API prefix requires a segment boundary", mode: "off", apiRate: 1, target: "/apiary", statuses: []int{200, 200}},
+		{name: "API and login budgets are separate", mode: "off", apiRate: 1, extraArgs: []string{"-wordpress", "-login-per-minute", "1"}, targets: []string{"/wp-login.php", "/api", "/wp-login.php", "/api"}, statuses: []int{200, 200, 429, 429}},
+		{name: "negative API limit refuses startup", mode: "off", apiRate: -1, fails: true},
+		{name: "excess API limit refuses startup", mode: "off", apiRate: 100001, fails: true},
+		{name: "invalid API prefix refuses startup", mode: "off", apiRate: 1, apiPaths: "/api?x=1", fails: true},
 		{name: "unknown mode refuses startup", mode: "enforce", fails: true},
 		{name: "off with encoding refuses startup", mode: "off", allowEncoding: true, fails: true},
 		{name: "off with policy refuses startup", mode: "off", policy: `{}`, fails: true},
@@ -132,6 +147,13 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 				t.Fatal(err)
 			}
 			args := []string{"-listen", addr, "-upstream", app.URL, "-origin-allow", "127.0.0.0/8", "-mode", "off"}
+			args = append(args, tc.extraArgs...)
+			if tc.apiRate != 0 {
+				args = append(args, "-api-per-minute", fmt.Sprint(tc.apiRate))
+			}
+			if tc.apiPaths != "" {
+				args = append(args, "-api-rate-paths", tc.apiPaths)
+			}
 			if tc.mode != "" {
 				args = append(args, "-formats-mode", tc.mode)
 			}
@@ -199,12 +221,22 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 			if target == "" {
 				target = "/api/save"
 			}
-			for range max(tc.repeat, 1) {
-				req, err := http.NewRequest(method, url+target, strings.NewReader(tc.body))
+			for i := range max(tc.repeat, len(tc.statuses), 1) {
+				want, requestTarget := tc.status, target
+				if len(tc.statuses) > 0 {
+					want = tc.statuses[i]
+				}
+				if len(tc.targets) > 0 {
+					requestTarget = tc.targets[i]
+				}
+				req, err := http.NewRequest(method, url+requestTarget, strings.NewReader(tc.body))
 				if err != nil {
 					t.Fatal(err)
 				}
 				req.Header.Set("Content-Type", tc.ct)
+				if len(tc.forwarding) > 0 {
+					req.Header.Set("X-Forwarded-For", tc.forwarding[i])
+				}
 				if tc.encoding != "" {
 					req.Header.Set("Content-Encoding", tc.encoding)
 				}
@@ -213,12 +245,15 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 					t.Fatal(err)
 				}
 				resp.Body.Close()
-				if resp.StatusCode != tc.status {
-					t.Fatalf("status %d, want %d", resp.StatusCode, tc.status)
+				if resp.StatusCode != want {
+					t.Fatalf("status %d, want %d", resp.StatusCode, want)
+				}
+				if want == 429 && (resp.Header.Get("Retry-After") != "60" || resp.Header.Get("Cache-Control") != "no-store") {
+					t.Fatal("rate refusal lacks retry or cache policy")
 				}
 				select {
 				case got := <-requests:
-					if tc.status != 200 {
+					if want != 200 {
 						t.Fatal("refused request reached the origin")
 					}
 					want := tc.body
@@ -229,7 +264,7 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 						t.Fatalf("origin received %d body bytes, encoding %q, length %d", len(got.body), got.encoding, got.length)
 					}
 				default:
-					if tc.status == 200 {
+					if want == 200 {
 						t.Fatal("accepted request did not reach the origin")
 					}
 				}
