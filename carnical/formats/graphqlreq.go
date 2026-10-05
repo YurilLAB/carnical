@@ -1,4 +1,3 @@
-// Copyright 2026 Google LLC
 // SPDX-License-Identifier: Apache-2.0
 
 package formats
@@ -88,11 +87,20 @@ func (in *Inspector) graphQLDocument(f *finder, src []byte, mustParse bool, oper
 			return true, false
 		}
 	}
-	op, valid := selectedOperation(doc, operationName)
+	op, index, valid := selectedOperation(doc, operationName)
 	if !valid {
 		return true, !f.hit(rGQLShape, -1, dOperationSelection)
 	}
 	if f.get && op.opType == "mutation" && f.hit(rGQLGetMutation, -1, dNone) {
+		return true, false
+	}
+	f.graphql.add(rep.ops[index])
+	switch {
+	case f.graphql.fields > lim.MaxRequestFields && f.hitLimit(rGQLRequestFields, dNone, lim.MaxRequestFields, -1):
+		return true, false
+	case f.graphql.aliases > lim.MaxRequestAliases && f.hitLimit(rGQLRequestAliases, dNone, lim.MaxRequestAliases, -1):
+		return true, false
+	case f.graphql.dirs > lim.MaxRequestDirectives && f.hitLimit(rGQLRequestDirs, dNone, lim.MaxRequestDirectives, -1):
 		return true, false
 	}
 	return true, true
@@ -100,8 +108,9 @@ func (in *Inspector) graphQLDocument(f *finder, src []byte, mustParse bool, oper
 
 // selectedOperation follows GraphQL's operation selection rules without executing the document.
 // Duplicate names and an anonymous operation beside another operation are invalid regardless of the selected name.
-func selectedOperation(doc *gqlDoc, name string) (*gqlDef, bool) {
+func selectedOperation(doc *gqlDoc, name string) (*gqlDef, int, bool) {
 	var selected *gqlDef
+	index, selectedIndex := 0, -1
 	names := make(map[string]bool, doc.ops)
 	for i := range doc.defs {
 		op := &doc.defs[i]
@@ -109,14 +118,16 @@ func selectedOperation(doc *gqlDoc, name string) (*gqlDef, bool) {
 			continue
 		}
 		if names[op.name] || op.name == "" && doc.ops != 1 {
-			return nil, false
+			return nil, -1, false
 		}
 		names[op.name] = true
 		if name == op.name || name == "" && doc.ops == 1 {
 			selected = op
+			selectedIndex = index
 		}
+		index++
 	}
-	return selected, selected != nil
+	return selected, selectedIndex, selected != nil
 }
 
 // checkGraphQLBody checks an application/graphql body: the whole body is the document.

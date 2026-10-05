@@ -1,4 +1,3 @@
-// Copyright 2026 Google LLC
 // SPDX-License-Identifier: Apache-2.0
 
 package formats
@@ -12,18 +11,21 @@ import (
 )
 
 const (
-	idGQLSyntax      = 5002300
-	idGQLDepth       = 5002301
-	idGQLFields      = 5002302
-	idGQLAliases     = 5002303
-	idGQLDirs        = 5002304
-	idGQLBatch       = 5002305
-	idGQLIntro       = 5002306
-	idGQLFrag        = 5002307
-	idGQLShape       = 5002308
-	idGQLLimit       = 5002309
-	idGQLGetMutation = 5002310
-	appJSON          = "application/json"
+	idGQLSyntax         = 5002300
+	idGQLDepth          = 5002301
+	idGQLFields         = 5002302
+	idGQLAliases        = 5002303
+	idGQLDirs           = 5002304
+	idGQLBatch          = 5002305
+	idGQLIntro          = 5002306
+	idGQLFrag           = 5002307
+	idGQLShape          = 5002308
+	idGQLLimit          = 5002309
+	idGQLGetMutation    = 5002310
+	idGQLRequestFields  = 5002311
+	idGQLRequestAliases = 5002312
+	idGQLRequestDirs    = 5002313
+	appJSON             = "application/json"
 )
 
 // jq returns query as a JSON string.
@@ -130,6 +132,23 @@ var graphqlRows = register("graphql", []row{
 	{name: "a graphql looking query on another path is checked and passes", path: "/api/gql", ct: appJSON, body: gqlReq(`{ a { b } }`)},
 
 	// Limits.
+	{name: "request total field boundary", path: "/graphql", ct: appJSON, body: batch(2, fieldsQuery(500))},
+	{name: "batch multiplies field work", path: "/graphql", ct: appJSON, body: batch(3, fieldsQuery(334)), want: idGQLRequestFields},
+	{name: "request total alias boundary", path: "/graphql", ct: appJSON, body: batch(2, aliasesQuery(20))},
+	{name: "batch multiplies alias work", path: "/graphql", ct: appJSON, body: batch(3, aliasesQuery(14)), want: idGQLRequestAliases},
+	{name: "request total directive boundary", path: "/graphql", ct: appJSON, body: batch(2, "{ a "+strings.Repeat("@skip(if: false) ", 50)+"}")},
+	{name: "batch multiplies directive work", path: "/graphql", ct: appJSON, body: batch(3, "{ a "+strings.Repeat("@skip(if: false) ", 34)+"}"), want: idGQLRequestDirs},
+	{name: "total fields after fragment expansion", path: "/graphql", ct: appJSON, body: batch(3, `{ ...F ...F } fragment F on T { a b }`), want: idGQLRequestFields,
+		tweak: func(p *Policy) { p.GraphQL.MaxRequestFields = 10 }},
+	{name: "only selected operations count towards total", path: "/graphql", ct: appJSON,
+		body:  `[{"query":"query Heavy { a b c } fragment F on T { x } query Light { ...F }","operationName":"Light"},{"query":"query Light { a } query Heavy { b c d }","operationName":"Light"}]`,
+		tweak: func(p *Policy) { p.GraphQL.MaxRequestFields = 2 }},
+	{name: "selected operation after an interleaved fragment", path: "/graphql", ct: appJSON,
+		body: `[{"query":"query Light { a } fragment F on T { b c } query Heavy { ...F }","operationName":"Heavy"},{"query":"{a b}"}]`, want: idGQLRequestFields,
+		tweak: func(p *Policy) { p.GraphQL.MaxRequestFields = 3 }},
+	{name: "total limit raised for legitimate batches", path: "/graphql", ct: appJSON, body: batch(3, fieldsQuery(334)),
+		tweak: func(p *Policy) { p.GraphQL.MaxRequestFields = 1002 }},
+	{name: "total cost on an automatically identified endpoint", path: "/api/gql", ct: appJSON, body: batch(3, aliasesQuery(14)), want: idGQLRequestAliases},
 	{name: "depth thirteen", path: "/graphql", ct: appJSON, body: gqlReq(deepQuery(13)), want: idGQLDepth},
 	{name: "depth in a hundred", path: "/graphql", ct: appJSON, body: gqlReq(deepQuery(100)), want: idGQLDepth},
 	{name: "depth in a thousand", path: "/graphql", ct: appJSON, body: gqlReq(deepQuery(1000)), want: idGQLDepth},
@@ -312,5 +331,5 @@ func BenchmarkGraphQL(b *testing.B) {
 	for i := 0; sb.Len() < 30<<10; i++ {
 		fmt.Fprintf(&sb, "query Q%d($id: ID!, $n: Int = 5) { user(id: $id) { id name email friends(first: $n) { id name ...F%d } } }\nfragment F%d on User { id bio }\n", i, i, i)
 	}
-	benchRow(b, row{path: "/graphql", ct: "application/graphql", body: sb.String(), tweak: func(p *Policy) { p.GraphQL.MaxOperations = 10000 }})
+	benchRow(b, row{path: "/graphql", ct: appJSON, body: `{"query":` + jq(sb.String()) + `,"operationName":"Q0"}`, tweak: func(p *Policy) { p.GraphQL.MaxOperations = 10000 }})
 }

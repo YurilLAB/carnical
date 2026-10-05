@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package formats
 
 import (
@@ -176,6 +178,9 @@ func TestPolicyValidate(t *testing.T) {
 		{"internal-error cannot be off", Policy{Rules: map[string]Action{"internal-error": Off}}, "never let through"},
 		{"policy-invalid cannot be monitor", Policy{Rules: map[string]Action{"policy-invalid": Monitor}}, "never let through"},
 		{"a negative limit", Policy{JSON: JSONLimits{MaxDepth: -1}}, "json.max_depth is negative"},
+		{"negative request field budget", Policy{GraphQL: GraphQLLimits{MaxRequestFields: -1}}, "graphql.max_request_fields is negative"},
+		{"request alias budget above ceiling", Policy{GraphQL: GraphQLLimits{MaxRequestAliases: 10_000_001}}, "graphql.max_request_aliases"},
+		{"negative request directive budget", Policy{GraphQL: GraphQLLimits{MaxRequestDirectives: -1}}, "graphql.max_request_directives is negative"},
 		{"a limit above the ceiling", Policy{JSON: JSONLimits{MaxDepth: 5000}}, "above the ceiling"},
 		{"a body limit above the ceiling", Policy{MaxBodyBytes: 1 << 40}, "max_body_bytes"},
 		{"a bad type entry", Policy{AllowedTypes: []string{"json"}}, "allowed_types"},

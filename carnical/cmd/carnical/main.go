@@ -1,4 +1,3 @@
-// Copyright 2026 Google LLC
 // SPDX-License-Identifier: Apache-2.0
 
 // Command carnical puts the OWASP Core Rule Set, run by Coraza, in front of one website.

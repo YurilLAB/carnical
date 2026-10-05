@@ -26,6 +26,14 @@ Security review added live reproductions for two pre-existing guard-ordering def
 - `govulncheck ./cmd/carnical` reports no vulnerabilities at the time of the run.
 - A Linux/amd64 binary with `CGO_ENABLED=0` is cross-compiled as a build check; this does not verify Linux runtime confinement.
 
+## Aggregate GraphQL request budgets (2026-10-05)
+
+Field, alias and directive budgets now apply to the selected operations across an entire request, including JSON batches. Tests exercise exact boundaries, fragment amplification, custom limits, selected versus unused operations, and interleaved fragment definitions. Each request owns its counters.
+
+The compiled executable's live suite now has 29 cases, including batch refusal without an origin request, monitor forwarding, and three repeated valid batches through the same process to verify that counters reset. Normal and race runs of `./formats ./cmd/carnical` pass, with only the two existing throughput tests excluded from the race run as described above. `go vet` passes for both packages. The final GraphQL fuzz run passes 196,898 executions in 30 seconds, and the existing GraphQL benchmark runs with a valid selected-operation envelope. The Linux/amd64 cross-build passes again.
+
+Review checked operation-index alignment, saturating arithmetic, per-request state, fixed-content findings, and monitor/off semantics. These are syntax budgets; schema-aware resolver costs and persisted-query registries are not implemented.
+
 ## Environment and baseline limitations
 
 `go test ./...` in the upstream module fails on existing Windows filesystem expectations and open audit/debug log handles (auditlog, operators, seclang, testing). The changed code is confined to Carnical's separate module; no upstream engine files are changed.
@@ -34,6 +42,6 @@ The broader Carnical race run encounters Windows audit-file recovery/truncation 
 
 That broad run also times out after ten minutes in the untracked virtual-patch brute-force comparison test (`TestIndexedMatchEqualsBruteForce`). It is not represented as a passing full-module race run.
 
-`go run mage.go adr` rejects 60 pre-existing ADRs as lacking the exact technical-discussion section marker. The new ADR-0061 produces no diagnostic. The Windows checkout has CRLF in older documents, which the validator's exact marker comparison does not normalize. This check is not claimed to pass globally.
+`go run mage.go adr` rejects 60 pre-existing ADRs as lacking the exact technical-discussion section marker. The new ADRs 0061–0063 produce no diagnostics. The Windows checkout has CRLF in older documents, which the validator's exact marker comparison does not normalize. This check is not claimed to pass globally.
 
 WSL's Ubuntu environment first reported a read-only home when creating the Go cache and subsequently failed to start. Linux confinement and the full Linux CI matrix have not been verified by these runs.

@@ -78,6 +78,7 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 		return "--B\r\nContent-Disposition: form-data; name=\"file\"; filename=\"" + name + "\"\r\nContent-Type: text/plain\r\n\r\n" + content + "\r\n--B--\r\n"
 	}
 	tests := []struct {
+		repeat                                                                      int
 		name, mode, policy, method, target, ct, body, encoding, logRule, originBody string
 		allowEncoding, fails, policyDir                                             bool
 		status                                                                      int
@@ -89,6 +90,9 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 		{name: "duplicate JSON key", mode: "block", ct: "application/json", body: `{"a":1,"a":2}`, status: 400, logRule: `"rule":5002103`},
 		{name: "XML external entity", mode: "block", ct: "text/xml", body: `<!DOCTYPE a [<!ENTITY x SYSTEM "file:///etc/passwd">]><a>&x;</a>`, status: 400},
 		{name: "custom GraphQL depth", mode: "block", policy: `{"graphql":{"max_depth":2}}`, target: "/graphql", ct: "application/json", body: `{"query":"{a{b{c}}}"}`, status: 400},
+		{name: "aggregate GraphQL budget blocks a batch", mode: "block", policy: `{"graphql":{"max_request_fields":3}}`, target: "/graphql", ct: "application/json", body: `[{"query":"{a b}"},{"query":"{c d}"}]`, status: 400, logRule: `"rule":5002311`},
+		{name: "aggregate budget is local to each request", mode: "block", policy: `{"graphql":{"max_request_fields":4}}`, target: "/graphql", ct: "application/json", body: `[{"query":"{a b}"},{"query":"{c d}"}]`, status: 200, repeat: 3},
+		{name: "aggregate budget monitoring", mode: "monitor", policy: `{"graphql":{"max_request_fields":3}}`, target: "/graphql", ct: "application/json", body: `[{"query":"{a b}"},{"query":"{c d}"}]`, status: 200, logRule: `"rule":5002311`},
 		{name: "explicit monitor overrides policy", mode: "monitor", policy: `{"monitor":false}`, ct: "application/json", body: `{"a":1,"a":2}`, status: 200, logRule: `"rule":5002103`},
 		{name: "explicit block overrides policy monitor", mode: "block", policy: `{"monitor":true}`, ct: "application/json", body: `{"a":1,"a":2}`, status: 400},
 		{name: "off forwards uninspected JSON", mode: "off", ct: "application/json", body: `{"a":1,"a":2}`, status: 200},
@@ -190,37 +194,39 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 			if target == "" {
 				target = "/api/save"
 			}
-			req, err := http.NewRequest(method, url+target, strings.NewReader(tc.body))
-			if err != nil {
-				t.Fatal(err)
-			}
-			req.Header.Set("Content-Type", tc.ct)
-			if tc.encoding != "" {
-				req.Header.Set("Content-Encoding", tc.encoding)
-			}
-			resp, err := client.Do(req)
-			if err != nil {
-				t.Fatal(err)
-			}
-			resp.Body.Close()
-			if resp.StatusCode != tc.status {
-				t.Fatalf("status %d, want %d", resp.StatusCode, tc.status)
-			}
-			select {
-			case got := <-requests:
-				if tc.status != 200 {
-					t.Fatal("refused request reached the origin")
+			for range max(tc.repeat, 1) {
+				req, err := http.NewRequest(method, url+target, strings.NewReader(tc.body))
+				if err != nil {
+					t.Fatal(err)
 				}
-				want := tc.body
-				if tc.originBody != "" {
-					want = tc.originBody
+				req.Header.Set("Content-Type", tc.ct)
+				if tc.encoding != "" {
+					req.Header.Set("Content-Encoding", tc.encoding)
 				}
-				if got.body != want || got.encoding != "" || got.length != int64(len(want)) {
-					t.Fatalf("origin received %d body bytes, encoding %q, length %d", len(got.body), got.encoding, got.length)
+				resp, err := client.Do(req)
+				if err != nil {
+					t.Fatal(err)
 				}
-			default:
-				if tc.status == 200 {
-					t.Fatal("accepted request did not reach the origin")
+				resp.Body.Close()
+				if resp.StatusCode != tc.status {
+					t.Fatalf("status %d, want %d", resp.StatusCode, tc.status)
+				}
+				select {
+				case got := <-requests:
+					if tc.status != 200 {
+						t.Fatal("refused request reached the origin")
+					}
+					want := tc.body
+					if tc.originBody != "" {
+						want = tc.originBody
+					}
+					if got.body != want || got.encoding != "" || got.length != int64(len(want)) {
+						t.Fatalf("origin received %d body bytes, encoding %q, length %d", len(got.body), got.encoding, got.length)
+					}
+				default:
+					if tc.status == 200 {
+						t.Fatal("accepted request did not reach the origin")
+					}
 				}
 			}
 			cancel()

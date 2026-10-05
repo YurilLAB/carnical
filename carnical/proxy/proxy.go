@@ -1,4 +1,3 @@
-// Copyright 2026 Google LLC
 // SPDX-License-Identifier: Apache-2.0
 
 // Package proxy is a reverse proxy that inspects every request with Coraza running the OWASP Core Rule Set, and

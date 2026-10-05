@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package formats
 
 import (
@@ -80,6 +82,10 @@ type GraphQLLimits struct {
 	MaxBatch      int `json:"max_batch,omitempty"`       // operations in a JSON array (default 10)
 	MaxOperations int `json:"max_operations,omitempty"`  // operations in one document (default 10)
 	MaxQueryBytes int `json:"max_query_bytes,omitempty"` // bytes in one document (default 65536)
+	// Request totals count the selected operation of every document in the request, with fragments expanded.
+	MaxRequestFields     int `json:"max_request_fields,omitempty"`     // default 1000
+	MaxRequestAliases    int `json:"max_request_aliases,omitempty"`    // default 40
+	MaxRequestDirectives int `json:"max_request_directives,omitempty"` // default 100
 	// AllowIntrospection lets __schema and __type through. Introspection hands an attacker the whole schema.
 	AllowIntrospection bool `json:"allow_introspection,omitempty"`
 }
@@ -194,6 +200,9 @@ func (p Policy) withDefaults() Policy {
 	def(&p.GraphQL.MaxBatch, 10)
 	def(&p.GraphQL.MaxOperations, 10)
 	def(&p.GraphQL.MaxQueryBytes, 64<<10)
+	def(&p.GraphQL.MaxRequestFields, 1000)
+	def(&p.GraphQL.MaxRequestAliases, 40)
+	def(&p.GraphQL.MaxRequestDirectives, 100)
 
 	def(&p.NDJSON.MaxLines, 1000)
 
@@ -289,6 +298,9 @@ func (p Policy) Validate() error {
 		{"graphql.max_depth", p.GraphQL.MaxDepth, ceilDepth}, {"graphql.max_fields", p.GraphQL.MaxFields, ceilCount}, {"graphql.max_aliases", p.GraphQL.MaxAliases, ceilCount},
 		{"graphql.max_directives", p.GraphQL.MaxDirectives, ceilCount}, {"graphql.max_batch", p.GraphQL.MaxBatch, 10000}, {"graphql.max_operations", p.GraphQL.MaxOperations, 10000},
 		{"graphql.max_query_bytes", p.GraphQL.MaxQueryBytes, ceilBytes},
+		{"graphql.max_request_fields", p.GraphQL.MaxRequestFields, ceilCount},
+		{"graphql.max_request_aliases", p.GraphQL.MaxRequestAliases, ceilCount},
+		{"graphql.max_request_directives", p.GraphQL.MaxRequestDirectives, ceilCount},
 		{"ndjson.max_lines", p.NDJSON.MaxLines, ceilCount},
 		{"encoding.max_output", p.Encoding.MaxOutput, ceilBytes}, {"encoding.max_ratio", p.Encoding.MaxRatio, 100000},
 		{"yaml.max_bytes", p.YAML.MaxBytes, ceilBytes}, {"yaml.max_depth", p.YAML.MaxDepth, ceilDepth}, {"yaml.max_nodes", p.YAML.MaxNodes, ceilCount},

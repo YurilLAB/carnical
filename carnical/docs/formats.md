@@ -76,6 +76,8 @@ Operation selection follows the [GraphQL execution rules](https://spec.graphql.o
 
 These protections complement the depth, alias, field and batch limits used by commercial products such as [F5 WAF for NGINX](https://docs.nginx.com/waf/policies/graphql-protection/) and [Fastly Next-Gen WAF](https://www.fastly.com/blog/introducing-graphql-inspection-for-the-fastly-next-gen-waf). They do not validate GraphQL fields against a schema or replace application authorization.
 
+Each HTTP request also has aggregate GraphQL budgets: `graphql.max_request_fields` defaults to 1000, `max_request_aliases` to 40, and `max_request_directives` to 100. Totals include only the selected operation of every document inspected in that request, after fragment expansion; unused operations still undergo their individual limits. A batch cannot multiply a permitted individual budget without being subject to these totals. Counters reset for every request and use saturating arithmetic. These are conservative syntax counts, not schema-weighted resolver cost or a bound on response size; pagination arguments and authorization still require application controls. Raise the request budgets for a known legitimate workload, or use monitor mode while tuning.
+
 Identifiers 5002000 to 5002999. The table is the one the code holds; a test (`TestDocumentationMatchesRules`) fails if this table and `Rules()` differ in any column. A message looks like `json-duplicate-key: an object key given twice (compared after decoding escapes, ignoring case) at byte 17`, or `graphql-fields: a GraphQL query that selects more fields than the limit (limit 500)`, or, for NDJSON, `... in line 3 at byte 9`.
 
 Default is what happens when the policy does not say. Status is what the visitor gets for a refusal.
@@ -139,6 +141,9 @@ Default is what happens when the policy does not say. Status is what the visitor
 | 5002308 | `graphql-request-shape` | block | 400 | high | a GraphQL request whose parts are not the types the protocol uses |
 | 5002309 | `graphql-limit` | block | 400 | high | a GraphQL document over a size or count limit |
 | 5002310 | `graphql-get-mutation` | block | 403 | high | a GraphQL mutation selected for execution using GET |
+| 5002311 | `graphql-request-fields` | block | 400 | high | a GraphQL request whose selected operations exceed the total field limit |
+| 5002312 | `graphql-request-aliases` | block | 400 | high | a GraphQL request whose selected operations exceed the total alias limit |
+| 5002313 | `graphql-request-directives` | block | 400 | high | a GraphQL request whose selected operations exceed the total directive limit |
 | 5002400 | `ndjson-lines` | block | 400 | high | more lines than the limit |
 | 5002401 | `ndjson-blank-line` | block | 400 | medium | a blank line between records |
 | 5002500 | `yaml-syntax` | block | 400 | high | YAML that cannot be parsed |

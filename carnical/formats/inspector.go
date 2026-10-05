@@ -1,4 +1,3 @@
-// Copyright 2026 Google LLC
 // SPDX-License-Identifier: Apache-2.0
 
 // Package formats is Carnical's strict reader for request bodies. A firewall and the application behind it each parse the same body,
