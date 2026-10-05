@@ -1,0 +1,13 @@
+# Four runs a day, each a random time up to 45 minutes after the hour, so that a run cannot be dodged by timing.
+# Not more often: several times a day finds a mistake within hours rather than weeks, and the tenant checks send real
+# requests through the real data plane.
+[Unit]
+Description=Run the Carnical segmentation and host audit four times a day
+
+[Timer]
+OnCalendar=*-*-* 00,06,12,18:00:00
+RandomizedDelaySec=45min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

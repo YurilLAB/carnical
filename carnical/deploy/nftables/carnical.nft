@@ -1,0 +1,86 @@
+#!/usr/sbin/nft -f
+# Network policy for one machine that runs the parts of Carnical as different users.
+#
+# The question this answers: if the edge, the portal or anything else here is taken over, what can it reach over the network?
+# The kernel decides by which user owns the socket (meta skuid), so a process cannot talk its way round it. It needs the users
+# to exist first (deploy/sysusers.d/carnical.conf).
+#
+# Edit the three definitions below, then:   nft -c -f carnical.nft   (check)   and   nft -f carnical.nft   (load)
+# Load it from a unit that runs before the services, and keep it out of reach of every service user.
+
+define mgmt4 = { 192.0.2.10 }            # addresses that may reach SSH: yours, written in. Documentation addresses stand in.
+define mgmt6 = { 2001:db8::10 }
+define resolver = { 127.0.0.53, 127.0.0.54 }   # what /etc/resolv.conf points at
+
+table inet carnical
+flush table inet carnical
+
+table inet carnical {
+
+	# Addresses a customer's site must never be reached at, whatever its name resolves to. The proxy refuses them too (the
+	# origin guard); this is the same rule enforced by the kernel, so that a bug in one is not a way through both.
+	set not_public4 {
+		type ipv4_addr
+		flags interval
+		elements = { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.0.0.0/24,
+		             192.168.0.0/16, 198.18.0.0/15, 224.0.0.0/4, 240.0.0.0/4 }
+	}
+	set not_public6 {
+		type ipv6_addr
+		flags interval
+		elements = { ::/128, ::1/128, 64:ff9b::/96, 100::/64, 2002::/16, fc00::/7, fe80::/10, ff00::/8 }
+	}
+
+	chain input {
+		type filter hook input priority 0; policy drop;
+		ct state established,related accept
+		ct state invalid drop
+		iif lo accept
+		meta l4proto { icmp, ipv6-icmp } limit rate 20/second accept
+		# The only ports that are open to the world: the edge (443). The portal gets its own line when it has an address.
+		tcp dport 443 accept
+		# Administration: from named addresses only.
+		ip saddr $mgmt4 tcp dport 22 ct state new limit rate 6/minute accept
+		ip6 saddr $mgmt6 tcp dport 22 ct state new limit rate 6/minute accept
+		counter log prefix "carnical-in-drop " level info limit rate 5/minute drop
+	}
+
+	chain forward {
+		type filter hook forward priority 0; policy drop;
+	}
+
+	chain output {
+		type filter hook output priority 0; policy accept;
+		ct state established,related accept
+
+		# The cloud metadata service answers anyone on the machine and holds credentials. Only root asks it.
+		ip daddr 169.254.169.254 meta skuid != 0 counter log prefix "carnical-imds " drop
+		ip6 daddr fd00:ec2::254 meta skuid != 0 counter log prefix "carnical-imds " drop
+
+		meta skuid "carnical-edge" jump edge_out
+		meta skuid { "carnical-portal", "carnical-ctl", "carnical-signer", "carnical-audit" } jump internal_out
+	}
+
+	# The edge talks to customers' sites on the public internet, and to nothing on this machine or in this network over IP
+	# (it talks to the control plane over a UNIX socket, which this does not touch).
+	chain edge_out {
+		ip daddr $resolver udp dport 53 accept
+		ip daddr $resolver tcp dport 53 accept
+		ip daddr @not_public4 counter log prefix "carnical-edge-private " drop
+		ip6 daddr @not_public6 counter log prefix "carnical-edge-private " drop
+		# This machine's own public address as well: an origin that is the edge itself would loop.
+		fib daddr type local counter log prefix "carnical-edge-self " drop
+		tcp dport { 80, 443 } accept
+		counter log prefix "carnical-edge-egress " limit rate 10/minute drop
+		drop
+	}
+
+	# Everything else here has no reason to open a connection to anywhere but this machine. Sending spam (25, 465, 587), a
+	# reverse shell, a download of tools and a miner's connection all need one. Open a port here only for a named reason.
+	chain internal_out {
+		oif lo accept
+		ip daddr $resolver udp dport 53 accept
+		counter log prefix "carnical-internal-egress " limit rate 10/minute drop
+		drop
+	}
+}

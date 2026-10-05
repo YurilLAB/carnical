@@ -1,0 +1,59 @@
+## Audit rules for the Carnical host. Install as /etc/audit/rules.d/carnical.rules and run `augenrules --load`.
+##
+## They are chosen to be silent on a quiet server run by one person: each one is something a service never does, so a
+## record is an incident, not noise. Service accounts have no login session, so the rules match on the user, not on
+## the login uid.
+
+-D
+-b 8192
+-f 1
+
+## The edge is a Go program that never starts another program. Any exec by it is an attacker. (It cannot do it: the
+## seccomp filter ends the process first, and the kernel writes a SECCOMP record for the call, which is the other half
+## of this.)
+-a always,exit -F arch=b64 -S execve,execveat -F uid=carnical-edge -k carnical_svc_exec
+-a always,exit -F arch=b64 -S execve,execveat -F uid=carnical-portal -k carnical_svc_exec
+-a always,exit -F arch=b64 -S execve,execveat -F uid=carnical-ctl -k carnical_svc_exec
+-a always,exit -F arch=b64 -S execve,execveat -F uid=carnical-signer -k carnical_svc_exec
+
+## Things an attacker does with a foothold, by any user that is not root.
+-a always,exit -F arch=b64 -S ptrace,process_vm_readv,process_vm_writev,memfd_create,bpf,unshare,setns,init_module,finit_module,delete_module,kexec_load -F auid=unset -F uid!=0 -k carnical_abuse
+
+## A file made setuid or setgid.
+-a always,exit -F arch=b64 -S chmod,fchmod,fchmodat -F a1&04000 -k carnical_setuid
+-a always,exit -F arch=b64 -S chmod,fchmod,fchmodat -F a1&02000 -k carnical_setuid
+
+## Changes to what runs at boot or on a schedule, who may become root, how libraries are loaded, and how people log in.
+-w /etc/ld.so.preload -p wa -k carnical_persist
+-w /etc/ld.so.conf -p wa -k carnical_persist
+-w /etc/ld.so.conf.d/ -p wa -k carnical_persist
+-w /etc/systemd/system/ -p wa -k carnical_persist
+-w /usr/lib/systemd/system/ -p wa -k carnical_persist
+-w /etc/cron.d/ -p wa -k carnical_persist
+-w /etc/crontab -p wa -k carnical_persist
+-w /var/spool/cron/ -p wa -k carnical_persist
+-w /etc/sudoers -p wa -k carnical_priv
+-w /etc/sudoers.d/ -p wa -k carnical_priv
+-w /etc/pam.d/ -p wa -k carnical_priv
+-w /etc/passwd -p wa -k carnical_priv
+-w /etc/shadow -p wa -k carnical_priv
+-w /etc/group -p wa -k carnical_priv
+-w /etc/ssh/ -p wa -k carnical_ssh
+-w /root/.ssh/ -p wa -k carnical_ssh
+
+## Our own programs, configuration and the rules that protect them.
+-w /usr/local/bin/carnical -p wa -k carnical_self
+-w /usr/local/bin/carnical-audit -p wa -k carnical_self
+-w /etc/carnical/ -p wa -k carnical_self
+-w /etc/nftables.conf -p wa -k carnical_self
+-w /etc/sysctl.d/ -p wa -k carnical_self
+-w /etc/audit/ -p wa -k carnical_self
+
+## Honeytokens: files that look like a copy of the customer database and a key. Nothing reads them. Any read is an
+## incident, and a good one: it has no false positives. Create them with deploy/honeytokens.sh.
+-w /var/lib/carnical/ctl/customers-backup.sqlite -p r -k carnical_honey
+-w /var/lib/carnical/portal/.env.bak -p r -k carnical_honey
+-w /var/lib/carnical/signer/signing-key.old -p r -k carnical_honey
+
+## Make the rules immutable until the next boot: an attacker with root cannot switch the audit off quietly.
+-e 2

@@ -62,6 +62,7 @@ func run() error {
 	keepCaching := flag.Bool("keep-caching", false, "do not add Cache-Control: private, no-store to responses that set a cookie or look like a stylesheet but are HTML")
 	maxConns := flag.Int("max-conns-per-ip", 128, "connections one address may hold open (negative = no limit)")
 	uploadDir := flag.String("upload-dir", "", "directory for the file parts of uploads while a request runs (default: the system temporary directory; give it a private one)")
+	fromSystemd := flag.Bool("systemd-socket", false, "use the listening socket systemd passes in (socket activation), so the proxy needs no privilege to use port 443")
 	confine := flag.Bool("confine", false, "after start-up, confine the process: no new programs, no ptrace, no other files, no other ports (Linux; build with CGO_ENABLED=0)")
 	confineConnect := flag.String("confine-connect", "80,443,53", "with -confine, the TCP ports the proxy may connect to: the ports of the origins, and 53 for DNS")
 	confineRead := flag.String("confine-read", "", "with -confine, extra files and directories the proxy may read (for example a certificate directory it reloads from)")
@@ -147,8 +148,12 @@ func run() error {
 		}
 		server.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert}}
 	}
-	ln, err := net.Listen("tcp", *listen)
-	if err != nil {
+	var ln net.Listener
+	if *fromSystemd {
+		if ln, err = systemdListener(); err != nil {
+			return err
+		}
+	} else if ln, err = net.Listen("tcp", *listen); err != nil {
 		return err
 	}
 	defer ln.Close()
@@ -191,6 +196,18 @@ func run() error {
 		defer cancel()
 		return server.Shutdown(shutdown)
 	}
+}
+
+// systemdListener returns the listening socket systemd handed over as file descriptor 3 (see sd_listen_fds(3)).
+func systemdListener() (net.Listener, error) {
+	if os.Getenv("LISTEN_PID") != strconv.Itoa(os.Getpid()) || os.Getenv("LISTEN_FDS") != "1" {
+		return nil, errors.New("-systemd-socket was given, but systemd did not pass exactly one socket to this process")
+	}
+	os.Unsetenv("LISTEN_PID")
+	os.Unsetenv("LISTEN_FDS")
+	f := os.NewFile(3, "systemd-socket")
+	defer f.Close() // FileListener duplicates it
+	return net.FileListener(f)
 }
 
 // parsePorts reads a comma-separated list of TCP ports.

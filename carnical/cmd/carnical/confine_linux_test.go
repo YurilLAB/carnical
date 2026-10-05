@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -12,11 +13,15 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/YurilLAB/coraza/carnical/audit"
+	"github.com/YurilLAB/coraza/carnical/audit/host"
 )
 
 // The real binary, confined, serving real requests: everything the proxy does in a day must still work inside the
@@ -154,6 +159,24 @@ func TestTheConfinedProxyStillDoesItsJob(t *testing.T) {
 				if !strings.Contains(text, wantFilter) || !strings.Contains(text, wantNNP) {
 					t.Fatalf("%s: want %q and %q:\n%s", status, wantFilter, wantNNP, text)
 				}
+			}
+			// The host audit's own view of the same process: it must pass for the confined proxy and fail for the control, or
+			// it is not telling them apart.
+			me, err := user.Current()
+			if err != nil {
+				t.Fatal(err)
+			}
+			res := audit.Run(context.Background(), []audit.Check{host.Confined(host.OS{}, host.EdgeSpec{Exe: bin, User: me.Username})}, 10*time.Second).Results[0]
+			switch {
+			case confined && os.Geteuid() == 0 && res.Status != audit.Pass:
+				t.Fatalf("the audit does not see the confined proxy as confined: %+v", res)
+			case confined && os.Geteuid() != 0 && res.Status != audit.Skip:
+				// A process that is not dumpable hides its program from other processes of the same user, which is the
+				// protection working: only root (or CAP_SYS_PTRACE) can see it, so that is who the host audit runs as.
+				t.Fatalf("an unprivileged observer could see a non-dumpable process's program: %+v", res)
+			}
+			if !confined && res.Status != audit.Fail {
+				t.Fatalf("the audit passed a proxy that is not confined: %+v", res)
 			}
 			if confined && !strings.Contains(logs.String(), `"msg":"confined"`) {
 				t.Fatalf("the proxy did not say it was confined:\n%s", logs.String())

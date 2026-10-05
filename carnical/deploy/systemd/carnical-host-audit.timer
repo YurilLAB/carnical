@@ -1,0 +1,11 @@
+# Four runs a day, offset from the other audit so that the two do not run together.
+[Unit]
+Description=Run the Carnical host audit four times a day
+
+[Timer]
+OnCalendar=*-*-* 02,08,14,20:00:00
+RandomizedDelaySec=45min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

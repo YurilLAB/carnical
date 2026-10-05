@@ -202,8 +202,8 @@ func TestZoneReachFindsAnOpenWallAndABrokenFlow(t *testing.T) {
 	defer stopOwner()
 	defer stopControl()
 	zm := Map{Here: "edge",
-		Zones: []Zone{{Name: "edge"}, {Name: "control", Internal: true, Services: []Service{{"config", control}}},
-			{Name: "owner", Internal: true, Services: []Service{{"console", owner}}}},
+		Zones: []Zone{{Name: "edge"}, {Name: "control", Internal: true, Services: []Service{{Name: "config", Addr: control}}},
+			{Name: "owner", Internal: true, Services: []Service{{Name: "console", Addr: owner}}}},
 		Flows: []Flow{{From: "edge", To: "control"}}}
 	if err := zm.Validate(); err != nil {
 		t.Fatal(err)

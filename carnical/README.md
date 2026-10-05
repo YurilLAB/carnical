@@ -13,6 +13,10 @@ rewritten: Coraza is the engine and the OWASP Core Rule Set (CRS) is the rule se
 | `audit/`, `cmd/carnical-audit/` | The segmentation checks: the walls between zones and between customers, run a few times a day. `carnical-audit -zones zones.json`. |
 | `docs/backend-integration.md` | What it takes to connect this to our backend and web UI. |
 | `docs/segmentation.md` | Zones, who may talk to whom, how customers are kept apart, and the checks and their schedule. Read this next. |
+| `sandbox/`, `cmd/carnical-confine/` | The proxy confining itself from the inside (Landlock, seccomp, no new privileges), and a probe that tries 34 forbidden actions from inside it. |
+| `audit/host/` | Checks of the machine itself: kernel settings, mounts, services' sandboxes, network and audit rules, listeners, processes, integrity, setuid files, whether the running edge is confined. |
+| `deploy/` | systemd units, nftables policy by user, sysctls, module blacklist, audit rules, users and directories, honeytokens, and the order to install them in. |
+| `docs/hardening.md` | What stops an attacker who is already on the machine as a service user, what would show it, what was verified and what was not. |
 | `docs/attacks.md` | Modern web attacks researched, what Carnical does about each, what the rule set already covers, and what no proxy can stop. |
 | `docs/backend-compat.md` | The contracts the existing backend expects (feed, events, policy, updates, advice) and the defects in it that matter for hosting. |
 

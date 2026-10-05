@@ -36,6 +36,9 @@ type Zone struct {
 type Service struct {
 	Name string `json:"name"`
 	Addr string `json:"addr"`
+	// User, if set, is who must own the listening socket on this machine: a name, or several separated by commas. A socket
+	// that systemd opened for a service (socket activation) is owned by root, so list both.
+	User string `json:"user,omitempty"`
 }
 
 // Flow allows connections from one zone to another.

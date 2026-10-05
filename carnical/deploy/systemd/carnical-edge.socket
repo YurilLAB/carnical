@@ -1,0 +1,15 @@
+[Unit]
+Description=Carnical edge: the listening socket (systemd opens it, the proxy never needs the right to)
+
+[Socket]
+ListenStream=0.0.0.0:443
+ListenStream=[::]:443
+# Enough waiting connections to ride out a burst; the proxy's own limits take over after that.
+Backlog=1024
+NoDelay=yes
+# Only the proxy's user may use the socket it is given.
+SocketUser=carnical-edge
+SocketMode=0600
+
+[Install]
+WantedBy=sockets.target

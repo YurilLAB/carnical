@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/YurilLAB/coraza/carnical/audit"
+	"github.com/YurilLAB/coraza/carnical/audit/host"
 	"github.com/YurilLAB/coraza/carnical/proxy"
 )
 
@@ -41,6 +42,10 @@ func run() int {
 	every := flag.Duration("every", 6*time.Hour, "with -watch, how long between runs")
 	jitter := flag.Duration("jitter", 0, "wait a random time up to this long before each run, so the runs are not predictable")
 	list := flag.Bool("list", false, "list the checks and exit")
+	hostChecks := flag.Bool("host", false, "also check this machine: kernel settings, mounts, the services' sandboxes, network and audit rules, who is listening, what is running, whether anything that should not change has changed (Linux; needs root to see other users' processes)")
+	baselineDir := flag.String("baseline-dir", "/var/lib/carnical/audit", "where the integrity and setuid baselines are kept")
+	writeBaseline := flag.Bool("write-baseline", false, "record the current integrity and setuid state as the baseline, and exit (run it once, when the machine is known to be good)")
+	force := flag.Bool("force", false, "with -write-baseline, replace a baseline that exists (a baseline rewritten by whoever changed the machine proves nothing)")
 	schedule := flag.String("print-schedule", "", "print how to run this on a schedule (systemd or schtasks) and exit; nothing is installed")
 	flag.Parse()
 
@@ -73,7 +78,13 @@ func run() int {
 		fmt.Fprintln(os.Stderr, "carnical-audit:", err)
 		return 2
 	}
+	if *writeBaseline {
+		return writeBaselines(*baselineDir, *force)
+	}
 	checks := catalogue(zm, proxy.OriginPolicy{Allow: allow})
+	if *hostChecks {
+		checks = append(checks, hostCatalogue(zm, *baselineDir)...)
+	}
 	if *list {
 		for _, c := range checks {
 			fmt.Printf("%-26s from %-8s %s\n", c.Name, c.Zone, c.What)
@@ -119,6 +130,47 @@ func catalogue(zm audit.Map, policy proxy.OriginPolicy) []audit.Check {
 		}
 	}
 	return mine
+}
+
+// hostCatalogue is the checks of the machine itself. They are not tied to a zone: the machine is one place.
+func hostCatalogue(zm audit.Map, baselineDir string) []audit.Check {
+	var src host.OS
+	var declared []audit.Service
+	for _, z := range zm.Zones {
+		declared = append(declared, z.Services...)
+	}
+	return []audit.Check{
+		host.Sysctl(src, host.Sysctls),
+		host.Mount(src, host.Mounts),
+		host.Unit(src, host.EdgeUnit),
+		host.NFT(src),
+		host.Auditd(src),
+		host.Ownership(src, host.Files),
+		host.Listeners(src, declared),
+		host.Running(src, host.DefaultProcs),
+		host.Confined(src, host.DefaultEdge),
+		host.Integrity(src, filepath.Join(baselineDir, "integrity.json")),
+		host.SUID(src, filepath.Join(baselineDir, "suid.json")),
+	}
+}
+
+func writeBaselines(dir string, replace bool) int {
+	var src host.OS
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		fmt.Fprintln(os.Stderr, "carnical-audit:", err)
+		return 1
+	}
+	ctx := context.Background()
+	if err := host.WriteIntegrity(src, filepath.Join(dir, "integrity.json"), host.IntegrityFiles, replace); err != nil {
+		fmt.Fprintln(os.Stderr, "carnical-audit:", err)
+		return 1
+	}
+	if err := host.WriteSUID(ctx, src, filepath.Join(dir, "suid.json"), replace); err != nil {
+		fmt.Fprintln(os.Stderr, "carnical-audit:", err)
+		return 1
+	}
+	fmt.Println("recorded the baselines in", dir, "- copy them somewhere an attacker on this machine cannot reach")
+	return 0
 }
 
 func report(rep audit.Report, logFile, statusFile string, allowSkips bool) int {

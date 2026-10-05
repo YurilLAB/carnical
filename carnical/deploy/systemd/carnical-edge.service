@@ -1,0 +1,76 @@
+# The Carnical edge: the part that faces the internet and reads every visitor's request.
+#
+# Everything below assumes that someone has already taken over this process, and limits what they can do next. Each
+# line names what it stops; the details and the checks are in deploy/README.md. The proxy also confines itself from the
+# inside (-confine): files, ports, new programs, ptrace. These settings are the second wall, applied by the kernel
+# from outside the process, so that a bug in one is not a way through both.
+[Unit]
+Description=Carnical edge (web application firewall)
+Documentation=file:///usr/local/share/doc/carnical/README.md
+After=network-online.target nss-lookup.target
+Wants=network-online.target
+Requires=carnical-edge.socket
+
+[Service]
+Type=exec
+User=carnical-edge
+Group=carnical-edge
+# Arguments live in one file, so that a site is added without editing the unit (and without weakening it).
+EnvironmentFile=/etc/carnical/edge.env
+ExecStart=/usr/local/bin/carnical -systemd-socket -confine -upload-dir /var/lib/carnical/edge/uploads $CARNICAL_ARGS
+Restart=on-failure
+RestartSec=2
+# A process the filter ended (an attacker's first step) is restarted, and the audit log holds the record of what it tried.
+
+# --- Privilege: none -----------------------------------------------------------------------------------------------
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictSUIDSGID=yes
+# Port 443 comes from the socket unit, so no capability is needed to bind it.
+
+# --- Files: the whole machine read-only, except its own directory ----------------------------------------------------
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ReadWritePaths=/var/lib/carnical/edge/uploads
+# Other services' data is not merely unreadable: it is not there.
+InaccessiblePaths=/var/lib/carnical/ctl /var/lib/carnical/portal /var/lib/carnical/signer /etc/carnical/signer /root /boot /dev/shm
+UMask=0077
+RemoveIPC=yes
+LimitCORE=0
+
+# --- The kernel: the parts an attacker uses to get from "a process" to "the machine" ----------------------------------
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHostname=yes
+# Other users' processes are not listed, so their command lines and environments are not there to read.
+ProtectProc=invisible
+ProcSubset=pid
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+# Go does not generate code at run time. A page that is both writable and executable is how injected code runs.
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+# UNIX, IPv4, IPv6, and netlink for the machine's own addresses. Not packet sockets, the kernel crypto API or vsock.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+# Allow what a service needs; refuse what only an attacker does. @sandbox is kept because the proxy applies Landlock and
+# seccomp to itself. memfd_create and io_uring are not in @privileged and are refused by name (a program that is never
+# a file, and the kernel interface behind many recent local privilege escalations).
+SystemCallFilter=@system-service @sandbox
+SystemCallFilter=~@privileged @mount @debug @raw-io @reboot @swap @module @cpu-emulation @obsolete @clock @keyring
+SystemCallFilter=~io_uring_setup io_uring_enter io_uring_register userfaultfd memfd_create process_vm_readv process_vm_writev kcmp
+# The cloud metadata service answers anyone on the machine and holds credentials; nothing here has a reason to ask it.
+IPAddressDeny=link-local
+SocketBindDeny=any
+
+# --- Resources: a runaway or a miner is capped ------------------------------------------------------------------------
+LimitNOFILE=65536
+TasksMax=2048
+MemoryMax=2G
+CPUQuota=300%
