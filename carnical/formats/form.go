@@ -51,12 +51,22 @@ type formScanner struct {
 	fold    []byte
 	dup     bool
 	semi    bool
+	rules   parameterRules
 }
+
+type parameterRules struct{ escape, control, duplicate, limit, bracket, semicolon, prototype, utf8 *rule }
+
+var formParameterRules = parameterRules{rFormEscape, rFormCtl, rFormDup, rFormLimit, rFormBrkt, rFormSemi, rFormProto, rInvalidUTF8}
+var queryParameterRules = parameterRules{rQueryEscape, rQueryCtl, rQueryDup, rQueryLimit, rQueryBrkt, rQuerySemi, rQueryProto, rQueryUTF8}
 
 // checkForm checks a urlencoded body. utf8 says whether decoded names and values must be UTF-8 (they need not be when the
 // Content-Type names a single-byte charset). It returns false when the caller should stop.
 func (in *Inspector) checkForm(f *finder, body []byte, utf8 bool, capture *gqlParams) bool {
-	fs := &formScanner{f: f, lim: &in.pol.Form, utf8: utf8, capture: capture, dup: f.active(rFormDup)}
+	return checkParameters(f, body, &in.pol.Form, utf8, capture, formParameterRules)
+}
+
+func checkParameters(f *finder, body []byte, lim *FormLimits, utf8 bool, capture *gqlParams, rules parameterRules) bool {
+	fs := &formScanner{f: f, lim: lim, utf8: utf8, capture: capture, dup: f.active(rules.duplicate), rules: rules}
 	if fs.dup {
 		fs.seen = make(map[string]struct{})
 	}
@@ -76,7 +86,7 @@ func (in *Inspector) checkForm(f *finder, body []byte, utf8 bool, capture *gqlPa
 		}
 		params++
 		if params > fs.lim.MaxParams {
-			f.hitLimit(rFormLimit, dTooManyParams, fs.lim.MaxParams, at)
+			f.hitLimit(rules.limit, dTooManyParams, fs.lim.MaxParams, at)
 			return false
 		}
 		if !fs.pair(pair, at) {
@@ -104,32 +114,32 @@ func (fs *formScanner) pair(pair []byte, at int) bool {
 	}
 	f, lim := fs.f, fs.lim
 	if len(fs.name) > lim.MaxNameLen {
-		f.hitLimit(rFormLimit, dNameTooLong, lim.MaxNameLen, at)
+		f.hitLimit(fs.rules.limit, dNameTooLong, lim.MaxNameLen, at)
 		return false
 	}
 	if len(fs.val) > lim.MaxValueLen {
-		f.hitLimit(rFormLimit, dValueTooLong, lim.MaxValueLen, at)
+		f.hitLimit(fs.rules.limit, dValueTooLong, lim.MaxValueLen, at)
 		return false
 	}
 	if fs.utf8 && (!utf8.Valid(fs.name) || !utf8.Valid(fs.val)) {
-		if f.hit(rInvalidUTF8, at, dNone) {
+		if f.hit(fs.rules.utf8, at, dNone) {
 			return false
 		}
 	}
 	if bytes.IndexByte(fs.name, '[') >= 0 {
 		if n := bytes.Count(fs.name, []byte{'['}); n > lim.MaxBracketDepth {
-			if f.hitLimit(rFormBrkt, dNone, lim.MaxBracketDepth, at) {
+			if f.hitLimit(fs.rules.bracket, dNone, lim.MaxBracketDepth, at) {
 				return false
 			}
 		}
 	}
-	if protoName(fs.name) && f.hit(rFormProto, at, dNone) {
+	if protoName(fs.name) && f.hit(fs.rules.prototype, at, dNone) {
 		return false
 	}
 	if fs.dup && !bytes.HasSuffix(fs.name, []byte("[]")) {
 		fs.fold = appendFolded(fs.fold[:0], fs.name, false)
 		if _, seen := fs.seen[string(fs.fold)]; seen {
-			if f.hit(rFormDup, at, dNone) {
+			if f.hit(fs.rules.duplicate, at, dNone) {
 				return false
 			}
 		} else {
@@ -154,32 +164,32 @@ func (fs *formScanner) decode(dst, src []byte, at int, isName bool) ([]byte, boo
 			dst = append(dst, ' ')
 		case c == '%':
 			if i+2 >= len(src) {
-				if f.hit(rFormEscape, at+i, dTruncatedEscape) {
+				if f.hit(fs.rules.escape, at+i, dTruncatedEscape) {
 					return dst, false
 				}
 				dst = append(dst, c)
 				continue
 			}
 			if !isHexDigit(src[i+1]) || !isHexDigit(src[i+2]) {
-				if f.hit(rFormEscape, at+i, dBadHexEscape) {
+				if f.hit(fs.rules.escape, at+i, dBadHexEscape) {
 					return dst, false
 				}
 				dst = append(dst, c)
 				continue
 			}
 			b := byte(hexVal(src[i+1])<<4 | hexVal(src[i+2]))
-			if isFormControl(b, isName) && f.hit(rFormCtl, at+i, dEscapedControl) {
+			if isFormControl(b, isName) && f.hit(fs.rules.control, at+i, dEscapedControl) {
 				return dst, false
 			}
 			dst = append(dst, b)
 			i += 2
 		case c == ';':
-			if f.hit(rFormSemi, at+i, dNone) {
+			if f.hit(fs.rules.semicolon, at+i, dNone) {
 				return dst, false
 			}
 			dst = append(dst, c)
 		case c < 0x20 || c == 0x7f:
-			if f.hit(rFormCtl, at+i, dRawControl) {
+			if f.hit(fs.rules.control, at+i, dRawControl) {
 				return dst, false
 			}
 			dst = append(dst, c)

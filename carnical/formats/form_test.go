@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package formats
 
 import (
@@ -98,15 +100,51 @@ var formRows = register("form", []row{
 
 func TestForm(t *testing.T) { runTable(t, formRows) }
 
+var queryRows = register("query", []row{
+	{name: "ordinary API parameters", method: "GET", path: "/api", query: "q=hello+world&tags%5B%5D=red&tags%5B%5D=blue&page=1"},
+	{name: "encoded separators are values", method: "GET", query: "q=a%3Bb%26c%3Dd%25"},
+	{name: "unicode query", method: "GET", query: "q=%E6%97%A5%E6%9C%AC&name=%C3%A9"},
+	{name: "empty values and separators", method: "GET", query: "a=&flag&&b=2&"},
+	{name: "bad query escape", method: "GET", query: "x=%zz", want: 5002800},
+	{name: "bad escape in name", method: "GET", query: "%x=1", want: 5002800},
+	{name: "truncated escape", method: "GET", query: "x=%", want: 5002800},
+	{name: "query NUL", method: "GET", query: "x=%00", want: 5002801},
+	{name: "control in query name", method: "GET", query: "x%0A=1", want: 5002801},
+	{name: "invalid query UTF-8", method: "GET", query: "x=%ff", want: 5002807},
+	{name: "semicolon query separator", method: "GET", query: "a=1;b=2", want: 5002805},
+	{name: "query prototype", method: "GET", query: "user%5B__proto__%5D%5Badmin%5D=1", want: 5002806},
+	{name: "nested constructor prototype", method: "GET", query: "constructor%5Bprototype%5D%5Badmin%5D=1", want: 5002806},
+	{name: "query duplicates monitored", method: "GET", query: "id=1&%69D=2", also: []int{5002802}},
+	{name: "query duplicates blocked", method: "GET", query: "id=1&id=2", want: 5002802, tweak: func(p *Policy) { p.Rules["query-duplicate-param"] = Block }},
+	{name: "query parameter count", method: "GET", query: manyParams(1001), want: 5002803},
+	{name: "query name length", method: "GET", query: strings.Repeat("a", 257) + "=1", want: 5002803},
+	{name: "query value length", method: "GET", query: "x=%41%42%43", want: 5002803, tweak: func(p *Policy) { p.Query.MaxValueLen = 2 }},
+	{name: "query bracket depth", method: "GET", query: "a[1][2][3]=x", want: 5002804, tweak: func(p *Policy) { p.Query.MaxBracketDepth = 2 }},
+	{name: "query byte cap boundary", method: "GET", query: "a=12", tweak: func(p *Policy) { p.MaxQueryBytes = 4 }},
+	{name: "query byte cap", method: "GET", query: "a=123", want: 5002808, tweak: func(p *Policy) { p.MaxQueryBytes = 4 }},
+	{name: "POST query is inspected", query: "x=%zz", ct: appJSON, body: `{}`, want: 5002800},
+	{name: "HEAD query is inspected", method: "HEAD", query: "x=%zz", want: 5002800},
+	{name: "query monitor cap does not skip JSON body", query: "a=123", ct: appJSON, body: `{"a":1,"a":2}`, want: idJSONDup, tweak: func(p *Policy) { p.MaxQueryBytes = 4; p.Rules["query-too-large"] = Monitor }},
+	{name: "query off cap does not skip JSON body", query: "a=123", ct: appJSON, body: `{"a":1,"a":2}`, want: idJSONDup, tweak: func(p *Policy) { p.MaxQueryBytes = 4; p.Rules["query-too-large"] = Off }},
+	{name: "query count monitor does not skip JSON body", query: "a=1&b=2", ct: appJSON, body: `{"a":1,"a":2}`, want: idJSONDup, tweak: func(p *Policy) { p.Query.MaxParams = 1; p.Rules["query-limit"] = Monitor }},
+})
+
+func TestQueryParameters(t *testing.T) { runTable(t, queryRows) }
+
 func FuzzForm(f *testing.F) {
 	for _, r := range formRows {
 		f.Add(r.body)
+	}
+	for _, r := range queryRows {
+		f.Add(r.query)
 	}
 	in := New(Policy{})
 	f.Fuzz(func(t *testing.T, body string) {
 		fuzzNoPanic(t, in, row{ct: form, body: body})
 		fuzzNoPanic(t, in, row{ct: form, path: "/graphql", body: body})
 		fuzzNoPanic(t, in, row{method: "GET", path: "/graphql", query: body})
+		fuzzNoPanic(t, in, row{method: "GET", path: "/api", query: body})
+		fuzzNoPanic(t, in, row{path: "/api", query: body, ct: appJSON, body: `{}`})
 	})
 }
 

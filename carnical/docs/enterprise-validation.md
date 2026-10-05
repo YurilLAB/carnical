@@ -50,6 +50,14 @@ Normal and race runs of `./proxy ./cmd/carnical` pass, with final focused normal
 
 These quotas apply to one process, use IP identity, and reset on restart. They do not provide distributed or authenticated-principal rate accounting. Capacity exhaustion is an explicit refusal, trading admission availability for bounded enforcement.
 
+## URL query protection (2026-10-05)
+
+Five new live reproductions returned 200 before the change for malformed escapes, raw semicolons, NUL, invalid UTF-8 and prototype parameter names. They now return 400 with no origin request. The compiled executable suite has 56 passing cases, checking ordinary encoded values/arrays, unchanged origin request targets, monitored duplicates/semicolons, configurable duplicate blocking, query byte/count caps and continued JSON body enforcement after a monitored query cap.
+
+The full normal format suite and scoped race suite pass, with the two existing throughput exclusions described above for race instrumentation. The CLI normal/race suites and vet pass. The existing form fuzz target now includes generic GET and POST query inputs and passes 58,427 executions in 30 seconds. Query rows participate in the common monitor/off negative controls and concurrent shared-inspector checks. Policy validation, default serialization and the complete rule documentation table also pass.
+
+Review covered independent form/query rule selection, bounded scanning and capture, escaped names, parameter counts, fixed-content findings, all-method dispatch and body-inspection continuity. A query beyond a monitored/disabled scan budget is forwarded without complete query analysis; default enforcement refuses it. Application-specific parameter schemas and query/body name collisions remain outside this change.
+
 ## Environment and baseline limitations
 
 `go test ./...` in the upstream module fails on existing Windows filesystem expectations and open audit/debug log handles (auditlog, operators, seclang, testing). The changed code is confined to Carnical's separate module; no upstream engine files are changed.
@@ -58,6 +66,6 @@ The broader Carnical race run encounters Windows audit-file recovery/truncation 
 
 That broad run also times out after ten minutes in the untracked virtual-patch brute-force comparison test (`TestIndexedMatchEqualsBruteForce`). It is not represented as a passing full-module race run.
 
-`go run mage.go adr` rejects 60 pre-existing ADRs as lacking the exact technical-discussion section marker. The new ADRs 0061–0065 produce no diagnostics. The Windows checkout has CRLF in older documents, which the validator's exact marker comparison does not normalize. This check is not claimed to pass globally.
+`go run mage.go adr` rejects 60 pre-existing ADRs as lacking the exact technical-discussion section marker. The new ADRs 0061–0066 produce no diagnostics. The Windows checkout has CRLF in older documents, which the validator's exact marker comparison does not normalize. This check is not claimed to pass globally.
 
 WSL's Ubuntu environment first reported a read-only home when creating the Go cache and subsequently failed to start. Linux confinement and the full Linux CI matrix have not been verified by these runs.

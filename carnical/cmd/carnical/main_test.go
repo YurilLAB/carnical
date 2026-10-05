@@ -35,6 +35,7 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 	type received struct {
 		body, encoding string
 		length         int64
+		target         string
 	}
 	requests := make(chan received, 64)
 	app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -44,7 +45,7 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 				http.Error(w, "bad body", 400)
 				return
 			}
-			requests <- received{string(body), r.Header.Get("Content-Encoding"), r.ContentLength}
+			requests <- received{string(body), r.Header.Get("Content-Encoding"), r.ContentLength, r.RequestURI}
 		}
 		w.WriteHeader(200)
 	}))
@@ -92,6 +93,18 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 		{name: "block GET mutation with CRS off", mode: "block", method: "GET", target: "/graphql?query=mutation%7BdeleteUser%7D", status: 403, logRule: `"rule":5002310`},
 		{name: "selected GET query beside mutation", mode: "block", method: "GET", target: "/graphql?query=query+Read%7Ba%7D+mutation+Write%7Bb%7D&operationName=Read", status: 200},
 		{name: "valid JSON", mode: "block", ct: "application/json", body: good, status: 200},
+		{name: "query malformed escape", mode: "block", method: "GET", target: "/api?x=%zz", status: 400},
+		{name: "query raw semicolon", mode: "block", method: "GET", target: "/api?x=1;y=2", status: 400},
+		{name: "query escaped NUL", mode: "block", ct: "application/json", body: good, target: "/api?x=%00", status: 400},
+		{name: "query invalid UTF-8", mode: "block", method: "GET", target: "/api?x=%ff", status: 400},
+		{name: "query prototype key", mode: "block", method: "GET", target: "/api?user%5B__proto__%5D%5Badmin%5D=1", status: 400},
+		{name: "valid query preserves target", mode: "block", method: "GET", target: "/api?q=a%3Bb%26c&tag%5B%5D=red&tag%5B%5D=blue", status: 200},
+		{name: "query duplicate monitor", mode: "block", method: "GET", target: "/api?id=1&%69D=2", status: 200, logRule: `"rule":5002802`},
+		{name: "query duplicate opt-in block", mode: "block", policy: `{"rules":{"query-duplicate-param":"block"}}`, method: "GET", target: "/api?id=1&id=2", status: 400},
+		{name: "query semicolon monitor forwards unchanged", mode: "monitor", method: "GET", target: "/api?x=1;y=2", status: 200, logRule: `"rule":5002805`},
+		{name: "query byte cap", mode: "block", policy: `{"max_query_bytes":4}`, method: "GET", target: "/api?a=123", status: 414},
+		{name: "query count policy", mode: "block", policy: `{"query":{"max_params":1}}`, method: "GET", target: "/api?a=1&b=2", status: 400},
+		{name: "query monitor cap still checks body", mode: "block", policy: `{"max_query_bytes":4,"rules":{"query-too-large":"monitor"}}`, target: "/api?a=123", ct: "application/json", body: `{"a":1,"a":2}`, status: 400, logRule: `"rule":5002103`},
 		{name: "duplicate JSON key", mode: "block", ct: "application/json", body: `{"a":1,"a":2}`, status: 400, logRule: `"rule":5002103`},
 		{name: "XML external entity", mode: "block", ct: "text/xml", body: `<!DOCTYPE a [<!ENTITY x SYSTEM "file:///etc/passwd">]><a>&x;</a>`, status: 400},
 		{name: "custom GraphQL depth", mode: "block", policy: `{"graphql":{"max_depth":2}}`, target: "/graphql", ct: "application/json", body: `{"query":"{a{b{c}}}"}`, status: 400},
@@ -262,6 +275,9 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 					}
 					if got.body != want || got.encoding != "" || got.length != int64(len(want)) {
 						t.Fatalf("origin received %d body bytes, encoding %q, length %d", len(got.body), got.encoding, got.length)
+					}
+					if got.target != requestTarget {
+						t.Fatal("origin request target changed")
 					}
 				default:
 					if want == 200 {

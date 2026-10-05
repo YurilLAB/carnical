@@ -35,6 +35,7 @@ Start every site with `"monitor": true`, read what is found for a few days, set 
 | gzip, deflate | A second layer, any other encoding, a corrupt or truncated stream, a wrong checksum, anything after the stream (a second gzip member is anything after it), output over 1 MiB, a ratio over 100:1 |
 | YAML (off unless allowed) | Any explicit tag, more than 4 anchors or 8 aliases, depth over 32, more than 10,000 nodes, a body over 32 KiB, more than one document (an empty one counts), a duplicate key |
 | Form | A bad percent escape, an escaped or raw NUL or control character, `;` as a separator, invalid UTF-8, more than 1,000 parameters, over-long names and values, brackets nested over 8, `__proto__` names; duplicate names are recorded |
+| URL query | The same parameter grammar checks on every method and endpoint, with independent query rules/limits; raw queries over 64 KiB; repeated parameters are monitored by default, with explicit `[]` arrays supported |
 | Multipart | No boundary, an invalid or over-long boundary, more than 100 parts, a part header that does not follow the grammar, a repeated Content-Disposition or Content-Type, a `filename` and `filename*` that disagree, a nested multipart, a transfer encoding other than 7bit, 8bit or binary, a bare line feed, no closing boundary, data before the first or after the last boundary, a line that starts with the boundary and is not a delimiter, a part with no name |
 | Mismatch | A body that starts like JSON, XML or multipart under a Content-Type that says form, `text/plain` or multipart (or none); a body declared as JSON or XML that does not start like it |
 
@@ -50,8 +51,11 @@ All fields are optional; a field left out (or zero) takes its default. No limit 
 | `allow_opaque`, `opaque_max_bytes` | Opaque types the site receives (a media type or a prefix ending in `*`) and their size cap (default 64 KiB). |
 | `allowed_charsets` | Default `utf-8`, `us-ascii`, `iso-8859-1`, `windows-1252`. |
 | `max_body_bytes` | Largest body after decompression (default 1 MiB). |
+| `max_query_bytes` | Largest raw URL query scanned (default 64 KiB). The proxy's request-target/header cap also applies. |
 | `graphql_paths` | Exact paths that are GraphQL endpoints, in addition to any path with a segment called `graphql` or `graphiql`. |
-| `json`, `xml`, `graphql`, `ndjson`, `encoding`, `yaml`, `form`, `multipart` | The limits of each parser. Each field is named, with its default, in the Go type (`policy.go`). |
+| `json`, `xml`, `graphql`, `ndjson`, `encoding`, `yaml`, `form`, `query`, `multipart` | The limits of each parser. `query` uses the same fields/defaults as `form` (1000 parameters, 256 name bytes, 65536 value bytes, bracket depth 8), applied independently to the URL. Each field is named, with its default, in the Go type (`policy.go`). |
+
+Query names and values are percent-decoded once for validation and must be UTF-8. Valid encoded separators remain values; raw semicolons are refused because parsers disagree about them. Duplicate query names are compared after escape decoding and case folding; the default is monitoring, with `query-duplicate-param: block` available for APIs that require singular parameters. All four GraphQL protocol parameters still reject repetition independently. The query is never rewritten. A query beyond its scan budget is refused in block mode; monitoring or disabling that budget allows it without complete query analysis. Body inspection continues even when query analysis stops at a monitored budget.
 
 ### How GraphQL is found
 
@@ -66,7 +70,7 @@ A request to a GraphQL path must be a GraphQL request: its query must parse. A r
 * **`text/plain` is checked for a body that is a whole JSON or XML document** (it starts like one and ends like one): that is how a cross-site request carries JSON with no preflight. Plain prose that starts with a bracket is left alone. An HTML snippet posted as `text/plain` is refused as XML; a site that does this sets `mismatch-xml-body` to `monitor`.
 * **Gzip's `x-gzip` alias, a second member, and `deflate` without a zlib header are refused** (`allow_raw_deflate` accepts the last). These are differences between servers, and the proxy only passes `gzip` and `deflate` through anyway.
 * **The ratio limit does not apply under 4 KiB of output.** A few hundred bytes of repetitive JSON can compress past 100:1 and is not an attack. Above that, the limit applied is the smaller of the output cap and 100 times the compressed size.
-* **Decompression reads at most the limit plus one byte.** The time and memory a compressed body can cost depend on the limit, not on what the stream claims to hold. The decompressed body may be larger than the proxy's `MaxFormBody` (128 KiB), which applies to what was sent: set `encoding.max_output` to 131072 on a site that has no upload so that the rule set never sees more than it would from an uncompressed request.
+* **Decompression reads at most the limit plus one byte.** The time and memory a compressed body can cost depend on the limit, not on what the stream claims to hold. The proxy also checks final decompressed bytes against `MaxFormBody` (128 KiB for non-uploads), independently of the format inspector's mode and output limit. Uploaded content and filenames are checked after decompression.
 * **XML text split by a comment or CDATA section is refused.** Coraza hands the rules the text pieces of an element separately, so `sel<!-- -->ect` is not seen whole by them and is by the application (README, "Known limits"). One run of text, or one CDATA section alone, is accepted; `a<!-- -->b`, `a<![CDATA[b]]>` and two CDATA sections are not. This also refuses `hello <!-- note --> world`, which no request has a reason to send.
 * **A refused or monitored finding never quotes the request.** A message is built from a rule's fixed sentence, one of a fixed list of phrases (`details.go`, an enumeration, so no string from the request can be passed) and numbers. A test puts a marker in every place content can reach and checks that no message repeats it.
 
@@ -176,6 +180,15 @@ Default is what happens when the policy does not say. Status is what the visitor
 | 5002714 | `multipart-delimiter` | block | 400 | high | a boundary line that is not a clean delimiter |
 | 5002715 | `multipart-disposition` | block | 400 | high | a missing or invalid Content-Disposition |
 | 5002716 | `multipart-duplicate-param` | block | 400 | high | a Content-Disposition parameter given more than once |
+| 5002800 | `query-bad-escape` | block | 400 | high | a URL query percent escape that is not two hex digits |
+| 5002801 | `query-control-char` | block | 400 | high | a NUL or control character in URL query parameters |
+| 5002802 | `query-duplicate-param` | monitor | 400 | medium | a URL query parameter name given more than once |
+| 5002803 | `query-limit` | block | 400 | high | URL query parameters over a count or length limit |
+| 5002804 | `query-bracket-depth` | block | 400 | high | a URL query parameter name with brackets nested deeper than the limit |
+| 5002805 | `query-semicolon` | block | 400 | high | an unescaped semicolon in URL query parameters |
+| 5002806 | `query-proto-key` | block | 400 | high | a URL query parameter name that pollutes an object prototype |
+| 5002807 | `query-invalid-utf8` | block | 400 | high | URL query parameters that are not valid UTF-8 |
+| 5002808 | `query-too-large` | block | 414 | high | a raw URL query larger than the site allows |
 | 5002990 | `policy-invalid` | block | 503 | critical | the formats policy is invalid, so bodies are refused |
 | 5002991 | `internal-error` | block | 503 | critical | the body could not be checked |
 

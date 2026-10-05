@@ -38,7 +38,7 @@ func reg(id int, name string, status int, severity string, def Action, text stri
 }
 
 // The identifiers are grouped by format: 20xx content type, 202x shared text rules, 204x mismatch, 207x encoding, 21xx JSON,
-// 22xx XML, 23xx GraphQL, 24xx NDJSON, 25xx YAML, 26xx form, 27xx multipart, 299x the inspector itself.
+// 22xx XML, 23xx GraphQL, 24xx NDJSON, 25xx YAML, 26xx form, 27xx multipart, 28xx URL query, 299x the inspector itself.
 // docs/formats.md has the same table, and a test fails if the two differ.
 var (
 	// Content type.
@@ -150,6 +150,17 @@ var (
 	rMPDelim      = reg(5002714, "multipart-delimiter", 400, "high", Block, "a boundary line that is not a clean delimiter")
 	rMPDisp       = reg(5002715, "multipart-disposition", 400, "high", Block, "a missing or invalid Content-Disposition")
 	rMPDupParam   = reg(5002716, "multipart-duplicate-param", 400, "high", Block, "a Content-Disposition parameter given more than once")
+
+	// URL query parameters, independent of form-body policy.
+	rQueryEscape = reg(5002800, "query-bad-escape", 400, "high", Block, "a URL query percent escape that is not two hex digits")
+	rQueryCtl    = reg(5002801, "query-control-char", 400, "high", Block, "a NUL or control character in URL query parameters")
+	rQueryDup    = reg(5002802, "query-duplicate-param", 400, "medium", Monitor, "a URL query parameter name given more than once")
+	rQueryLimit  = reg(5002803, "query-limit", 400, "high", Block, "URL query parameters over a count or length limit")
+	rQueryBrkt   = reg(5002804, "query-bracket-depth", 400, "high", Block, "a URL query parameter name with brackets nested deeper than the limit")
+	rQuerySemi   = reg(5002805, "query-semicolon", 400, "high", Block, "an unescaped semicolon in URL query parameters")
+	rQueryProto  = reg(5002806, "query-proto-key", 400, "high", Block, "a URL query parameter name that pollutes an object prototype")
+	rQueryUTF8   = reg(5002807, "query-invalid-utf8", 400, "high", Block, "URL query parameters that are not valid UTF-8")
+	rQuerySize   = reg(5002808, "query-too-large", 414, "high", Block, "a raw URL query larger than the site allows")
 
 	// The inspector itself.
 	rPolicyInvalid = reg(5002990, "policy-invalid", 503, "critical", Block, "the formats policy is invalid, so bodies are refused")

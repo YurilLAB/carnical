@@ -3,8 +3,6 @@
 package formats
 
 import (
-	"strings"
-
 	"github.com/YurilLAB/coraza/carnical/inspect"
 )
 
@@ -294,31 +292,21 @@ func (in *Inspector) graphQLParams(f *finder, g *gqlParams, mustParse bool) bool
 // what the protocol allows, and a browser can send one), and on any method at a GraphQL endpoint. It returns false when the caller
 // should stop.
 func (in *Inspector) queryCheck(f *finder, r *inspect.Request, gqlPath bool) bool {
-	if r.Method != "GET" && !gqlPath {
-		return true
-	}
 	raw := r.RawQuery
-	// A parameter named query must contain "query" unless its name is percent-encoded.
-	if !gqlPath && !strings.Contains(raw, "query") && strings.IndexByte(raw, '%') < 0 {
-		return true
+	if len(raw) > in.pol.MaxQueryBytes {
+		f.hitLimit(rQuerySize, dNone, in.pol.MaxQueryBytes, -1)
+		return !f.blocked // retain the scan bound in monitor/off, then continue inspecting the body
 	}
 	var g gqlParams
-	for raw != "" {
-		var pair string
-		pair, raw, _ = strings.Cut(raw, "&")
-		name, value, _ := strings.Cut(pair, "=")
-		dn, ok := unescapeQuery(name)
-		if !ok || dn != "query" && dn != "variables" && dn != "operationName" && dn != "extensions" {
-			continue
-		}
-		dv, ok := unescapeQuery(value)
-		if !ok {
-			if gqlPath && f.hit(rFormEscape, -1, dInQueryString) {
-				return false
-			}
-			continue
-		}
-		g.set(dn, dv)
+	var capture *gqlParams
+	if r.Method == "GET" || gqlPath {
+		capture = &g
+	}
+	if !checkParameters(f, []byte(raw), &in.pol.Query, true, capture, queryParameterRules) {
+		return !f.blocked // a parser limit must not skip body inspection in monitor/off
+	}
+	if capture == nil {
+		return true
 	}
 	return in.graphQLParams(f, &g, gqlPath)
 }

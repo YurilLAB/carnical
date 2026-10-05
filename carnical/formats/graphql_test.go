@@ -262,7 +262,7 @@ var graphqlRows = register("graphql", []row{
 	{name: "the query given twice", path: "/graphql", ct: appJSON, body: `{"query":"{a}","query":"{b}"}`, want: idJSONDup},
 	{name: "the query given twice in different case", path: "/graphql", ct: appJSON, body: `{"query":"{a}","Query":"{__schema{types{name}}}"}`, want: idJSONDup},
 	{name: "the query given twice by get", method: "GET", path: "/graphql", query: "query=%7Ba%7D&query=%7Bb%7D", want: idGQLShape},
-	{name: "a bad escape in the query by get", method: "GET", path: "/graphql", query: "query=%7Ba%zz%7D", want: idFormEscape},
+	{name: "a bad escape in the query by get", method: "GET", path: "/graphql", query: "query=%7Ba%zz%7D", want: 5002800},
 	{name: "variables by get that are not json", method: "GET", path: "/graphql", query: "query=%7Ba%7D&variables=%7B", want: idJSONSyntax},
 	{name: "variables by get that are an array", method: "GET", path: "/graphql", query: "query=%7Ba%7D&variables=%5B1%5D", want: idGQLShape},
 	{name: "variables by get with a duplicate key", method: "GET", path: "/graphql", query: "query=%7Ba%7D&variables=%7B%22x%22%3A1%2C%22x%22%3A2%7D", want: idJSONDup},

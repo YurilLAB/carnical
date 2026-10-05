@@ -43,6 +43,8 @@ type Policy struct {
 	AllowedCharsets []string `json:"allowed_charsets,omitempty"`
 	// MaxBodyBytes is the largest body accepted after any decompression (default 1 MiB).
 	MaxBodyBytes int `json:"max_body_bytes,omitempty"`
+	// MaxQueryBytes is the largest raw URL query inspected (default 65536); server request-target limits also apply.
+	MaxQueryBytes int `json:"max_query_bytes,omitempty"`
 	// GraphQLPaths names paths (exact, as received) that are GraphQL endpoints, in addition to any path with a segment called graphql or
 	// graphiql. A request to one is checked as GraphQL; a request elsewhere is checked only if its query parses as GraphQL.
 	GraphQLPaths []string `json:"graphql_paths,omitempty"`
@@ -54,6 +56,7 @@ type Policy struct {
 	Encoding  EncodingLimits  `json:"encoding"`
 	YAML      YAMLLimits      `json:"yaml"`
 	Form      FormLimits      `json:"form"`
+	Query     FormLimits      `json:"query"`
 	Multipart MultipartLimits `json:"multipart"`
 }
 
@@ -119,7 +122,7 @@ type YAMLLimits struct {
 	MaxAliases int `json:"max_aliases,omitempty"` // aliases (*name) used (default 8)
 }
 
-// FormLimits bound an application/x-www-form-urlencoded body.
+// FormLimits bound URL-encoded parameters in a body or URL query, independently for each channel.
 type FormLimits struct {
 	MaxParams       int `json:"max_params,omitempty"`        // default 1000
 	MaxNameLen      int `json:"max_name_len,omitempty"`      // bytes in a decoded name (default 256)
@@ -183,6 +186,7 @@ func (p Policy) withDefaults() Policy {
 	}
 	def(&p.OpaqueMaxBytes, 64<<10)
 	def(&p.MaxBodyBytes, 1<<20)
+	def(&p.MaxQueryBytes, 64<<10)
 
 	def(&p.JSON.MaxDepth, 64)
 	def(&p.JSON.MaxNodes, 50000)
@@ -224,6 +228,10 @@ func (p Policy) withDefaults() Policy {
 	def(&p.Form.MaxNameLen, 256)
 	def(&p.Form.MaxValueLen, 64<<10)
 	def(&p.Form.MaxBracketDepth, 8)
+	def(&p.Query.MaxParams, 1000)
+	def(&p.Query.MaxNameLen, 256)
+	def(&p.Query.MaxValueLen, 64<<10)
+	def(&p.Query.MaxBracketDepth, 8)
 
 	def(&p.Multipart.MaxParts, 100)
 	def(&p.Multipart.MaxHeaderBytes, 8192)
@@ -296,6 +304,7 @@ func (p Policy) Validate() error {
 	}
 	for _, b := range []bound{
 		{"opaque_max_bytes", p.OpaqueMaxBytes, ceilBytes}, {"max_body_bytes", p.MaxBodyBytes, ceilBytes},
+		{"max_query_bytes", p.MaxQueryBytes, ceilBytes},
 		{"json.max_depth", p.JSON.MaxDepth, ceilDepth}, {"json.max_nodes", p.JSON.MaxNodes, ceilCount}, {"json.max_keys", p.JSON.MaxKeys, ceilCount},
 		{"json.max_key_len", p.JSON.MaxKeyLen, ceilBytes}, {"json.max_string_len", p.JSON.MaxStringLen, ceilBytes}, {"json.max_number_len", p.JSON.MaxNumberLen, 1000},
 		{"xml.max_depth", p.XML.MaxDepth, ceilDepth}, {"xml.max_attributes", p.XML.MaxAttributes, 10000}, {"xml.max_elements", p.XML.MaxElements, ceilCount},
@@ -312,6 +321,8 @@ func (p Policy) Validate() error {
 		{"yaml.max_anchors", p.YAML.MaxAnchors, 10000}, {"yaml.max_aliases", p.YAML.MaxAliases, 10000},
 		{"form.max_params", p.Form.MaxParams, ceilCount}, {"form.max_name_len", p.Form.MaxNameLen, 65536}, {"form.max_value_len", p.Form.MaxValueLen, ceilBytes},
 		{"form.max_bracket_depth", p.Form.MaxBracketDepth, 1000},
+		{"query.max_params", p.Query.MaxParams, ceilCount}, {"query.max_name_len", p.Query.MaxNameLen, 65536}, {"query.max_value_len", p.Query.MaxValueLen, ceilBytes},
+		{"query.max_bracket_depth", p.Query.MaxBracketDepth, 1000},
 		{"multipart.max_parts", p.Multipart.MaxParts, 100000}, {"multipart.max_header_bytes", p.Multipart.MaxHeaderBytes, 1 << 20}, {"multipart.max_headers", p.Multipart.MaxHeaders, 1000},
 		{"multipart.max_boundary_len", p.Multipart.MaxBoundaryLen, 200}, {"multipart.max_name_len", p.Multipart.MaxNameLen, 65536},
 	} {
