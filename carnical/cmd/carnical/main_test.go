@@ -7,8 +7,10 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/rand"
 	"net"
 	"net/http"
@@ -20,6 +22,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/YurilLAB/coraza/carnical/formats"
+	"github.com/YurilLAB/coraza/carnical/inspect"
 )
 
 // This is executable startup and TCP forwarding behavior, which cannot be expressed as an engine profile.
@@ -80,6 +85,9 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 		return "--B\r\nContent-Disposition: form-data; name=\"file\"; filename=\"" + name + "\"\r\nContent-Type: text/plain\r\n\r\n" + content + "\r\n--B--\r\n"
 	}
 	tests := []struct {
+		alsoRules                                                                   []int
+		statsRule                                                                   int
+		statsBlocked, statsMonitored                                                uint64
 		repeat                                                                      int
 		apiRate                                                                     int
 		apiPaths                                                                    string
@@ -92,6 +100,16 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 		{name: "default monitor logs a GET mutation", method: "GET", target: "/graphql?query=mutation%7BdeleteUser%7D", status: 200, logRule: `"rule":5002310`},
 		{name: "block GET mutation with CRS off", mode: "block", method: "GET", target: "/graphql?query=mutation%7BdeleteUser%7D", status: 403, logRule: `"rule":5002310`},
 		{name: "block HEAD mutation with CRS off", mode: "block", method: "HEAD", target: "/graphql?query=mutation%7BdeleteUser%7D", status: 403, logRule: "\"rule\":5002314"},
+		{name: "blocked bypass totals", mode: "block", method: "HEAD", target: "/api/gql?%71uery=%6d%75%74%61%74%69%6f%6e%7BSECRET_TOKEN_CLI_TEST%7D", repeat: 3, status: 403, logRule: "\"rule\":5002314",
+			extraArgs: []string{"-formats-stats-interval", "100ms"}, statsRule: 5002314, statsBlocked: 3},
+		{name: "multiple independent bypass detections", mode: "monitor", method: "HEAD", target: "/graphql", ct: "application/json",
+			body: "{\"query\":\"{a}\",\"query\":\"mutation{SECRET_TOKEN_CLI_TEST}\"}", status: 200, logRule: "\"rule\":5002314", alsoRules: []int{5002009, 5002103},
+			extraArgs: []string{"-formats-stats-interval", "100ms"}, statsRule: 5002314, statsMonitored: 1},
+		{name: "monitored related bypass totals", mode: "monitor", method: "OPTIONS", target: "/graphql", ct: "application/x-www-form-urlencoded", body: "%71uery=mutation%7BSECRET_TOKEN_CLI_TEST%7D", repeat: 2, status: 200, logRule: "\"rule\":5002314",
+			extraArgs: []string{"-formats-stats-interval", "100ms"}, statsRule: 5002314, statsMonitored: 2},
+		{name: "invalid negative stats interval", extraArgs: []string{"-formats-stats-interval", "-1s"}, fails: true},
+		{name: "invalid excessive stats frequency", extraArgs: []string{"-formats-stats-interval", "50ms"}, fails: true},
+		{name: "invalid long stats interval", extraArgs: []string{"-formats-stats-interval", "25h"}, fails: true},
 		{name: "block discovered HEAD mutation", mode: "block", method: "HEAD", target: "/api/gql?query=mutation%7BdeleteUser%7D", status: 403},
 		{name: "block OPTIONS mutation with CRS off", mode: "block", method: "OPTIONS", target: "/api/gql?query=mutation%7BdeleteUser%7D", status: 403},
 		{name: "block TRACE mutation with CRS off", mode: "block", method: "TRACE", target: "/api/gql?query=mutation%7BdeleteUser%7D", status: 403},
@@ -134,7 +152,7 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 		{name: "compressed ordinary upload", mode: "block", ct: "multipart/form-data; boundary=B", body: compress(upload("photo.txt", "ordinary text")), originBody: upload("photo.txt", "ordinary text"), encoding: "gzip", allowEncoding: true, status: 200},
 		{name: "gzip opt-in required", mode: "block", ct: "application/json", body: packed.String(), encoding: "gzip", status: 415},
 		{name: "corrupt gzip refused", mode: "block", ct: "application/json", body: "bad-gzip", encoding: "gzip", allowEncoding: true, status: 400},
-		{name: "API quota holds with CRS and formats off", mode: "off", apiRate: 2, target: "/api/orders", statuses: []int{200, 200, 429}, logRule: `"rule":5000040`},
+		{name: "API quota holds with CRS and formats off", mode: "off", apiRate: 2, target: "/api/orders", statuses: []int{200, 200, 429}, logRule: `"rule":5000042`},
 		{name: "API prefixes share a budget", mode: "off", apiRate: 2, targets: []string{"/api/orders", "/graphql", "/api/users"}, statuses: []int{200, 200, 429}},
 		{name: "API forwarding spoof cannot rotate identity", mode: "off", apiRate: 1, target: "/api", forwarding: []string{"198.51.100.1", "198.51.100.2"}, statuses: []int{200, 429}},
 		{name: "trusted clients have separate quotas", mode: "off", apiRate: 1, target: "/api", extraArgs: []string{"-trusted-proxies", "127.0.0.0/8"}, forwarding: []string{"198.51.100.1", "198.51.100.1", "198.51.100.2"}, statuses: []int{200, 429, 200}},
@@ -297,6 +315,38 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 					}
 				}
 			}
+			if tc.statsRule != 0 {
+				deadline := time.Now().Add(2 * time.Second)
+				for {
+					data, err := os.ReadFile(logPath)
+					if err != nil {
+						t.Fatal(err)
+					}
+					found := false
+					for _, line := range bytes.Split(data, []byte("\n")) {
+						var event struct {
+							Msg   string
+							Rules []struct {
+								Rule               int
+								Blocked, Monitored uint64
+							}
+						}
+						if json.Unmarshal(line, &event) != nil || event.Msg != "format protection totals" {
+							continue
+						}
+						for _, r := range event.Rules {
+							found = found || r.Rule == tc.statsRule && r.Blocked == tc.statsBlocked && r.Monitored == tc.statsMonitored
+						}
+					}
+					if found {
+						break
+					}
+					if time.Now().After(deadline) {
+						t.Fatal("compiled firewall did not report expected bypass totals")
+					}
+					time.Sleep(20 * time.Millisecond)
+				}
+			}
 			cancel()
 			_ = cmd.Wait()
 			waited = true
@@ -307,8 +357,94 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 			if tc.logRule != "" && !bytes.Contains(data, []byte(tc.logRule)) {
 				t.Fatalf("expected finding %s absent from logs", tc.logRule)
 			}
+			if tc.logRule != "" {
+				var wanted struct{ Rule int }
+				if err := json.Unmarshal([]byte("{"+tc.logRule+"}"), &wanted); err != nil {
+					t.Fatal(err)
+				}
+				blocked := tc.status >= 400
+				if len(tc.statuses) > 0 {
+					blocked = tc.statuses[len(tc.statuses)-1] >= 400
+				}
+				for _, id := range append([]int{wanted.Rule}, tc.alsoRules...) {
+					matches := 0
+					for _, line := range bytes.Split(data, []byte("\n")) {
+						var event struct {
+							Msg        string
+							Rule       int
+							Disruptive bool
+						}
+						if json.Unmarshal(line, &event) == nil && event.Msg == "rule matched" && event.Rule == id {
+							matches++
+							if event.Disruptive != blocked {
+								t.Fatal("finding logged with incorrect enforcement outcome")
+							}
+						}
+					}
+					if matches < max(tc.repeat, 1) {
+						t.Fatalf("not every attempt produced detection %d", id)
+					}
+				}
+			}
 			if bytes.Contains(data, []byte("SECRET_TOKEN_CLI_TEST")) {
 				t.Fatal("default log disclosed request content")
+			}
+		})
+	}
+}
+
+type statsWriter struct {
+	bytes.Buffer
+	emitted chan struct{}
+}
+
+func (w *statsWriter) Write(p []byte) (int, error) {
+	n, err := w.Buffer.Write(p)
+	select {
+	case w.emitted <- struct{}{}:
+	default:
+	}
+	return n, err
+}
+
+func TestFormatStatsLifecycle(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		interval time.Duration
+		periodic bool
+		off      bool
+		want     int
+	}{
+		{"graceful final snapshot", time.Hour, false, false, 1},
+		{"unchanged final snapshot suppressed", 100 * time.Millisecond, true, false, 1},
+		{"statistics disabled", 0, false, false, 0},
+		{"formats disabled", 100 * time.Millisecond, false, true, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := formats.New(formats.Policy{Monitor: true})
+			in.Inspect(&inspect.Request{Method: "HEAD", Path: "/graphql", RawQuery: "query=mutation%7BSECRET_TOKEN_CLI_TEST%7D"})
+			if tc.off {
+				in = nil
+			}
+			out := &statsWriter{emitted: make(chan struct{}, 1)}
+			stop := startFormatStats(slog.New(slog.NewJSONHandler(out, nil)), in, tc.interval)
+			defer stop()
+			if tc.periodic {
+				select {
+				case <-out.emitted:
+				case <-time.After(2 * time.Second):
+					t.Fatal("periodic statistics were not emitted")
+				}
+			}
+			stop() // joins the writer before reading the buffer
+			if got := bytes.Count(out.Bytes(), []byte("format protection totals")); got != tc.want {
+				t.Fatalf("%d snapshots, want %d", got, tc.want)
+			}
+			if bytes.Contains(out.Bytes(), []byte("SECRET_TOKEN_CLI_TEST")) {
+				t.Fatal("statistics expose request content")
+			}
+			if tc.want != 0 && !bytes.Contains(out.Bytes(), []byte("\"monitored\":1")) {
+				t.Fatal("final snapshot lost the finding")
 			}
 		})
 	}

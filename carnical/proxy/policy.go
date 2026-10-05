@@ -30,7 +30,7 @@ const (
 	idXMLRPC          = 5000021
 	idRateLimited     = 5000022
 	idTooManyConns    = 5000030
-	idAPIRateLimited  = 5000040
+	idAPIRateLimited  = 5000042
 	idRateStateFull   = 5000041
 )
 

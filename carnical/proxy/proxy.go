@@ -99,7 +99,7 @@ type Config struct {
 	ResponseHeaderTimeout time.Duration
 	// OnMatch is called for every rule that matches. It must not block.
 	OnMatch func(Match)
-	// LogDetails adds the client address, the URI and the matched data to a Match. They hold what the visitor
+	// LogDetails adds the client address, URI, matched data and expanded message to a Match. They hold what the visitor
 	// sent, which can include personal data and credentials, so they are left out unless asked for.
 	LogDetails bool
 }
@@ -112,7 +112,7 @@ type Match struct {
 	TransactionID string
 	Disruptive    bool
 	// Set only with Config.LogDetails.
-	ClientIP, URI, Data string
+	ClientIP, URI, Data, ExpandedMessage string
 }
 
 // Edge is the proxy. It is an http.Handler.
@@ -241,10 +241,13 @@ func (e *Edge) onMatch(m types.MatchedRule) {
 	if e.cfg.OnMatch == nil {
 		return
 	}
-	match := Match{RuleID: m.Rule().ID(), Severity: m.Rule().Severity().String(), Message: m.Message(),
+	// Coraza's Message is macro-expanded and may contain credentials or arbitrary request values.
+	// Its public metadata exposes no unexpanded message; keep the default summary fixed.
+	match := Match{RuleID: m.Rule().ID(), Severity: m.Rule().Severity().String(), Message: "Coraza rule matched",
 		TransactionID: m.TransactionID(), Disruptive: m.Disruptive()}
 	if e.cfg.LogDetails {
 		match.ClientIP, match.URI, match.Data = m.ClientIPAddress(), m.URI(), m.Data()
+		match.ExpandedMessage = m.Message()
 	}
 	e.cfg.OnMatch(match)
 }

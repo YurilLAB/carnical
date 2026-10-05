@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package proxy
 
 import (
@@ -374,12 +376,19 @@ func TestMatchesAreReportedWithoutWhatTheVisitorSentUnlessAsked(t *testing.T) {
 	collect := func(into *[]Match) func(Match) {
 		return func(m Match) { mu.Lock(); *into = append(*into, m); mu.Unlock() }
 	}
-	a := start(t, func(c *Config) { c.OnMatch = collect(&plain) })
-	b := start(t, func(c *Config) { c.OnMatch = collect(&detailed); c.LogDetails = true })
+	const expanded = "SecRule ARGS:note \"@rx .\" \"id:5000099,phase:2,deny,status:403,log,msg:'request=%{ARGS.note}',logdata:'%{ARGS.note}'\""
+	a := start(t, func(c *Config) { c.OnMatch = collect(&plain); c.CRS.After = expanded })
+	b := start(t, func(c *Config) { c.OnMatch = collect(&detailed); c.CRS.After = expanded; c.LogDetails = true })
 	secret := "SECRETMARK-4711"
 	attack := get("/search?q=" + url.QueryEscape("1' OR '"+secret+"'='"+secret+"' --"))
 	a.raw(t, attack)
 	b.raw(t, attack)
+	// Macro-expanded messages can contain request data even when logdata and URI are omitted.
+	for _, s := range []*setup{a, b} {
+		if status, _ := s.raw(t, get("/profile?note="+secret)); status != 403 {
+			t.Fatalf("macro rule status %d", status)
+		}
+	}
 	mu.Lock()
 	defer mu.Unlock()
 	if len(plain) == 0 || len(detailed) == 0 {
@@ -387,18 +396,19 @@ func TestMatchesAreReportedWithoutWhatTheVisitorSentUnlessAsked(t *testing.T) {
 	}
 	for _, m := range plain {
 		text := fmt.Sprintf("%+v", m)
-		if strings.Contains(text, secret) || strings.Contains(text, "127.0.0.1") || m.ClientIP != "" || m.URI != "" || m.Data != "" {
+		if strings.Contains(text, secret) || strings.Contains(text, "127.0.0.1") || m.ClientIP != "" || m.URI != "" || m.Data != "" || m.ExpandedMessage != "" {
 			t.Errorf("a default match carries request data: %+v", m)
 		}
 		if m.RuleID == 0 || m.Message == "" {
 			t.Errorf("a match without a rule: %+v", m)
 		}
 	}
-	found := false
+	found, expandedFound := false, false
 	for _, m := range detailed {
 		found = found || strings.Contains(m.URI, secret) || strings.Contains(m.Data, secret)
+		expandedFound = expandedFound || m.RuleID == 5000099 && strings.Contains(m.ExpandedMessage, secret)
 	}
-	if !found {
+	if !found || !expandedFound {
 		t.Error("LogDetails did not add the request details")
 	}
 }

@@ -69,5 +69,10 @@ func (f *finder) record(r *rule, d detail, limit, off int) bool {
 		msg += " at byte " + strconv.Itoa(off)
 	}
 	f.verdicts = append(f.verdicts, inspect.Verdict{ID: r.id, Message: msg, Block: block, Status: r.status, Severity: r.severity})
+	if block {
+		f.in.counts[r.idx].blocked.Add(1)
+	} else {
+		f.in.counts[r.idx].monitored.Add(1)
+	}
 	return block
 }

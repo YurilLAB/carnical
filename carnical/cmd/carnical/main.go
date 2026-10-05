@@ -50,6 +50,7 @@ func run() error {
 	maxBody := flag.Int64("max-body", 1<<20, "largest request body inspected, in bytes; a larger body is refused")
 	formatsMode := flag.String("formats-mode", "monitor", "request formats: monitor (default), block, or off; independent of -mode and overrides policy monitor")
 	formatsPolicy := flag.String("formats-policy", "", "JSON request-format policy file (maximum 1 MiB; default: built-in format limits)")
+	formatsStats := flag.Duration("formats-stats-interval", time.Minute, "log changed per-rule blocked/monitored format totals (0 = off; 100ms to 24h)")
 	requestEncoding := flag.Bool("allow-request-encoding", false, "allow one bounded gzip or deflate layer through the format inspector (requires formats enabled)")
 	responses := flag.Bool("inspect-responses", false, "also run the CRS response rules (buffers text, HTML and XML responses)")
 	methods := flag.String("allowed-methods", "", "comma-separated HTTP methods to allow (default: the CRS list GET HEAD POST OPTIONS)")
@@ -80,7 +81,7 @@ func run() error {
 	evalBudget := flag.Duration("eval-budget", 2*time.Second, "most time each phase of rule evaluation may take for one request; a request over it is refused with 503")
 	maxEval := flag.Int("max-evaluations", 0, "requests in rule evaluation at once (0 = the number of CPUs, negative = no limit)")
 	maxForm := flag.Int64("max-form-body", 128<<10, "largest request body that is not a file upload, in bytes; uploads may be as large as -max-body")
-	details := flag.Bool("log-details", false, "log the client address, URI and matched data of each rule match (personal data)")
+	details := flag.Bool("log-details", false, "log client address, URI, matched data and macro-expanded messages (may contain credentials)")
 	certFile := flag.String("tls-cert", "", "TLS certificate file")
 	keyFile := flag.String("tls-key", "", "TLS key file")
 	showVersion := flag.Bool("version", false, "print the CRS version that is embedded and exit")
@@ -99,6 +100,9 @@ func run() error {
 	}
 	if (*certFile == "") != (*keyFile == "") {
 		return errors.New("give both -tls-cert and -tls-key, or neither")
+	}
+	if *formatsStats != 0 && (*formatsStats < 100*time.Millisecond || *formatsStats > 24*time.Hour) {
+		return errors.New("-formats-stats-interval must be 0 or between 100ms and 24h")
 	}
 	formatInspector, err := configureFormats(*formatsMode, *formatsPolicy, *requestEncoding)
 	if err != nil {
@@ -144,9 +148,9 @@ func run() error {
 		Responses: proxy.ResponsePolicy{KeepBanners: *keepBanners, KeepCaching: *keepCaching}, MaxConnsPerIP: *maxConns,
 		Inspectors: inspectors, AllowRequestEncoding: *requestEncoding,
 		OnMatch: func(m proxy.Match) {
-			attrs := []any{"rule", m.RuleID, "severity", m.Severity, "msg", m.Message, "tx", m.TransactionID, "disruptive", m.Disruptive}
+			attrs := []any{"rule", m.RuleID, "severity", m.Severity, "rule_msg", m.Message, "tx", m.TransactionID, "disruptive", m.Disruptive}
 			if *details {
-				attrs = append(attrs, "client", m.ClientIP, "uri", m.URI, "data", m.Data)
+				attrs = append(attrs, "client", m.ClientIP, "uri", m.URI, "data", m.Data, "expanded_msg", m.ExpandedMessage)
 			}
 			log.Warn("rule matched", attrs...)
 		},
@@ -193,6 +197,8 @@ func run() error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	stopStats := startFormatStats(log, formatInspector, *formatsStats)
+	defer stopStats()
 	done := make(chan error, 1)
 	go func() {
 		log.Info("listening", "addr", *listen, "upstream", target.String(), "crs", crs.Version(), "mode", *mode, "paranoia", *paranoia,

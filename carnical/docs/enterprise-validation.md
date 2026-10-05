@@ -66,6 +66,16 @@ The full normal format and executable suites pass. Scoped race checks, vet and t
 
 Review confirms method metadata is initialized inside panic recovery, every inspected envelope shares the selected-operation check, and no request rewriting or method expansion occurs. Persisted queries and nonstandard origin method aliases still require origin-specific enforcement. Two obsolete limitations in the format documentation were corrected.
 
+## Bypass telemetry and log privacy (2026-10-05)
+
+A live Coraza rule with a request macro first reproduced a secret marker in a default finding's Message, even though URI/Data were omitted. The same test now confirms a fixed default summary and an expanded message only with explicit detailed logging. A panic carrying request content is refused with 503 and a fixed failure message; a subsequent valid request still reaches the origin. Inspector failure (5000040), rate-state exhaustion (5000041) and API quota (5000042) now have distinct IDs. Rule text uses rule_msg, leaving slog's msg key for the event instead of producing duplicate JSON keys.
+
+The executable suite now has 74 cases. Added cases verify every repeated blocked/monitored bypass attempt has a finding with the correct enforcement outcome, changed per-rule totals reach the actual executable's JSON log, and neither individual findings nor aggregates contain the secret marker. One monitored HEAD body simultaneously triggers body-on-get, duplicate JSON and safe-method mutation findings; all three are independently asserted. Related encoded/form variants share the appropriate structural rule rather than relying on one attack string. Invalid reporting intervals fail before listening.
+
+Normal format/proxy/executable tests and the scoped race suite pass, with the two existing timing-test exclusions described above. The final additional executable case passes normal and race checks. Twenty concurrent workers produce exactly 100 blocked or monitored findings, batches emit once per rule per request, disabled rules remain silent, and snapshot mutation cannot change inspector state. Reporter lifecycle tests verify final flushing, suppression of unchanged snapshots, disabled reporting and format mode off. Vet, the CLI dependency vulnerability scan and Linux/amd64 cross-build pass.
+
+Review covered atomic counter storage sized only by the registry, independent snapshots, unchanged stop/reporting caps, reporter cancellation/joining, stable labels and the opt-in boundary for expanded messages/panic details. Counters describe emitted findings, reset with a new inspector and are local to one process. A forced kill cannot flush a final summary. Default Coraza summaries require rule-ID lookup; existing log consumers must adopt rule_msg and the API quota's corrected ID. These are monitoring boundaries, not evidence of production deployment or complete application authorization.
+
 ## Environment and baseline limitations
 
 `go test ./...` in the upstream module fails on existing Windows filesystem expectations and open audit/debug log handles (auditlog, operators, seclang, testing). The changed code is confined to Carnical's separate module; no upstream engine files are changed.
@@ -74,6 +84,6 @@ The broader Carnical race run encounters Windows audit-file recovery/truncation 
 
 That broad run also times out after ten minutes in the untracked virtual-patch brute-force comparison test (`TestIndexedMatchEqualsBruteForce`). It is not represented as a passing full-module race run.
 
-`go run mage.go adr` rejects 60 pre-existing ADRs as lacking the exact technical-discussion section marker. The new ADRs 0061–0067 produce no diagnostics. The Windows checkout has CRLF in older documents, which the validator's exact marker comparison does not normalize. This check is not claimed to pass globally.
+`go run mage.go adr` rejects 60 pre-existing ADRs as lacking the exact technical-discussion section marker. The new ADRs 0061–0068 produce no diagnostics. The Windows checkout has CRLF in older documents, which the validator's exact marker comparison does not normalize. This check is not claimed to pass globally.
 
 WSL's Ubuntu environment first reported a read-only home when creating the Go cache and subsequently failed to start. Linux confinement and the full Linux CI matrix have not been verified by these runs.

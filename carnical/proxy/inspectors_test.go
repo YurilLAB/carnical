@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package proxy
 
 import (
@@ -136,17 +138,22 @@ func TestInspectorsRunOnARequestWithNoBody(t *testing.T) {
 func TestAnInspectorThatPanicsRefusesTheRequestAndNotTheProxy(t *testing.T) {
 	boom := fakeInspector{"boom", func(r *inspect.Request) inspect.Result {
 		if r.Path == "/boom" {
-			panic("a bug in a signature")
+			panic(r.RawQuery)
 		}
 		return inspect.Result{}
 	}}
 	var seen matches
 	s := start(t, func(c *Config) { ruleSetOff(c); c.Inspectors = []inspect.Inspector{boom}; c.OnMatch = seen.record })
-	if status, _ := s.raw(t, get("/boom")); status != http.StatusServiceUnavailable {
+	if status, _ := s.raw(t, get("/boom?token=SECRET_INSPECTOR_CREDENTIAL")); status != http.StatusServiceUnavailable {
 		t.Fatalf("a panicking inspector: %d, want 503", status)
 	}
-	if got := seen.all(); len(got) != 1 || got[0].RuleID != idInspectorFailed || !strings.Contains(got[0].Message, "boom failed") {
+	if got := seen.all(); len(got) != 1 || got[0].RuleID != idInspectorFailed || got[0].RuleID == idAPIRateLimited || !strings.Contains(got[0].Message, "inspector failed") {
 		t.Fatalf("what was recorded: %+v", got)
+	}
+	for _, m := range seen.all() {
+		if strings.Contains(m.Message+m.ExpandedMessage, "SECRET_INSPECTOR_CREDENTIAL") {
+			t.Fatal("default failure log exposes panic data")
+		}
 	}
 	if status, _ := s.raw(t, get("/fine")); status != 200 {
 		t.Fatalf("the proxy did not carry on: %d", status)

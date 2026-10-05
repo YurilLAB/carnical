@@ -9,13 +9,14 @@
 // accepts only what RFC grammar allows, refuses what is ambiguous, and has a limit on everything an attacker can make large. If the
 // firewall will not read a body two ways, there is no second way for the application to read it.
 //
-// Inspector implements inspect.Inspector. It keeps nothing between requests, so one value serves any number of them at once. Every
+// Inspector implements inspect.Inspector. Only atomic finding counters are shared between requests; parsing state is local. Every
 // refusal has an identifier from 5002000 to 5002999 (see Rules and docs/formats.md) and a message that names the rule and a byte
 // position or a limit, never any of the request's content.
 package formats
 
 import (
 	"strings"
+	"sync/atomic"
 
 	"github.com/YurilLAB/coraza/carnical/inspect"
 )
@@ -29,18 +30,46 @@ type Inspector struct {
 	charsets map[string]bool
 	gqlPaths map[string]bool
 	err      error
+	counts   []ruleCounts
+}
+
+type ruleCounts struct {
+	blocked, monitored atomic.Uint64
+}
+
+// RuleStats is a lifetime count of emitted findings for one rule, with no request content or client labels.
+// Counts describe findings, not unique requests; parsing stops at a blocking finding and at the verdict cap.
+type RuleStats struct {
+	ID        int    `json:"rule"`
+	Name      string `json:"name"`
+	Blocked   uint64 `json:"blocked"`
+	Monitored uint64 `json:"monitored"`
+}
+
+// Stats returns an independent snapshot of nonzero counters in registry order.
+// Concurrent reads are safe. Each counter is atomic; the snapshot is not a transaction across all rules.
+// Storage is fixed by the rule registry, never by a request's values. A new Inspector starts at zero.
+func (in *Inspector) Stats() []RuleStats {
+	var out []RuleStats
+	for _, r := range registry {
+		blocked, monitored := in.counts[r.idx].blocked.Load(), in.counts[r.idx].monitored.Load()
+		if blocked != 0 || monitored != 0 {
+			out = append(out, RuleStats{ID: r.id, Name: r.name, Blocked: blocked, Monitored: monitored})
+		}
+	}
+	return out
 }
 
 // New builds an Inspector. Call Policy.Validate first and handle its error: an Inspector built from a policy that fails it is not a
 // way to run with a weaker policy. It refuses every request that has a body (policy-invalid, 5002990) and says why in Err.
 func New(p Policy) *Inspector {
 	if err := p.Validate(); err != nil {
-		in := &Inspector{err: err}
+		in := &Inspector{err: err, counts: make([]ruleCounts, len(registry))}
 		in.act = in.actions(Policy{})
 		return in
 	}
 	p = p.withDefaults()
-	in := &Inspector{pol: p, types: newTypeSet(p.AllowedTypes), opaque: newOpaqueSet(p.AllowOpaque), charsets: map[string]bool{}, gqlPaths: map[string]bool{}}
+	in := &Inspector{pol: p, types: newTypeSet(p.AllowedTypes), opaque: newOpaqueSet(p.AllowOpaque), charsets: map[string]bool{}, gqlPaths: map[string]bool{}, counts: make([]ruleCounts, len(registry))}
 	for _, c := range p.AllowedCharsets {
 		in.charsets[c] = true
 	}

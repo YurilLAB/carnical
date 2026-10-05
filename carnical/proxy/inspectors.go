@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package proxy
 
 import (
@@ -24,7 +26,11 @@ func (e *Edge) runInspectors(w http.ResponseWriter, r *http.Request, rawPath, ra
 	for _, in := range e.cfg.Inspectors {
 		res, err := safeInspect(in, req)
 		if err != nil {
-			e.log(Match{RuleID: idInspectorFailed, Severity: "CRITICAL", Message: in.Name() + " failed: " + err.Error(), Disruptive: true}, r)
+			m := Match{RuleID: idInspectorFailed, Severity: "CRITICAL", Message: "request inspector failed", Disruptive: true}
+			if e.cfg.LogDetails {
+				m.ExpandedMessage = in.Name() + " failed: " + err.Error()
+			}
+			e.log(m, r)
 			http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
 			return nil, nil, false
 		}

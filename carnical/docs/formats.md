@@ -197,6 +197,14 @@ Default is what happens when the policy does not say. Status is what the visitor
 
 `type-duplicate-header` is a second line of defence: the proxy already refuses a request with two Content-Type headers (5000005) before any inspector runs. `internal-error` is what a panic in a parser becomes (none was found; see the fuzzing below).
 
+## Monitoring and logs
+
+Each emitted finding increments an atomic per-rule blocked or monitored counter. `Inspector.Stats()` returns a fresh snapshot containing only stable rule IDs/names and counts. Storage is sized by the rule registry, never by client identities or input strings. A rule is counted at most once per request; a batch may trigger the same rule repeatedly, but the inspector emits it once. Off rules are silent. Parsing still stops at the first blocking finding and the 32-verdict reporting cap, so counts describe reported findings rather than all possible problems or unique requests. Snapshot fields are independently atomic, not one transaction across all rules.
+
+The executable logs changed `format protection totals` snapshots every minute by default. `-formats-stats-interval` accepts `0` (disabled) or 100ms through 24h; a graceful stop flushes a final changed snapshot. A forced process kill cannot flush. Counters reset when a new inspector is constructed and do not aggregate across a fleet. Format mode off does not run this reporter.
+
+For per-attempt events, `msg` is `rule matched`, `rule_msg` contains fixed rule text, and `disruptive` distinguishes enforced from monitored findings. Log tests verify every repeated bypass attempt is recorded with the correct outcome. Aggregate labels contain no URI, body, credentials or client address. CRS expanded messages and inspector panic text are available only through the explicit detailed-log setting; they are not safe summaries.
+
 ## How it is built
 
 One file per format, each with its own parser, its limits and its fuzz target. The inspector (`inspector.go`) parses the Content-Type, decides by media type, decompresses if asked, and calls the format's check. A check reports a finding to the `finder`, which applies the policy (block, monitor or off) and says whether to stop; no parser decides what a finding costs. Each rule is reported once per request.

@@ -364,6 +364,55 @@ func TestThePolicyIsCopied(t *testing.T) {
 	}
 }
 
+func TestRuleCountersAreBoundedAndConcurrent(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mode Action
+		r    row
+		id   int
+	}{
+		{"blocked safe mutation", Block, row{method: "HEAD", path: "/graphql", query: "query=mutation%7BSECRET_ACCOUNT%7D"}, idGQLSafeMutation},
+		{"monitored batch counted once per request", Monitor, row{method: "OPTIONS", path: "/graphql", ct: appJSON,
+			body: "[{\"query\":\"mutation{SECRET_ACCOUNT}\"},{\"query\":\"mutation{SECRET_ACCOUNT}\"}]"}, idGQLSafeMutation},
+		{"disabled mutation rule", Off, row{method: "HEAD", path: "/graphql", query: "query=mutation%7BSECRET_ACCOUNT%7D"}, idGQLSafeMutation},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := New(Policy{Rules: map[string]Action{ruleName(tc.id): tc.mode}})
+			if len(in.Stats()) != 0 {
+				t.Fatal("a new inspector has counters")
+			}
+			var wg sync.WaitGroup
+			for range 20 {
+				wg.Go(func() {
+					for range 5 {
+						in.Inspect(tc.r.request())
+						_ = in.Stats() // poll while other requests update counters
+					}
+				})
+			}
+			wg.Wait()
+			got := in.Stats()
+			if tc.mode == Off {
+				if len(got) != 0 {
+					t.Fatalf("off rule produced totals: %+v", got)
+				}
+				return
+			}
+			if len(got) != 1 || got[0].ID != tc.id || got[0].Name != ruleName(tc.id) {
+				t.Fatalf("unexpected labels: %+v", got)
+			}
+			if tc.mode == Block && (got[0].Blocked != 100 || got[0].Monitored != 0) ||
+				tc.mode == Monitor && (got[0].Blocked != 0 || got[0].Monitored != 100) {
+				t.Fatalf("lost or duplicated findings: %+v", got)
+			}
+			got[0].Name = "SECRET_ACCOUNT"
+			if in.Stats()[0].Name != ruleName(tc.id) {
+				t.Fatal("the snapshot shares mutable storage")
+			}
+		})
+	}
+}
+
 func TestARequestWithNoHeadersAtAll(t *testing.T) {
 	in := New(Policy{})
 	res := in.Inspect(&inspect.Request{Method: "POST", Path: "/", Body: []byte("a=1")})

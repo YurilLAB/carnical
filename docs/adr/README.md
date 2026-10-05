@@ -136,5 +136,6 @@ Superseding does not delete the old record. Set its status and let the history s
 | [0065](0065-carnical-api-rate-limits.md) | Local private development | 2026-10-05 | unreleased | F | Verified-client API quotas and bounded fail-closed rate-limit state |
 | [0066](0066-carnical-url-query-validation.md) | Local private development | 2026-10-05 | unreleased | F | Bounded query validation on all endpoints and methods |
 | [0067](0067-carnical-graphql-safe-methods.md) | Local private development | 2026-10-05 | unreleased | F | GraphQL mutation protection on all safe HTTP methods |
+| [0068](0068-carnical-bypass-monitoring.md) | Local private development | 2026-10-05 | unreleased | F | Bounded bypass counters and privacy-safe logging |
 
 Categories: **F**eature · **P**arity · **⚡** Perf · **R**efactor

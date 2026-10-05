@@ -3,15 +3,52 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
+	"slices"
+	"time"
 
 	"github.com/YurilLAB/coraza/carnical/formats"
 )
 
 const maxFormatsPolicyBytes = formats.MaxPolicyBytes
+
+// startFormatStats emits changed, bounded snapshots and a final snapshot on graceful shutdown.
+// It opens no listener and adds no client/URI labels. The caller must invoke the returned stop function.
+func startFormatStats(log *slog.Logger, in *formats.Inspector, interval time.Duration) func() {
+	if in == nil || interval == 0 {
+		return func() {}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		var last []formats.RuleStats
+		report := func() {
+			current := in.Stats()
+			if len(current) != 0 && !slices.Equal(current, last) {
+				log.Info("format protection totals", "rules", current)
+				last = current
+			}
+		}
+		for {
+			select {
+			case <-ticker.C:
+				report()
+			case <-ctx.Done():
+				report()
+				return
+			}
+		}
+	}()
+	return func() { cancel(); <-done }
+}
 
 // configureFormats loads everything before the process opens its listener or confines itself.
 // A bad policy or a conflicting flag refuses startup rather than dropping a protection.
