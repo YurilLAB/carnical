@@ -4,7 +4,7 @@
 package transformations
 
 import (
-	"path/filepath"
+	"path"
 )
 
 func normalisePath(data string) (string, bool, error) {
@@ -12,7 +12,9 @@ func normalisePath(data string) (string, bool, error) {
 	if leng < 1 {
 		return data, false, nil
 	}
-	clean := filepath.Clean(data)
+	// path, not path/filepath: the result must not depend on the operating system's separator (on Windows
+	// filepath.Clean turns "/" into "\\", which stopped rules such as CRS 930120 from matching "etc/passwd").
+	clean := path.Clean(data)
 	if clean == "." {
 		return "", true, nil
 	}
