@@ -59,6 +59,9 @@ func newUpstream(t testing.TB) *upstream {
 	return u
 }
 
+// The test upstreams are on the loopback address, which the edge refuses unless it is allowed.
+var loopback = OriginPolicy{Allow: []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("::1/128")}}
+
 type setup struct {
 	cfg  Config
 	up   *upstream
@@ -70,7 +73,7 @@ func start(t testing.TB, change func(*Config)) *setup {
 	t.Helper()
 	up := newUpstream(t)
 	target, _ := url.Parse(up.URL)
-	cfg := Config{Upstream: target, CRS: crs.DefaultSettings()}
+	cfg := Config{Upstream: target, CRS: crs.DefaultSettings(), Origin: loopback}
 	if change != nil {
 		change(&cfg)
 	}
@@ -287,7 +290,7 @@ func TestTrustedProxyRangesAreChecked(t *testing.T) {
 	}
 	var invalid = netip.MustParsePrefix("0.0.0.0/0")
 	target, _ := url.Parse("http://127.0.0.1:1")
-	if _, err := New(Config{Upstream: target, CRS: crs.DefaultSettings(), TrustedProxies: []netip.Prefix{invalid}}); err == nil {
+	if _, err := New(Config{Upstream: target, CRS: crs.DefaultSettings(), Origin: loopback, TrustedProxies: []netip.Prefix{invalid}}); err == nil {
 		t.Fatal("New accepted a /0 trusted range")
 	}
 }
@@ -301,7 +304,7 @@ func TestTheUpstreamAddressIsChecked(t *testing.T) {
 	}
 	for _, good := range []string{"http://127.0.0.1:8080", "https://origin.example.com", "http://origin.example.com/"} {
 		u, _ := url.Parse(good)
-		e, err := New(Config{Upstream: u, CRS: crs.DefaultSettings()})
+		e, err := New(Config{Upstream: u, CRS: crs.DefaultSettings(), Origin: loopback})
 		if err != nil {
 			t.Errorf("%q refused: %v", good, err)
 			continue

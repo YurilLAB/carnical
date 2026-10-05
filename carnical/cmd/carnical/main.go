@@ -45,6 +45,7 @@ func run() error {
 	responses := flag.Bool("inspect-responses", false, "also run the CRS response rules (buffers text, HTML and XML responses)")
 	methods := flag.String("allowed-methods", "", "comma-separated HTTP methods to allow (default: the CRS list GET HEAD POST OPTIONS)")
 	trustedList := flag.String("trusted-proxies", "", "comma-separated addresses or ranges that may supply X-Forwarded-For")
+	originAllow := flag.String("origin-allow", "", "comma-separated addresses or ranges the upstream may be at even though they are not public (default: public addresses only)")
 	allowUpgrade := flag.Bool("allow-upgrade", false, "let WebSocket upgrades through, uninspected")
 	maxUpstream := flag.Int("max-upstream", 256, "requests allowed at the upstream at once")
 	details := flag.Bool("log-details", false, "log the client address, URI and matched data of each rule match (personal data)")
@@ -75,6 +76,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	origin, err := proxy.ParseOriginAllow(*originAllow)
+	if err != nil {
+		return err
+	}
 	settings := crs.DefaultSettings()
 	settings.Mode = crs.Mode(*mode)
 	settings.ParanoiaLevel, settings.DetectionParanoiaLevel = *paranoia, *detection
@@ -89,7 +94,7 @@ func run() error {
 
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	edge, err := proxy.New(proxy.Config{
-		Upstream: target, UpstreamHost: *upstreamHost, CRS: settings, TrustedProxies: trusted, AllowUpgrade: *allowUpgrade,
+		Upstream: target, Origin: proxy.OriginPolicy{Allow: origin}, UpstreamHost: *upstreamHost, CRS: settings, TrustedProxies: trusted, AllowUpgrade: *allowUpgrade,
 		MaxUpstreamInFlight: *maxUpstream, LogDetails: *details,
 		OnMatch: func(m proxy.Match) {
 			attrs := []any{"rule", m.RuleID, "severity", m.Severity, "msg", m.Message, "tx", m.TransactionID, "disruptive", m.Disruptive}

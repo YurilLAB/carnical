@@ -13,7 +13,10 @@ import (
 // ParseTrusted reads a comma-separated list of addresses and CIDR ranges that may tell the proxy who a visitor is
 // through X-Forwarded-For (a load balancer or CDN in front of it). A range that covers every address is refused:
 // it would let any client choose its own address.
-func ParseTrusted(list string) ([]netip.Prefix, error) {
+func ParseTrusted(list string) ([]netip.Prefix, error) { return parseRanges(list, "trusted proxy") }
+
+// parseRanges reads a comma-separated list of addresses and CIDR ranges; what names them in an error.
+func parseRanges(list, what string) ([]netip.Prefix, error) {
 	var out []netip.Prefix
 	for _, part := range strings.Split(list, ",") {
 		part = strings.TrimSpace(part)
@@ -24,21 +27,21 @@ func ParseTrusted(list string) ([]netip.Prefix, error) {
 		if strings.Contains(part, "/") {
 			p, err := netip.ParsePrefix(part)
 			if err != nil {
-				return nil, fmt.Errorf("trusted proxy %q: %w", part, err)
+				return nil, fmt.Errorf("%s %q: %w", what, part, err)
 			}
 			prefix = p
 		} else {
 			a, err := netip.ParseAddr(part)
 			if err != nil {
-				return nil, fmt.Errorf("trusted proxy %q: %w", part, err)
+				return nil, fmt.Errorf("%s %q: %w", what, part, err)
 			}
 			if a.Zone() != "" { // PrefixFrom would silently drop the zone
-				return nil, fmt.Errorf("trusted proxy %q: an address with a zone is not allowed", part)
+				return nil, fmt.Errorf("%s %q: an address with a zone is not allowed", what, part)
 			}
 			prefix = netip.PrefixFrom(a, a.BitLen())
 		}
 		if err := checkTrusted(prefix); err != nil {
-			return nil, fmt.Errorf("trusted proxy %q: %w", part, err)
+			return nil, fmt.Errorf("%s %q: %w", what, part, err)
 		}
 		out = append(out, prefix.Masked())
 	}
@@ -52,7 +55,7 @@ func checkTrusted(p netip.Prefix) error {
 	case p.Addr().Is4In6():
 		return errors.New("write an IPv4 range as IPv4, not as an IPv4-mapped IPv6 range")
 	case p.Bits() == 0:
-		return errors.New("a range of /0 trusts every address; list the actual frontends")
+		return errors.New("a range of /0 covers every address; list the actual ones")
 	}
 	return nil
 }

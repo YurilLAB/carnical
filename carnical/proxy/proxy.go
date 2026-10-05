@@ -30,6 +30,10 @@ import (
 type Config struct {
 	// Upstream is where clean requests go: http or https, a host, no path, user name, query or fragment.
 	Upstream *url.URL
+	// Origin says which addresses the upstream may be at. By default only public addresses are allowed, so a site
+	// cannot be pointed at this machine, the cloud metadata service or the private network; list a range in
+	// Origin.Allow for an origin that is really there.
+	Origin OriginPolicy
 	// UpstreamHost is the Host header sent to the upstream. Empty keeps the visitor's Host, which is what a site
 	// that serves several names expects; set it when the upstream is a shared machine, so a visitor cannot reach
 	// another site there by choosing a different Host.
@@ -81,6 +85,16 @@ func New(cfg Config) (*Edge, error) {
 		return nil, errors.New("the upstream must be an http or https address with a host")
 	case u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") || u.Opaque != "":
 		return nil, errors.New("the upstream must not carry a user name, a path, a query or a fragment")
+	}
+	for _, p := range cfg.Origin.Allow {
+		if !p.IsValid() || p.Bits() == 0 {
+			return nil, fmt.Errorf("origin range %s: a range of /0 would switch the origin check off", p)
+		}
+	}
+	if ip, err := netip.ParseAddr(u.Hostname()); err == nil {
+		if err := cfg.Origin.Check(ip); err != nil {
+			return nil, fmt.Errorf("the upstream: %w", err)
+		}
 	}
 	for _, p := range cfg.TrustedProxies {
 		if err := checkTrusted(p); err != nil {
@@ -181,6 +195,8 @@ func (e *Edge) forward() http.Handler {
 	target := e.cfg.Upstream
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil // never an environment proxy
+	// Every connection is checked at the moment it is made, against the address it will really use.
+	transport.DialContext = e.cfg.Origin.Dialer().DialContext
 	transport.ResponseHeaderTimeout = e.cfg.ResponseHeaderTimeout
 	if transport.ResponseHeaderTimeout <= 0 {
 		transport.ResponseHeaderTimeout = 30 * time.Second
