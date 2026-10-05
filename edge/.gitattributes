@@ -1,0 +1,4 @@
+# The embedded CRS must stay byte-for-byte what was signed: no line-ending conversion on any platform.
+crs/owasp_crs/** -text
+crs/owasp-crs-release-key.asc -text
+crs/provenance.json -text
