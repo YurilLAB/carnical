@@ -37,23 +37,29 @@ type request struct {
 }
 type sample struct {
 	Category, Group string
+	Note            string
 	Request         request
 }
 type testCase struct {
-	Name    string
-	Attack  bool
-	Request request
+	Name        string
+	Attack      bool
+	Request     request
+	Description string
 }
 type result struct {
-	Name             string
-	Attack           bool
-	Requests, Errors int
-	Statuses         map[int]int
-	ErrorExamples    []string "json:\"error_examples,omitempty\""
-	OriginReached    int64
-	LatencyUS        []int64 "json:\"-\""
+	Name                              string
+	Attack                            bool
+	Requests, Errors                  int
+	Statuses                          map[int]int
+	ErrorExamples                     []string "json:\"error_examples,omitempty\""
+	OriginReached                     int64
+	Method, URI, WireURI, Description string
+	LatencyUS                         []int64 "json:\"-\""
 }
 type report struct {
+	Suite, SuiteSHA256                                                                       string
+	CategoryResults                                                                          []categoryResult
+	AdmittedAttacks                                                                          []admittedAttack
 	BinarySHA256, BenignCorpusSHA256, AttackCorpusSHA256                                     string
 	Started, Completed, OS, Go, Binary                                                       string
 	CPUs, Count, Concurrency, RPSLimit                                                       int
@@ -65,6 +71,18 @@ type report struct {
 	Results                                                                                  []result
 	LogRules                                                                                 map[int]int
 	LogLines                                                                                 int
+}
+
+type admittedAttack struct {
+	result
+	Request request
+}
+
+type categoryResult struct {
+	Category                                                                          string
+	AttackCases, AdmittedAttackCases, BenignCases                                     int
+	AttackRequests, AttackRefused, BenignRequests, BenignRefused, Errors, Unavailable int
+	AttackOrigin, BenignOrigin                                                        int64
 }
 
 func main() {
@@ -191,7 +209,7 @@ func readCorpus(path string, attack bool) ([]testCase, error) {
 		if attack {
 			category = s.Category
 		}
-		out = append(out, testCase{fmt.Sprintf("%s/%d", category, len(out)), attack, s.Request})
+		out = append(out, testCase{Name: fmt.Sprintf("%s/%d", category, len(out)), Attack: attack, Request: s.Request, Description: s.Note})
 	}
 	return out, sc.Err()
 }
@@ -252,7 +270,7 @@ func probes() []testCase {
 		if ct != "" {
 			h["Content-Type"] = ct
 		}
-		return testCase{"regression/" + name, attack, request{Method: method, URI: uri, Headers: h, Body: body}}
+		return testCase{Name: "regression/" + name, Attack: attack, Request: request{Method: method, URI: uri, Headers: h, Body: body}, Description: name}
 	}
 	var out []testCase
 	for _, p := range []struct {
@@ -289,6 +307,7 @@ func run() error {
 	count := flag.Int("count", 500000, "number of measured requests")
 	concurrency := flag.Int("concurrency", 16, "concurrent clients")
 	rps := flag.Int("rps", 0, "global requests/second cap (0 = unpaced)")
+	extended := flag.Bool("extended", false, "add six attack families and their benign controls")
 	flag.Parse()
 	if *binary == "" || *corpus == "" || *output == "" || *count < 1 || *concurrency < 1 || *concurrency > 128 || *rps < 0 {
 		return fmt.Errorf("invalid flags")
@@ -302,6 +321,11 @@ func run() error {
 		return err
 	}
 	cases := append(append(b, a...), probes()...)
+	suite := "baseline-v1"
+	if *extended {
+		cases = append(cases, extendedCases()...)
+		suite = "extended-v1"
+	}
 	if len(cases) == 0 {
 		return fmt.Errorf("empty corpus")
 	}
@@ -368,16 +392,21 @@ func run() error {
 		return fmt.Errorf("WAF did not become ready; see %s", logPath)
 	}
 	templates := make([]*http.Request, len(cases))
+	seenNames := make(map[string]bool, len(cases))
 	for i, c := range cases {
+		if seenNames[c.Name] {
+			return fmt.Errorf("duplicate case name %q", c.Name)
+		}
+		seenNames[c.Name] = true
 		templates[i], err = prepare(c, target, i)
 		if err != nil {
 			return fmt.Errorf("case %s: %w", c.Name, err)
 		}
 	}
-	fmt.Printf("WAF pid=%d loopback=%s samples=%d (%d benign corpus, %d attack corpus, %d regressions) requests=%d concurrency=%d\n", cmd.Process.Pid, addr, len(cases), len(b), len(a), len(cases)-len(b)-len(a), *count, *concurrency)
+	fmt.Printf("WAF pid=%d loopback=%s suite=%s samples=%d (%d benign corpus, %d attack corpus, %d regressions, %d extended) requests=%d concurrency=%d\n", cmd.Process.Pid, addr, suite, len(cases), len(b), len(a), len(probes()), len(cases)-len(b)-len(a)-len(probes()), *count, *concurrency)
 	results := make([]result, len(cases))
 	for i, c := range cases {
-		results[i] = result{Name: c.Name, Attack: c.Attack, Statuses: map[int]int{}}
+		results[i] = result{Name: c.Name, Attack: c.Attack, Method: c.Request.Method, URI: c.Request.URI, WireURI: templates[i].URL.RequestURI(), Description: c.Description, Statuses: map[int]int{}}
 	}
 	var next, done atomic.Int64
 	var mu sync.Mutex
@@ -451,6 +480,12 @@ func run() error {
 	}
 	elapsed := time.Since(start)
 	rep := report{Started: start.UTC().Format(time.RFC3339), Completed: time.Now().UTC().Format(time.RFC3339), OS: runtime.GOOS, Go: runtime.Version(), CPUs: runtime.NumCPU(), Binary: *binary, WAFArgs: args, Count: *count, Concurrency: *concurrency, RPSLimit: *rps, ElapsedSeconds: elapsed.Seconds(), RequestsPerSecond: float64(*count) / elapsed.Seconds(), Results: results, LogRules: map[int]int{}}
+	rep.Suite = suite
+	suiteBytes, err := json.Marshal(cases)
+	if err != nil {
+		return err
+	}
+	rep.SuiteSHA256 = fmt.Sprintf("%x", sha256.Sum256(suiteBytes))
 	if rep.BinarySHA256, err = fileHash(*binary); err != nil {
 		return err
 	}
@@ -503,6 +538,45 @@ func run() error {
 		return float64(latencies[int(float64(len(latencies)-1)*p)]) / 1000
 	}
 	rep.LatencyP50MS, rep.LatencyP95MS, rep.LatencyP99MS = percentile(.5), percentile(.95), percentile(.99)
+	categories := map[string]*categoryResult{}
+	for i, r := range rep.Results {
+		name := strings.SplitN(r.Name, "/", 2)[0]
+		cat := categories[name]
+		if cat == nil {
+			cat = &categoryResult{Category: name}
+			categories[name] = cat
+		}
+		cat.Errors += r.Errors
+		if r.Attack {
+			cat.AttackCases++
+			cat.AttackRequests += r.Requests
+			cat.AttackOrigin += r.OriginReached
+			if r.OriginReached > 0 {
+				cat.AdmittedAttackCases++
+				rep.AdmittedAttacks = append(rep.AdmittedAttacks, admittedAttack{result: r, Request: cases[i].Request})
+			}
+		} else {
+			cat.BenignCases++
+			cat.BenignRequests += r.Requests
+			cat.BenignOrigin += r.OriginReached
+		}
+		for status, n := range r.Statuses {
+			if status >= 500 && status != 501 {
+				cat.Unavailable += n
+			} else if status >= 400 && status < 500 || status == 501 {
+				if r.Attack {
+					cat.AttackRefused += n
+				} else {
+					cat.BenignRefused += n
+				}
+			}
+		}
+	}
+	for _, cat := range categories {
+		rep.CategoryResults = append(rep.CategoryResults, *cat)
+	}
+	sort.Slice(rep.CategoryResults, func(i, j int) bool { return rep.CategoryResults[i].Category < rep.CategoryResults[j].Category })
+	sort.Slice(rep.AdmittedAttacks, func(i, j int) bool { return rep.AdmittedAttacks[i].Name < rep.AdmittedAttacks[j].Name })
 	lf, e := os.Open(logPath)
 	if e != nil {
 		return fmt.Errorf("read WAF log: %w", e)

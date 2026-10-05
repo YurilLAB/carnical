@@ -84,6 +84,10 @@ Format bypass findings have process-local per-rule blocked/monitored totals. `-f
 The [2026-10-06 live load report](docs/loadtest-2026-10-06.md) records 500,000 mixed requests through the standalone executable,
 including per-case origin admissions, detection gaps and false positives. Its harness is `tools/loadtest/`.
 
+The [750,000-request extended run](docs/loadtest-750k-2026-10-06.md) retains that workload and adds LDAP, XPath, NoSQL,
+SSI, parameter pollution and prototype pollution. Its [admitted-attack inventory](docs/loadtest-750k-admitted-2026-10-06.md)
+groups all 67 admitted templates by category. Use the harness's `-extended` flag to reproduce this suite.
+
 - The CRS has no rule for XML external entities, and Coraza's XML processor hands rules the text pieces of an element separately, so a keyword split by an empty CDATA section is not seen whole.
 - Uploaded file contents, trailers (dropped, so never forwarded) and SQL in a URL path segment are not inspected; CRS is generic and does not carry CVE-specific virtual patches for WordPress plugins.
 - A body of hostile input costs CPU in proportion to its size (several seconds for 1 MiB of adversarial text). Keep `-max-body` as small as the site allows.

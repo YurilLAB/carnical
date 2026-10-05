@@ -121,6 +121,17 @@ labelled-benign refusal. All 8,888 added bypass regression requests are refused 
 preserves the 34 admitted attack templates and 11 refused benign templates, the precise standalone configuration and
 the boundary between request admission and exploitation. It does not measure the uninstalled integration APIs.
 
+The [extended live load report](loadtest-750k-2026-10-06.md) records 750,000 requests through the same WAF binary, retaining
+all 731 original templates and adding 238 templates across six categories. The run achieves 5,657.82 requests/second with
+p99 9.633 ms and zero transport/availability errors. It refuses 312,695 of 364,553 labelled attack requests (85.77%) and
+11,608 of 385,447 labelled benign requests (3.01%). The original cohort retains the same outcomes; the new workload exposes
+18 admitted HPP templates, 15 admitted XPath templates and four new benign refusals. All 10,062 bypass regression requests
+are refused. The [organized inventory](loadtest-750k-admitted-2026-10-06.md) lists all 67 admitted attack templates with
+wire targets and payload details. Vet and a 3,000-request race-instrumented harness pilot pass; the child WAF is built
+normally. Post-run checks reconcile every case and aggregate, verify original-cohort outcomes and matching binary/corpus
+hashes, and confirm child shutdown. This is admission evidence against a fixed origin, not exploitation or production
+deployment validation.
+
 `go test ./...` in the upstream module fails on existing Windows filesystem expectations and open audit/debug log handles (auditlog, operators, seclang, testing). The changed code is confined to Carnical's separate module; no upstream engine files are changed.
 
 An earlier broader Carnical race run encountered Windows audit-file recovery/truncation failures in the then-untracked
