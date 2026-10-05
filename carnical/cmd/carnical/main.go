@@ -13,16 +13,19 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/YurilLAB/coraza/carnical/crs"
 	"github.com/YurilLAB/coraza/carnical/proxy"
+	"github.com/YurilLAB/coraza/carnical/sandbox"
 )
 
 func main() {
@@ -59,6 +62,10 @@ func run() error {
 	keepCaching := flag.Bool("keep-caching", false, "do not add Cache-Control: private, no-store to responses that set a cookie or look like a stylesheet but are HTML")
 	maxConns := flag.Int("max-conns-per-ip", 128, "connections one address may hold open (negative = no limit)")
 	uploadDir := flag.String("upload-dir", "", "directory for the file parts of uploads while a request runs (default: the system temporary directory; give it a private one)")
+	confine := flag.Bool("confine", false, "after start-up, confine the process: no new programs, no ptrace, no other files, no other ports (Linux; build with CGO_ENABLED=0)")
+	confineConnect := flag.String("confine-connect", "80,443,53", "with -confine, the TCP ports the proxy may connect to: the ports of the origins, and 53 for DNS")
+	confineRead := flag.String("confine-read", "", "with -confine, extra files and directories the proxy may read (for example a certificate directory it reloads from)")
+	confineBestEffort := flag.Bool("confine-best-effort", false, "with -confine, carry on with the layers the kernel supports instead of refusing to start")
 	allowUpgrade := flag.Bool("allow-upgrade", false, "let WebSocket upgrades through, uninspected")
 	maxUpstream := flag.Int("max-upstream", 256, "requests allowed at the upstream at once")
 	evalBudget := flag.Duration("eval-budget", 2*time.Second, "most time each phase of rule evaluation may take for one request; a request over it is refused with 503")
@@ -131,19 +138,46 @@ func run() error {
 	defer edge.Close()
 
 	server := edge.Server(*listen)
+	// Everything the proxy needs from the outside is opened before it is confined: the certificate and key are read,
+	// and the listening socket exists. After that it needs no more files, and no new ports to listen on.
 	if *certFile != "" {
-		server.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+		cert, err := tls.LoadX509KeyPair(*certFile, *keyFile)
+		if err != nil {
+			return fmt.Errorf("the certificate: %w", err)
+		}
+		server.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert}}
+	}
+	ln, err := net.Listen("tcp", *listen)
+	if err != nil {
+		return err
+	}
+	defer ln.Close()
+	if *confine {
+		ports, err := parsePorts(*confineConnect)
+		if err != nil {
+			return fmt.Errorf("-confine-connect: %w", err)
+		}
+		policy := sandbox.Policy{ReadOnly: splitList(*confineRead), ConnectTCP: ports, BindTCP: []uint16{}, Require: !*confineBestEffort}
+		if *uploadDir != "" {
+			policy.ReadWrite = []string{*uploadDir}
+		}
+		rep, err := sandbox.Apply(policy)
+		if err != nil {
+			return err
+		}
+		log.Info("confined", "no_new_privs", rep.NoNewPrivs, "undumpable", rep.Undumpable, "landlock_abi", rep.LandlockABI,
+			"files", rep.LandlockFS, "ports", rep.LandlockNet, "scope", rep.LandlockScope, "seccomp", rep.Seccomp, "notes", rep.Notes)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	done := make(chan error, 1)
 	go func() {
 		log.Info("listening", "addr", *listen, "upstream", target.String(), "crs", crs.Version(), "mode", *mode, "paranoia", *paranoia,
-			"inbound_threshold", *inbound, "tls", *certFile != "")
+			"inbound_threshold", *inbound, "tls", *certFile != "", "confined", *confine)
 		if *certFile != "" {
-			done <- server.ListenAndServeTLS(*certFile, *keyFile)
+			done <- server.ServeTLS(ln, "", "")
 		} else {
-			done <- server.ListenAndServe()
+			done <- server.Serve(ln)
 		}
 	}()
 	select {
@@ -157,6 +191,19 @@ func run() error {
 		defer cancel()
 		return server.Shutdown(shutdown)
 	}
+}
+
+// parsePorts reads a comma-separated list of TCP ports.
+func parsePorts(s string) ([]uint16, error) {
+	ports := []uint16{}
+	for _, part := range splitList(s) {
+		n, err := strconv.ParseUint(part, 10, 16)
+		if err != nil || n == 0 {
+			return nil, fmt.Errorf("%q is not a port", part)
+		}
+		ports = append(ports, uint16(n))
+	}
+	return ports, nil
 }
 
 // splitList reads a comma-separated list, ignoring empty items.
