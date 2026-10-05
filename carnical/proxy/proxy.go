@@ -19,6 +19,7 @@ import (
 	"net/netip"
 	"net/url"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -28,6 +29,7 @@ import (
 	"github.com/corazawaf/coraza/v3/types"
 
 	"github.com/YurilLAB/coraza/carnical/crs"
+	"github.com/YurilLAB/coraza/carnical/inspect"
 )
 
 // Config describes one protected site.
@@ -76,6 +78,9 @@ type Config struct {
 	// MaxConnsPerIP is how many connections one address may hold open (default 128; negative means no limit).
 	// Connections from TrustedProxies are not counted.
 	MaxConnsPerIP int
+	// Inspectors look at every request, in this order, after the proxy's own checks and before the rule set: the virtual-patch
+	// signatures, the body-format checks, the API guard. See package inspect.
+	Inspectors []inspect.Inspector
 	// MaxFormBody is the largest request body that is not a file upload (default 128 KiB). Evaluating a body costs
 	// time in proportion to its size, and the engine does not apply its own limit for bodies without files, so the
 	// proxy does. A multipart/form-data body may be as large as CRS.RequestBodyLimit.
@@ -253,6 +258,7 @@ func (e *Edge) guard(next http.Handler) http.Handler {
 		if !e.checkRequest(w, r, addr) {
 			return
 		}
+		rawPath, rawQuery, _ := strings.Cut(r.RequestURI, "?")
 
 		limit := e.bodyLimit(r)
 		if r.ContentLength > limit {
@@ -263,10 +269,12 @@ func (e *Edge) guard(next http.Handler) http.Handler {
 		if r.Body != nil && r.Body != http.NoBody {
 			capped.rc, r.Body = r.Body, capped
 		}
-		if mt, params, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err == nil && mt == "multipart/form-data" &&
-			r.Body != nil && r.Body != http.NoBody {
-			// Read the whole upload (it is already capped) so that what is in the files can be looked at, then hand
-			// the same bytes on.
+		mt, params, mtErr := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		hasBody := r.Body != nil && r.Body != http.NoBody
+		isUpload := mtErr == nil && mt == "multipart/form-data"
+		if hasBody && (isUpload || len(e.cfg.Inspectors) > 0) {
+			// Read the whole body (it is already capped) so that it can be looked at, then hand the same bytes on, or the
+			// replacement an inspector made of them.
 			body, err := io.ReadAll(r.Body)
 			if err != nil {
 				status, msg := http.StatusBadRequest, "the request could not be read"
@@ -276,11 +284,25 @@ func (e *Edge) guard(next http.Handler) http.Handler {
 				http.Error(w, msg, status)
 				return
 			}
-			if id, why := scanUpload(body, params["boundary"], e.cfg.Uploads); id != 0 {
-				e.refuse(w, r, http.StatusForbidden, id, why)
+			if isUpload {
+				if id, why := scanUpload(body, params["boundary"], e.cfg.Uploads); id != 0 {
+					e.refuse(w, r, http.StatusForbidden, id, why)
+					return
+				}
+			}
+			if replaced, ok := e.runInspectors(w, r, rawPath, rawQuery, body, addr); !ok {
 				return
+			} else if replaced != nil {
+				body = replaced
+				// The body the application gets is not the one that was sent, so its framing is rewritten to match.
+				r.ContentLength, r.TransferEncoding = int64(len(body)), nil
+				r.Header.Set("Content-Length", strconv.Itoa(len(body)))
 			}
 			r.Body = io.NopCloser(bytes.NewReader(body))
+		} else if len(e.cfg.Inspectors) > 0 {
+			if _, ok := e.runInspectors(w, r, rawPath, rawQuery, nil, addr); !ok {
+				return
+			}
 		}
 		tw := &trackWriter{ResponseWriter: w}
 		next.ServeHTTP(tw, r.WithContext(context.WithValue(r.Context(), contextKey{}, addr)))
