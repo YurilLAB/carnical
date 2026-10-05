@@ -10,6 +10,8 @@ This package does not try to predict what the application will do. It reads each
 
 ## Using it
 
+The `carnical` executable installs this inspector with `-formats-mode monitor` by default. Set `-formats-mode block` after tuning; set `off` to disable it. Its mode is independent of `-mode`, which controls CRS. `-formats-policy path.json` reads a regular file of at most 1 MiB before listening or confinement, with unknown fields, trailing data and invalid limits refused. The CLI mode overrides `monitor` in that file; individual rule overrides still apply. `-allow-request-encoding` lets one gzip/deflate layer reach this inspector. Encoding opt-in and a policy path require formats to be enabled. The proxy's `-max-body`/`-max-form-body` limits and the format policy's body/decompression limits each apply; raising one does not raise the others.
+
 ```go
 pol := formats.Policy{Monitor: true} // start a site here: record, refuse nothing
 if err := pol.Validate(); err != nil { /* refuse to start */ }

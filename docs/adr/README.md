@@ -130,5 +130,6 @@ Superseding does not delete the old record. Set its status and let the history s
 | [0059](0059-secresponsebodyjsondepthlimit.md) | GHSA-3c6w-j9xm-8h2h | 2026-09-26 | unreleased | F | `SecResponseBodyJsonDepthLimit` directive |
 | [0060](0060-json-bounded-recursion-prescan.md) | GHSA-6gcq-wc29-5xf2 | 2026-09-30 | unreleased | P | Iterative depth pre-scan before `gjson.Valid` in the JSON body processor |
 | [0061](0061-carnical-graphql-operation-selection.md) | Local private development | 2026-10-05 | unreleased | F | Carnical GraphQL operation selection and GET method safety |
+| [0062](0062-carnical-cli-format-enforcement.md) | Local private development | 2026-10-05 | unreleased | F | Independent format enforcement and policy loading in the Carnical executable |
 
 Categories: **F**eature · **P**arity · **⚡** Perf · **R**efactor

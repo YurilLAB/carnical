@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: Apache-2.0
+
+package main
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"os"
+
+	"github.com/YurilLAB/coraza/carnical/formats"
+)
+
+const maxFormatsPolicyBytes = 1 << 20
+
+// configureFormats loads everything before the process opens its listener or confines itself.
+// A bad policy or a conflicting flag refuses startup rather than dropping a protection.
+func configureFormats(mode, path string, encoding bool) (*formats.Inspector, error) {
+	switch mode {
+	case "off":
+		if path != "" || encoding {
+			return nil, errors.New("-formats-mode off cannot be combined with -formats-policy or -allow-request-encoding")
+		}
+		return nil, nil
+	case "monitor", "block":
+	default:
+		return nil, errors.New("-formats-mode must be monitor, block, or off")
+	}
+	p := formats.Policy{}
+	if path != "" {
+		file, err := os.Open(path)
+		if err != nil {
+			return nil, fmt.Errorf("-formats-policy: %w", err)
+		}
+		defer file.Close()
+		info, err := file.Stat()
+		if err != nil {
+			return nil, fmt.Errorf("-formats-policy: %w", err)
+		}
+		if !info.Mode().IsRegular() {
+			return nil, errors.New("-formats-policy must be a regular file")
+		}
+		data, err := io.ReadAll(io.LimitReader(file, maxFormatsPolicyBytes+1))
+		if err != nil {
+			return nil, fmt.Errorf("-formats-policy: %w", err)
+		}
+		if len(data) > maxFormatsPolicyBytes {
+			return nil, errors.New("-formats-policy exceeds 1 MiB")
+		}
+		p, err = formats.ParsePolicy(data)
+		if err != nil {
+			return nil, fmt.Errorf("-formats-policy: %w", err)
+		}
+	}
+	p.Monitor = mode == "monitor"
+	in := formats.New(p)
+	if err := in.Err(); err != nil {
+		return nil, fmt.Errorf("-formats-policy: %w", err)
+	}
+	return in, nil
+}

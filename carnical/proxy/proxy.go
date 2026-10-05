@@ -1,3 +1,6 @@
+// Copyright 2026 Google LLC
+// SPDX-License-Identifier: Apache-2.0
+
 // Package proxy is a reverse proxy that inspects every request with Coraza running the OWASP Core Rule Set, and
 // forwards what passes to one upstream.
 //
@@ -276,7 +279,7 @@ func (e *Edge) guard(next http.Handler) http.Handler {
 			capped.rc, r.Body = r.Body, capped
 		}
 		var seen *inspect.Request // what the inspectors saw, for the observers
-		mt, params, mtErr := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		mt, _, mtErr := mime.ParseMediaType(r.Header.Get("Content-Type"))
 		hasBody := r.Body != nil && r.Body != http.NoBody
 		isUpload := mtErr == nil && mt == "multipart/form-data"
 		if hasBody && (isUpload || len(e.cfg.Inspectors) > 0) {
@@ -291,12 +294,6 @@ func (e *Edge) guard(next http.Handler) http.Handler {
 				http.Error(w, msg, status)
 				return
 			}
-			if isUpload {
-				if id, why := scanUpload(body, params["boundary"], e.cfg.Uploads); id != 0 {
-					e.refuse(w, r, http.StatusForbidden, id, why)
-					return
-				}
-			}
 			ireq, replaced, ok := e.runInspectors(w, r, rawPath, rawQuery, body, addr)
 			if !ok {
 				return
@@ -304,6 +301,20 @@ func (e *Edge) guard(next http.Handler) http.Handler {
 			seen = ireq
 			if replaced != nil {
 				body = replaced
+			}
+			// Validate the bytes and media type that will reach Coraza and the application, including after decompression.
+			if int64(len(body)) > e.bodyLimit(r) {
+				http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
+			mt, params, mtErr := mime.ParseMediaType(r.Header.Get("Content-Type"))
+			if mtErr == nil && mt == "multipart/form-data" {
+				if id, why := scanUpload(body, params["boundary"], e.cfg.Uploads); id != 0 {
+					e.refuse(w, r, http.StatusForbidden, id, why)
+					return
+				}
+			}
+			if replaced != nil {
 				// The body the application gets is not the one that was sent, so its framing is rewritten to match.
 				r.ContentLength, r.TransferEncoding = int64(len(body)), nil
 				r.Header.Set("Content-Length", strconv.Itoa(len(body)))

@@ -38,6 +38,12 @@ Start every new site in `detect`, read the log for a few days, add exclusions fo
 Options: `-paranoia 1..4`, `-inbound-threshold`, `-max-body`, `-allowed-methods`, `-inspect-responses`, `-trusted-proxies`,
 `-tls-cert`/`-tls-key`, `-upstream-host`, `-max-upstream`, `-log-details`. Run `-h` for all of them.
 
+The executable enables request-format findings in monitor mode by default. Use `-formats-mode block` to enforce strict JSON, XML/SOAP, GraphQL, forms, multipart, NDJSON and text checks independently of CRS mode. `-formats-policy formats.json` loads validated per-site limits and rule actions before listening; the file must be regular and at most 1 MiB. The CLI mode overrides the policy's `monitor` field. `-allow-request-encoding` enables one bounded gzip or deflate layer; the origin and CRS receive the decompressed bytes with corrected framing. `-formats-mode off` cannot be combined with a policy file or compression opt-in. See [format policy](docs/formats.md) and [validation evidence](docs/enterprise-validation.md).
+
+```
+go run ./cmd/carnical -upstream http://127.0.0.1:8081 -mode block -formats-mode block -allow-request-encoding
+```
+
 Paranoia levels on the 715-request corpus from the earlier research (468 deliberately tricky benign requests, 247 attacks):
 
 | Level | Benign requests wrongly blocked | Attacks detected |

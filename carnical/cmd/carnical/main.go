@@ -1,3 +1,6 @@
+// Copyright 2026 Google LLC
+// SPDX-License-Identifier: Apache-2.0
+
 // Command carnical puts the OWASP Core Rule Set, run by Coraza, in front of one website.
 //
 //	carnical -upstream http://127.0.0.1:8081 -listen :8080            (logs what the rules find, blocks nothing)
@@ -24,6 +27,7 @@ import (
 	"time"
 
 	"github.com/YurilLAB/coraza/carnical/crs"
+	"github.com/YurilLAB/coraza/carnical/inspect"
 	"github.com/YurilLAB/coraza/carnical/proxy"
 	"github.com/YurilLAB/coraza/carnical/sandbox"
 )
@@ -45,6 +49,9 @@ func run() error {
 	inbound := flag.Int("inbound-threshold", 5, "anomaly score at which a request is blocked")
 	outbound := flag.Int("outbound-threshold", 4, "anomaly score at which a response is blocked (with -inspect-responses)")
 	maxBody := flag.Int64("max-body", 1<<20, "largest request body inspected, in bytes; a larger body is refused")
+	formatsMode := flag.String("formats-mode", "monitor", "request formats: monitor (default), block, or off; independent of -mode and overrides policy monitor")
+	formatsPolicy := flag.String("formats-policy", "", "JSON request-format policy file (maximum 1 MiB; default: built-in format limits)")
+	requestEncoding := flag.Bool("allow-request-encoding", false, "allow one bounded gzip or deflate layer through the format inspector (requires formats enabled)")
 	responses := flag.Bool("inspect-responses", false, "also run the CRS response rules (buffers text, HTML and XML responses)")
 	methods := flag.String("allowed-methods", "", "comma-separated HTTP methods to allow (default: the CRS list GET HEAD POST OPTIONS)")
 	trustedList := flag.String("trusted-proxies", "", "comma-separated addresses or ranges that may supply X-Forwarded-For")
@@ -92,6 +99,14 @@ func run() error {
 	if (*certFile == "") != (*keyFile == "") {
 		return errors.New("give both -tls-cert and -tls-key, or neither")
 	}
+	formatInspector, err := configureFormats(*formatsMode, *formatsPolicy, *requestEncoding)
+	if err != nil {
+		return err
+	}
+	var inspectors []inspect.Inspector
+	if formatInspector != nil {
+		inspectors = append(inspectors, formatInspector)
+	}
 	target, err := url.Parse(*upstream)
 	if err != nil {
 		return fmt.Errorf("-upstream: %w", err)
@@ -125,6 +140,7 @@ func run() error {
 		DenyHeaders: splitList(*denyHeaders), WordPress: proxy.WordPressPolicy{Enabled: *wordpress, AllowXMLRPC: *xmlrpc, LoginPerMinute: *loginRate},
 		Uploads:   proxy.UploadPolicy{AllowExecutableNames: *scriptNames, AllowScriptContent: *scriptContent},
 		Responses: proxy.ResponsePolicy{KeepBanners: *keepBanners, KeepCaching: *keepCaching}, MaxConnsPerIP: *maxConns,
+		Inspectors: inspectors, AllowRequestEncoding: *requestEncoding,
 		OnMatch: func(m proxy.Match) {
 			attrs := []any{"rule", m.RuleID, "severity", m.Severity, "msg", m.Message, "tx", m.TransactionID, "disruptive", m.Disruptive}
 			if *details {
@@ -178,7 +194,7 @@ func run() error {
 	done := make(chan error, 1)
 	go func() {
 		log.Info("listening", "addr", *listen, "upstream", target.String(), "crs", crs.Version(), "mode", *mode, "paranoia", *paranoia,
-			"inbound_threshold", *inbound, "tls", *certFile != "", "confined", *confine)
+			"inbound_threshold", *inbound, "tls", *certFile != "", "confined", *confine, "formats_mode", *formatsMode, "request_encoding", *requestEncoding)
 		if *certFile != "" {
 			done <- server.ServeTLS(ln, "", "")
 		} else {
