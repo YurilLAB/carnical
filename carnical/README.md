@@ -9,6 +9,8 @@ configurable policies and monitoring, alongside targeted hardening fixes to the 
 
 Transport protections reserve connection capacity before TLS or HTTP processing, keep live subnet counts through address
 churn, and enforce a global cap across listeners and trusted proxies. See [flood protection](docs/ddos.md) for tuning and limits.
+The optional [Linux deployment policy](docs/network-protection.md) adds SYN budgets before connection tracking, malformed-packet
+filtering, bounded flood counters and echo limits that preserve IPv6 discovery.
 
 `carnical/` is its own Go module (`github.com/YurilLAB/coraza/carnical`), keeping the application additions separate
 from the Coraza engine. See the [repository overview](../README.md) and [current security findings](../docs/security-findings.md).

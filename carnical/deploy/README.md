@@ -15,7 +15,7 @@ Tested on Linux 6.18 with systemd 259 (Ubuntu 26.04 under WSL2). Not yet on Ubun
 | `systemd/carnical-edge.service`, `.socket` | The edge: no capabilities, a read-only machine, other services' data not visible, nothing but the system calls a service needs, port 443 from systemd. |
 | `systemd/carnical-audit.*` | The segmentation checks, as an unprivileged user, four times a day. |
 | `systemd/carnical-host-audit.*` | The checks of the machine itself, as root with five capabilities and no network sockets, four times a day. |
-| `nftables/carnical.nft` | Which user may open a connection to where. The edge: public addresses on 80 and 443 only. Everything else: this machine only. The metadata service: root only. |
+| `nftables/carnical.nft` | Early SYN and malformed-packet filtering, bounded echo/log budgets, and network policy by user. The edge: public addresses on 80 and 443 only. Everything else: this machine only. The metadata service: root only. See [L3/L4 protection](../docs/network-protection.md). |
 | `sysctl/90-carnical.conf` | Kernel settings against ptrace, kernel address leaks, BPF, io_uring, user namespaces and link tricks. |
 | `modprobe/carnical.conf` | Kernel modules a web server does not need and attackers use. |
 | `auditd/carnical.rules` | What to record, chosen so that each record is an incident. |
@@ -36,7 +36,7 @@ Tested on Linux 6.18 with systemd 259 (Ubuntu 26.04 under WSL2). Not yet on Ubun
 3. `install -m 0644 sysusers.d/carnical.conf /etc/sysusers.d/ && systemd-sysusers`, then the same for `tmpfiles.d` and `systemd-tmpfiles --create`.
 4. Put `zones.json` in `/etc/carnical/` (see `docs/segmentation.md`; with everything on one machine each part is a zone, each listener names its `user`, and a socket that systemd opened is owned by root, so list `root,carnical-edge`). Put the edge's arguments in `/etc/carnical/edge.env` as `CARNICAL_ARGS="-upstream ... -mode block ..."`.
 5. `install -m 0644 sysctl/90-carnical.conf /etc/sysctl.d/ && sysctl --system`. `install -m 0644 modprobe/carnical.conf /etc/modprobe.d/`.
-6. Edit the three definitions at the top of `nftables/carnical.nft` (your SSH source addresses and the resolver), check it, then load it: `nft -c -f carnical.nft && nft -f carnical.nft`. Load it from a unit that runs before the services, and keep the file where no service user can write it.
+6. Edit the three definitions at the top of `nftables/carnical.nft` (your SSH source addresses and the resolver), tune the SYN/echo budgets for the deployment (especially shared NAT/CDN peers), check it, then load it: `nft -c -f carnical.nft && nft -f carnical.nft`. Load it from a unit that runs before the services, and keep the file where no service user can write it.
 7. `./honeytokens.sh`, then `install -m 0640 auditd/carnical.rules /etc/audit/rules.d/ && augenrules --load`. The last line of the rules locks them until the next boot.
 8. Install the units, then `systemctl daemon-reload && systemctl enable --now carnical-edge.socket carnical-audit.timer carnical-host-audit.timer`.
 9. Mount `/tmp`, `/var/tmp` and `/dev/shm` with `nosuid,nodev,noexec` (a `tmp.mount` unit or `/etc/fstab`) and `/proc` with `hidepid=invisible`. The host audit reports each one that is not.

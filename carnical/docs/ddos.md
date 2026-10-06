@@ -121,8 +121,9 @@ during an attack only standing earned at least `KnownMinAge` before the attack b
 - **Floods bigger than the network link** fill the link before they reach this machine. Only the hosting provider's network
   (its DDoS protection) or an upstream scrubbing service can stop those. Ask the provider what volumetric protection the
   server's network has.
-- **Packet floods below TCP** (SYN floods, spoofed sources, UDP and reflection floods) are the kernel's work. SYN cookies are on
-  (`deploy/sysctl/90-carnical.conf`); kernel firewall rate limits for the public port are not part of this change.
+- **Packet floods below TCP** are handled separately by the [Linux deployment policy](network-protection.md): bounded SYN
+  budgets before connection tracking, malformed TCP filtering and UDP/443 refusal. SYN cookies are also configured in
+  `deploy/sysctl/90-carnical.conf`. These layers require deployment; the Go listener alone does not install kernel rules.
 - **A patient botnet** that uses the site normally for minutes before attacking can earn known standing. Per-address limits
   still apply to it, and 30 refusals during an attack remove the standing.
 - **A restart during an attack** relearns the baseline from the attack, and for the first 60 seconds nothing is declared an

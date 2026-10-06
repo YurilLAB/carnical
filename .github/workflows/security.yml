@@ -179,10 +179,49 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  network-regressions:
+    name: L3 and L4 live protection tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.26.6'
+          cache-dependency-path: '**/go.sum'
+      - name: Install network test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y nftables iproute2
+      - name: Check shield races and a live distributed flood
+        working-directory: carnical
+        shell: bash
+        run: |
+          mkdir -p ../build/security-reports
+          go test -race ./shield -count=1 | tee ../build/security-reports/connection-races.log
+          go test -race ./proxy -run TestAFloodFromAThousandAddressesThroughTheProxy -count=1 -v \
+            | tee ../build/security-reports/live-flood.log
+          CGO_ENABLED=0 go build -o ../build/carnical-network-linux ./cmd/carnical
+      - name: Exercise kernel policy and live IPv4 and IPv6 WAF traffic
+        shell: bash
+        run: |
+          sudo python3 .github/security/test_network_policy.py --binary build/carnical-network-linux \
+            | tee build/security-reports/network-policy.log
+      - name: Preserve network protection evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: network-protection-regressions
+          path: build/security-reports/*.log
+          if-no-files-found: warn
+          retention-days: 7
+
   required:
     name: Security review required
     if: ${{ always() }}
-    needs: [gosec, dependencies, secrets, workflows, regressions]
+    needs: [gosec, dependencies, secrets, workflows, regressions, network-regressions]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -193,6 +232,7 @@ jobs:
           SECRETS: ${{ needs.secrets.result }}
           WORKFLOWS: ${{ needs.workflows.result }}
           REGRESSIONS: ${{ needs.regressions.result }}
+          NETWORK: ${{ needs.network-regressions.result }}
         run: |
           {
             echo '| Category | Result |'
@@ -202,10 +242,11 @@ jobs:
             echo "| Secrets | $SECRETS |"
             echo "| Workflows | $WORKFLOWS |"
             echo "| Runtime and live WAF tests | $REGRESSIONS |"
+            echo "| L3/L4 protection tests | $NETWORK |"
             echo ''
             echo 'Download the per-category artifacts from this run to inspect findings.'
           } >> "$GITHUB_STEP_SUMMARY"
-          for result in "$GOSEC" "$DEPENDENCIES" "$SECRETS" "$WORKFLOWS" "$REGRESSIONS"; do
+          for result in "$GOSEC" "$DEPENDENCIES" "$SECRETS" "$WORKFLOWS" "$REGRESSIONS" "$NETWORK"; do
             if [ "$result" != success ]; then
               echo '::error::A security check failed, was cancelled, or was skipped.'
               exit 1

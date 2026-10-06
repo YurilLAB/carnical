@@ -16,6 +16,61 @@ table inet carnical
 flush table inet carnical
 
 table inet carnical {
+	# Bounded per-source SYN meters. IPv6 groups a /64 so address rotation inside one allocation earns no new budget.
+	set syn4 {
+		type ipv4_addr
+		flags dynamic, timeout
+		timeout 60s
+		size 65536
+	}
+	set syn6 {
+		type ipv6_addr
+		flags dynamic, timeout
+		timeout 60s
+		size 65536
+	}
+	counter edge_bad_source {}
+	counter edge_bad_tcp {}
+	counter edge_udp_drop {}
+	counter edge_syn_global_drop {}
+	counter edge_syn_source_drop {}
+	counter edge_syn_admitted {}
+	counter input_denied {}
+	counter input_logged {}
+	counter edge_discovery_accept {}
+	counter edge_echo_admitted {}
+	counter edge_echo_drop {}
+	counter egress_private_drop {}
+	counter egress_imds_drop {}
+	counter egress_edge_drop {}
+	counter egress_internal_drop {}
+
+	# After IP reassembly (-400), before conntrack (-200). This is a local TLS endpoint, not a router or QUIC server.
+	# No conntrack state is used here. Forwarded traffic and loopback are left to their existing policies.
+	chain edge_prerouting {
+		type filter hook prerouting priority raw; policy accept;
+		iifname "lo" return
+		fib daddr type != local return
+		udp dport 443 counter name edge_udp_drop drop
+		tcp dport 443 jump edge_tcp
+	}
+	chain edge_tcp {
+		ip saddr { 0.0.0.0/8, 127.0.0.0/8, 224.0.0.0/4, 240.0.0.0/4 } counter name edge_bad_source drop
+		ip6 saddr { ::/128, ::1/128, ff00::/8 } counter name edge_bad_source drop
+		tcp flags & (syn | fin) == (syn | fin) counter name edge_bad_tcp drop
+		tcp flags & (syn | rst) == (syn | rst) counter name edge_bad_tcp drop
+		tcp flags & (syn | rst | ack) == 0 counter name edge_bad_tcp drop
+		# Mask only the handshake/termination flags: ECN's ECE/CWR and data-in-SYN remain valid.
+		tcp flags & (fin | syn | rst | ack) == syn jump edge_syn
+	}
+	chain edge_syn {
+		# Tune both levels for the deployment, especially shared NAT/CDN peers. No source bypasses the aggregate cap.
+		limit rate over 10000/second burst 20000 packets counter name edge_syn_global_drop drop
+		meta nfproto ipv4 update @syn4 { ip saddr limit rate 100/second burst 200 packets } counter name edge_syn_admitted return
+		meta nfproto ipv6 update @syn6 { ip6 saddr & ffff:ffff:ffff:ffff:: limit rate 100/second burst 200 packets } counter name edge_syn_admitted return
+		# Positive admission above; exhaustion of a source budget OR a full meter set falls through to this drop.
+		counter name edge_syn_source_drop drop
+	}
 
 	# Addresses a customer's site must never be reached at, whatever its name resolves to. The proxy refuses them too (the
 	# origin guard); this is the same rule enforced by the kernel, so that a bug in one is not a way through both.
@@ -33,16 +88,31 @@ table inet carnical {
 
 	chain input {
 		type filter hook input priority 0; policy drop;
-		ct state established,related accept
 		ct state invalid drop
 		iif lo accept
-		meta l4proto { icmp, ipv6-icmp } limit rate 20/second accept
+		# Echo requests remain limited after conntrack marks their identifier established.
+		icmp type echo-request jump echo_guard
+		icmpv6 type echo-request jump echo_guard
+		ct state established,related accept
+		# Preserve path-MTU/error reporting and IPv6 discovery. Echo floods must not consume their budget (RFC 4890).
+		icmp type { destination-unreachable, time-exceeded, parameter-problem } accept
+		icmpv6 type { destination-unreachable, packet-too-big, time-exceeded, parameter-problem } accept
+		icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert } ip6 hoplimit 255 counter name edge_discovery_accept accept
+		icmpv6 type nd-router-advert ip6 saddr fe80::/10 ip6 hoplimit 255 counter name edge_discovery_accept accept
 		# The only ports that are open to the world: the edge (443). The portal gets its own line when it has an address.
 		tcp dport 443 accept
 		# Administration: from named addresses only.
 		ip saddr $mgmt4 tcp dport 22 ct state new limit rate 6/minute accept
 		ip6 saddr $mgmt6 tcp dport 22 ct state new limit rate 6/minute accept
-		counter log prefix "carnical-in-drop " level info limit rate 5/minute drop
+		counter name input_denied jump input_drop
+	}
+	chain echo_guard {
+		limit rate 20/second burst 40 packets counter name edge_echo_admitted accept
+		counter name edge_echo_drop drop
+	}
+	chain input_drop {
+		limit rate 5/minute burst 5 packets counter name input_logged log prefix "carnical-in-drop " level info
+		drop
 	}
 
 	chain forward {
@@ -54,8 +124,8 @@ table inet carnical {
 		ct state established,related accept
 
 		# The cloud metadata service answers anyone on the machine and holds credentials. Only root asks it.
-		ip daddr 169.254.169.254 meta skuid != 0 counter log prefix "carnical-imds " drop
-		ip6 daddr fd00:ec2::254 meta skuid != 0 counter log prefix "carnical-imds " drop
+		ip daddr 169.254.169.254 meta skuid != 0 counter name egress_imds_drop jump imds_drop
+		ip6 daddr fd00:ec2::254 meta skuid != 0 counter name egress_imds_drop jump imds_drop
 
 		meta skuid "carnical-edge" jump edge_out
 		meta skuid { "carnical-portal", "carnical-ctl", "carnical-signer", "carnical-audit" } jump internal_out
@@ -66,13 +136,12 @@ table inet carnical {
 	chain edge_out {
 		ip daddr $resolver udp dport 53 accept
 		ip daddr $resolver tcp dport 53 accept
-		ip daddr @not_public4 counter log prefix "carnical-edge-private " drop
-		ip6 daddr @not_public6 counter log prefix "carnical-edge-private " drop
+		ip daddr @not_public4 counter name egress_private_drop jump edge_private_drop
+		ip6 daddr @not_public6 counter name egress_private_drop jump edge_private_drop
 		# This machine's own public address as well: an origin that is the edge itself would loop.
-		fib daddr type local counter log prefix "carnical-edge-self " drop
+		fib daddr type local counter jump edge_self_drop
 		tcp dport { 80, 443 } accept
-		counter log prefix "carnical-edge-egress " limit rate 10/minute drop
-		drop
+		counter name egress_edge_drop jump edge_egress_drop
 	}
 
 	# Everything else here has no reason to open a connection to anywhere but this machine. Sending spam (25, 465, 587), a
@@ -80,7 +149,27 @@ table inet carnical {
 	chain internal_out {
 		oif lo accept
 		ip daddr $resolver udp dport 53 accept
-		counter log prefix "carnical-internal-egress " limit rate 10/minute drop
+		counter name egress_internal_drop jump internal_egress_drop
+	}
+	# Logging is conditional; refusal is unconditional. A flood cannot bypass a drop by exhausting its log budget.
+	chain imds_drop {
+		limit rate 10/minute burst 10 packets log prefix "carnical-imds "
+		drop
+	}
+	chain edge_private_drop {
+		limit rate 10/minute burst 10 packets log prefix "carnical-edge-private "
+		drop
+	}
+	chain edge_self_drop {
+		limit rate 10/minute burst 10 packets log prefix "carnical-edge-self "
+		drop
+	}
+	chain edge_egress_drop {
+		limit rate 10/minute burst 10 packets log prefix "carnical-edge-egress "
+		drop
+	}
+	chain internal_egress_drop {
+		limit rate 10/minute burst 10 packets log prefix "carnical-internal-egress "
 		drop
 	}
 }
