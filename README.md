@@ -9,7 +9,7 @@
 [![Project Status: Active](https://www.repostatus.org/badges/latest/active.svg)](https://www.repostatus.org/#active)
 [![Coraza API Docs](https://godoc.org/github.com/corazawaf/coraza?status.svg)](https://godoc.org/github.com/corazawaf/coraza/v3)
 
-Carnical is the Go-based Web Application Firewall (WAF)built on [OWASP Coraza](https://github.com/corazawaf/coraza) and the OWASP Core Rule Set v4. It keeps Coraza's engine and ModSecurity SecLang support, adding a hardened reverse proxy, API protections, layered request inspection and monitoring.
+Carnical is an independent Go-based Web Application Firewall (WAF), built on [OWASP Coraza](https://github.com/corazawaf/coraza) and the OWASP Core Rule Set v4. It runs as a reverse proxy between clients and protected applications, combining Coraza's ModSecurity SecLang rules with API and body validation, flood mitigation, configurable policies and monitoring.
 
 See the [Carnical guide](carnical/README.md) for setup and configuration. The Coraza library examples and upstream resources below remain available for engine integrations.
 
@@ -28,7 +28,7 @@ Key Features (Coraza engine):
 
 * 🔌 **Extensible** - Coraza is a library at its core, with many integrations to deploy on-premise Web Application Firewall instances. Audit Loggers, persistence engines, operators, actions, create your own functionalities to extend Coraza as much as you want.
 
-* 🚀 **Performance** - From huge websites to small blogs, Coraza can handle the load with minimal performance impact. Check our [Benchmarks](https://coraza.io/docs/reference/benchmarks)
+* 🚀 **Performance** - From huge websites to small blogs, Coraza can handle the load with minimal performance impact. See the upstream Coraza [Benchmarks](https://coraza.io/docs/reference/benchmarks).
 
 * ﹡ **Simplicity** - Anyone is able to understand and modify the Coraza source code. It is easy to extend Coraza with new functionality.
 
@@ -73,15 +73,15 @@ import (
 )
 
 func main() {
-	// First we initialize our waf and our seclang parser
+	// Initialize the WAF and parse the SecLang rules.
 	waf, err := coraza.NewWAF(coraza.NewWAFConfig().
 		WithDirectives(`SecRule REMOTE_ADDR "@rx .*" "id:1,phase:1,deny,status:403"`))
-	// Now we parse our rules
+	// Check for rule parsing errors.
 	if err != nil {
 		fmt.Println(err)
 	}
 
-	// Then we create a transaction and assign some variables
+	// Create a transaction and set its connection details.
 	tx := waf.NewTransaction()
 	defer func() {
 		tx.ProcessLogging()
@@ -89,7 +89,7 @@ func main() {
 	}()
 	tx.ProcessConnection("127.0.0.1", 8080, "127.0.0.1", 12345)
 
-	// Finally we process the request headers phase, which may return an interruption
+	// Process the request headers phase, which may return an interruption.
 	if it := tx.ProcessRequestHeaders(); it != nil {
 		fmt.Printf("Transaction was interrupted with status %d\n", it.Status)
 	}
@@ -211,9 +211,9 @@ To support upstream Coraza, see its [Donations site](https://owasp.org/donate/?r
 
 ## Thanks to all the people who have contributed
 
-First and foremost, huge thanks to [Juan Pablo Tosso](https://twitter.com/jptosso) for starting this project, and building an amazing community around Coraza!
+First and foremost, huge thanks to [Juan Pablo Tosso](https://twitter.com/jptosso) for starting Coraza, and building an amazing community around it!
 
-Today we have lots of amazing contributors, we could not have done this without you!
+Thanks to the many contributors who have helped build and maintain the Coraza engine!
 
 <a href="https://github.com/corazawaf/coraza/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=corazawaf/coraza" />

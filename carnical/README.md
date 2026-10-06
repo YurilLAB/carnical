@@ -2,9 +2,11 @@
 
 # Carnical: a Web Application Firewall built on Coraza
 
-Carnical is our web application firewall for the 5weeks1K project, built on [OWASP Coraza](https://github.com/corazawaf/coraza)
-and the OWASP Core Rule Set (CRS). This folder adds the reverse proxy, API and body protections, flood mitigation,
-virtual patches, customer policies and monitoring. The fork also includes targeted engine hardening fixes.
+Carnical is an independent web application firewall written in Go, built on [OWASP Coraza](https://github.com/corazawaf/coraza)
+and the OWASP Core Rule Set (CRS). It runs as a reverse proxy between clients and protected applications, inspecting
+HTTP traffic before forwarding it. Its protections include API and body validation, flood mitigation, virtual patches,
+configurable policies and monitoring, alongside targeted hardening fixes to the Coraza engine.
+
 `carnical/` is its own Go module (`github.com/YurilLAB/coraza/carnical`), keeping the application additions separate
 from the Coraza engine. See the [repository overview](../README.md) and [current security findings](../docs/security-findings.md).
 
@@ -15,7 +17,7 @@ from the Coraza engine. See the [repository overview](../README.md) and [current
 | `cmd/carnical/` | The program: `carnical -upstream http://127.0.0.1:8081 -mode block`. |
 | `tools/update-crs/` | Fetches a CRS release, checks its GPG signature against the CRS project's pinned key, and replaces the embedded copy. |
 | `audit/`, `cmd/carnical-audit/` | The segmentation checks: the walls between zones and between customers, run a few times a day. `carnical-audit -zones zones.json`. |
-| `docs/backend-integration.md` | What it takes to connect this to our backend and web UI. |
+| `docs/backend-integration.md` | Backend and web UI integration requirements. |
 | `docs/segmentation.md` | Zones, who may talk to whom, how customers are kept apart, and the checks and their schedule. Read this next. |
 | `sandbox/`, `cmd/carnical-confine/` | The proxy confining itself from the inside (Landlock, seccomp, no new privileges), and a probe that tries 34 forbidden actions from inside it. |
 | `audit/host/` | Checks of the machine itself: kernel settings, mounts, services' sandboxes, network and audit rules, listeners, processes, integrity, setuid files, whether the running edge is confined. |
@@ -30,7 +32,7 @@ from the Coraza engine. See the [repository overview](../README.md) and [current
 
 ## Versions
 
-- Coraza: v3.8.1 (branch `foundation` is the pinned upstream tag; our branch is `edge-crs`).
+- Coraza: v3.8.1 (branch `foundation` is the pinned upstream tag; Carnical development uses `edge-crs`).
 - OWASP CRS: 4.30.0, release signed by key `3600 6F0E 0BA1 6783 2158 8211 38EE ACA1 AB8A 6E72`. `crs/provenance.json` holds the
   archive hash, the signature hash and the hash of every embedded file; a test fails if any file differs.
 
@@ -72,7 +74,7 @@ to use without heavy tuning.
 
 ## What the proxy adds around Coraza
 
-These come from bugs found in our own earlier gateway, where what the firewall inspected and what the application received could differ.
+The proxy addresses cases where the traffic inspected by the firewall could differ from what the application receives.
 
 - The request target is forwarded exactly as it was inspected; one Go would re-encode (such as `/a%2fb|`) is refused.
 - Proxy and identity headers are removed with `_` and `-` treated alike (`X_Original_URL` is `X-Original-URL` to PHP, CGI and IIS), and rebuilt from the verified client address.
@@ -105,7 +107,7 @@ variation. Use `-variants` for this suite and its even attack/benign request spl
 - The CRS has no rule for XML external entities, and Coraza's XML processor hands rules the text pieces of an element separately, so a keyword split by an empty CDATA section is not seen whole.
 - Uploaded file contents, trailers (dropped, so never forwarded) and SQL in a URL path segment are not inspected; CRS is generic and does not carry CVE-specific virtual patches for WordPress plugins.
 - A body of hostile input costs CPU in proportion to its size (several seconds for 1 MiB of adversarial text). Keep `-max-body` as small as the site allows.
-- Developing on Windows: run the tests under WSL or Linux. Coraza's own suite has Windows-only failures, and one of them (`normalisePath`, fixed in our copy) silently disabled the CRS's OS-file rule on Windows.
+- Developing on Windows: run the tests under WSL or Linux. Coraza's own suite has Windows-only failures, and one of them (`normalisePath`, fixed in this fork) silently disabled the CRS's OS-file rule on Windows.
 
 ## Updating the CRS
 
@@ -117,7 +119,7 @@ go test ./crs
 The tool downloads over https from github.com only, refuses anything whose signature is not from the pinned key (checked with a
 throwaway keyring, not yours), extracts only expected regular files, and writes nothing if any check fails.
 
-## Our changes to upstream files
+## Changes to upstream files
 
 - `go.work`: one line adding `./carnical`, and a `toolchain` line so the workspace builds with a Go release that has the standard-library fixes (go1.26.4 had seven that affect a proxy: HTTP/2 cleartext check, quadratic URL path resolution, XML recursion; `govulncheck ./...` reports none on go1.26.6).
 - `internal/corazawaf/rulegroup.go`, `rule.go`, `transaction.go`: rule evaluation stops when the transaction's context is done, and a blocking engine refuses the transaction (503). Nothing in the engine looked at the context before, so a request that was expensive to inspect could not be cut short. The proxy gives each evaluation phase a budget through it (`proxy/deadline.go`). A test in `rulegroup_test.go` covers the three cases.
@@ -125,5 +127,5 @@ throwaway keyring, not yours), extracts only expected regular files, and writes 
 
 ## Licence
 
-Coraza and the CRS are Apache-2.0 (the CRS licence is kept in `crs/owasp_crs/LICENSE`). The licence for code we add in `carnical/` is not
+Coraza and the CRS are Apache-2.0 (the CRS licence is kept in `crs/owasp_crs/LICENSE`). The licence for additions in `carnical/` is not
 decided yet.
