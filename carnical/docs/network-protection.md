@@ -170,8 +170,10 @@ not evidence that an HTTP attack reached the application. No SQL injection probe
 
 The large profile's ordinary batches completed in about 3.6 seconds each (roughly 1,400 requests/s locally), and the mixed
 flood batch in about seven seconds. Its p99 request latency rose from 10–14 ms in that recorded ordinary run to about
-1,027 ms during the flood. Other repeated runs also showed a tail-latency penalty; these results establish service continuity
-in this workload, not a latency guarantee. Kernel backlog pressure, TLS capacity, connection tracking, origin performance
+1,027 ms during the flood. The [controlled investigation below](#investigating-the-one-second-tail) subsequently reproduced
+that delay without a flood and traced it to the test origin's accept queue and connection churn. The original comparison
+also doubled client concurrency during the flood. These results establish service continuity in this workload, not a latency
+guarantee. Kernel backlog pressure, TLS capacity, connection tracking, origin performance
 and upstream bandwidth still need measurement on the intended server. A 100,000/s configured SYN budget is not a claim of
 100,000/s tested server capacity. This lab does not emulate a multi-node massive website or realistic internet latency.
 
@@ -197,6 +199,62 @@ keeps the detailed logs. Repository-wide findings and the sandbox/YAML timing fa
 The hosted Ubuntu 24.04 [scaling job for commit 65b9acde](https://github.com/YurilLAB/coraza/actions/runs/37493305231/job/112371316359)
 passed the full race suite, live distributed flood, both deployment profiles, verified TLS, port changes and reload checks.
 
+### Investigating the one-second tail
+
+The existing namespace test now records connection setup (including TLS when enabled), request writes, response headers,
+body reads, reused-connection latency, accepted origin connections, handled origin requests and TCP counter deltas in both namespaces. Its percentiles
+use the nearest-rank definition. Flood and no-flood controls use the same number of workers. `flood_requests` counts requests
+started while the packet generator was active; a fast HTTP batch can finish before the eight-second packet stream finishes.
+Counter snapshots cover the HTTP batch, while final nft counters account for the complete packet stream.
+
+Three live repetitions of four origin configurations used the same Carnical binary, CRS, shield limits and large packet
+profile. Each configuration served 10,000 requests at 64 workers without a flood and another 10,000 during a 100,000-packet
+stream. The final repetition measured:
+
+| Origin configuration | No-flood p99 | Flood p99 | Origin connections, no flood / flood | Listen overflows, no flood / flood |
+|---|---:|---:|---:|---:|
+| Original HTTP/1.0, queue 5 | 1,026 ms | 1,026 ms | 10,000 / 10,000 | 326 / 318 |
+| HTTP/1.0, queue 256 only | 44 ms | 45 ms | 10,000 / 10,000 | 0 / 0 |
+| HTTP/1.1 with Content-Length, queue 256 | 52 ms | 52 ms | 69 / 0 | 0 / 0 |
+| Same persistent origin with TCP_NODELAY | 46 ms | 84 ms | 44 / 19 | 0 / 0 |
+
+The original response-header wait accounted for almost the entire second; client-to-edge SYN retransmissions were zero.
+The server namespace recorded 183/225 SYN retransmissions in the no-flood/flood original-origin batches and none after
+changing only its queue. Together with the reproduced no-flood delay and unchanged WAF, this identifies an overloaded
+origin accept queue as the cause in this lab. Linux's documented initial SYN retransmission timeout is one second.
+The original HTTP/1.0 origin closed each connection, forcing a new upstream handshake for every request. Carnical already
+uses a persistent Go transport, but an origin that closes connections prevents reuse. The fixture now supplies valid
+HTTP/1.1 response framing, a bounded queue of 256 and TCP_NODELAY. Persistent origin connections removed most handshakes;
+TCP_NODELAY reduced the final run's 10,000-request flood batch from 7.28 to 3.26 seconds. The persistent TCP_NODELAY fixture's
+flood p99 ranged from 46 to 84 ms across the three repetitions; it was 47 ms in the second. This change improves the test
+origin and its deployment guidance; it does not change WAF rules or relax flood budgets.
+
+All 240,000 ordinary requests across the three control repetitions succeeded. The last two repetitions also blocked 400/400
+SQL injection probes before any origin connection was opened; the final repetition explicitly counted zero handled origin
+requests for those probes. The full profile suite additionally checks a no-flood control
+at eight workers for small deployments and 64 for large, verified HTTPS during another 100,000-packet flood, zero listen
+overflows, zero client SYN retransmissions, bounded upstream connection creation and p99 below 500 ms. That threshold is a
+laboratory regression check, not a production SLA. Both the profile suite and four-origin controls run in the existing
+GitHub L3/L4 job and retain their logs. Each of two local full-suite runs served 36,440/36,440 ordinary batch requests,
+blocked 150/150 SQL probes and accounted for 206,000 varied flood packets. Large matched-concurrency p99 was 44.6–45.2 ms
+without flood and 45.6–46.2 ms during flood; small was 7.1–7.8 / 4.3–8.0 ms. The 4,000-request HTTPS flood batches used
+16 workers paced at 20 ms, verified the certificate chain and IP SAN, and measured p99 4.5–5.8 ms.
+All 4,000 requests in each HTTPS flood batch started during packet generation, with no
+transport failures, listen overflows or client SYN retransmissions. The paced HTTPS result is not directly comparable to
+the unpaced 64-worker HTTP result. Reproduce the controls on Linux with:
+
+```sh
+sudo python3 .github/security/test_network_policy.py --binary build/carnical-network-linux --latency-investigation
+```
+
+For an actual deployment, enable correctly framed persistent responses at the origin, size its accept queue and workers
+against measured upstream concurrency, and compare `ss -lnt` queue occupancy with TCP counter deltas under matched traffic.
+Track origin connection creation, visitor latency and named nft admission/refusal counters together. `ListenDrops` is a
+namespace-wide counter and also rises from incomplete attacking SYNs; it does not by itself show that visitors were dropped.
+Measure edge handshakes separately from origin waits before changing packet budgets. A larger queue only absorbs bursts;
+it cannot increase a saturated origin's processing capacity. Keep evaluation, upstream and connection limits within the
+server's resource budget. These local results do not measure internet-scale volumetric attacks or multi-node capacity.
+
 ## References
 
 - [Netfilter hook ordering](https://wiki.nftables.org/wiki-nftables/index.php/Netfilter_hooks): raw priority -300 follows
@@ -207,6 +265,10 @@ passed the full race suite, live distributed flood, both deployment profiles, ve
 - [nftables scripting](https://wiki.nftables.org/wiki-nftables/index.php/Scripting): load a generated policy in one atomic transaction.
 - [nftables 1.0.9 changes](https://www.netfilter.org/projects/nftables/files/changes-nftables-1.0.9.txt): destroy command support and kernel feature checks.
 - [Linux TCP capacity settings](https://kernel.org/doc/html/latest/networking/ip-sysctl.html): SYN backlog limits and the purpose of SYN-cookie fallback.
+- [Python HTTP response framing](https://docs.python.org/3.14/library/http.server.html#http.server.BaseHTTPRequestHandler.protocol_version)
+  and [server queues](https://docs.python.org/3.14/library/socketserver.html#socketserver.BaseServer.request_queue_size):
+  the fixture's HTTP/1.0 and queue defaults, and the Content-Length requirement for persistent responses.
+- [Go HTTP transport](https://pkg.go.dev/net/http#Transport): persistent connection pooling.
 - [Process descriptor limits](https://man7.org/linux/man-pages/man2/getrlimit.2.html): the soft limit constrains descriptors a process can open.
 - [Linux IPv6 input implementation](https://github.com/torvalds/linux/blob/v6.18/net/ipv6/ip6_input.c): early rejection of
   multicast sources and loopback addresses on non-loopback interfaces.

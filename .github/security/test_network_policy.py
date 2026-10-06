@@ -7,6 +7,7 @@ import http.client
 import http.server
 import ipaddress
 import json
+import math
 import os
 import pathlib
 import socket
@@ -47,6 +48,29 @@ def checksum(data):
 def equal(actual, expected, message):
     if actual != expected:
         raise AssertionError(f"{message}: got {actual!r}, expected {expected!r}")
+
+
+def tcp_counters():
+    values = {}
+    for filename in ("/proc/net/netstat", "/proc/net/snmp"):
+        lines = pathlib.Path(filename).read_text().splitlines()
+        for names, counts in zip(lines[::2], lines[1::2]):
+            if names.split()[0] in ("Tcp:", "TcpExt:"):
+                values.update(zip(names.split()[1:], map(int, counts.split()[1:])))
+    return {name: values[name] for name in ("ListenOverflows", "ListenDrops", "TCPSynRetrans", "SyncookiesSent",
+                                           "TCPReqQFullDoCookies", "TCPReqQFullDrop", "ActiveOpens", "RetransSegs")}
+
+
+def delta(after, before):
+    return {name: after[name] - value for name, value in before.items()}
+
+
+def latency(samples):
+    if not samples:
+        return {"count": 0, "p99_ms": 0, "max_ms": 0}
+    ordered = sorted(samples)
+    return {"count": len(samples), "p99_ms": round(ordered[math.ceil(len(ordered) * .99) - 1] * 1000, 2),
+            "max_ms": round(ordered[-1] * 1000, 2)}
 
 
 def frame(src, proto=6, flags=2, ident=1, hop=64, payload=None, port=443):
@@ -159,13 +183,36 @@ def peer():
                     else:
                         conn = http.client.HTTPConnection(address, 443, timeout=10)
                     statuses, latencies, errors = {}, [], 0
+                    stages = {name: [] for name in ("connect", "write", "headers", "body", "reused")}
+                    slow, flooded_requests = [], 0
                     for index in range(worker, task["count"], task["workers"]):
                         begin = time.monotonic()
+                        if flood_thread is not None and flood_thread.is_alive():
+                            flooded_requests += 1
+                        new_connection = conn.sock is None
+                        connected = written = headers = begin
                         try:
+                            if new_connection:
+                                conn.connect()
+                                connected = time.monotonic()
+                                stages["connect"].append(connected - begin)
                             path = "/?q=%27%20OR%201%3D1--" if task.get("attack") else f"/static/{index % 31}.css"
                             conn.request("GET", path, headers={"Host": "example.test", "User-Agent": "scale-test/1.0"})
+                            written = time.monotonic()
                             response = conn.getresponse()
+                            headers = time.monotonic()
                             body = response.read()
+                            finished = time.monotonic()
+                            stages["write"].append(written - connected)
+                            stages["headers"].append(headers - written)
+                            stages["body"].append(finished - headers)
+                            if not new_connection:
+                                stages["reused"].append(finished - begin)
+                            if finished - begin > .5 and len(slow) < 4:
+                                slow.append({"family": family, "request": index, "new_connection": new_connection,
+                                             "connect_ms": round((connected - begin) * 1000, 2),
+                                             "headers_ms": round((headers - written) * 1000, 2),
+                                             "total_ms": round((finished - begin) * 1000, 2)})
                             status = str(response.status)
                             statuses[status] = statuses.get(status, 0) + 1
                             if response.status == 200 and body != b"origin-ok":
@@ -177,22 +224,30 @@ def peer():
                         if task.get("pace"):
                             time.sleep(task["pace"])
                     conn.close()
-                    return str(family), statuses, latencies, errors
+                    return str(family), statuses, latencies, errors, stages, slow, flooded_requests
                 begin = time.monotonic()
+                tcp_before = tcp_counters()
                 totals, times, errors, families = {}, [], 0, {}
+                stages = {name: [] for name in ("connect", "write", "headers", "body", "reused")}
+                slow, flooded_requests = [], 0
                 with concurrent.futures.ThreadPoolExecutor(max_workers=task["workers"]) as pool:
-                    for family, statuses, latencies, failed in pool.map(visitor, range(task["workers"])):
+                    for family, statuses, latencies, failed, measured, delayed, during_flood in pool.map(visitor, range(task["workers"])):
                         errors += failed
                         times.extend(latencies)
                         for status, count in statuses.items():
                             totals[status] = totals.get(status, 0) + count
                             family_totals = families.setdefault(family, {})
                             family_totals[status] = family_totals.get(status, 0) + count
-                times.sort()
+                        for name, samples in measured.items():
+                            stages[name].extend(samples)
+                        slow.extend(delayed)
+                        flooded_requests += during_flood
                 result = {"statuses": totals, "families": families, "errors": errors, "seconds": round(time.monotonic() - begin, 3),
-                          "p99_ms": round(times[min(len(times) - 1, int(len(times) * .99))] * 1000, 2)}
+                          **latency(times), "stages": {name: latency(samples) for name, samples in stages.items()},
+                          "slow_samples": slow[:8], "flood_requests": flooded_requests,
+                          "client_tcp": delta(tcp_counters(), tcp_before)}
             elif task["kind"] == "serve_origin":
-                server = http.server.ThreadingHTTPServer(("0.0.0.0", 80), Origin)
+                server = OriginServer(("0.0.0.0", 80), Origin)
                 threading.Thread(target=server.serve_forever, daemon=True).start()
                 result = {"started": True}
             else:
@@ -286,13 +341,50 @@ class Lab:
 
 
 class Origin(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
     def do_GET(self):
+        with self.server.metrics_lock:
+            self.server.requests += 1
         self.send_response(200)
+        if self.protocol_version == "HTTP/1.1":
+            self.send_header("Content-Length", "9")
         self.end_headers()
         self.wfile.write(b"origin-ok")
 
     def log_message(self, *args):
         pass
+
+
+class LegacyOrigin(Origin):
+    protocol_version = "HTTP/1.0"
+
+
+class OriginServer(http.server.ThreadingHTTPServer):
+    # The fixture must not limit the WAF's 64-worker workload to Python's default queue of five.
+    request_queue_size = 256
+    no_delay = True
+
+    def __init__(self, address, handler):
+        self.metrics_lock = threading.Lock()
+        self.accepted, self.requests = 0, 0
+        super().__init__(address, handler)
+
+    def metrics(self):
+        with self.metrics_lock:
+            return self.accepted, self.requests
+
+    def get_request(self):
+        conn, address = super().get_request()
+        try:
+            if self.no_delay:
+                conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except OSError:
+            conn.close()
+            raise
+        with self.metrics_lock:
+            self.accepted += 1
+        return conn, address
 
 
 def egress():
@@ -310,7 +402,7 @@ def egress():
     print(json.dumps({"connected": connected}), flush=True)
 
 
-def test(binary):
+def test(binary, investigate=False):
     if os.geteuid() != 0:
         raise RuntimeError("network namespace test requires root")
     if os.stat("/proc/self/ns/net").st_ino == os.stat("/proc/1/ns/net").st_ino:
@@ -330,7 +422,7 @@ def test(binary):
         stack.callback(lab.close)
         lab.setup()
         run("nft", "--file", "-", input="table inet carnical_test_canary {\n counter intact { packets 7 bytes 42 }\n}\n")
-        origin = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Origin)
+        origin = OriginServer(("127.0.0.1", 0), Origin)
         stack.callback(origin.server_close)
         threading.Thread(target=origin.serve_forever, daemon=True).start()
         stack.callback(origin.shutdown)
@@ -358,6 +450,59 @@ def test(binary):
                     if time.monotonic() > deadline:
                         raise RuntimeError("WAF did not listen")
                     time.sleep(0.05)
+        def measured_batch(task):
+            before = tcp_counters()
+            accepted, requests = origin.metrics()
+            result = lab.ask({"kind": "http_batch", **task})
+            result["server_tcp"] = delta(tcp_counters(), before)
+            after_accepted, after_requests = origin.metrics()
+            result["origin_connections"] = after_accepted - accepted
+            result["origin_requests"] = after_requests - requests
+            equal(result["origin_requests"], 0 if task.get("attack") else task["count"], "requests actually reaching the origin")
+            return result
+        if investigate:
+            # One-factor controls use the same binary, WAF limits, policy, workers and requests.
+            for label, handler, backlog, no_delay in (
+                ("legacy-queue5", LegacyOrigin, 5, False),
+                ("legacy-queue256", LegacyOrigin, 256, False),
+                ("persistent-queue256", Origin, 256, False),
+                ("persistent-nodelay-queue256", Origin, 256, True),
+            ):
+                origin.RequestHandlerClass = handler
+                origin.socket.listen(backlog)
+                origin.no_delay = no_delay
+                lab.load(profile="large", peers=True)
+                waf = start_waf(["-ddos", "on", "-ddos-rate", "50000", "-ddos-burst", "100000",
+                                 "-ddos-baseline-rate", "10000", "-ddos-max-conns", "4096",
+                                 "-max-evaluations", "64", "-max-upstream", "128"])
+                for flooded in (False, True):
+                    if flooded:
+                        lab.ask({"kind": "flood_start", "count": 100000, "duration": 8})
+                    result = measured_batch({"family": 0, "count": 10000, "workers": 64})
+                    equal(result["errors"], 0, "latency investigation transport errors")
+                    equal(result["families"], {"4": {"200": 5000}, "6": {"200": 5000}}, "latency investigation responses")
+                    if handler is Origin and result["origin_connections"] > 128:
+                        raise AssertionError("persistent origin did not reuse connections")
+                    if backlog == 256:
+                        equal(result["server_tcp"]["ListenOverflows"], 0, "sized origin accept queue must not overflow")
+                    print(f"MEASURE: {label} flood={flooded} {json.dumps(result)}", flush=True)
+                    if flooded:
+                        if result["flood_requests"] < 5000:
+                            raise AssertionError("latency control did not overlap the packet stream sufficiently")
+                        equal(lab.ask({"kind": "flood_wait"}), {"sent": 100000}, "investigation flood generation")
+                        lab.expect("edge_bad_tcp", 33334)
+                        lab.expect("edge_udp_drop", 33333)
+                        lab.expect("edge_syn_source_drop", 20000)
+                        equal(sum(lab.count(name) for name in ("edge_syn_admitted", "edge_syn_source_drop", "edge_syn_global_drop")),
+                              33333, "investigation flood SYN accounting")
+                for family in (4, 6):
+                    result = measured_batch({"family": family, "count": 25, "workers": 1, "attack": True, "pace": .05})
+                    equal(result["errors"], 0, "latency control SQL probe transport errors")
+                    equal(result["statuses"], {"403": 25}, "SQL injection blocked in every latency control")
+                    equal(result["origin_connections"], 0, "blocked SQL probe must not open an origin connection")
+                print(f"PASS: {label} SQL injection 50/50 blocked before the origin", flush=True)
+                stop_waf(waf)
+            return
         waf = start_waf(["-ddos", "off"])
 
         lab.load()
@@ -512,16 +657,31 @@ def test(binary):
                              "-ddos-max-conns", "64" if profile == "small" else "4096",
                              "-max-evaluations", str(2 * workers), "-max-upstream", str(4 * workers)])
             for family in (4, 6):
-                result = lab.ask({"kind": "http_batch", "family": family, "count": requests, "workers": workers,
-                                  "pace": .025 if profile == "small" else 0})
+                result = measured_batch({"family": family, "count": requests, "workers": workers,
+                                         "pace": .025 if profile == "small" else 0})
                 equal(result["errors"], 0, "ordinary request errors")
                 equal(result["statuses"], {"200": requests}, "ordinary requests must reach the origin")
                 print(f"PASS: {profile} IPv{family} ordinary traffic {json.dumps(result)}", flush=True)
+            # Compare against the flood at identical concurrency; the per-family batches use half as many workers.
+            control = measured_batch({"family": 0, "count": 2 * requests, "workers": 2 * workers,
+                                      "pace": .025 if profile == "small" else 0})
+            equal(control["errors"], 0, "matched-concurrency ordinary request errors")
+            equal(control["families"], {"4": {"200": requests}, "6": {"200": requests}}, "matched-concurrency responses")
+            print(f"PASS: {profile} simultaneous IPv4/IPv6 without flood {json.dumps(control)}", flush=True)
             lab.ask({"kind": "flood_start", "count": packets, "duration": 3 if profile == "small" else 8})
-            result = lab.ask({"kind": "http_batch", "family": 0, "count": 2 * requests, "workers": 2 * workers,
-                              "pace": .025 if profile == "small" else 0})
+            result = measured_batch({"family": 0, "count": 2 * requests, "workers": 2 * workers,
+                                     "pace": .025 if profile == "small" else 0})
             equal(result["errors"], 0, "legitimate traffic errors during packet flood")
             equal(result["families"], {"4": {"200": requests}, "6": {"200": requests}}, "both IP families during packet flood")
+            if result["flood_requests"] < requests:
+                raise AssertionError("profile workload did not overlap the packet stream sufficiently")
+            for measured in (control, result):
+                equal(measured["server_tcp"]["ListenOverflows"], 0, "origin and WAF accept queues must not overflow")
+                equal(measured["client_tcp"]["TCPSynRetrans"], 0, "legitimate edge handshakes must not retransmit")
+                if measured["origin_connections"] > 4 * workers:
+                    raise AssertionError("origin keep-alive did not bound connection churn")
+                if measured["p99_ms"] >= 500:
+                    raise AssertionError(f"{profile} laboratory p99 exceeded 500 ms: {measured['p99_ms']}")
             print(f"PASS: {profile} simultaneous IPv4/IPv6 traffic across packet flood {json.dumps(result)}", flush=True)
             equal(lab.ask({"kind": "flood_wait"}), {"sent": packets}, "varied flood generation")
             lab.expect("edge_bad_tcp", (packets + 2) // 3)
@@ -582,10 +742,25 @@ def test(binary):
         lab.load(profile="large", peers=True)
         waf = start_waf(["-ddos", "on", "-ddos-rate", "50000", "-ddos-burst", "100000", "-max-evaluations", "32",
                          "-tls-cert", str(certificate), "-tls-key", str(key)])
-        result = lab.ask({"kind": "http_batch", "family": 0, "count": 1000, "workers": 16, "ca_file": str(certificate)})
+        result = measured_batch({"family": 0, "count": 1000, "workers": 16, "ca_file": str(certificate)})
         equal(result["errors"], 0, "TLS request errors")
         equal(result["families"], {"4": {"200": 500}, "6": {"200": 500}}, "verified TLS requests")
         print(f"PASS: verified TLS with kernel policy, shield and CRS enabled {json.dumps(result)}", flush=True)
+        lab.ask({"kind": "flood_start", "count": 100000, "duration": 8})
+        result = measured_batch({"family": 0, "count": 4000, "workers": 16, "pace": .02, "ca_file": str(certificate)})
+        equal(result["errors"], 0, "verified TLS transport errors during packet flood")
+        equal(result["families"], {"4": {"200": 2000}, "6": {"200": 2000}}, "verified TLS responses during packet flood")
+        equal(result["server_tcp"]["ListenOverflows"], 0, "TLS flood accept queues must not overflow")
+        equal(result["client_tcp"]["TCPSynRetrans"], 0, "TLS edge handshakes must not retransmit")
+        if result["p99_ms"] >= 500 or result["origin_connections"] > 32 or result["flood_requests"] < 2000:
+            raise AssertionError(f"TLS flood latency, connection reuse or overlap regression: {result}")
+        print(f"PASS: verified TLS during varied packet flood {json.dumps(result)}", flush=True)
+        equal(lab.ask({"kind": "flood_wait"}), {"sent": 100000}, "TLS flood generation")
+        lab.expect("edge_bad_tcp", 33334)
+        lab.expect("edge_udp_drop", 33333)
+        lab.expect("edge_syn_source_drop", 20000)
+        equal(sum(lab.count(name) for name in ("edge_syn_admitted", "edge_syn_source_drop", "edge_syn_global_drop")),
+              33333, "TLS flood SYN accounting")
         for family in (4, 6):
             result = lab.ask({"kind": "http_batch", "family": family, "count": 25, "workers": 1,
                               "attack": True, "pace": .05, "ca_file": str(certificate)})
@@ -612,6 +787,7 @@ def main():
     parser.add_argument("--peer", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--egress", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--binary", type=pathlib.Path)
+    parser.add_argument("--latency-investigation", action="store_true", help="compare origin queue, keep-alive and TCP flush controls")
     args = parser.parse_args()
     if args.peer or args.egress:
         if os.stat("/proc/self/ns/net").st_ino == os.stat("/proc/1/ns/net").st_ino:
@@ -624,9 +800,10 @@ def main():
         parser.error("--binary is required")
     elif not args.inside:
         os.execvp("unshare", ["unshare", "--net", sys.executable, str(pathlib.Path(__file__).resolve()),
-                              "--inside", "--binary", str(args.binary.resolve())])
+                              "--inside", "--binary", str(args.binary.resolve()),
+                              *(["--latency-investigation"] if args.latency_investigation else [])])
     else:
-        test(args.binary.resolve())
+        test(args.binary.resolve(), investigate=args.latency_investigation)
 
 
 if __name__ == "__main__":

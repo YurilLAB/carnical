@@ -209,6 +209,11 @@ jobs:
         run: |
           sudo python3 .github/security/test_network_policy.py --binary build/carnical-network-linux \
             | tee build/security-reports/network-policy.log
+      - name: Measure flood latency with origin bottleneck controls
+        shell: bash
+        run: |
+          sudo python3 .github/security/test_network_policy.py --binary build/carnical-network-linux --latency-investigation \
+            | tee build/security-reports/flood-latency.log
       - name: Preserve network protection evidence
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

@@ -55,6 +55,11 @@ ausearch -m SECCOMP -i                                    # the record the kerne
 
 If `-unconfined` does not pass, the probe is broken and the confined run proves nothing.
 
+For flood latency, check the origin as well as the edge: persistent responses, accept-queue capacity and upstream concurrency
+must fit the measured workload. The [controlled latency investigation](../docs/network-protection.md#investigating-the-one-second-tail)
+reproduced the earlier one-second delay in an undersized test origin even without a flood. Compare matched-concurrency runs
+and connection/TCP counters before increasing protection budgets.
+
 ## What to do when something fails
 
 * A `host-processes`, `host-listeners` or `host-edge-confined` finding on a machine that was fine yesterday is an incident until shown otherwise. Do not restart the service first: the process and its open files are the evidence. `ausearch -k carnical_svc_exec -i` and `-m SECCOMP -i` show what it tried.
