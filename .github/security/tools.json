@@ -1,0 +1,26 @@
+{
+  "gosec": {
+    "repository": "securego/gosec",
+    "version": "v2.29.0",
+    "linux": {"asset": "gosec_2.29.0_linux_amd64.tar.gz", "sha256": "6431b119741c1f4a50fdfcf94e782e16b9e642afc8c7fa9b5d39d48bf3003095"},
+    "windows": {"asset": "gosec_2.29.0_windows_amd64.tar.gz", "sha256": "67cd5ca3a80280b27102a8d6482e7124e8a47bda240412a0fcd1bb7f1be96faf"}
+  },
+  "osv-scanner": {
+    "repository": "google/osv-scanner",
+    "version": "v2.6.0",
+    "linux": {"asset": "osv-scanner_linux_amd64", "sha256": "ca69b3d3cd08f889a49dc0a383122f71cc528b83803671df5fd874d97485b108"},
+    "windows": {"asset": "osv-scanner_windows_amd64.exe", "sha256": "e0ed7644118b717b028c249ee9d3515024e55e8510747ca08906eb96765354d6"}
+  },
+  "gitleaks": {
+    "repository": "gitleaks/gitleaks",
+    "version": "v8.30.1",
+    "linux": {"asset": "gitleaks_8.30.1_linux_x64.tar.gz", "sha256": "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"},
+    "windows": {"asset": "gitleaks_8.30.1_windows_x64.zip", "sha256": "d29144deff3a68aa93ced33dddf84b7fdc26070add4aa0f4513094c8332afc4e"}
+  },
+  "actionlint": {
+    "repository": "rhysd/actionlint",
+    "version": "v1.7.12",
+    "linux": {"asset": "actionlint_1.7.12_linux_amd64.tar.gz", "sha256": "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"},
+    "windows": {"asset": "actionlint_1.7.12_windows_amd64.zip", "sha256": "6e7241b51e6817ea6a047693d8e6fed13b31819c9a0dd6c5a726e1592d22f6e9"}
+  }
+}

@@ -1,0 +1,19 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: edge-crs
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+  - package-ecosystem: gomod
+    directories:
+      - /
+      - /carnical
+      - /examples/http-server
+      - /testing/coreruleset
+      - /testing/modsecurity
+    target-branch: edge-crs
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

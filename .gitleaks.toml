@@ -1,0 +1,83 @@
+title = "Coraza verified synthetic security fixtures"
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Verified fixture: carnical/apiguard/bench_test.go"
+condition = "AND"
+targetRules = ["jwt"]
+regexTarget = "secret"
+paths = ["^carnical/apiguard/bench_test\\.go$"]
+regexes = ["^eyJhbGciOiJIUzI1NiJ9\\.eyJzdWIiOiIxMjM0NTY3ODkwIn0\\.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U$"]
+
+[[allowlists]]
+description = "Verified fixture: carnical/config/keyset.go"
+condition = "AND"
+targetRules = ["generic-api-key"]
+regexTarget = "secret"
+paths = ["^carnical/config/keyset\\.go$"]
+regexes = ["^carnical\\-keys\\-v1$"]
+
+[[allowlists]]
+description = "Verified fixture: carnical/config/vectors_test.go"
+condition = "AND"
+targetRules = ["generic-api-key"]
+regexTarget = "secret"
+paths = ["^carnical/config/vectors_test\\.go$"]
+regexes = ["^15585cf3ff4c9fe73a0298d62af6f33ddc87064a8031106d36443f6644cb08579eceb1bcff13d5b479d421437c238da1f526fce5145c8ddf9346b85741ff6a0f$"]
+
+[[allowlists]]
+description = "Verified fixture: carnical/control/feed/helpers_test.go"
+condition = "AND"
+targetRules = ["generic-api-key"]
+regexTarget = "secret"
+paths = ["^carnical/control/feed/helpers_test\\.go$"]
+regexes = ["^AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA$"]
+
+[[allowlists]]
+description = "Verified fixture: carnical/deploy/honeytokens.sh"
+condition = "AND"
+targetRules = ["private-key"]
+regexTarget = "secret"
+paths = ["^carnical/deploy/honeytokens\\.sh$"]
+regexes = ["^\\-\\-\\-\\-\\-BEGIN\\ PRIVATE\\ KEY\\-\\-\\-\\-\\-\\\\n'\\\n\\\thead\\ \\-c\\ 96\\ /dev/urandom\\ \\|\\ base64\\\n\\\tprintf\\ \\-\\-\\ '\\-\\-\\-\\-\\-END\\ PRIVATE\\ KEY\\-\\-\\-\\-\\-$"]
+
+[[allowlists]]
+description = "Verified fixture: edge/proxy/proxy_test.go"
+condition = "AND"
+targetRules = ["generic-api-key"]
+regexTarget = "secret"
+paths = ["^edge/proxy/proxy_test\\.go$"]
+regexes = ["^SECRETMARK\\-4711$"]
+
+[[allowlists]]
+description = "Verified fixture: examples/plugins/operator-jwt/jwt_test.go"
+condition = "AND"
+targetRules = ["jwt"]
+regexTarget = "secret"
+paths = ["^examples/plugins/operator\\-jwt/jwt_test\\.go$"]
+regexes = ["^eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\\.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ\\.XbPfbIHMI6arZ3Y922BhjWgQzWXcXNrz0ogtVhfEd2o$"]
+
+[[allowlists]]
+description = "Verified fixture: http/interceptor_test.go"
+condition = "AND"
+targetRules = ["generic-api-key"]
+regexTarget = "secret"
+paths = ["^http/interceptor_test\\.go$"]
+regexes = ["^dGhlIHNhbXBsZSBub25jZQ==$"]
+
+[[allowlists]]
+description = "Verified fixture: http/websocket_test.go"
+condition = "AND"
+targetRules = ["generic-api-key"]
+regexTarget = "secret"
+paths = ["^http/websocket_test\\.go$"]
+regexes = ["^dGhlIHNhbXBsZSBub25jZQ==$"]
+
+[[allowlists]]
+description = "Verified fixture: synthetic load-test tokens"
+condition = "AND"
+targetRules = ["generic-api-key"]
+regexTarget = "secret"
+paths = ["^carnical/docs/loadtest\\-750k\\-2026\\-10\\-06\\.json$","^carnical/docs/loadtest\\-750k\\-variants\\-2026\\-10\\-06\\.json$","^carnical/docs/loadtest\\-hardening\\-2026\\-10\\-06\\.json$","^carnical/docs/loadtest\\-hardening\\-control\\-2026\\-10\\-06\\.json$"]
+regexes = ["^0WI7csOHwXEOgxAYIooZUwroxSdV2MmbQp4U7V7RexesEGejPaCju$","^2iruyBpBt9B948RNLd$","^3UnxR2QvvU0RHjAkVU7CpCF9a4nGKxmeN2iPvx1a55HKHzACBMErILNjXj217G$","^H8MaijCbNYUaQs88qef3Btm7N2pJCAEtw8D4BuPz5tFBrsDle9QVSqreUBP0Hsl9Bi$","^JRaJFx1UKfUabInghvacl5JsqApYJMVRjTXEpcSQ1VRjyhvuDctuox5fAcW0qbcGOJzno$","^MaPLvc3fGQBagiEIsLsF1h1xZfM4DqPppVq5WxPM32LUS87IUJFuw7fBVN8AlUBNyudOD6FpTOht9uI$","^Q8bnXhowUuS9vd83paEOMi3J3R5OU063Ou5llVatlK5XSYXt$","^f4o5XDpizpJaVRoUid8VUu5Uk3DbLAynZP4VzGsBekYljaY5AzVu53OMOowE3ACNGgiYk8HuxDi$","^n6AV6J1fShGnYhTDBqe$","^opS2csbtXELmzZkRxqYY9KObaKs7EzOxJvMJ8dj5ayHCJnuMxqIl3nPN01v$","^rI97pe1oRIDoy06GU3ZtlltXCWumRGEEcInsdnxYYoC4jb$","^sqjHAGgw9kLqVLqrHRwomkaxa$","^tScmjee8h76pRVObsNfE7bShF0Y5RVywKzWkX41MfMgvrOI1DAXISrV6bqhaNwTbOBvw7ZOfh$","^vfn1iVeYOahJKYtptgUNuSeC8N5ab6fufGW0TAE9Sk9iOEf7w0q1ELaxl7f06PkRr$","^x4393cE30OpzfQTTDPSMxcuBPUnvk994KYIIErg8Yn8OvPppMwH3Edr3MyRdAK7t$"]

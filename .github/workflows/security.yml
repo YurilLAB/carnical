@@ -1,0 +1,161 @@
+name: Security review
+
+on:
+  push:
+    branches: [edge-crs, main]
+  pull_request:
+  schedule:
+    - cron: '15 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  gosec:
+    name: Go security (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [linux, windows]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.26.6'
+          cache-dependency-path: '**/go.sum'
+      - name: Install verified scanner
+        run: python3 .github/security/install.py gosec
+      - name: Scan every pure Go module
+        env:
+          GOOS: ${{ matrix.target }}
+          CGO_ENABLED: '0'
+        run: |
+          mkdir -p build/security-reports
+          scanner="$PWD/build/security-tools/gosec"
+          reports="$PWD/build/security-reports"
+          status=0
+          for module in . carnical examples/http-server testing/coreruleset; do
+            name=$(echo "$module" | tr '/.' '__')
+            (cd "$module" && "$scanner" -exclude-dir=.attack -exclude-dir=build \
+              -fmt=sarif -out="$reports/gosec-$GOOS-$name.sarif" ./...) || status=1
+          done
+          exit "$status"
+      - name: Preserve findings even when the scan fails
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: gosec-${{ matrix.target }}
+          path: build/security-reports/*.sarif
+          if-no-files-found: error
+          retention-days: 7
+
+  dependencies:
+    name: Dependency vulnerabilities
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.26.6'
+          cache-dependency-path: '**/go.sum'
+      - name: Install verified scanner
+        run: python3 .github/security/install.py osv-scanner
+      - name: Audit all five dependency manifests
+        run: |
+          mkdir -p build/security-reports
+          build/security-tools/osv-scanner scan source --call-analysis=go --all-vulns \
+            --lockfile=go.mod --lockfile=carnical/go.mod \
+            --lockfile=examples/http-server/go.mod --lockfile=testing/coreruleset/go.mod \
+            --lockfile=testing/modsecurity/go.mod \
+            --format=json --output-file=build/security-reports/osv.json
+      - name: Preserve dependency inventory
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: osv-dependencies
+          path: build/security-reports/osv.json
+          if-no-files-found: error
+          retention-days: 7
+
+  secrets:
+    name: Secret detection
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install verified scanner
+        run: python3 .github/security/install.py gitleaks
+      - name: Scan complete Git history with redacted output
+        run: |
+          mkdir -p build/security-reports
+          build/security-tools/gitleaks git . --config=.gitleaks.toml --redact \
+            --report-format=sarif --report-path=build/security-reports/gitleaks.sarif
+      - name: Preserve redacted findings
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: gitleaks-secrets
+          path: build/security-reports/gitleaks.sarif
+          if-no-files-found: error
+          retention-days: 7
+
+  workflows:
+    name: Workflow validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Install verified checker
+        run: python3 .github/security/install.py actionlint
+      - name: Check workflow expressions and shell scripts
+        run: build/security-tools/actionlint -pyflakes=
+      - name: Verify installer security boundaries
+        run: python3 .github/security/test_install.py
+
+  required:
+    name: Security review required
+    if: ${{ always() }}
+    needs: [gosec, dependencies, secrets, workflows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every category to succeed
+        env:
+          GOSEC: ${{ needs.gosec.result }}
+          DEPENDENCIES: ${{ needs.dependencies.result }}
+          SECRETS: ${{ needs.secrets.result }}
+          WORKFLOWS: ${{ needs.workflows.result }}
+        run: |
+          {
+            echo '| Category | Result |'
+            echo '| --- | --- |'
+            echo "| Go code (Linux and Windows) | $GOSEC |"
+            echo "| Dependencies | $DEPENDENCIES |"
+            echo "| Secrets | $SECRETS |"
+            echo "| Workflows | $WORKFLOWS |"
+            echo ''
+            echo 'Download the per-category artifacts from this run to inspect findings.'
+          } >> "$GITHUB_STEP_SUMMARY"
+          for result in "$GOSEC" "$DEPENDENCIES" "$SECRETS" "$WORKFLOWS"; do
+            if [ "$result" != success ]; then
+              echo '::error::A security check failed, was cancelled, or was skipped.'
+              exit 1
+            fi
+          done

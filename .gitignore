@@ -19,5 +19,6 @@ coraza-waf
 __debug_bin
 
 build/
+__pycache__/
 
 go.work.sum
