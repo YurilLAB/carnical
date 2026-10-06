@@ -247,6 +247,15 @@ the unpaced 64-worker HTTP result. Reproduce the controls on Linux with:
 sudo python3 .github/security/test_network_policy.py --binary build/carnical-network-linux --latency-investigation
 ```
 
+The first hosted run passed the full profile/TLS suite (large p99 69 ms with and without flood), but the deliberately
+undersized queue-five control delivered only 9,999/10,000 requests to the origin. The diagnostic now prints every control's
+status, error, latency and backend counts before checking it. Failures in that intentionally overloaded baseline remain
+visible as measurements; all queue-256 configurations retain strict checks for 10,000 successful backend responses, zero
+transport errors and zero listen overflows. SQL probes must still be blocked without reaching the backend in every control.
+Live fault checks forced one real origin-side TCP reset: the broken baseline recorded a 502 and 9,999 handled requests
+and continued through every corrected configuration. Injecting the same reset into a queue-256 configuration made its
+strict response check fail, verifying that corrected-configuration failures are not accepted as baseline observations.
+
 For an actual deployment, enable correctly framed persistent responses at the origin, size its accept queue and workers
 against measured upstream concurrency, and compare `ss -lnt` queue occupancy with TCP counter deltas under matched traffic.
 Track origin connection creation, visitor latency and named nft admission/refusal counters together. `ListenDrops` is a

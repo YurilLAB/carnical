@@ -450,7 +450,7 @@ def test(binary, investigate=False):
                     if time.monotonic() > deadline:
                         raise RuntimeError("WAF did not listen")
                     time.sleep(0.05)
-        def measured_batch(task):
+        def measured_batch(task, *, require_origin=True):
             before = tcp_counters()
             accepted, requests = origin.metrics()
             result = lab.ask({"kind": "http_batch", **task})
@@ -458,7 +458,8 @@ def test(binary, investigate=False):
             after_accepted, after_requests = origin.metrics()
             result["origin_connections"] = after_accepted - accepted
             result["origin_requests"] = after_requests - requests
-            equal(result["origin_requests"], 0 if task.get("attack") else task["count"], "requests actually reaching the origin")
+            if require_origin:
+                equal(result["origin_requests"], 0 if task.get("attack") else task["count"], "requests actually reaching the origin")
             return result
         if investigate:
             # One-factor controls use the same binary, WAF limits, policy, workers and requests.
@@ -478,14 +479,18 @@ def test(binary, investigate=False):
                 for flooded in (False, True):
                     if flooded:
                         lab.ask({"kind": "flood_start", "count": 100000, "duration": 8})
-                    result = measured_batch({"family": 0, "count": 10000, "workers": 64})
-                    equal(result["errors"], 0, "latency investigation transport errors")
-                    equal(result["families"], {"4": {"200": 5000}, "6": {"200": 5000}}, "latency investigation responses")
+                    result = measured_batch({"family": 0, "count": 10000, "workers": 64}, require_origin=False)
+                    # Always preserve the measurement, including an intentionally overloaded control's failures.
+                    print(f"MEASURE: {label} flood={flooded} {json.dumps(result)}", flush=True)
+                    equal(result["count"], 10000, "all control attempts must be measured")
+                    if backlog != 5:
+                        equal(result["errors"], 0, "sized-origin latency investigation transport errors")
+                        equal(result["families"], {"4": {"200": 5000}, "6": {"200": 5000}}, "sized-origin latency investigation responses")
+                        equal(result["origin_requests"], 10000, "sized-origin requests must all reach the backend")
                     if handler is Origin and result["origin_connections"] > 128:
                         raise AssertionError("persistent origin did not reuse connections")
                     if backlog == 256:
                         equal(result["server_tcp"]["ListenOverflows"], 0, "sized origin accept queue must not overflow")
-                    print(f"MEASURE: {label} flood={flooded} {json.dumps(result)}", flush=True)
                     if flooded:
                         if result["flood_requests"] < 5000:
                             raise AssertionError("latency control did not overlap the packet stream sufficiently")
