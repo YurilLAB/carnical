@@ -24,6 +24,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/corazawaf/coraza/v3"
@@ -259,6 +260,9 @@ func (e *Edge) onMatch(m types.MatchedRule) {
 	// Its public metadata exposes no unexpanded message; keep the default summary fixed.
 	match := Match{RuleID: m.Rule().ID(), Severity: m.Rule().Severity().String(), Message: "Coraza rule matched",
 		TransactionID: m.TransactionID(), Disruptive: m.Disruptive()}
+	if label := crs.LocalRuleMessage(match.RuleID); label != "" {
+		match.Message = label
+	}
 	if e.cfg.LogDetails {
 		match.ClientIP, match.URI, match.Data = m.ClientIPAddress(), m.URI(), m.Data()
 		match.ExpandedMessage = m.Message()
@@ -471,7 +475,15 @@ func (e *Edge) forward() http.Handler {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil // never an environment proxy
 	// Every connection is checked at the moment it is made, against the address it will really use.
-	transport.DialContext = e.cfg.Origin.Dialer().DialContext
+	dialer := e.cfg.Origin.Dialer()
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		conn, err, retries := dialBindRetry(ctx, network, address, dialer.DialContext)
+		if retries > 0 && e.cfg.OnMatch != nil {
+			e.cfg.OnMatch(Match{RuleID: idUpstreamBindRetry, Severity: "WARNING",
+				Message: fmt.Sprintf("upstream socket bind retried %d time(s)", retries), Disruptive: false})
+		}
+		return conn, err
+	}
 	transport.ResponseHeaderTimeout = e.cfg.ResponseHeaderTimeout
 	if transport.ResponseHeaderTimeout <= 0 {
 		transport.ResponseHeaderTimeout = 30 * time.Second
@@ -529,6 +541,28 @@ func (e *Edge) forward() http.Handler {
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			markOrigin(r.Context())
+			if e.cfg.OnMatch != nil {
+				// Operational failure, not an attack finding. Error strings can
+				// contain addresses or request data; default logs get only a class
+				// and (when present) the numeric OS error code.
+				m := Match{RuleID: idUpstreamFailed, Severity: "ERROR", Message: "upstream request failed", Disruptive: true}
+				var errno syscall.Errno
+				var networkError net.Error
+				switch {
+				case errors.As(err, &errno):
+					m.Message = fmt.Sprintf("upstream network failure (errno %d)", errno)
+				case errors.As(err, &networkError) && networkError.Timeout():
+					m.Message = "upstream request timed out"
+				case errors.Is(err, context.Canceled):
+					m.Message = "upstream request canceled"
+				case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
+					m.Message = "upstream connection ended before a response"
+				}
+				if e.cfg.LogDetails {
+					m.ClientIP, m.URI, m.ExpandedMessage = r.RemoteAddr, r.RequestURI, err.Error()
+				}
+				e.cfg.OnMatch(m)
+			}
 			http.Error(w, "upstream unavailable", http.StatusBadGateway)
 		},
 	}

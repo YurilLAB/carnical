@@ -140,5 +140,6 @@ Superseding does not delete the old record. Set its status and let the history s
 | [0069](0069-carnical-graphql-transport-layers.md) | Local private development | 2026-10-05 | unreleased | F | Independent GraphQL transport and method-override guards |
 | [0070](0070-carnical-enterprise-integration-packages.md) | Owner-authorized development | 2026-10-06 | unreleased | F | API, signed-policy, control/feed and virtual-patch integration packages |
 | [0071](0071-carnical-flood-protection.md) | Owner-authorized development | 2026-10-06 | unreleased | F | Flood protection with distributed-attack detection |
+| [0072](0072-carnical-input-contracts-and-local-rules.md) | Owner-authorized development | 2026-10-06 | unreleased | F | Local injection rules, parameter interpretations and explicit API contracts |
 
 Categories: **F**eature · **P**arity · **⚡** Perf · **R**efactor

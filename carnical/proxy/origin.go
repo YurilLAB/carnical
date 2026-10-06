@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"runtime"
 	"sync"
 	"syscall"
 	"time"
@@ -86,6 +87,28 @@ func (p OriginPolicy) Control(network, address string, _ syscall.RawConn) error 
 // Dialer returns a dialer that applies the policy to every connection it makes.
 func (p OriginPolicy) Dialer() *net.Dialer {
 	return &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second, Control: p.Control}
+}
+
+// Only retry local address collisions while creating a TCP connection. No HTTP
+// bytes have been written here; established-connection failures must never replay
+// a non-idempotent request. Each fresh dial still executes OriginPolicy.Control.
+func dialBindRetry(ctx context.Context, network, address string, dial func(context.Context, string, string) (net.Conn, error)) (net.Conn, error, int) {
+	retries := 0
+	for attempt := 0; ; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err, retries
+		}
+		if attempt > 0 {
+			retries++
+		}
+		conn, err := dial(ctx, network, address)
+		// Windows syscall.EADDRINUSE is a Go compatibility errno, distinct
+		// from Winsock's observed WSAEADDRINUSE (10048).
+		collision := errors.Is(err, syscall.EADDRINUSE) || runtime.GOOS == "windows" && errors.Is(err, syscall.Errno(10048))
+		if err == nil || !collision || attempt == 2 {
+			return conn, err, retries
+		}
+	}
 }
 
 // CheckHost resolves host and checks every address it gives. It is for deciding whether to accept an origin when it

@@ -1,0 +1,33 @@
+{
+  "openapi": "3.0.3",
+  "info": {"title": "Example explicit API input contracts", "version": "1.0"},
+  "paths": {
+    "/api/import": {
+      "get": {
+        "parameters": [{"name": "src", "in": "query", "required": true, "schema": {
+          "type": "string", "maxLength": 256,
+          "pattern": "^https://assets[.]example[.]test/public/[A-Za-z0-9_-]+[.]png$"
+        }}],
+        "responses": {"200": {"description": "Accepted"}}
+      },
+      "post": {
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {
+          "type": "object", "additionalProperties": false, "required": ["src"],
+          "properties": {"src": {"type": "string", "maxLength": 256,
+            "pattern": "^https://assets[.]example[.]test/public/[A-Za-z0-9_-]+[.]png$"}}
+        }}}},
+        "responses": {"200": {"description": "Accepted"}}
+      }
+    },
+    "/api/search": {
+      "get": {
+        "parameters": [
+          {"name": "user_id", "in": "query", "required": true, "schema": {"type": "integer", "minimum": 1, "maximum": 1000000}},
+          {"name": "tags", "in": "query", "style": "form", "explode": true,
+            "schema": {"type": "array", "maxItems": 4, "items": {"type": "string", "enum": ["red", "blue", "green"]}}}
+        ],
+        "responses": {"200": {"description": "Accepted"}}
+      }
+    }
+  }
+}

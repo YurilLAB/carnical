@@ -383,10 +383,17 @@ func TestMatchesAreReportedWithoutWhatTheVisitorSentUnlessAsked(t *testing.T) {
 	attack := get("/search?q=" + url.QueryEscape("1' OR '"+secret+"'='"+secret+"' --"))
 	a.raw(t, attack)
 	b.raw(t, attack)
+	if status, _ := a.raw(t, get("/search?q="+url.QueryEscape("' or true() or '"+secret+"'='b"))); status != 403 {
+		t.Fatalf("local rule status %d", status)
+	}
 	// Macro-expanded messages can contain request data even when logdata and URI are omitted.
 	for _, s := range []*setup{a, b} {
 		if status, _ := s.raw(t, get("/profile?note="+secret)); status != 403 {
 			t.Fatalf("macro rule status %d", status)
+		}
+		s.up.Close()
+		if status, _ := s.raw(t, get("/health?trace="+secret)); status != 502 {
+			t.Fatalf("unavailable origin status %d", status)
 		}
 	}
 	mu.Lock()
@@ -394,7 +401,10 @@ func TestMatchesAreReportedWithoutWhatTheVisitorSentUnlessAsked(t *testing.T) {
 	if len(plain) == 0 || len(detailed) == 0 {
 		t.Fatalf("no matches reported (%d, %d)", len(plain), len(detailed))
 	}
+	localLabel, upstreamLabel := false, false
 	for _, m := range plain {
+		localLabel = localLabel || m.RuleID == 5006001 && m.Message == "XPath predicate injection syntax"
+		upstreamLabel = upstreamLabel || m.RuleID == idUpstreamFailed && strings.HasPrefix(m.Message, "upstream ")
 		text := fmt.Sprintf("%+v", m)
 		if strings.Contains(text, secret) || strings.Contains(text, "127.0.0.1") || m.ClientIP != "" || m.URI != "" || m.Data != "" || m.ExpandedMessage != "" {
 			t.Errorf("a default match carries request data: %+v", m)
@@ -403,12 +413,19 @@ func TestMatchesAreReportedWithoutWhatTheVisitorSentUnlessAsked(t *testing.T) {
 			t.Errorf("a match without a rule: %+v", m)
 		}
 	}
-	found, expandedFound := false, false
+	if !localLabel {
+		t.Error("local rule has no safe family label")
+	}
+	if !upstreamLabel {
+		t.Error("upstream failure has no safe operational label")
+	}
+	found, expandedFound, upstreamDetails := false, false, false
 	for _, m := range detailed {
 		found = found || strings.Contains(m.URI, secret) || strings.Contains(m.Data, secret)
 		expandedFound = expandedFound || m.RuleID == 5000099 && strings.Contains(m.ExpandedMessage, secret)
+		upstreamDetails = upstreamDetails || m.RuleID == idUpstreamFailed && strings.Contains(m.URI, secret) && m.ExpandedMessage != ""
 	}
-	if !found || !expandedFound {
+	if !found || !expandedFound || !upstreamDetails {
 		t.Error("LogDetails did not add the request details")
 	}
 }

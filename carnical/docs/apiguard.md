@@ -214,6 +214,10 @@ requests, schema enforcement, discovery, learning and bounded rate state. The ha
 The standalone executable's 500,000-request run exercises CRS and format enforcement; it does not automatically install
 this API guard. Package-level validation and standalone load measurements cover different integration boundaries.
 
+The executable now optionally installs explicit local OpenAPI contracts with `-api-spec` and `-api-spec-mode`.
+See [input hardening](input-hardening.md) for its supported enforcement subset and live checks. Without that flag,
+the standalone binary still runs no API description or learning model.
+
 ## 11. What the owner has to do to integrate it
 
 1. Make one `apiguard.Guard` per protected site (`apiguard.New(cfg)`), keep it with the site's proxy and give the proxy the same object as an inspector and as an observer. The Guard keeps all of a site's state; never share one between sites.

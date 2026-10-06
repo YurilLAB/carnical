@@ -42,6 +42,10 @@ Start every new site in `detect`, read the log for a few days, add exclusions fo
 Options: `-paranoia 1..4`, `-inbound-threshold`, `-max-body`, `-allowed-methods`, `-inspect-responses`, `-trusted-proxies`,
 `-tls-cert`/`-tls-key`, `-upstream-host`, `-max-upstream`, `-log-details`. Run `-h` for all of them.
 
+Local injection rules also run at PL1 with the selected CRS mode and threshold. Use `-local-rules=false` to omit them.
+`-api-spec site-api.json` optionally installs an explicit OpenAPI input contract; enforcement requires
+`-formats-mode block`. See [input hardening](docs/input-hardening.md) for rule IDs, supported contracts and destination restrictions.
+
 The executable enables request-format findings in monitor mode by default. Use `-formats-mode block` to enforce strict JSON, XML/SOAP, GraphQL, forms, multipart, NDJSON and text checks independently of CRS mode. `-formats-policy formats.json` loads validated per-site limits and rule actions before listening; the file must be regular and at most 1 MiB. The CLI mode overrides the policy's `monitor` field. `-allow-request-encoding` enables one bounded gzip or deflate layer; the origin and CRS receive the decompressed bytes with corrected framing. `-formats-mode off` cannot be combined with a policy file or compression opt-in. See [format policy](docs/formats.md) and [validation evidence](docs/enterprise-validation.md).
 
 ```

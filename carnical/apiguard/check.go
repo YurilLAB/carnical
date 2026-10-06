@@ -311,8 +311,8 @@ func (g *Guard) checkRoute(rt *Route, rv *reqView, caps *captures, ids *idSet, c
 // name[key]=value), which is listed by its base name.
 func hasDeepObjectPrefix(c *routeC, name string) bool {
 	if i := strings.IndexByte(name, '['); i > 0 {
-		_, ok := c.query[name[:i]]
-		return ok
+		p, ok := c.query[name[:i]]
+		return ok && p.Style == "deepObject" && p.Schema != nil && hasType(p.Schema, "object")
 	}
 	return false
 }

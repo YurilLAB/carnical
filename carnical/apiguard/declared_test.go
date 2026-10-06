@@ -112,6 +112,16 @@ func TestDescriptionFindingsAreWarningsUntilThePromotedToEnforce(t *testing.T) {
 
 func TestUnknownQueryParametersCanBeRefused(t *testing.T) {
 	g := shopGuard(t, func(c *Config) { c.RefuseUnknownParams = true })
+	for _, target := range []string{
+		"/api/v1/products?limit[0]=evil", "/api/v1/products?limit[]=evil",
+		"/api/v1/products?limit%5Bvalue%5D=evil", "/api/v1/products?tags[0]=evil",
+	} {
+		t.Run(target, func(t *testing.T) {
+			if res := g.Inspect(mk("GET", target)); !has(res, IDSpecUnknownQuery) || !blocked(res) {
+				t.Fatalf("an undeclared bracket alias bypassed the scalar/array contract: %+v", res.Verdicts)
+			}
+		})
+	}
 	if res := g.Inspect(mk("GET", "/api/v1/products?utm_source=x")); !has(res, IDSpecUnknownQuery) {
 		t.Fatalf("verdicts %+v", res.Verdicts)
 	}

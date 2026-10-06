@@ -85,6 +85,7 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 		return "--B\r\nContent-Disposition: form-data; name=\"file\"; filename=\"" + name + "\"\r\nContent-Type: text/plain\r\n\r\n" + content + "\r\n--B--\r\n"
 	}
 	tests := []struct {
+		apiSpec                                                                     string
 		headers                                                                     map[string]string
 		alsoRules                                                                   []int
 		statsRule                                                                   int
@@ -98,6 +99,39 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 		allowEncoding, fails, policyDir                                             bool
 		status                                                                      int
 	}{
+		{name: "contract correct URL query", mode: "block", apiSpec: "example", method: "GET", target: "/api/import?src=https%3A%2F%2Fassets.example.test%2Fpublic%2Fphoto.png", status: 200},
+		{name: "contract correct JSON URL", mode: "block", apiSpec: "example", target: "/api/import", ct: "application/json", body: `{"src":"https://assets.example.test/public/photo.png"}`, status: 200},
+		{name: "contract attacker host", mode: "block", apiSpec: "example", method: "GET", target: "/api/import?src=https%3A%2F%2Fevil.example%2Fpublic%2Fphoto.png", status: 400, logRule: `"rule":5003103`},
+		{name: "contract private IP", mode: "block", apiSpec: "example", method: "GET", target: "/api/import?src=http%3A%2F%2F127.0.0.1%2F", status: 400, logRule: `"rule":5003103`},
+		{name: "contract userinfo bypass", mode: "block", apiSpec: "example", target: "/api/import", ct: "application/json", body: `{"src":"https://assets.example.test@evil.example/public/photo.png"}`, status: 400, logRule: `"rule":5003108`},
+		{name: "contract escaped JSON host bypass", mode: "block", apiSpec: "example", target: "/api/import", ct: "application/json", body: `{"src":"https://\u0065vil.example/public/photo.png"}`, status: 400, logRule: `"rule":5003108`},
+		{name: "contract missing URL", mode: "block", apiSpec: "example", target: "/api/import", ct: "application/json", body: `{}`, status: 400, logRule: `"rule":5003108`},
+		{name: "contract independently detects duplicate JSON", mode: "block", apiSpec: "example", policy: `{"rules":{"json-duplicate-key":"off"}}`, target: "/api/import", ct: "application/json", body: `{"src":"https://assets.example.test/public/photo.png","src":"https://evil.example/x"}`, status: 400, logRule: `"rule":5003006`},
+		{name: "contract refuses JSON relabeled text", mode: "block", apiSpec: "example", target: "/api/import", ct: "text/plain", body: `{"src":"https://evil.example/x"}`, status: 415, logRule: `"rule":5002040`},
+		{name: "contract unknown privileged JSON field", mode: "block", apiSpec: "example", target: "/api/import", ct: "application/json", body: `{"src":"https://assets.example.test/public/photo.png","role":"admin"}`, status: 400, logRule: `"rule":5003109`},
+		{name: "contract JSON array shape bypass", mode: "block", apiSpec: "example", target: "/api/import", ct: "application/json", body: `[{"src":"https://assets.example.test/public/photo.png"}]`, status: 400, logRule: `"rule":5003108`},
+		{name: "contract duplicate scalar", mode: "block", apiSpec: "example", method: "GET", target: "/api/search?user_id=1&user_id=2", status: 400, logRule: `"rule":5003103`},
+		{name: "contract scalar bracket alias", mode: "block", apiSpec: "example", method: "GET", target: "/api/search?user_id=1&user_id_extra[]=2", status: 400, logRule: `"rule":5003113`},
+		{name: "contract optional array bracket alias", mode: "block", apiSpec: "example", method: "GET", target: "/api/search?user_id=1&tags[]=red", status: 400, logRule: `"rule":5003113`},
+		{name: "contract declared repeated array", mode: "block", apiSpec: "example", method: "GET", target: "/api/search?user_id=1&tags=red&tags=blue", status: 200},
+		{name: "contract typed XPath protection", mode: "block", apiSpec: "example", method: "GET", target: "/api/search?user_id=0%20or%20true%28%29", status: 400, logRule: `"rule":5003103`},
+		{name: "contract monitor URL", mode: "monitor", apiSpec: "example", method: "GET", target: "/api/import?src=https%3A%2F%2Fevil.example%2Fx", extraArgs: []string{"-api-spec-mode", "monitor"}, status: 200, logRule: `"rule":5003103`},
+		{name: "contract block needs strict formats", mode: "monitor", apiSpec: "example", fails: true},
+		{name: "contract invalid mode", mode: "block", extraArgs: []string{"-api-spec-mode", "ignored"}, fails: true},
+		{name: "contract malformed specification", mode: "block", apiSpec: `{`, fails: true},
+		{name: "contract empty specification", mode: "block", apiSpec: `{"openapi":"3.0.3","paths":{}}`, fails: true},
+		{name: "contract empty required body media", mode: "block", apiSpec: `{"openapi":"3.0.3","paths":{"/api/x":{"post":{"requestBody":{"required":true,"content":{}}}}}}`, fails: true},
+		{name: "contract unsupported constraints", mode: "block", apiSpec: `{"openapi":"3.0.3","paths":{"/api/x":{"get":{"parameters":[{"name":"x","in":"query","schema":{"type":"string","pattern":"(?=a)"}}]}}}}`, fails: true},
+		{name: "contract object parameter", mode: "block", apiSpec: `{"openapi":"3.0.3","paths":{"/api/x":{"get":{"parameters":[{"name":"x","in":"query","style":"deepObject","schema":{"type":"object"}}]}}}}`, fails: true},
+		{name: "contract non JSON body", mode: "block", apiSpec: `{"openapi":"3.0.3","paths":{"/api/x":{"post":{"requestBody":{"content":{"application/x-www-form-urlencoded":{"schema":{"type":"object","properties":{"x":{"type":"string"}}}}}}}}}}`, fails: true},
+		{name: "live supplemental XPath", mode: "block", extraArgs: []string{"-mode", "block"}, method: "GET", target: "/api?q=%27%20or%20true%28%29%20or%20%27a%27%3D%27b", status: 403, logRule: `"rule":5006001`},
+		{name: "live heldout XPath comments", mode: "block", extraArgs: []string{"-mode", "block"}, method: "GET", target: "/api?q=%27%20or%20%28%3Acomment%3A%29%20true%28%29", status: 403, logRule: `"rule":5006009`},
+		{name: "live heldout deep traversal", mode: "block", extraArgs: []string{"-mode", "block"}, method: "GET", target: "/api?q=%2525252e%2525252e%2525252fetc%2525252fpasswd", status: 403, logRule: `"rule":5006006`},
+		{name: "live local rules detect mode", mode: "block", extraArgs: []string{"-mode", "detect"}, method: "GET", target: "/api?q=%27%20or%20true%28%29", status: 200, logRule: `"rule":5006001`},
+		{name: "live local rules opt out", mode: "block", extraArgs: []string{"-mode", "block", "-local-rules=false"}, method: "GET", target: "/api?q=rO0ABXNyABFqYXZhLnV0aWwuSGFzaE1hcAUH", status: 200},
+		{name: "live supplemental quoted shell", mode: "block", extraArgs: []string{"-mode", "block"}, method: "GET", target: "/api?q=%3Bi%27%27d", status: 403, logRule: `"rule":5006003`},
+		{name: "live parameter collision", mode: "block", ct: "application/x-www-form-urlencoded", body: "user.name=a&user_name=b", status: 400, logRule: `"rule":5002608`},
+		{name: "live XML attribute bypass", mode: "block", extraArgs: []string{"-mode", "block"}, ct: "application/xml", body: `<input value="' or true() or 'a'='b"/>`, status: 403, logRule: `"rule":5006001`},
 		{name: "default monitor logs a GET mutation", method: "GET", target: "/graphql?query=mutation%7BdeleteUser%7D", status: 200, logRule: `"rule":5002310`},
 		{name: "block GET mutation with CRS off", mode: "block", method: "GET", target: "/graphql?query=mutation%7BdeleteUser%7D", status: 403, logRule: `"rule":5002310`},
 		{name: "block HEAD mutation with CRS off", mode: "block", method: "HEAD", target: "/graphql?query=mutation%7BdeleteUser%7D", status: 403, logRule: "\"rule\":5002314"},
@@ -224,6 +258,20 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 			}
 			args := []string{"-listen", addr, "-upstream", app.URL, "-origin-allow", "127.0.0.0/8", "-mode", "off"}
 			args = append(args, tc.extraArgs...)
+			if tc.apiSpec != "" {
+				data := []byte(tc.apiSpec)
+				if tc.apiSpec == "example" {
+					data, err = os.ReadFile("../../docs/examples/api-contract.json")
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				path := filepath.Join(t.TempDir(), "api.json")
+				if err := os.WriteFile(path, data, 0600); err != nil {
+					t.Fatal(err)
+				}
+				args = append(args, "-api-spec", path)
+			}
 			if tc.apiRate != 0 {
 				args = append(args, "-api-per-minute", fmt.Sprint(tc.apiRate))
 			}
@@ -309,7 +357,9 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				req.Header.Set("Content-Type", tc.ct)
+				if tc.ct != "" {
+					req.Header.Set("Content-Type", tc.ct)
+				}
 				for name, value := range tc.headers {
 					req.Header.Set(name, value)
 				}
@@ -325,7 +375,8 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 				}
 				resp.Body.Close()
 				if resp.StatusCode != want {
-					t.Fatalf("status %d, want %d", resp.StatusCode, want)
+					data, _ := os.ReadFile(logPath)
+					t.Fatalf("status %d, want %d\n%s", resp.StatusCode, want, data)
 				}
 				if want == 429 && (resp.Header.Get("Retry-After") != "60" || resp.Header.Get("Cache-Control") != "no-store") {
 					t.Fatal("rate refusal lacks retry or cache policy")

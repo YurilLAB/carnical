@@ -315,7 +315,16 @@ func run() error {
 	rps := flag.Int("rps", 0, "global requests/second cap (0 = unpaced)")
 	extended := flag.Bool("extended", false, "add six attack families and their benign controls")
 	variants := flag.Bool("variants", false, "vary all attack categories and benign controls; implies -extended and alternates attack/benign requests")
+	ddos := flag.String("ddos", "on", "child WAF flood protection: on, monitor or off; recorded in the report")
+	localRules := flag.Bool("local-rules", true, "enable the child WAF's supplemental rules")
+	hardening := flag.Bool("hardening", false, "add held-out bypass syntax and benign controls; requires -variants")
 	flag.Parse()
+	if *ddos != "on" && *ddos != "monitor" && *ddos != "off" {
+		return fmt.Errorf("ddos must be on, monitor or off")
+	}
+	if *hardening && !*variants {
+		return fmt.Errorf("hardening requires variants")
+	}
 	if *binary == "" || *corpus == "" || *output == "" || *count < 1 || *concurrency < 1 || *concurrency > 128 || *rps < 0 {
 		return fmt.Errorf("invalid flags")
 	}
@@ -335,12 +344,18 @@ func run() error {
 	}
 	if *variants {
 		cases = append(cases, syntaxCases()...)
+		if *hardening {
+			cases = append(cases, hardeningCases()...)
+		}
 		generated, err := variedCases(cases)
 		if err != nil {
 			return err
 		}
 		cases = append(cases, generated...)
 		suite = "variants-v1"
+		if *hardening {
+			suite = "hardening-v1"
+		}
 	}
 	if len(cases) == 0 {
 		return fmt.Errorf("empty corpus")
@@ -383,6 +398,7 @@ func run() error {
 	}
 	defer logFile.Close()
 	args := []string{"-listen", addr, "-upstream", origin.URL, "-origin-allow", "127.0.0.1/32", "-mode", "block", "-formats-mode", "block", "-inspect-responses", "-formats-stats-interval", "5s"}
+	args = append(args, "-ddos", *ddos, fmt.Sprintf("-local-rules=%t", *localRules))
 	cmd := exec.Command(*binary, args...)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
@@ -674,6 +690,20 @@ func run() error {
 	}
 	if err = os.WriteFile(*output, append(data, '\n'), 0600); err != nil {
 		return err
+	}
+	// Keep invalid evidence for diagnosis, but never signal a successful benchmark
+	// when transport, availability or independent origin accounting failed.
+	if rep.TransportErrors != 0 || rep.Unavailable != 0 {
+		return fmt.Errorf("invalid payload measurement: %d transport errors, %d unavailable responses; evidence saved to %s", rep.TransportErrors, rep.Unavailable, *output)
+	}
+	for _, r := range rep.Results {
+		statuses := 0
+		for _, n := range r.Statuses {
+			statuses += n
+		}
+		if statuses+r.Errors != r.Requests || r.OriginReached != int64(r.Statuses[200]) {
+			return fmt.Errorf("invalid request/origin accounting for %s; evidence saved to %s", r.Name, *output)
+		}
 	}
 	fmt.Printf("DONE %d requests %.1f/s p50=%.3fms p95=%.3fms p99=%.3fms benign=%d/%d passed attacks=%d/%d refused attacks_at_origin=%d unavailable=%d transport_errors=%d report=%s\n", *count, rep.RequestsPerSecond, rep.LatencyP50MS, rep.LatencyP95MS, rep.LatencyP99MS, rep.BenignPassed, rep.BenignRequests, rep.AttackRefused, rep.AttackRequests, rep.OriginAttacks, rep.Unavailable, rep.TransportErrors, *output)
 	return nil

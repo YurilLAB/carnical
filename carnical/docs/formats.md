@@ -179,6 +179,7 @@ Default is what happens when the policy does not say. Status is what the visitor
 | 5002604 | `form-bracket-depth` | block | 400 | high | a parameter name with brackets nested deeper than the limit |
 | 5002605 | `form-semicolon` | block | 400 | high | a semicolon used as a separator |
 | 5002606 | `form-proto-key` | block | 400 | high | a parameter name that pollutes an object prototype |
+| 5002608 | `form-parameter-shape` | block | 400 | high | parameter names with conflicting scalar, container or normalized interpretations |
 | 5002700 | `multipart-no-boundary` | block | 400 | high | a multipart type with no boundary |
 | 5002701 | `multipart-bad-boundary` | block | 400 | high | a boundary that RFC 2046 does not allow |
 | 5002702 | `multipart-limit` | block | 400 | high | a multipart body over a part or header limit |
@@ -205,6 +206,7 @@ Default is what happens when the policy does not say. Status is what the visitor
 | 5002806 | `query-proto-key` | block | 400 | high | a URL query parameter name that pollutes an object prototype |
 | 5002807 | `query-invalid-utf8` | block | 400 | high | URL query parameters that are not valid UTF-8 |
 | 5002808 | `query-too-large` | block | 414 | high | a raw URL query larger than the site allows |
+| 5002809 | `query-parameter-shape` | block | 400 | high | URL parameter names with conflicting scalar, container or normalized interpretations |
 | 5002990 | `policy-invalid` | block | 503 | critical | the formats policy is invalid, so bodies are refused |
 | 5002991 | `internal-error` | block | 503 | critical | the body could not be checked |
 

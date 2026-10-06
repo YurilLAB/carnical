@@ -61,12 +61,13 @@ type formScanner struct {
 	dup     bool
 	semi    bool
 	rules   parameterRules
+	shapes  map[string]*parameterNode
 }
 
-type parameterRules struct{ escape, control, duplicate, limit, bracket, semicolon, prototype, utf8 *rule }
+type parameterRules struct{ escape, control, duplicate, limit, bracket, semicolon, prototype, utf8, shape *rule }
 
-var formParameterRules = parameterRules{rFormEscape, rFormCtl, rFormDup, rFormLimit, rFormBrkt, rFormSemi, rFormProto, rInvalidUTF8}
-var queryParameterRules = parameterRules{rQueryEscape, rQueryCtl, rQueryDup, rQueryLimit, rQueryBrkt, rQuerySemi, rQueryProto, rQueryUTF8}
+var formParameterRules = parameterRules{rFormEscape, rFormCtl, rFormDup, rFormLimit, rFormBrkt, rFormSemi, rFormProto, rInvalidUTF8, rFormShape}
+var queryParameterRules = parameterRules{rQueryEscape, rQueryCtl, rQueryDup, rQueryLimit, rQueryBrkt, rQuerySemi, rQueryProto, rQueryUTF8, rQueryShape}
 
 // checkForm checks a urlencoded body. utf8 says whether decoded names and values must be UTF-8 (they need not be when the
 // Content-Type names a single-byte charset). It returns false when the caller should stop.
@@ -78,6 +79,9 @@ func checkParameters(f *finder, body []byte, lim *FormLimits, utf8 bool, capture
 	fs := &formScanner{f: f, lim: lim, utf8: utf8, capture: capture, dup: f.active(rules.duplicate), rules: rules}
 	if fs.dup {
 		fs.seen = make(map[string]struct{})
+	}
+	if f.active(rules.shape) {
+		fs.shapes = make(map[string]*parameterNode)
 	}
 	params := 0
 	pos := 0
@@ -145,8 +149,17 @@ func (fs *formScanner) pair(pair []byte, at int) bool {
 	if protoName(fs.name) && f.hit(fs.rules.prototype, at, dNone) {
 		return false
 	}
+	if fs.shapes != nil && ambiguousParameter(fs.shapes, string(fs.name)) && f.hit(fs.rules.shape, at, dNone) {
+		return false
+	}
 	if fs.dup && !bytes.HasSuffix(fs.name, []byte("[]")) {
-		fs.fold = appendFolded(fs.fold[:0], fs.name, false)
+		fs.fold = fs.fold[:0]
+		for _, c := range fs.name {
+			if c >= 'A' && c <= 'Z' {
+				c += 'a' - 'A'
+			}
+			fs.fold = append(fs.fold, c)
+		}
 		if _, seen := fs.seen[string(fs.fold)]; seen {
 			if f.hit(fs.rules.duplicate, at, dNone) {
 				return false

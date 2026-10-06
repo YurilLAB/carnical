@@ -2,9 +2,15 @@ package proxy
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
+	"runtime"
+	"syscall"
 	"testing"
 	"time"
 
@@ -90,6 +96,78 @@ func TestOriginPolicyControlOnlyAllowsTCPToAnAddress(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if err := (OriginPolicy{}).Control(tt.network, tt.address, nil); (err == nil) != tt.ok {
 				t.Fatalf("Control(%s, %s) = %v, want ok=%v", tt.network, tt.address, err, tt.ok)
+			}
+		})
+	}
+}
+
+// Dial attempts and cancellation precede HTTP/engine processing; an engine
+// profile cannot inject an OS bind collision or assert no request replay.
+func TestDialBindRetry(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		err             error
+		failures, calls int
+		cancel          bool
+		live            bool
+	}{
+		{"success", nil, 0, 1, false, false},
+		{"one collision", fmt.Errorf("bind: %w", syscall.EADDRINUSE), 1, 2, false, false},
+		{"persistent collision is bounded", syscall.EADDRINUSE, 10, 3, false, false},
+		{"EOF is not replayed", io.EOF, 1, 1, false, false},
+		{"policy error is not retried", errors.New("origin denied"), 1, 1, false, false},
+		{"other socket failure is not retried", syscall.ECONNRESET, 1, 1, false, false},
+		{"cancel before retry", syscall.EADDRINUSE, 10, 1, true, false},
+		{"Winsock collision", syscall.Errno(10048), 1, map[bool]int{true: 2, false: 1}[runtime.GOOS == "windows"], false, false},
+		{"live socket collision then fresh source port", nil, 1, 2, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			calls := 0
+			target, wantNetwork := "origin.example.test:443", "tcp"
+			var liveDial func(context.Context, string, string) (net.Conn, error)
+			if tc.live {
+				occupied, err := net.Listen("tcp4", "127.0.0.1:0")
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer occupied.Close()
+				origin, err := net.Listen("tcp4", "127.0.0.1:0")
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer origin.Close()
+				target, wantNetwork = origin.Addr().String(), "tcp4"
+				liveDial = func(ctx context.Context, network, address string) (net.Conn, error) {
+					d := loopback.Dialer()
+					if calls == 1 {
+						d.LocalAddr = occupied.Addr()
+					}
+					return d.DialContext(ctx, network, address)
+				}
+			}
+			conn, err, retries := dialBindRetry(ctx, wantNetwork, target, func(ctx context.Context, network, address string) (net.Conn, error) {
+				calls++
+				if network != wantNetwork || address != target {
+					t.Fatal("dial target changed")
+				}
+				if liveDial != nil {
+					return liveDial(ctx, network, address)
+				}
+				if tc.cancel {
+					cancel()
+				}
+				if calls <= tc.failures {
+					return nil, tc.err
+				}
+				return nil, nil
+			})
+			if conn != nil {
+				conn.Close()
+			}
+			if calls != tc.calls || retries != calls-1 || (err == nil) != (calls > tc.failures) {
+				t.Fatalf("calls=%d retries=%d err=%v", calls, retries, err)
 			}
 		})
 	}

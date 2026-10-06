@@ -1,5 +1,6 @@
 // Package crs embeds the OWASP Core Rule Set so a Coraza WAF can run it without any files on disk, and turns a
-// few typed settings (mode, paranoia level, thresholds) into the directives that configure it.
+// few typed settings (mode, paranoia level, thresholds) into the directives that configure it. A separate local/ directory
+// holds Carnical's supplemental signatures; those are not part of the upstream release or its provenance manifest.
 //
 // The rules in owasp_crs/ are copied, never edited, by tools/update-crs from an official release after its GPG
 // signature has been checked against the CRS project's pinned key. provenance.json records the release, the
@@ -16,7 +17,7 @@ import (
 	"strings"
 )
 
-//go:embed owasp_crs base provenance.json
+//go:embed owasp_crs base local provenance.json
 var files embed.FS
 
 // FS returns the embedded files. Its root holds base/coraza.conf (Coraza's recommended configuration), owasp_crs/
@@ -106,6 +107,9 @@ type Settings struct {
 	// documentation puts rule exclusions. They are trusted configuration written by the operator, so never fill
 	// them from a tenant's input.
 	Before, After string
+	// DisableLocalRules omits Carnical's supplemental injection rules. They are separate from the verified, unmodified CRS
+	// release, run at PL1 and add five inbound anomaly points per finding. Mode and thresholds apply to both rule sets.
+	DisableLocalRules bool
 }
 
 // DefaultSettings blocks at paranoia level 1 with the standard thresholds.
@@ -192,7 +196,26 @@ func (s Settings) Directives() (string, error) {
 	if s.Before != "" {
 		line("%s", s.Before)
 	}
-	line("Include owasp_crs/*.conf")
+	// Multiphase builds can inspect query/cookie values during phase 1. Load
+	// local signatures after CRS initializes the per-PL scores, or that reset
+	// would erase their findings. Keep every upstream file in sorted order.
+	rules, err := fs.Glob(files, "owasp_crs/*.conf")
+	if err != nil {
+		return "", fmt.Errorf("list embedded CRS rules: %w", err)
+	}
+	initialized := false
+	for _, path := range rules {
+		line("Include %s", path)
+		if path == "owasp_crs/REQUEST-901-INITIALIZATION.conf" {
+			initialized = true
+			if !s.DisableLocalRules {
+				line("Include local/*.conf")
+			}
+		}
+	}
+	if !initialized {
+		return "", fmt.Errorf("embedded CRS initialization rules are missing")
+	}
 	if s.After != "" {
 		line("%s", s.After)
 	}

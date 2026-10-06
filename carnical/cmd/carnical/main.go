@@ -53,6 +53,9 @@ func run() error {
 	formatsStats := flag.Duration("formats-stats-interval", time.Minute, "log changed per-rule blocked/monitored format totals (0 = off; 100ms to 24h)")
 	requestEncoding := flag.Bool("allow-request-encoding", false, "allow one bounded gzip or deflate layer through the format inspector (requires formats enabled)")
 	responses := flag.Bool("inspect-responses", false, "also run the CRS response rules (buffers text, HTML and XML responses)")
+	localRules := flag.Bool("local-rules", true, "run Carnical supplemental injection rules at PL1, with the selected CRS mode and threshold")
+	apiSpec := flag.String("api-spec", "", "local OpenAPI JSON/YAML contract; scalar/array parameters and JSON bodies (no fetching or learning)")
+	apiSpecMode := flag.String("api-spec-mode", "block", "OpenAPI contract action: block or monitor (block requires formats block)")
 	methods := flag.String("allowed-methods", "", "comma-separated HTTP methods to allow (default: the CRS list GET HEAD POST OPTIONS)")
 	trustedList := flag.String("trusted-proxies", "", "comma-separated addresses or ranges that may supply X-Forwarded-For")
 	originAllow := flag.String("origin-allow", "", "comma-separated addresses or ranges the upstream may be at even though they are not public (default: public addresses only)")
@@ -119,6 +122,13 @@ func run() error {
 	if formatInspector != nil {
 		inspectors = append(inspectors, formatInspector)
 	}
+	apiInspector, apiReport, err := configureAPI(*apiSpec, *apiSpecMode, *formatsMode)
+	if err != nil {
+		return err
+	}
+	if apiInspector != nil {
+		inspectors = append(inspectors, apiInspector)
+	}
 	target, err := url.Parse(*upstream)
 	if err != nil {
 		return fmt.Errorf("-upstream: %w", err)
@@ -137,6 +147,7 @@ func run() error {
 	settings.InboundThreshold, settings.OutboundThreshold = *inbound, *outbound
 	settings.RequestBodyLimit = *maxBody
 	settings.InspectResponses = *responses
+	settings.DisableLocalRules = !*localRules
 	settings.UploadDir = *uploadDir
 	if *methods != "" {
 		for _, m := range strings.Split(*methods, ",") {
@@ -145,6 +156,10 @@ func run() error {
 	}
 
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	if apiInspector != nil {
+		log.Info("API contract loaded", "mode", *apiSpecMode, "sha256", apiReport.Hash, "routes", apiReport.Routes,
+			"warnings", apiReport.Warnings, "warnings_dropped", apiReport.WarningsDropped)
+	}
 	guard, err := configureShield(log, shieldFlags{mode: *ddosMode, rate: *ddosRate, burst: *ddosBurst, maxConns: *ddosConns,
 		challenge: *ddosChallenge, baseline: *ddosBaseline, ranges: *ddosRanges}, trusted)
 	if err != nil {

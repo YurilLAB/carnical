@@ -1,0 +1,1056 @@
+{
+  "Scope": "Initial local-rule prototypes; synthetic admission to an inert counted origin, not application exploitation. New cases were used to develop fixes, so final success is regression evidence, not a blind evaluation.",
+  "BeforeRuns": [
+    {
+      "SourceReportSHA256": "90c2ac9abd98341b673b2401febf67f3a3b909777de9b16b21e5a08c58ca2237",
+      "Started": "2026-10-06T04:51:23Z",
+      "Completed": "2026-10-06T04:51:29Z",
+      "Count": 30000,
+      "BinarySHA256": "4239c9dee8a0d0c4018c108dd18999c80b1491a035ca98a0099d57d83c96c22a",
+      "SuiteSHA256": "06b791421367b5761747c4176c0f5586e669f6a29d21aea7729365efef3baac2",
+      "TransportErrors": 0,
+      "Unavailable": 0,
+      "AdmissionsAndFinalResults": [
+        {
+          "Before": {
+            "Name": "lfi/defense-00-0",
+            "Attack": true,
+            "Requests": 4,
+            "Errors": 0,
+            "Statuses": {
+              "200": 4
+            },
+            "OriginReached": 4,
+            "Method": "GET",
+            "URI": "/api/loadtest/lfi?input=%2525252e%2525252e%2525252fetc%2525252fpasswd",
+            "WireURI": "/api/loadtest/lfi?input=%2525252e%2525252e%2525252fetc%2525252fpasswd",
+            "Description": "held-out syntax probe; application sink required",
+            "Parent": "lfi/adversarial-family",
+            "Variation": "syntax-00-channel-0",
+            "RequestSHA256": "67a83be47e2a0fe4f57e1f4ade242c46181dd05ac9bd55e59e2d6c07eb680385",
+            "Request": {
+              "Method": "GET",
+              "URI": "/api/loadtest/lfi?input=%2525252e%2525252e%2525252fetc%2525252fpasswd",
+              "Headers": null,
+              "Body": "",
+              "Files": null
+            }
+          },
+          "Final": {
+            "Name": "lfi/defense-00-0",
+            "Attack": true,
+            "Requests": 92,
+            "Errors": 0,
+            "Statuses": {
+              "403": 92
+            },
+            "OriginReached": 0,
+            "Method": "GET",
+            "URI": "/api/loadtest/lfi?input=%2525252e%2525252e%2525252fetc%2525252fpasswd",
+            "WireURI": "/api/loadtest/lfi?input=%2525252e%2525252e%2525252fetc%2525252fpasswd",
+            "Description": "held-out syntax probe; application sink required",
+            "Parent": "lfi/adversarial-family",
+            "Variation": "syntax-00-channel-0",
+            "RequestSHA256": "67a83be47e2a0fe4f57e1f4ade242c46181dd05ac9bd55e59e2d6c07eb680385"
+          }
+        },
+        {
+          "Before": {
+            "Name": "lfi/defense-00-1",
+            "Attack": true,
+            "Requests": 4,
+            "Errors": 0,
+            "Statuses": {
+              "200": 4
+            },
+            "OriginReached": 4,
+            "Method": "POST",
+            "URI": "/api/loadtest/lfi",
+            "WireURI": "/api/loadtest/lfi",
+            "Description": "held-out syntax probe; application sink required",
+            "Parent": "lfi/adversarial-family",
+            "Variation": "syntax-00-channel-1",
+            "RequestSHA256": "09e5306d61055694c4d77057727d20310f2d3c489a5a84d39656b88021d8785a",
+            "Request": {
+              "Method": "POST",
+              "URI": "/api/loadtest/lfi",
+              "Headers": {
+                "Content-Type": "application/x-www-form-urlencoded"
+              },
+              "Body": "input=%2525252e%2525252e%2525252fetc%2525252fpasswd",
+              "Files": null
+            }
+          },
+          "Final": {
+            "Name": "lfi/defense-00-1",
+            "Attack": true,
+            "Requests": 92,
+            "Errors": 0,
+            "Statuses": {
+              "403": 92
+            },
+            "OriginReached": 0,
+            "Method": "POST",
+            "URI": "/api/loadtest/lfi",
+            "WireURI": "/api/loadtest/lfi",
+            "Description": "held-out syntax probe; application sink required",
+            "Parent": "lfi/adversarial-family",
+            "Variation": "syntax-00-channel-1",
+            "RequestSHA256": "09e5306d61055694c4d77057727d20310f2d3c489a5a84d39656b88021d8785a"
+          }
+        },
+        {
+          "Before": {
+            "Name": "lfi/defense-00-2",
+            "Attack": true,
+            "Requests": 4,
+            "Errors": 0,
+            "Statuses": {
+              "200": 4
+            },
+            "OriginReached": 4,
+            "Method": "POST",
+            "URI": "/api/loadtest/lfi",
+            "WireURI": "/api/loadtest/lfi",
+            "Description": "held-out syntax probe; application sink required",
+            "Parent": "lfi/adversarial-family",
+            "Variation": "syntax-00-channel-2",
+            "RequestSHA256": "cdb771c390e2fa94f0fbb8ecffe6c32e98589caa2bd2b31b8d5466aa8b40e94f",
+            "Request": {
+              "Method": "POST",
+              "URI": "/api/loadtest/lfi",
+              "Headers": {
+                "Content-Type": "application/json"
+              },
+              "Body": "{\"input\":\"%25252e%25252e%25252fetc%25252fpasswd\"}",
+              "Files": null
+            }
+          },
+          "Final": {
+            "Name": "lfi/defense-00-2",
+            "Attack": true,
+            "Requests": 92,
+            "Errors": 0,
+            "Statuses": {
+              "403": 92
+            },
+            "OriginReached": 0,
+            "Method": "POST",
+            "URI": "/api/loadtest/lfi",
+            "WireURI": "/api/loadtest/lfi",
+            "Description": "held-out syntax probe; application sink required",
+            "Parent": "lfi/adversarial-family",
+            "Variation": "syntax-00-channel-2",
+            "RequestSHA256": "cdb771c390e2fa94f0fbb8ecffe6c32e98589caa2bd2b31b8d5466aa8b40e94f"
+          }
+        },
+        {
+          "Before": {
+            "Name": "lfi/defense-01-0",
+            "Attack": true,
+            "Requests": 4,
+            "Errors": 0,
+            "Statuses": {
+              "200": 4
+            },
+            "OriginReached": 4,
+            "Method": "GET",
+            "URI": "/api/loadtest/lfi?input=%252525252e%252525252e%252525252fetc%252525252fpasswd",
+            "WireURI": "/api/loadtest/lfi?input=%252525252e%252525252e%252525252fetc%252525252fpasswd",
+            "Description": "held-out syntax probe; application sink required",
+            "Parent": "lfi/adversarial-family",
+            "Variation": "syntax-01-channel-0",
+            "RequestSHA256": "a8a17b1873130b476b8922b14f11995a2b2daebac5e2c752be1f3a6aa88322ca",
+            "Request": {
+              "Method": "GET",
+              "URI": "/api/loadtest/lfi?input=%252525252e%252525252e%252525252fetc%252525252fpasswd",
+              "Headers": null,
+              "Body": "",
+              "Files": null
+            }
+          },
+          "Final": {
+            "Name": "lfi/defense-01-0",
+            "Attack": true,
+            "Requests": 92,
+            "Errors": 0,
+            "Statuses": {
+              "403": 92
+            },
+            "OriginReached": 0,
+            "Method": "GET",
+            "URI": "/api/loadtest/lfi?input=%252525252e%252525252e%252525252fetc%252525252fpasswd",
+            "WireURI": "/api/loadtest/lfi?input=%252525252e%252525252e%252525252fetc%252525252fpasswd",
+            "Description": "held-out syntax probe; application sink required",
+            "Parent": "lfi/adversarial-family",
+            "Variation": "syntax-01-channel-0",
+            "RequestSHA256": "a8a17b1873130b476b8922b14f11995a2b2daebac5e2c752be1f3a6aa88322ca"
+          }
+        },
+        {
+          "Before": {
+            "Name": "lfi/defense-01-1",
+            "Attack": true,
+            "Requests": 4,
+            "Errors": 0,
+            "Statuses": {
+              "200": 4
+            },
+            "OriginReached": 4,
+            "Method": "POST",
+            "URI": "/api/loadtest/lfi",
+            "WireURI": "/api/loadtest/lfi",
+            "Description": "held-out syntax probe; application sink required",
+            "Parent": "lfi/adversarial-family",
+            "Variation": "syntax-01-channel-1",
+            "RequestSHA256": "a681e2514edc2ee7c6b022addca0fa5b6e1e7a1212887cfcf5faf5b59ca5bb28",
+            "Request": {
+              "Method": "POST",
+              "URI": "/api/loadtest/lfi",
+              "Headers": {
+                "Content-Type": "application/x-www-form-urlencoded"
+              },
+              "Body": "input=%252525252e%252525252e%252525252fetc%252525252fpasswd",
+              "Files": null
+            }
+          },
+          "Final": {
+            "Name": "lfi/defense-01-1",
+            "Attack": true,
+            "Requests": 92,
+            "Errors": 0,
+            "Statuses": {
+              "403": 92
+            },
+            "OriginReached": 0,
+            "Method": "POST",
+            "URI": "/api/loadtest/lfi",
+            "WireURI": "/api/loadtest/lfi",
+            "Description": "held-out syntax probe; application sink required",
+            "Parent": "lfi/adversarial-family",
+            "Variation": "syntax-01-channel-1",
+            "RequestSHA256": "a681e2514edc2ee7c6b022addca0fa5b6e1e7a1212887cfcf5faf5b59ca5bb28"
+          }
+        },
+        {
+          "Before": {
+            "Name": "lfi/defense-01-2",
+            "Attack": true,
+            "Requests": 4,
+            "Errors": 0,
+            "Statuses": {
+              "200": 4
+            },
+            "OriginReached": 4,
+            "Method": "POST",
+            "URI": "/api/loadtest/lfi",
+            "WireURI": "/api/loadtest/lfi",
+            "Description": "held-out syntax probe; application sink required",
+            "Parent": "lfi/adversarial-family",
+            "Variation": "syntax-01-channel-2",
+            "RequestSHA256": "ac9a23dbe6c532c78424b74a44b8a4c3256ba8030991c78eb8675508fd10c307",
+            "Request": {
+              "Method": "POST",
+              "URI": "/api/loadtest/lfi",
+              "Headers": {
+                "Content-Type": "application/json"
+              },
+              "Body": "{\"input\":\"%2525252e%2525252e%2525252fetc%2525252fpasswd\"}",
+              "Files": null
+            }
+          },
+          "Final": {
+            "Name": "lfi/defense-01-2",
+            "Attack": true,
+            "Requests": 92,
+            "Errors": 0,
+            "Statuses": {
+              "403": 92
+            },
+            "OriginReached": 0,
+            "Method": "POST",
+            "URI": "/api/loadtest/lfi",
+            "WireURI": "/api/loadtest/lfi",
+            "Description": "held-out syntax probe; application sink required",
+            "Parent": "lfi/adversarial-family",
+            "Variation": "syntax-01-channel-2",
+            "RequestSHA256": "ac9a23dbe6c532c78424b74a44b8a4c3256ba8030991c78eb8675508fd10c307"
+          }
+        },
+        {
+          "Before": {
+            "Name": "ssti/defense-02-0",
+            "Attack": true,
+            "Requests": 4,
+            "Errors": 0,
+            "Statuses": {
+              "200": 4
+            },
+            "OriginReached": 4,
+            "Method": "GET",
+            "URI": "/api/loadtest/ssti?input=%2A%7B%288+%2B+8%29%7D",
+            "WireURI": "/api/loadtest/ssti?input=%2A%7B%288+%2B+8%29%7D",
+            "Description": "held-out syntax probe; application sink required",
+            "Parent": "ssti/adversarial-family",
+            "Variation": "syntax-02-channel-0",
+            "RequestSHA256": "2b463ddd932787f57cae699198b772b0b680268dbb8f7cd160d8ad9ec64efe92",
+            "Request": {
+              "Method": "GET",
+              "URI": "/api/loadtest/ssti?input=%2A%7B%288+%2B+8%29%7D",
+              "Headers": null,
+              "Body": "",
+              "Files": null
+            }
+          },
+          "Final": {
+            "Name": "ssti/defense-02-0",
+            "Attack": true,
+            "Requests": 92,
+            "Errors": 0,
+            "Statuses": {
+              "403": 92
+            },
+            "OriginReached": 0,
+            "Method": "GET",
+            "URI": "/api/loadtest/ssti?input=%2A%7B%288+%2B+8%29%7D",
+            "WireURI": "/api/loadtest/ssti?input=%2A%7B%288+%2B+8%29%7D",
+            "Description": "held-out syntax probe; application sink required",
+            "Parent": "ssti/adversarial-family",
+            "Variation": "syntax-02-channel-0",
+            "RequestSHA256": "2b463ddd932787f57cae699198b772b0b680268dbb8f7cd160d8ad9ec64efe92"
+          }
+        },
+        {
+          "Before": {
+            "Name": "ssti/defense-02-1",
+            "Attack": true,
+            "Requests": 4,
+            "Errors": 0,
+            "Statuses": {
+              "200": 4
+            },
+            "OriginReached": 4,
+            "Method": "POST",
+            "URI": "/api/loadtest/ssti",
+            "WireURI": "/api/loadtest/ssti",
+            "Description": "held-out syntax probe; application sink required",
+            "Parent": "ssti/adversarial-family",
+            "Variation": "syntax-02-channel-1",
+            "RequestSHA256": "e717d81a95a20b9aed37a3f40634e12f68f3bfe45846ef962bd6c52d604878d2",
+            "Request": {
+              "Method": "POST",
+              "URI": "/api/loadtest/ssti",
+              "Headers": {
+                "Content-Type": "application/x-www-form-urlencoded"
+              },
+              "Body": "input=%2A%7B%288+%2B+8%29%7D",
+              "Files": null
+            }
+          },
+          "Final": {
+            "Name": "ssti/defense-02-1",
+            "Attack": true,
+            "Requests": 92,
+            "Errors": 0,
+            "Statuses": {
+              "403": 92
+            },
+            "OriginReached": 0,
+            "Method": "POST",
+            "URI": "/api/loadtest/ssti",
+            "WireURI": "/api/loadtest/ssti",
+            "Description": "held-out syntax probe; application sink required",
+            "Parent": "ssti/adversarial-family",
+            "Variation": "syntax-02-channel-1",
+            "RequestSHA256": "e717d81a95a20b9aed37a3f40634e12f68f3bfe45846ef962bd6c52d604878d2"
+          }
+        },
+        {
+          "Before": {
+            "Name": "ssti/defense-02-2",
+            "Attack": true,
+            "Requests": 4,
+            "Errors": 0,
+            "Statuses": {
+              "200": 4
+            },
+            "OriginReached": 4,
+            "Method": "POST",
+            "URI": "/api/loadtest/ssti",
+            "WireURI": "/api/loadtest/ssti",
+            "Description": "held-out syntax probe; application sink required",
+            "Parent": "ssti/adversarial-family",
+            "Variation": "syntax-02-channel-2",
+            "RequestSHA256": "30c64b2e867c734a7df77e6bebe3e5e43a82222889e8d9a604b0914fd581d3b7",
+            "Request": {
+              "Method": "POST",
+              "URI": "/api/loadtest/ssti",
+              "Headers": {
+                "Content-Type": "application/json"
+              },
+              "Body": "{\"input\":\"*{(8 + 8)}\"}",
+              "Files": null
+            }
+          },
+          "Final": {
+            "Name": "ssti/defense-02-2",
+            "Attack": true,
+            "Requests": 92,
+            "Errors": 0,
+            "Statuses": {
+              "403": 92
+            },
+            "OriginReached": 0,
+            "Method": "POST",
+            "URI": "/api/loadtest/ssti",
+            "WireURI": "/api/loadtest/ssti",
+            "Description": "held-out syntax probe; application sink required",
+            "Parent": "ssti/adversarial-family",
+            "Variation": "syntax-02-channel-2",
+            "RequestSHA256": "30c64b2e867c734a7df77e6bebe3e5e43a82222889e8d9a604b0914fd581d3b7"
+          }
+        },
+        {
+          "Before": {
+            "Name": "xpath/defense-00-0",
+            "Attack": true,
+            "Requests": 4,
+            "Errors": 0,
+            "Statuses": {
+              "200": 4
+            },
+            "OriginReached": 4,
+            "Method": "GET",
+            "URI": "/api/loadtest/xpath?input=%27+or+%28%28true%28%29%29%29+or+%27a%27%3D%27b",
+            "WireURI": "/api/loadtest/xpath?input=%27+or+%28%28true%28%29%29%29+or+%27a%27%3D%27b",
+            "Description": "held-out syntax probe; application sink required",
+            "Parent": "xpath/adversarial-family",
+            "Variation": "syntax-00-channel-0",
+            "RequestSHA256": "aee51a6af9679d4f4470bfd641f261b543df1430cbae412c2b8d62c9342d2fed",
+            "Request": {
+              "Method": "GET",
+              "URI": "/api/loadtest/xpath?input=%27+or+%28%28true%28%29%29%29+or+%27a%27%3D%27b",
+              "Headers": null,
+              "Body": "",
+              "Files": null
+            }
+          },
+          "Final": {
+            "Name": "xpath/defense-00-0",
+            "Attack": true,
+            "Requests": 92,
+            "Errors": 0,
+            "Statuses": {
+              "403": 92
+            },
+            "OriginReached": 0,
+            "Method": "GET",
+            "URI": "/api/loadtest/xpath?input=%27+or+%28%28true%28%29%29%29+or+%27a%27%3D%27b",
+            "WireURI": "/api/loadtest/xpath?input=%27+or+%28%28true%28%29%29%29+or+%27a%27%3D%27b",
+            "Description": "held-out syntax probe; application sink required",
+            "Parent": "xpath/adversarial-family",
+            "Variation": "syntax-00-channel-0",
+            "RequestSHA256": "aee51a6af9679d4f4470bfd641f261b543df1430cbae412c2b8d62c9342d2fed"
+          }
+        },
+        {
+          "Before": {
+            "Name": "xpath/defense-00-1",
+            "Attack": true,
+            "Requests": 4,
+            "Errors": 0,
+            "Statuses": {
+              "200": 4
+            },
+            "OriginReached": 4,
+            "Method": "POST",
+            "URI": "/api/loadtest/xpath",
+            "WireURI": "/api/loadtest/xpath",
+            "Description": "held-out syntax probe; application sink required",
+            "Parent": "xpath/adversarial-family",
+            "Variation": "syntax-00-channel-1",
+            "RequestSHA256": "a68b4b6b008abb5d2670cd4627c400a64f0bfb120617b555b4b8cd08d77aae0a",
+            "Request": {
+              "Method": "POST",
+              "URI": "/api/loadtest/xpath",
+              "Headers": {
+                "Content-Type": "application/x-www-form-urlencoded"
+              },
+              "Body": "input=%27+or+%28%28true%28%29%29%29+or+%27a%27%3D%27b",
+              "Files": null
+            }
+          },
+          "Final": {
+            "Name": "xpath/defense-00-1",
+            "Attack": true,
+            "Requests": 92,
+            "Errors": 0,
+            "Statuses": {
+              "403": 92
+            },
+            "OriginReached": 0,
+            "Method": "POST",
+            "URI": "/api/loadtest/xpath",
+            "WireURI": "/api/loadtest/xpath",
+            "Description": "held-out syntax probe; application sink required",
+            "Parent": "xpath/adversarial-family",
+            "Variation": "syntax-00-channel-1",
+            "RequestSHA256": "a68b4b6b008abb5d2670cd4627c400a64f0bfb120617b555b4b8cd08d77aae0a"
+          }
+        },
+        {
+          "Before": {
+            "Name": "xpath/defense-00-2",
+            "Attack": true,
+            "Requests": 4,
+            "Errors": 0,
+            "Statuses": {
+              "200": 4
+            },
+            "OriginReached": 4,
+            "Method": "POST",
+            "URI": "/api/loadtest/xpath",
+            "WireURI": "/api/loadtest/xpath",
+            "Description": "held-out syntax probe; application sink required",
+            "Parent": "xpath/adversarial-family",
+            "Variation": "syntax-00-channel-2",
+            "RequestSHA256": "84bff37a95752f249dfdc8254b61ab4c8244c226a9ab299e21087a72f2a69641",
+            "Request": {
+              "Method": "POST",
+              "URI": "/api/loadtest/xpath",
+              "Headers": {
+                "Content-Type": "application/json"
+              },
+              "Body": "{\"input\":\"' or ((true())) or 'a'='b\"}",
+              "Files": null
+            }
+          },
+          "Final": {
+            "Name": "xpath/defense-00-2",
+            "Attack": true,
+            "Requests": 92,
+            "Errors": 0,
+            "Statuses": {
+              "403": 92
+            },
+            "OriginReached": 0,
+            "Method": "POST",
+            "URI": "/api/loadtest/xpath",
+            "WireURI": "/api/loadtest/xpath",
+            "Description": "held-out syntax probe; application sink required",
+            "Parent": "xpath/adversarial-family",
+            "Variation": "syntax-00-channel-2",
+            "RequestSHA256": "84bff37a95752f249dfdc8254b61ab4c8244c226a9ab299e21087a72f2a69641"
+          }
+        },
+        {
+          "Before": {
+            "Name": "xpath/defense-01-0",
+            "Attack": true,
+            "Requests": 4,
+            "Errors": 0,
+            "Statuses": {
+              "200": 4
+            },
+            "OriginReached": 4,
+            "Method": "GET",
+            "URI": "/api/loadtest/xpath?input=%27+or+%28%3Acomment%3A%29+true%28%29+or+%27a%27%3D%27b",
+            "WireURI": "/api/loadtest/xpath?input=%27+or+%28%3Acomment%3A%29+true%28%29+or+%27a%27%3D%27b",
+            "Description": "held-out syntax probe; application sink required",
+            "Parent": "xpath/adversarial-family",
+            "Variation": "syntax-01-channel-0",
+            "RequestSHA256": "1ca6e095f3942a57d7a0d9a09d06d7ceab83c57688451ac9f72fbf986df3ca46",
+            "Request": {
+              "Method": "GET",
+              "URI": "/api/loadtest/xpath?input=%27+or+%28%3Acomment%3A%29+true%28%29+or+%27a%27%3D%27b",
+              "Headers": null,
+              "Body": "",
+              "Files": null
+            }
+          },
+          "Final": {
+            "Name": "xpath/defense-01-0",
+            "Attack": true,
+            "Requests": 92,
+            "Errors": 0,
+            "Statuses": {
+              "403": 92
+            },
+            "OriginReached": 0,
+            "Method": "GET",
+            "URI": "/api/loadtest/xpath?input=%27+or+%28%3Acomment%3A%29+true%28%29+or+%27a%27%3D%27b",
+            "WireURI": "/api/loadtest/xpath?input=%27+or+%28%3Acomment%3A%29+true%28%29+or+%27a%27%3D%27b",
+            "Description": "held-out syntax probe; application sink required",
+            "Parent": "xpath/adversarial-family",
+            "Variation": "syntax-01-channel-0",
+            "RequestSHA256": "1ca6e095f3942a57d7a0d9a09d06d7ceab83c57688451ac9f72fbf986df3ca46"
+          }
+        },
+        {
+          "Before": {
+            "Name": "xpath/defense-01-1",
+            "Attack": true,
+            "Requests": 4,
+            "Errors": 0,
+            "Statuses": {
+              "200": 4
+            },
+            "OriginReached": 4,
+            "Method": "POST",
+            "URI": "/api/loadtest/xpath",
+            "WireURI": "/api/loadtest/xpath",
+            "Description": "held-out syntax probe; application sink required",
+            "Parent": "xpath/adversarial-family",
+            "Variation": "syntax-01-channel-1",
+            "RequestSHA256": "e6be372d37fc5b6e8b91ff0819a3fb8f0bdce90dc25f41430597b0696633595c",
+            "Request": {
+              "Method": "POST",
+              "URI": "/api/loadtest/xpath",
+              "Headers": {
+                "Content-Type": "application/x-www-form-urlencoded"
+              },
+              "Body": "input=%27+or+%28%3Acomment%3A%29+true%28%29+or+%27a%27%3D%27b",
+              "Files": null
+            }
+          },
+          "Final": {
+            "Name": "xpath/defense-01-1",
+            "Attack": true,
+            "Requests": 92,
+            "Errors": 0,
+            "Statuses": {
+              "403": 92
+            },
+            "OriginReached": 0,
+            "Method": "POST",
+            "URI": "/api/loadtest/xpath",
+            "WireURI": "/api/loadtest/xpath",
+            "Description": "held-out syntax probe; application sink required",
+            "Parent": "xpath/adversarial-family",
+            "Variation": "syntax-01-channel-1",
+            "RequestSHA256": "e6be372d37fc5b6e8b91ff0819a3fb8f0bdce90dc25f41430597b0696633595c"
+          }
+        },
+        {
+          "Before": {
+            "Name": "xpath/defense-01-2",
+            "Attack": true,
+            "Requests": 4,
+            "Errors": 0,
+            "Statuses": {
+              "200": 4
+            },
+            "OriginReached": 4,
+            "Method": "POST",
+            "URI": "/api/loadtest/xpath",
+            "WireURI": "/api/loadtest/xpath",
+            "Description": "held-out syntax probe; application sink required",
+            "Parent": "xpath/adversarial-family",
+            "Variation": "syntax-01-channel-2",
+            "RequestSHA256": "bc56f55a91542e7fdc04bf1dbeb8562681d2d1841b54cf4ca1abefa49da73b80",
+            "Request": {
+              "Method": "POST",
+              "URI": "/api/loadtest/xpath",
+              "Headers": {
+                "Content-Type": "application/json"
+              },
+              "Body": "{\"input\":\"' or (:comment:) true() or 'a'='b\"}",
+              "Files": null
+            }
+          },
+          "Final": {
+            "Name": "xpath/defense-01-2",
+            "Attack": true,
+            "Requests": 92,
+            "Errors": 0,
+            "Statuses": {
+              "403": 92
+            },
+            "OriginReached": 0,
+            "Method": "POST",
+            "URI": "/api/loadtest/xpath",
+            "WireURI": "/api/loadtest/xpath",
+            "Description": "held-out syntax probe; application sink required",
+            "Parent": "xpath/adversarial-family",
+            "Variation": "syntax-01-channel-2",
+            "RequestSHA256": "bc56f55a91542e7fdc04bf1dbeb8562681d2d1841b54cf4ca1abefa49da73b80"
+          }
+        },
+        {
+          "Before": {
+            "Name": "xpath/defense-02-0",
+            "Attack": true,
+            "Requests": 4,
+            "Errors": 0,
+            "Statuses": {
+              "200": 4
+            },
+            "OriginReached": 4,
+            "Method": "GET",
+            "URI": "/api/loadtest/xpath?input=%27+or+%28%3A%28%3Anested%3A%29comment%3A%29+true%28%29+or+%27a%27%3D%27b",
+            "WireURI": "/api/loadtest/xpath?input=%27+or+%28%3A%28%3Anested%3A%29comment%3A%29+true%28%29+or+%27a%27%3D%27b",
+            "Description": "held-out syntax probe; application sink required",
+            "Parent": "xpath/adversarial-family",
+            "Variation": "syntax-02-channel-0",
+            "RequestSHA256": "39d808c49a1f9179013764d093788fd52bf6223bd247a20301da48147415431c",
+            "Request": {
+              "Method": "GET",
+              "URI": "/api/loadtest/xpath?input=%27+or+%28%3A%28%3Anested%3A%29comment%3A%29+true%28%29+or+%27a%27%3D%27b",
+              "Headers": null,
+              "Body": "",
+              "Files": null
+            }
+          },
+          "Final": {
+            "Name": "xpath/defense-02-0",
+            "Attack": true,
+            "Requests": 92,
+            "Errors": 0,
+            "Statuses": {
+              "403": 92
+            },
+            "OriginReached": 0,
+            "Method": "GET",
+            "URI": "/api/loadtest/xpath?input=%27+or+%28%3A%28%3Anested%3A%29comment%3A%29+true%28%29+or+%27a%27%3D%27b",
+            "WireURI": "/api/loadtest/xpath?input=%27+or+%28%3A%28%3Anested%3A%29comment%3A%29+true%28%29+or+%27a%27%3D%27b",
+            "Description": "held-out syntax probe; application sink required",
+            "Parent": "xpath/adversarial-family",
+            "Variation": "syntax-02-channel-0",
+            "RequestSHA256": "39d808c49a1f9179013764d093788fd52bf6223bd247a20301da48147415431c"
+          }
+        },
+        {
+          "Before": {
+            "Name": "xpath/defense-02-1",
+            "Attack": true,
+            "Requests": 4,
+            "Errors": 0,
+            "Statuses": {
+              "200": 4
+            },
+            "OriginReached": 4,
+            "Method": "POST",
+            "URI": "/api/loadtest/xpath",
+            "WireURI": "/api/loadtest/xpath",
+            "Description": "held-out syntax probe; application sink required",
+            "Parent": "xpath/adversarial-family",
+            "Variation": "syntax-02-channel-1",
+            "RequestSHA256": "39306172455488d1e1a875a810a24dd985ef05192d4aa559825e237271cf7a2c",
+            "Request": {
+              "Method": "POST",
+              "URI": "/api/loadtest/xpath",
+              "Headers": {
+                "Content-Type": "application/x-www-form-urlencoded"
+              },
+              "Body": "input=%27+or+%28%3A%28%3Anested%3A%29comment%3A%29+true%28%29+or+%27a%27%3D%27b",
+              "Files": null
+            }
+          },
+          "Final": {
+            "Name": "xpath/defense-02-1",
+            "Attack": true,
+            "Requests": 92,
+            "Errors": 0,
+            "Statuses": {
+              "403": 92
+            },
+            "OriginReached": 0,
+            "Method": "POST",
+            "URI": "/api/loadtest/xpath",
+            "WireURI": "/api/loadtest/xpath",
+            "Description": "held-out syntax probe; application sink required",
+            "Parent": "xpath/adversarial-family",
+            "Variation": "syntax-02-channel-1",
+            "RequestSHA256": "39306172455488d1e1a875a810a24dd985ef05192d4aa559825e237271cf7a2c"
+          }
+        },
+        {
+          "Before": {
+            "Name": "xpath/defense-02-2",
+            "Attack": true,
+            "Requests": 4,
+            "Errors": 0,
+            "Statuses": {
+              "200": 4
+            },
+            "OriginReached": 4,
+            "Method": "POST",
+            "URI": "/api/loadtest/xpath",
+            "WireURI": "/api/loadtest/xpath",
+            "Description": "held-out syntax probe; application sink required",
+            "Parent": "xpath/adversarial-family",
+            "Variation": "syntax-02-channel-2",
+            "RequestSHA256": "e5274a5f80e7f79dc0fa30cfbf877f85d62493aaa28a2d5ffedd13eb79c3466c",
+            "Request": {
+              "Method": "POST",
+              "URI": "/api/loadtest/xpath",
+              "Headers": {
+                "Content-Type": "application/json"
+              },
+              "Body": "{\"input\":\"' or (:(:nested:)comment:) true() or 'a'='b\"}",
+              "Files": null
+            }
+          },
+          "Final": {
+            "Name": "xpath/defense-02-2",
+            "Attack": true,
+            "Requests": 92,
+            "Errors": 0,
+            "Statuses": {
+              "403": 92
+            },
+            "OriginReached": 0,
+            "Method": "POST",
+            "URI": "/api/loadtest/xpath",
+            "WireURI": "/api/loadtest/xpath",
+            "Description": "held-out syntax probe; application sink required",
+            "Parent": "xpath/adversarial-family",
+            "Variation": "syntax-02-channel-2",
+            "RequestSHA256": "e5274a5f80e7f79dc0fa30cfbf877f85d62493aaa28a2d5ffedd13eb79c3466c"
+          }
+        }
+      ]
+    },
+    {
+      "SourceReportSHA256": "d4166fdda348b90499024154cac4e287fd982e7a1010b3d93a6c5ed54b3d382a",
+      "Started": "2026-10-06T05:09:40Z",
+      "Completed": "2026-10-06T05:09:46Z",
+      "Count": 30000,
+      "BinarySHA256": "8537f9879d2cfb4a020a670db116db179a04eee9094c977d5ca3992bb56d640e",
+      "SuiteSHA256": "d5c81200a3bbda8c0f89af692427fcbb23af65b9054c4a44fdbdaab20e156d32",
+      "TransportErrors": 0,
+      "Unavailable": 0,
+      "AdmissionsAndFinalResults": [
+        {
+          "Before": {
+            "Name": "xpath/defense-xml-2",
+            "Attack": true,
+            "Requests": 4,
+            "Errors": 0,
+            "Statuses": {
+              "200": 4
+            },
+            "OriginReached": 4,
+            "Method": "POST",
+            "URI": "/api/loadtest/xpath",
+            "WireURI": "/api/loadtest/xpath",
+            "Description": "held-out XML syntax probe; application sink required",
+            "Parent": "xpath/adversarial-family",
+            "Variation": "XML scalar spelling",
+            "RequestSHA256": "1a72566edc74945cd43e00e10f911a1ec90671be5a7b56240c653a9697818a69",
+            "Request": {
+              "Method": "POST",
+              "URI": "/api/loadtest/xpath",
+              "Headers": {
+                "Content-Type": "application/xml"
+              },
+              "Body": "<input value=\"' or true() or 'a'='b\"/>",
+              "Files": null
+            }
+          },
+          "Final": {
+            "Name": "xpath/defense-xml-2",
+            "Attack": true,
+            "Requests": 92,
+            "Errors": 0,
+            "Statuses": {
+              "403": 92
+            },
+            "OriginReached": 0,
+            "Method": "POST",
+            "URI": "/api/loadtest/xpath",
+            "WireURI": "/api/loadtest/xpath",
+            "Description": "held-out XML syntax probe; application sink required",
+            "Parent": "xpath/adversarial-family",
+            "Variation": "XML scalar spelling",
+            "RequestSHA256": "1a72566edc74945cd43e00e10f911a1ec90671be5a7b56240c653a9697818a69"
+          }
+        }
+      ]
+    }
+  ],
+  "SocketFailureBeforeRetry": {
+    "SourceReportSHA256": "d8b3d1d01f6eec53ec1b8b85a30a2b47b237a34fe0a2bdc17d820047d8122489",
+    "BinarySHA256": "07211ef20716289b59f303ab10c543a8416fddfb320ff27c1e4bfac3801f4eab",
+    "SuiteSHA256": "93a86e48df503011bd08786a9965da9238f01799eea66c2ad34aa536206d38ec",
+    "Started": "2026-10-06T05:46:15Z",
+    "Completed": "2026-10-06T05:48:44Z",
+    "Count": 750000,
+    "Unavailable": 6,
+    "TransportErrors": 0,
+    "FailedCases": [
+      {
+        "Name": "generated/324",
+        "Attack": false,
+        "Requests": 201,
+        "Errors": 0,
+        "Statuses": {
+          "200": 200,
+          "502": 1
+        },
+        "OriginReached": 200,
+        "Method": "POST",
+        "URI": "/api/session",
+        "WireURI": "/api/session",
+        "Description": "",
+        "Parent": "",
+        "Variation": "",
+        "RequestSHA256": "7538774e484aa5ecb24a60700542042ab63647d848b8500e9c6255793b7b2143"
+      },
+      {
+        "Name": "nosql/control-04",
+        "Attack": false,
+        "Requests": 201,
+        "Errors": 0,
+        "Statuses": {
+          "200": 200,
+          "502": 1
+        },
+        "OriginReached": 200,
+        "Method": "POST",
+        "URI": "/api/login",
+        "WireURI": "/api/login",
+        "Description": "benign scalar/object control without query operators",
+        "Parent": "",
+        "Variation": "",
+        "RequestSHA256": "54fcb7d19de0ac9797ce701eed068c733c6df91048d43813e794ed336990d4c0"
+      },
+      {
+        "Name": "forms/variant-00687",
+        "Attack": false,
+        "Requests": 201,
+        "Errors": 0,
+        "Statuses": {
+          "200": 200,
+          "502": 1
+        },
+        "OriginReached": 200,
+        "Method": "POST",
+        "URI": "/wp-comments-post.php",
+        "WireURI": "/wp-comments-post.php",
+        "Description": "",
+        "Parent": "forms/215",
+        "Variation": "form-lower-hex",
+        "RequestSHA256": "152350721c1da0094352c05200cc4ae48c2f929617537c99ca3dbbeb96fc3ff4"
+      },
+      {
+        "Name": "forms/variant-00714",
+        "Attack": false,
+        "Requests": 201,
+        "Errors": 0,
+        "Statuses": {
+          "200": 200,
+          "502": 1
+        },
+        "OriginReached": 200,
+        "Method": "POST",
+        "URI": "/login",
+        "WireURI": "/login",
+        "Description": "",
+        "Parent": "forms/221",
+        "Variation": "form-encoded-value",
+        "RequestSHA256": "148b62c48381a69d08e15afa41c0da31e395c9b42da61030df81d46ec068d89a"
+      },
+      {
+        "Name": "forms/variant-00725",
+        "Attack": false,
+        "Requests": 201,
+        "Errors": 0,
+        "Statuses": {
+          "200": 200,
+          "502": 1
+        },
+        "OriginReached": 200,
+        "Method": "POST",
+        "URI": "/wp-admin/admin-ajax.php",
+        "WireURI": "/wp-admin/admin-ajax.php",
+        "Description": "",
+        "Parent": "forms/223",
+        "Variation": "form-lower-hex",
+        "RequestSHA256": "5186b9febae4b1d98635e7c226c2a558cdc9760f6638fa925edd8fd7dbfce05d"
+      },
+      {
+        "Name": "xpath/variant-02276",
+        "Attack": false,
+        "Requests": 200,
+        "Errors": 0,
+        "Statuses": {
+          "200": 199,
+          "502": 1
+        },
+        "OriginReached": 199,
+        "Method": "POST",
+        "URI": "/api/xml-search",
+        "WireURI": "/api/xml-search",
+        "Description": "benign scalar control",
+        "Parent": "xpath/control-01",
+        "Variation": "json-unicode-strings",
+        "RequestSHA256": "aaae68942c4486650bfa53a7699467aeaf038d4aa14623cae5d448b2ba0dd34a"
+      }
+    ],
+    "SafeOperationalEvents": [
+      {
+        "time": "2026-10-06T16:47:03.1179208+11:00",
+        "level": "WARN",
+        "msg": "rule matched",
+        "rule": 5000050,
+        "severity": "ERROR",
+        "rule_msg": "upstream network failure (errno 10048)",
+        "tx": "",
+        "disruptive": true
+      },
+      {
+        "time": "2026-10-06T16:47:14.3838674+11:00",
+        "level": "WARN",
+        "msg": "rule matched",
+        "rule": 5000050,
+        "severity": "ERROR",
+        "rule_msg": "upstream network failure (errno 10048)",
+        "tx": "",
+        "disruptive": true
+      },
+      {
+        "time": "2026-10-06T16:47:21.738461+11:00",
+        "level": "WARN",
+        "msg": "rule matched",
+        "rule": 5000050,
+        "severity": "ERROR",
+        "rule_msg": "upstream network failure (errno 10048)",
+        "tx": "",
+        "disruptive": true
+      },
+      {
+        "time": "2026-10-06T16:47:41.2740668+11:00",
+        "level": "WARN",
+        "msg": "rule matched",
+        "rule": 5000050,
+        "severity": "ERROR",
+        "rule_msg": "upstream network failure (errno 10048)",
+        "tx": "",
+        "disruptive": true
+      },
+      {
+        "time": "2026-10-06T16:47:52.3756658+11:00",
+        "level": "WARN",
+        "msg": "rule matched",
+        "rule": 5000050,
+        "severity": "ERROR",
+        "rule_msg": "upstream network failure (errno 10048)",
+        "tx": "",
+        "disruptive": true
+      },
+      {
+        "time": "2026-10-06T16:48:16.5758943+11:00",
+        "level": "WARN",
+        "msg": "rule matched",
+        "rule": 5000050,
+        "severity": "ERROR",
+        "rule_msg": "upstream network failure (errno 10048)",
+        "tx": "",
+        "disruptive": true
+      }
+    ],
+    "FinalControlRetryEvents": 0,
+    "FinalHardenedRetryEvents": 4
+  }
+}
