@@ -1,5 +1,5 @@
 <h1>
-  <img src="https://coraza.io/images/logo_shield_only.png" align="left" height="46px" alt="Coraza foundation"/>&nbsp;
+  <img src="docs/assets/carnival-logo.jpg" align="left" height="46px" alt="Carnical logo"/>&nbsp;
   <span>Carnical - Web Application Firewall</span>
 </h1>
 

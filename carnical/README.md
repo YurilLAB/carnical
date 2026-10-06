@@ -1,3 +1,5 @@
+<img src="../docs/assets/carnival-logo.jpg" align="left" height="46px" alt="Carnical logo"/>
+
 # Carnical: a Web Application Firewall built on Coraza
 
 Carnical is our web application firewall for the 5weeks1K project, built on [OWASP Coraza](https://github.com/corazawaf/coraza)
