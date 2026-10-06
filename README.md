@@ -9,7 +9,7 @@
 [![Project Status: Active](https://www.repostatus.org/badges/latest/active.svg)](https://www.repostatus.org/#active)
 [![Coraza API Docs](https://godoc.org/github.com/corazawaf/coraza?status.svg)](https://godoc.org/github.com/corazawaf/coraza/v3)
 
-Carnical is the Go-based Web Application Firewall (WAF) for the 5weeks1K project, built on [OWASP Coraza](https://github.com/corazawaf/coraza) and the OWASP Core Rule Set v4. It keeps Coraza's engine and ModSecurity SecLang support, adding a hardened reverse proxy, API protections, layered request inspection and monitoring.
+Carnical is the Go-based Web Application Firewall (WAF)built on [OWASP Coraza](https://github.com/corazawaf/coraza) and the OWASP Core Rule Set v4. It keeps Coraza's engine and ModSecurity SecLang support, adding a hardened reverse proxy, API protections, layered request inspection and monitoring.
 
 See the [Carnical guide](carnical/README.md) for setup and configuration. The Coraza library examples and upstream resources below remain available for engine integrations.
 
