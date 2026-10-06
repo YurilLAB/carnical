@@ -57,7 +57,7 @@ func (in *Inspector) yamlTree(f *finder, src string, lim *YAMLLimits) (ok bool) 
 		f.hitLimit(rYAMLLimit, dTooManyValues, lim.MaxNodes, -1)
 		return false
 	}
-	anchors, aliases, flow, maxDepth := 0, 0, 0, 0
+	anchors, aliases, flow, maxDepth, mappings := 0, 0, 0, 0, 0
 	var cols []int
 	lastLine := -1
 	// documents counts the documents in the stream from the tokens, because the parser merges empty ones: an explicit start marker
@@ -98,6 +98,15 @@ func (in *Inspector) yamlTree(f *finder, src string, lim *YAMLLimits) (ok bool) 
 		case token.InvalidType:
 			f.hit(rYAMLSyntax, off, dNone)
 			return false
+		case token.MappingValueType:
+			// Each ':' needs at least a key and a value node, including implicit
+			// nulls. Reject this lower bound before the parser recursively builds
+			// and copies mappings; the tree walk still counts all remaining nodes.
+			mappings++
+			if mappings > lim.MaxNodes/2 {
+				f.hitLimit(rYAMLLimit, dTooManyValues, lim.MaxNodes, off)
+				return false
+			}
 		case token.TagType:
 			if f.hit(rYAMLTag, off, dNone) {
 				return false

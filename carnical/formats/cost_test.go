@@ -93,6 +93,11 @@ var yamlShapes = []shape{
 		return sb.String()
 	}},
 	{"yaml short keys", "application/yaml", "/x", func(n int) string { return repeatTo("a: 1\n", n) }},
+	// This body stays below both caps, so the new token bound must still allow
+	// the parser's most expensive mapping case to be measured.
+	{"yaml mapping below node cap", "application/yaml", "/x", func(n int) string {
+		return repeatTo("a: 1\n", min(n, 4999*5)) // one mapping + two nodes per pair: 9999
+	}},
 	{"yaml flow list", "application/yaml", "/x", func(n int) string { return "[" + repeatTo("1,", n) + "1]\n" }},
 	{"yaml flow maps", "application/yaml", "/x", func(n int) string { return "{" + repeatTo("a: [1, {b: c}],", n) + "z: 1}\n" }},
 	{"yaml sequence of maps", "application/yaml", "/x", func(n int) string { return repeatTo("- {a: 1, b: 2}\n", n) }},
@@ -129,9 +134,11 @@ func timeOf(in *Inspector, r row) time.Duration {
 func TestYAMLAtItsDefaultCapIsBounded(t *testing.T) {
 	for _, s := range yamlShapes {
 		t.Run(s.name, func(t *testing.T) {
-			r := row{ct: s.ct, body: s.make(32 << 10), tweak: allowYAML}
+			// Leave room for each shape's closing delimiters and final line.
+			// Every body must reach parsing rather than trip the byte cap first.
+			r := row{ct: s.ct, body: s.make((32 << 10) - 64), tweak: allowYAML}
 			in := New(r.policy(nil, true))
-			if len(r.body) > 33<<10 {
+			if len(r.body) > in.pol.YAML.MaxBytes {
 				t.Fatalf("the body is %d bytes", len(r.body))
 			}
 			d := timeOf(in, r)

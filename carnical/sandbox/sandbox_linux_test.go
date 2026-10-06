@@ -175,6 +175,7 @@ type probeResult struct {
 		Want   string `json:"want"`
 		Got    string `json:"got"`
 		OK     bool   `json:"ok"`
+		Detail string `json:"detail"`
 	} `json:"results"`
 	Failures int `json:"failures"`
 }
@@ -200,7 +201,7 @@ func TestConfinementHoldsOnThisKernel(t *testing.T) {
 	}
 	for _, r := range confined.Results {
 		if !r.OK {
-			t.Errorf("confined: %s: wanted %s, got %s", r.Action, r.Want, r.Got)
+			t.Errorf("confined: %s: wanted %s, got %s (%s)", r.Action, r.Want, r.Got, r.Detail)
 		}
 	}
 	killed := 0
@@ -242,6 +243,9 @@ func TestTheCheckNoticesAWeakenedConfinement(t *testing.T) {
 	for _, tt := range tests {
 		t.Run("without "+tt.weaken, func(t *testing.T) {
 			res := runProbe(t, bin, "-weaken", tt.weaken)
+			if tt.weaken == "landlock" && res.ABI >= 4 {
+				tt.failing = append(tt.failing, "connect to a port that is not allowed", "listen on a port that is not allowed")
+			}
 			if res.Failures == 0 {
 				t.Fatalf("a confinement without %s passed the check", tt.weaken)
 			}

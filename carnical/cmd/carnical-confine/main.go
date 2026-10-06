@@ -47,15 +47,15 @@ const (
 )
 
 type env struct {
-	ro, rw, other  string
-	allowedPort    int
-	forbiddenPort  int
-	bindOK, bindNo int
-	abstract       string
-	parentPID      int
-	landlockABI    int
-	confine        bool
-	reportPath     string
+	ro, rw, other            string
+	allowedPort              uint16
+	forbiddenPort            uint16
+	bindOK, bindNo, httpPort uint16
+	abstract                 string
+	parentPID                int
+	landlockABI              int
+	confine                  bool
+	reportPath               string
 }
 
 type action struct {
@@ -93,7 +93,7 @@ var actions = []action{
 		return dial(e.allowedPort)
 	}},
 	{"listen on an allowed port", always(allowed), allowed, func(e *env) error { return listen(e.bindOK) }},
-	{"look up a name and talk HTTP", always(allowed), allowed, func(e *env) error { return httpRoundTrip(e.bindOK + 1) }},
+	{"look up a name and talk HTTP", always(allowed), allowed, func(e *env) error { return httpRoundTrip(e.httpPort) }},
 	{"read the machine's own addresses (netlink)", always(allowed), allowed, func(e *env) error {
 		_, err := net.InterfaceAddrs()
 		return err
@@ -223,7 +223,7 @@ func sock(domain int) error {
 	return err
 }
 
-func dial(port int) error {
+func dial(port uint16) error {
 	c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 2*time.Second)
 	if err == nil {
 		c.Close()
@@ -231,7 +231,7 @@ func dial(port int) error {
 	return err
 }
 
-func listen(port int) error {
+func listen(port uint16) error {
 	l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err == nil {
 		l.Close()
@@ -240,7 +240,7 @@ func listen(port int) error {
 }
 
 // httpRoundTrip is what the proxy does all day: resolve a name, listen, accept, answer, connect, read.
-func httpRoundTrip(port int) error {
+func httpRoundTrip(port uint16) error {
 	if _, err := net.LookupHost("localhost"); err != nil {
 		return err
 	}
@@ -248,7 +248,13 @@ func httpRoundTrip(port int) error {
 	if err != nil {
 		return err
 	}
-	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "ok") })}
+	srv := &http.Server{
+		ReadHeaderTimeout: 2 * time.Second,
+		ReadTimeout:       2 * time.Second,
+		WriteTimeout:      2 * time.Second,
+		IdleTimeout:       2 * time.Second,
+		Handler:           http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, "ok") }),
+	}
 	go srv.Serve(l)
 	defer srv.Close()
 	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/", port))
@@ -261,6 +267,37 @@ func httpRoundTrip(port int) error {
 		return errors.New("unexpected body")
 	}
 	return nil
+}
+
+func listenerPort(l net.Listener) (uint16, error) {
+	p := l.Addr().(*net.TCPAddr).Port
+	if p < 1 || p > 65535 {
+		return 0, fmt.Errorf("invalid probe listener port %d", p)
+	}
+	return uint16(p), nil
+}
+
+// Reserve all three ports together so the kernel cannot return the same port
+// twice. Release them only after selection; the child must bind them itself.
+func bindPorts() (ports [3]uint16, err error) {
+	var listeners []net.Listener
+	defer func() {
+		for _, l := range listeners {
+			err = errors.Join(err, l.Close())
+		}
+	}()
+	for i := range ports {
+		l, listenErr := net.Listen("tcp", "127.0.0.1:0")
+		if listenErr != nil {
+			return ports, listenErr
+		}
+		listeners = append(listeners, l)
+		ports[i], err = listenerPort(l)
+		if err != nil {
+			return ports, err
+		}
+	}
+	return ports, nil
 }
 
 func main() {
@@ -301,7 +338,7 @@ func check(args []string) int {
 
 	// Things outside the confinement that the child tries to reach.
 	var keep []io.Closer
-	serve := func() (int, error) {
+	serve := func() (uint16, error) {
 		l, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			return 0, err
@@ -316,7 +353,7 @@ func check(args []string) int {
 				c.Close()
 			}
 		}()
-		return l.Addr().(*net.TCPAddr).Port, nil
+		return listenerPort(l)
 	}
 	if e.allowedPort, err = serve(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -326,13 +363,12 @@ func check(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
-	free := func() int { // a port nothing listens on, to be bound by the child
-		l, _ := net.Listen("tcp", "127.0.0.1:0")
-		p := l.Addr().(*net.TCPAddr).Port
-		l.Close()
-		return p
+	ports, err := bindPorts()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
 	}
-	e.bindOK, e.bindNo = free(), free()
+	e.bindOK, e.bindNo, e.httpPort = ports[0], ports[1], ports[2]
 	e.abstract = fmt.Sprintf("carnical-confine-%d", os.Getpid())
 	if l, err := net.Listen("unix", "@"+e.abstract); err == nil {
 		keep = append(keep, l)
@@ -365,8 +401,8 @@ func check(args []string) int {
 	bad := 0
 	for i, a := range actions {
 		cmd := exec.Command(self, "run", strconv.Itoa(i),
-			"-ro", e.ro, "-rw", e.rw, "-other", e.other, "-allowed-port", strconv.Itoa(e.allowedPort), "-forbidden-port", strconv.Itoa(e.forbiddenPort),
-			"-bind-ok", strconv.Itoa(e.bindOK), "-bind-no", strconv.Itoa(e.bindNo), "-abstract", e.abstract, "-parent", strconv.Itoa(e.parentPID),
+			"-ro", e.ro, "-rw", e.rw, "-other", e.other, "-allowed-port", strconv.Itoa(int(e.allowedPort)), "-forbidden-port", strconv.Itoa(int(e.forbiddenPort)),
+			"-bind-ok", strconv.Itoa(int(e.bindOK)), "-bind-no", strconv.Itoa(int(e.bindNo)), "-http-port", strconv.Itoa(int(e.httpPort)), "-abstract", e.abstract, "-parent", strconv.Itoa(e.parentPID),
 			"-confine="+strconv.FormatBool(e.confine), "-weaken", *weaken)
 		var out bytes.Buffer
 		cmd.Stdout, cmd.Stderr = &out, &out
@@ -446,15 +482,35 @@ func run(args []string) int {
 	fs.StringVar(&e.ro, "ro", "", "")
 	fs.StringVar(&e.rw, "rw", "", "")
 	fs.StringVar(&e.other, "other", "", "")
-	fs.IntVar(&e.allowedPort, "allowed-port", 0, "")
-	fs.IntVar(&e.forbiddenPort, "forbidden-port", 0, "")
-	fs.IntVar(&e.bindOK, "bind-ok", 0, "")
-	fs.IntVar(&e.bindNo, "bind-no", 0, "")
+	for _, port := range []struct {
+		name string
+		dst  *uint16
+	}{
+		{"allowed-port", &e.allowedPort}, {"forbidden-port", &e.forbiddenPort},
+		{"bind-ok", &e.bindOK}, {"bind-no", &e.bindNo}, {"http-port", &e.httpPort},
+	} {
+		fs.Func(port.name, "probe port (1..65535)", func(value string) error {
+			n, err := strconv.ParseUint(value, 10, 16)
+			if err != nil || n == 0 {
+				return fmt.Errorf("invalid probe port %q", value)
+			}
+			*port.dst = uint16(n)
+			return nil
+		})
+	}
 	fs.StringVar(&e.abstract, "abstract", "", "")
 	fs.IntVar(&e.parentPID, "parent", 0, "")
 	fs.BoolVar(&e.confine, "confine", true, "")
 	weaken := fs.String("weaken", "", "")
 	fs.Parse(args[1:])
+	seen := make(map[uint16]bool)
+	for _, port := range []uint16{e.allowedPort, e.forbiddenPort, e.bindOK, e.bindNo, e.httpPort} {
+		if port == 0 || seen[port] {
+			fmt.Fprintln(os.Stderr, "probe ports must be nonzero and distinct")
+			return 2
+		}
+		seen[port] = true
+	}
 
 	// Threads that exist before the confinement is applied: it must reach them too.
 	var ready, hold sync.WaitGroup
@@ -475,8 +531,8 @@ func run(args []string) int {
 		rep, err := sandbox.Apply(sandbox.Policy{
 			ReadOnly:   []string{e.ro},
 			ReadWrite:  []string{e.rw},
-			BindTCP:    []uint16{uint16(e.bindOK), uint16(e.bindOK + 1)},
-			ConnectTCP: []uint16{uint16(e.allowedPort), uint16(e.bindOK + 1)},
+			BindTCP:    []uint16{e.bindOK, e.httpPort},
+			ConnectTCP: []uint16{e.allowedPort, e.httpPort},
 			Require:    false,
 			Skip:       strings.FieldsFunc(*weaken, func(r rune) bool { return r == ',' }),
 		})

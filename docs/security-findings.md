@@ -16,6 +16,8 @@ continue to fail the security gate; there is no blanket baseline or rule exclusi
 | G104, signature converter output | A failed stdout write still returned success | Return a failing exit status; independently test delivered and broken output |
 | G104, temporary signature/sequence files | Failure cleanup hid additional close/removal failures | Preserve the original error and join cleanup errors |
 | G114, HTTP example | Default server had no header/body/write/idle timeouts | Configure explicit timeouts and report response write failures |
+| G115, confinement probe ports | Closed ephemeral listeners could return the same allowed and forbidden port; deriving a second port with `+1` also lacked range checks | Reserve three distinct listeners together, validate nonzero 16-bit port arguments, and use a separately allocated HTTP port |
+| G112, confinement probe HTTP server | The probe's server lacked a header timeout | Set explicit header, read, write and idle timeouts |
 
 ## Defensive correctness improvements
 
@@ -31,6 +33,9 @@ bounds and preserve intended behavior:
   removing two unsafe dereferences, and check the descriptor range.
 - Check seccomp program length before indexing and narrowing to the kernel ABI.
   Real Linux sandbox tests exercise kernel enforcement, not just compilation.
+- Enforce a conservative YAML mapping-node bound before the parser builds its
+  tree. Each mapping separator requires at least two nodes. The tree walk still
+  counts all nodes, and the existing byte, depth and node limits stay unchanged.
 
 ## Verified, narrowly scoped scanner exceptions
 
@@ -99,3 +104,57 @@ retain supplemental enforcement; the live CI run exercises both layers.
 The post-fix local scan reports 147 Linux and 112 Windows findings with no
 package-loading errors (Linux: root 20, Carnical 127; Windows: root 20,
 Carnical 92; HTTP example zero on both). Remaining findings are not waived.
+
+## CI follow-up — 7 October 2026
+
+The YAML cost test now keeps every adversarial body below the actual 32 KiB
+cap; previously several shapes were rejected for size before parsing. Its
+250 ms ceiling remains unchanged. The repeated short-key case dropped from
+86 ms to 3.9 ms locally with `GOMAXPROCS=2`. All nine cost shapes passed,
+including a 9,999-node mapping below the node cap (56 ms locally). A separate
+running CLI blocked 60 varied block, flow and quoted-key mapping payloads under
+rule 5002503, while forwarding 60 valid YAML controls unchanged. Duplicate-key
+detection and flood mitigation were disabled in this
+isolated check, proving the node limit holds independently. No attack reached
+the counted inert origin.
+Raising the node limit to 20,000 admitted all 60 identical mapping payloads
+unchanged, confirming valid YAML and preserving the administrator's configured
+limit rather than imposing an unconditional mapping ban.
+
+The confinement probe passed twice on a real Linux kernel, including its
+unconfined control and deliberately weakened Landlock and seccomp controls.
+The weakened Landlock check now verifies forbidden bind and connect behavior
+on supported kernels. An independent 50,000-pair socket experiment reproduced
+five allowed/forbidden collisions with the old close-before-selection pattern.
+
+All Carnical packages were checked on Linux. The configuration and control
+tests were repeated on an executable Linux tmpfs because the Windows-mounted
+temporary directory does not preserve their required Unix permissions.
+Windows CLI tests, format race tests, 70,792 YAML fuzz executions, vet,
+workflow validation and a fresh 10,000-request live mixed-traffic run also
+passed. The mixed run retains the
+previously documented context-dependent admissions and benign refusals; all
+supported injection categories passed their existing CI gate.
+
+The follow-up scan reports 140 Linux and 112 Windows findings, with no package
+loading errors: seven fewer Linux findings, no new exceptions. Remaining
+findings still fail the security gate. Runtime CI now preserves unit-test
+output even if a failure prevents the live WAF test from running.
+
+The fresh dependency audit also found two advisories affecting the standalone
+HTTP example's old Coraza v3.3.3 dependency:
+[GHSA-6r3q-mjv7-xr8m](https://github.com/advisories/GHSA-6r3q-mjv7-xr8m)
+(argument-limit bypass) and
+[GHSA-prpw-wwv7-xjjr](https://github.com/advisories/GHSA-prpw-wwv7-xjjr)
+(native audit-log injection). The example now selects v3.8.1, which includes
+both upstream fixes. With `GOWORK=off`, its tests and build passed. The running
+standalone example blocked 100 varied parameter floods, passed a valid request
+at the configured argument limit, and escaped forged audit boundaries in the
+native log. The log-forgery request was accepted; its attempted forged log
+records were neutralized. OSV re-scanned all five module manifests with no
+actionable findings. The existing scoped OpenPGP exception is unchanged.
+
+The workspace dependency versions require Go 1.26. Module manifests and sums
+now match that minimum and the versions selected by workspace synchronization.
+The full `go run mage.go check` passed, including lint, alternate evaluation
+modes, race-tested HTTP example and CRS integration tests.

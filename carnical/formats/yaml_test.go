@@ -85,6 +85,10 @@ var yamlRows = register("yaml", []row{
 		tweak: func(p *Policy) { allowYAML(p); p.YAML.MaxAnchors = 10 }},
 
 	// Limits.
+	{name: "mapping at the node limit", ct: yamlType, body: "a: 1\nb: 2\n",
+		tweak: func(p *Policy) { allowYAML(p); p.YAML.MaxNodes = 5 }},
+	{name: "mapping pairs exceed the node limit before parsing", ct: yamlType, body: "a: 1\nb: 2\nc: 3\nd: 4\ne: 5\nf: 6\n", want: idYAMLLimit,
+		tweak: func(p *Policy) { allowYAML(p); p.YAML.MaxNodes = 10 }},
 	{name: "depth in a block", ct: yamlType, body: deepBlock(40), want: idYAMLLimit, tweak: allowYAML},
 	{name: "depth in flow style", ct: yamlType, body: "a: " + strings.Repeat("[", 100) + strings.Repeat("]", 100) + "\n", want: idYAMLLimit, tweak: allowYAML},
 	{name: "a very deep flow document", ct: yamlType, body: strings.Repeat("[", 30000), want: idYAMLLimit, tweak: allowYAML},
