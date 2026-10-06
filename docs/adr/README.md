@@ -142,5 +142,6 @@ Superseding does not delete the old record. Set its status and let the history s
 | [0071](0071-carnical-flood-protection.md) | Owner-authorized development | 2026-10-06 | unreleased | F | Flood protection with distributed-attack detection |
 | [0072](0072-carnical-input-contracts-and-local-rules.md) | Owner-authorized development | 2026-10-06 | unreleased | F | Local injection rules, parameter interpretations and explicit API contracts |
 | [0073](0073-carnical-kernel-packet-guards.md) | Owner-authorized development | 2026-10-07 | unreleased | F | Bounded kernel SYN guards, echo limits and packet monitoring |
+| [0074](0074-carnical-crowdsec-ip-decisions.md) | Owner-authorized development | 2026-10-07 | unreleased | F | Bounded CrowdSec LAPI IP and range ban integration |
 
 Categories: **F**eature · **P**arity · **⚡** Perf · **R**efactor

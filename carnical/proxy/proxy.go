@@ -24,6 +24,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -32,6 +33,7 @@ import (
 	txhttp "github.com/corazawaf/coraza/v3/http"
 	"github.com/corazawaf/coraza/v3/types"
 
+	"github.com/YurilLAB/coraza/carnical/crowdsec"
 	"github.com/YurilLAB/coraza/carnical/crs"
 	"github.com/YurilLAB/coraza/carnical/inspect"
 	"github.com/YurilLAB/coraza/carnical/shield"
@@ -102,9 +104,12 @@ type Config struct {
 	ResponseHeaderTimeout time.Duration
 	// OnMatch is called for every rule that matches. It must not block.
 	OnMatch func(Match)
-	// Shield, if set, protects the site against floods (package shield): it judges every request first, before any other
-	// check reads it, and its listener and ConnState judge connections. Wrap the listening socket with Shield.Listener.
+	// Shield, if set, protects the site against floods (package shield), before body inspection and rule evaluation.
+	// Its listener and ConnState judge connections. Wrap the listening socket with Shield.Listener.
 	Shield *shield.Shield
+	// CrowdSec checks LAPI bans against the verified visitor before reading a body.
+	// Its owner must Sync before serving, run its refresh loop and close it on shutdown.
+	CrowdSec *crowdsec.Client
 	// LogDetails adds the client address, URI, matched data and expanded message to a Match. They hold what the visitor
 	// sent, which can include personal data and credentials, so they are left out unless asked for.
 	LogDetails bool
@@ -123,14 +128,15 @@ type Match struct {
 
 // Edge is the proxy. It is an http.Handler.
 type Edge struct {
-	cfg     Config
-	waf     coraza.WAF
-	handler http.Handler
-	slots   chan struct{}
-	hosts   map[string]bool
-	deny    map[string]bool
-	limiter rateLimiter
-	conns   *connLimiter
+	crowdSecLogSecond atomic.Int64
+	cfg               Config
+	waf               coraza.WAF
+	handler           http.Handler
+	slots             chan struct{}
+	hosts             map[string]bool
+	deny              map[string]bool
+	limiter           rateLimiter
+	conns             *connLimiter
 }
 
 type contextKey struct{}
@@ -292,8 +298,29 @@ func (e *Edge) guard(next http.Handler) http.Handler {
 		}
 		// Coraza splits RemoteAddr at its last colon, so an IPv6 address is given without brackets.
 		r.RemoteAddr = fmt.Sprintf("%s:%d", addr, port)
+		if cs := e.cfg.CrowdSec; cs != nil {
+			action := cs.Check(addr)
+			if action != crowdsec.Allow {
+				status, id, msg := http.StatusForbidden, idCrowdSecBan, "CrowdSec IP ban"
+				if action == crowdsec.Unavailable {
+					status, id, msg = http.StatusServiceUnavailable, idCrowdSecUnavailable, "CrowdSec decision cache unavailable"
+					w.Header().Set("Retry-After", "10")
+				}
+				w.Header().Set("Cache-Control", "no-store")
+				// Keep refusal logs bounded during a ban flood; every request is
+				// counted in CrowdSec.Stats, including those with no sampled log.
+				second := time.Now().Unix()
+				previous := e.crowdSecLogSecond.Load()
+				if second != previous && e.crowdSecLogSecond.CompareAndSwap(previous, second) {
+					e.refuse(w, r, status, id, msg)
+				} else {
+					http.Error(w, http.StatusText(status), status)
+				}
+				return
+			}
+		}
 		if sh := e.cfg.Shield; sh != nil {
-			// The flood check comes first and costs a few map lookups: a request it refuses is never read further.
+			// Flood admission costs a few map lookups: a request it refuses is never read further.
 			d := sh.Admit(r, addr)
 			if d.Action != shield.Allow {
 				sh.Write(w, r, d)

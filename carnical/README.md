@@ -13,6 +13,9 @@ The optional [Linux deployment policy](docs/network-protection.md) adds SYN budg
 filtering, bounded flood counters and echo limits that preserve IPv6 discovery. Small and large deployment profiles provide
 finite budgets for ordinary sources and configured high-volume proxy peers; connection caps also respect small hosts' file limits.
 
+Optional [CrowdSec integration](docs/crowdsec.md) applies live IPv4 and IPv6 IP/range bans from its Local API, with
+background updates, local expiry, outage controls and bounded monitoring.
+
 `carnical/` is its own Go module (`github.com/YurilLAB/coraza/carnical`), keeping the application additions separate
 from the Coraza engine. See the [repository overview](../README.md) and [current security findings](../docs/security-findings.md).
 
@@ -20,6 +23,7 @@ from the Coraza engine. See the [repository overview](../README.md) and [current
 |---|---|
 | `crs/` | The CRS embedded in the binary, with proof of where it came from, and typed settings (mode, paranoia level, thresholds, body limit, allowed methods, exclusions) turned into the directives that configure it. |
 | `proxy/` | A reverse proxy: every request goes through Coraza and the CRS, clean ones are forwarded to one upstream. |
+| `crowdsec/` | Optional CrowdSec LAPI ban cache, checked against verified visitor IPs before request inspection. |
 | `cmd/carnical/` | The program: `carnical -upstream http://127.0.0.1:8081 -mode block`. |
 | `tools/update-crs/` | Fetches a CRS release, checks its GPG signature against the CRS project's pinned key, and replaces the embedded copy. |
 | `audit/`, `cmd/carnical-audit/` | The segmentation checks: the walls between zones and between customers, run a few times a day. `carnical-audit -zones zones.json`. |

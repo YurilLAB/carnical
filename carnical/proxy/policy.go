@@ -19,23 +19,25 @@ import (
 // Identifiers for what the proxy itself refuses, in the range kept for it (the rule set uses 9xxxxx, local rules 1 to
 // 99999). They appear as Match.RuleID, so one log and one feed carry both.
 const (
-	idHostNotAllowed    = 5000001
-	idPathNotCanon      = 5000002
-	idInternalHeader    = 5000003
-	idRequestEncoding   = 5000004
-	idAmbiguousType     = 5000005
-	idUploadName        = 5000010
-	idUploadScript      = 5000011
-	idWordPressPHP      = 5000020
-	idXMLRPC            = 5000021
-	idRateLimited       = 5000022
-	idTooManyConns      = 5000030
-	idAPIRateLimited    = 5000042
-	idRateStateFull     = 5000041
-	idMethodNotCanon    = 5000043
-	idMethodOverride    = 5000044
-	idUpstreamFailed    = 5000050
-	idUpstreamBindRetry = 5000051
+	idHostNotAllowed      = 5000001
+	idPathNotCanon        = 5000002
+	idInternalHeader      = 5000003
+	idRequestEncoding     = 5000004
+	idAmbiguousType       = 5000005
+	idUploadName          = 5000010
+	idUploadScript        = 5000011
+	idWordPressPHP        = 5000020
+	idXMLRPC              = 5000021
+	idRateLimited         = 5000022
+	idTooManyConns        = 5000030
+	idAPIRateLimited      = 5000042
+	idRateStateFull       = 5000041
+	idMethodNotCanon      = 5000043
+	idMethodOverride      = 5000044
+	idUpstreamFailed      = 5000050
+	idUpstreamBindRetry   = 5000051
+	idCrowdSecBan         = 5000060
+	idCrowdSecUnavailable = 5000061
 )
 
 // PathPolicy says how plain the request path must be. The zero value is the strict default.

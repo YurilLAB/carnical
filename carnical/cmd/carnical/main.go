@@ -25,6 +25,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/YurilLAB/coraza/carnical/crowdsec"
 	"github.com/YurilLAB/coraza/carnical/crs"
 	"github.com/YurilLAB/coraza/carnical/inspect"
 	"github.com/YurilLAB/coraza/carnical/proxy"
@@ -79,6 +80,15 @@ func run() error {
 	ddosChallenge := flag.Bool("ddos-challenge", true, "during an attack, ask unknown browsers to pass a short JavaScript check instead of refusing them")
 	ddosBaseline := flag.Float64("ddos-baseline-rate", 0, "the site's usual requests a second, to start from instead of learning it (so a restart during an attack is not fooled)")
 	ddosRanges := flag.String("ddos-ranges", "", "address-range table (ip2asn TSV) naming the countries and networks an attack comes from, in the attack logs")
+	csAPI := flag.String("crowdsec-api", "", "CrowdSec LAPI HTTP(S) origin or absolute Unix socket path (empty = disabled; HTTP requires loopback)")
+	csKey := flag.String("crowdsec-key-file", "", "private file containing a dedicated CrowdSec bouncer key")
+	csCA := flag.String("crowdsec-ca-file", "", "PEM CA bundle for CrowdSec HTTPS (default: system roots; verification always enabled)")
+	csInterval := flag.Duration("crowdsec-poll", 10*time.Second, "CrowdSec update interval, 1s to 1h")
+	csTimeout := flag.Duration("crowdsec-timeout", 5*time.Second, "CrowdSec API timeout, 100ms to 30s")
+	csStale := flag.Duration("crowdsec-max-stale", 2*time.Minute, "CrowdSec cache freshness limit; at least poll + timeout, at most 24h")
+	csFailOpen := flag.Bool("crowdsec-fail-open", false, "allow unlisted visitors when CrowdSec cache is stale; unexpired bans still block")
+	csLimit := flag.Int("crowdsec-max-decisions", 200000, "maximum stored CrowdSec bans and decisions in a response, 1 to 1000000")
+	csOrigins := flag.String("crowdsec-origins", "", "optional comma-separated CrowdSec decision origins (empty = all)")
 	maxConns := flag.Int("max-conns-per-ip", 128, "connections one address may hold open (negative = no limit)")
 	uploadDir := flag.String("upload-dir", "", "directory for the file parts of uploads while a request runs (default: the system temporary directory; give it a private one)")
 	fromSystemd := flag.Bool("systemd-socket", false, "use the listening socket systemd passes in (socket activation), so the proxy needs no privilege to use port 443")
@@ -156,6 +166,18 @@ func run() error {
 	}
 
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	cs, err := configureCrowdSec(crowdSecFlags{api: *csAPI, keyFile: *csKey, caFile: *csCA, origins: *csOrigins,
+		interval: *csInterval, timeout: *csTimeout, maxStale: *csStale, failOpen: *csFailOpen, maxDecisions: *csLimit})
+	if err != nil {
+		return err
+	}
+	if cs != nil {
+		defer cs.Close()
+		if err := cs.Sync(context.Background()); err != nil {
+			return err
+		} // authentication and complete snapshot required at startup
+		log.Info("CrowdSec connected", "entries", cs.Stats().Entries, "skipped", cs.Stats().Skipped, "fail_open", *csFailOpen)
+	}
 	if apiInspector != nil {
 		log.Info("API contract loaded", "mode", *apiSpecMode, "sha256", apiReport.Hash, "routes", apiReport.Routes,
 			"warnings", apiReport.Warnings, "warnings_dropped", apiReport.WarningsDropped)
@@ -176,7 +198,7 @@ func run() error {
 		APIRate:   proxy.APIRatePolicy{PerMinute: *apiRate, Paths: splitList(*apiPaths)},
 		Uploads:   proxy.UploadPolicy{AllowExecutableNames: *scriptNames, AllowScriptContent: *scriptContent},
 		Responses: proxy.ResponsePolicy{KeepBanners: *keepBanners, KeepCaching: *keepCaching}, MaxConnsPerIP: *maxConns,
-		Inspectors: inspectors, AllowRequestEncoding: *requestEncoding, Shield: guard,
+		Inspectors: inspectors, AllowRequestEncoding: *requestEncoding, Shield: guard, CrowdSec: cs,
 		OnMatch: func(m proxy.Match) {
 			attrs := []any{"rule", m.RuleID, "severity", m.Severity, "rule_msg", m.Message, "tx", m.TransactionID, "disruptive", m.Disruptive}
 			if *details {
@@ -217,6 +239,17 @@ func run() error {
 		if err != nil {
 			return fmt.Errorf("-confine-connect: %w", err)
 		}
+		if cs != nil && cs.ConnectPort() != 0 {
+			allowed := false
+			for _, p := range ports {
+				if p == cs.ConnectPort() {
+					allowed = true
+				}
+			}
+			if !allowed {
+				return errors.New("CrowdSec API TCP port must be listed in -confine-connect")
+			}
+		}
 		policy := sandbox.Policy{ReadOnly: splitList(*confineRead), ConnectTCP: ports, BindTCP: []uint16{}, Require: !*confineBestEffort}
 		if *uploadDir != "" {
 			policy.ReadWrite = []string{*uploadDir}
@@ -230,6 +263,24 @@ func run() error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if cs != nil {
+		pollCtx, cancelPoll := context.WithCancel(ctx)
+		pollDone := make(chan struct{})
+		go func() {
+			defer close(pollDone)
+			cs.Run(pollCtx, func(s crowdsec.Stats, err error) {
+				attrs := []any{"entries", s.Entries, "skipped", s.Skipped, "stale", s.Stale, "syncs", s.Syncs,
+					"failures", s.Failures, "blocked", s.Blocked, "unavailable", s.Unavailable}
+				if err != nil {
+					attrs = append(attrs, "error", err.Error())
+					log.Warn("CrowdSec refresh failed", attrs...)
+				} else {
+					log.Info("CrowdSec decisions", attrs...)
+				}
+			})
+		}()
+		defer func() { cancelPoll(); <-pollDone }()
+	}
 	stopStats := startFormatStats(log, formatInspector, *formatsStats)
 	defer stopStats()
 	done := make(chan error, 1)

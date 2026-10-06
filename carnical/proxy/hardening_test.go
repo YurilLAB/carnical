@@ -4,6 +4,7 @@ package proxy
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
@@ -21,6 +22,7 @@ import (
 
 	"golang.org/x/net/http2"
 
+	"github.com/YurilLAB/coraza/carnical/crowdsec"
 	"github.com/YurilLAB/coraza/carnical/crs"
 )
 
@@ -139,6 +141,61 @@ func TestRefusalsHoldWithTheRuleSetOffAndAreRecorded(t *testing.T) {
 			}
 		})
 	}
+	// The existing refusal table owns policy wiring. CrowdSec requires an
+	// external decision stream and verified client identity, not a SecLang profile.
+	t.Run("CrowdSec verified visitors", func(t *testing.T) {
+		cases := []struct {
+			name, scope, value, forwarded string
+			trusted, sync                 bool
+			status, id                    int
+		}{
+			{"direct ban", "Range", "127.0.0.0/8", "", false, true, 403, idCrowdSecBan},
+			{"clean direct visitor", "Ip", "192.0.2.9", "", false, true, 200, 0},
+			{"untrusted claimed banned address", "Ip", "192.0.2.9", "192.0.2.9", false, true, 200, 0},
+			{"untrusted claimed clean address", "Range", "127.0.0.0/8", "198.51.100.9", false, true, 403, idCrowdSecBan},
+			{"trusted IPv4 visitor", "Ip", "192.0.2.9", "192.0.2.9", true, true, 403, idCrowdSecBan},
+			{"trusted IPv6 visitor", "Range", "2001:db8::/64", "2001:db8::9", true, true, 403, idCrowdSecBan},
+			{"trusted clean visitor", "Ip", "192.0.2.9", "198.51.100.9", true, true, 200, 0},
+			{"ban covers peer but not visitor", "Range", "127.0.0.0/8", "198.51.100.9", true, true, 200, 0},
+			{"spoofed left entry", "Ip", "192.0.2.9", "198.51.100.9, 192.0.2.9", true, true, 403, idCrowdSecBan},
+			{"missing snapshot", "Ip", "192.0.2.9", "", false, false, 503, idCrowdSecUnavailable},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					fmt.Fprintf(w, `{"new":[{"id":1,"scope":%q,"value":%q,"type":"ban","duration":"1h"}],"deleted":[]}`, tc.scope, tc.value)
+				}))
+				defer api.Close()
+				cs, err := crowdsec.New(crowdsec.Config{URL: api.URL, APIKey: "proxy-test-bouncer-key"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer cs.Close()
+				if tc.sync {
+					if err := cs.Sync(context.Background()); err != nil {
+						t.Fatal(err)
+					}
+				}
+				var seen refusals
+				s := start(t, func(c *Config) {
+					ruleSetOff(c)
+					c.CrowdSec = cs
+					c.OnMatch = seen.record
+					if tc.trusted {
+						c.TrustedProxies = loopback.Allow
+					}
+				})
+				headers := []string{}
+				if tc.forwarded != "" {
+					headers = append(headers, "X-Forwarded-For: "+tc.forwarded+"\r\n")
+				}
+				status, _ := s.raw(t, get("/page", headers...))
+				if status != tc.status || seen.last() != tc.id || (len(s.up.requests()) > 0) != (tc.status == 200) {
+					t.Fatalf("status %d id %d reached origin %v", status, seen.last(), len(s.up.requests()) > 0)
+				}
+			})
+		}
+	})
 }
 
 func TestFrameworkControlHeadersNeverReachTheApplication(t *testing.T) {

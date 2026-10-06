@@ -11,7 +11,7 @@
 
 Carnical is an independent Go-based Web Application Firewall (WAF), built on [OWASP Coraza](https://github.com/corazawaf/coraza) and the OWASP Core Rule Set v4. It runs as a reverse proxy between clients and protected applications, combining Coraza's ModSecurity SecLang rules with API and body validation, flood mitigation, configurable policies and monitoring.
 
-See the [Carnical guide](carnical/README.md) for setup and configuration. The Coraza library examples and upstream resources below remain available for engine integrations.
+See the [Carnical guide](carnical/README.md) for setup and configuration, including optional [CrowdSec IP bans](carnical/docs/crowdsec.md). The Coraza library examples and upstream resources below remain available for engine integrations.
 
 * Upstream Coraza website: <https://coraza.io>
 * Carnical source and issues: [YurilLAB/coraza](https://github.com/YurilLAB/coraza)
