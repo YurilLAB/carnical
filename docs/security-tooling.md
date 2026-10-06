@@ -30,6 +30,7 @@ subject to the account's GitHub limits.
 Monday at 06:15 UTC, and manual dispatch. There are no path filters. Each category
 has a time limit, read-only repository permissions, and checkout credential
 persistence disabled. Actions are pinned to commit SHAs.
+The runner is pinned to Ubuntu 24.04 to avoid an unreviewed distribution upgrade.
 
 **Security review required** fails if any category fails, is cancelled, or is
 skipped. Findings are not suppressed with `-no-fail`, a vulnerability ignore
@@ -140,3 +141,13 @@ The test-module pin is `v0.55.0`. An upgrade requires checking its Go minimum
 and test-harness compatibility. The OpenPGP advisory has no fixed version and
 needs a package-level usage review. This tooling change does not hide findings
 or alter runtime/dependency versions.
+
+The first [hosted validation run](https://github.com/YurilLAB/coraza/actions/runs/37423931304)
+at commit `806f67f9` reproduced the local results: 183 Linux and 145 Windows gosec
+findings, and the same three dependency advisories. All eight gosec SARIF reports
+and the OSV inventory were downloaded and inspected. Secret detection, workflow
+validation including shellcheck, and installer regression tests passed. Findings
+failed the source/dependency jobs and the aggregate check; artifact uploads
+succeeded. The subsequent workflow maintenance change pins `upload-artifact`
+v7.0.1 to remove the deprecated Node 20 action warning. These results validate
+the tooling and its failure behavior, not a clean security audit of the code.
