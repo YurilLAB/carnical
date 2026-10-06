@@ -88,6 +88,14 @@ Existing repository-wide security findings remain tracked in [the findings repor
 The new ADR passes the repository's validator in isolation; the whole ADR collection still fails on 60 older records
 missing the required technical-discussion section.
 
+The hosted Ubuntu 24.04 [L3/L4 job](https://github.com/YurilLAB/coraza/actions/runs/37479256414/job/112322767126) passed its
+full race suite, live flood and packet checks. Its mitigated flood served 180/180 regular visitor requests and admitted
+19/22,571 flood requests after detection; the monitor control admitted 20,495/20,495. The broader runtime job also exposed
+a test timing issue where a correct reset arrived during `Dial`, before the test could check refusal. The test now accepts
+that explicit reset only for intentionally refused connections, and passed ten consecutive race-enabled runs locally.
+The overall security workflow remains failing on the existing sandbox forbidden-bind probe and unchanged Linux gosec
+results (147 findings). No blanket waiver or reduced security gate was added.
+
 ## References
 
 - [Netfilter hook ordering](https://wiki.nftables.org/wiki-nftables/index.php/Netfilter_hooks): raw priority -300 follows
