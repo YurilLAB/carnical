@@ -7,6 +7,7 @@ package shield
 import (
 	"errors"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/netip"
@@ -28,7 +29,7 @@ func listen(t *testing.T, s *Shield) (net.Listener, chan net.Conn) {
 		ln = s.Listener(raw)
 	}
 	t.Cleanup(func() { ln.Close() })
-	accepted := make(chan net.Conn, 64)
+	accepted := make(chan net.Conn, 4096)
 	go func() {
 		for {
 			c, err := ln.Accept()
@@ -155,25 +156,35 @@ func TestConnectionLimitsPerNetworkAndForBannedAddresses(t *testing.T) {
 	}
 
 	// Real simultaneous accepts on separate listeners exercise the shared capacity reservation, with and without trust.
-	for _, trusted := range []bool{false, true} {
-		name := "concurrent listeners"
-		if trusted {
-			name = "trusted peers share global cap"
-		}
-		t.Run(name, func(t *testing.T) {
+	for _, tc := range []struct {
+		name                       string
+		trusted                    bool
+		capacity, attempts         int
+		fdLimit, average, admitted int64
+	}{
+		{"small direct", false, 16, 128, 0, 0, 13},
+		{"small trusted", true, 16, 128, 0, 0, 16},
+		{"low file limit at startup", false, 20000, 128, 64, 0, 41},
+		{"low file limit after growth", true, 20000, 128, 64, 20000, 51},
+		{"large direct", false, 2048, 4096, 0, 0, 1639},
+		{"large trusted", true, 2048, 4096, 0, 0, 2048},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			fixed := time.Now()
 			sh := newTestShield(t, &fixed, func(c *Config) {
-				c.MaxConns, c.SubnetConns, c.ConnBurst, c.DeferAccept = 16, 1000, 1000, -1
-				if trusted {
+				c.MaxConns, c.SubnetConns, c.ConnBurst, c.DeferAccept = tc.capacity, tc.attempts, float64(tc.attempts), -1
+				if tc.trusted {
 					c.Trusted = []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")}
 				}
 			})
+			sh.fdLimit = tc.fdLimit // exercise a low server limit without exhausting the test client's own descriptors
+			sh.connAvg.Store(math.Float64bits(float64(tc.average)))
 			listeners := make([]net.Listener, 8)
 			channels := make([]chan net.Conn, len(listeners))
 			for i := range listeners {
 				listeners[i], channels[i] = listen(t, sh)
 			}
-			const attempts = 128
+			attempts := tc.attempts
 			start := make(chan struct{})
 			clients := make(chan net.Conn, attempts)
 			dialErrors := make(chan error, attempts)
@@ -181,7 +192,7 @@ func TestConnectionLimitsPerNetworkAndForBannedAddresses(t *testing.T) {
 			for i := 0; i < attempts; i++ {
 				wg.Go(func() {
 					<-start
-					c, err := net.DialTimeout("tcp", listeners[i%len(listeners)].Addr().String(), 2*time.Second)
+					c, err := net.DialTimeout("tcp", listeners[i%len(listeners)].Addr().String(), 10*time.Second)
 					if err != nil {
 						dialErrors <- err
 					} else {
@@ -202,24 +213,30 @@ func TestConnectionLimitsPerNetworkAndForBannedAddresses(t *testing.T) {
 					t.Errorf("dial: %v", err)
 				}
 			}
-			deadline := time.Now().Add(2 * time.Second)
-			for sh.conns.Load()+int64(sh.counters.connsRefused.Load()) < attempts && time.Now().Before(deadline) {
+			deadline := time.Now().Add(10 * time.Second)
+			for sh.conns.Load()+int64(sh.counters.connsRefused.Load()) < int64(attempts) && time.Now().Before(deadline) {
 				time.Sleep(time.Millisecond)
 			}
-			want := int64(13) // 16 minus the three slots reserved for known clients
-			if trusted {
-				want = 16
-			}
+			want := tc.admitted
 			snap := sh.Snapshot()
-			if snap.Connections != want || snap.ConnsRefused != uint64(attempts-want) {
-				t.Fatalf("admitted %d, refused %d; want %d, %d", snap.Connections, snap.ConnsRefused, want, attempts-want)
+			if snap.Connections != want || snap.ConnsRefused != uint64(int64(attempts)-want) {
+				t.Fatalf("admitted %d, refused %d; want %d, %d", snap.Connections, snap.ConnsRefused, want, int64(attempts)-want)
 			}
-			for _, ch := range channels {
-				for len(ch) > 0 {
-					if err := (<-ch).Close(); err != nil {
-						t.Fatal(err)
+			// Capacity is counted just before Accept returns. Wait for those sockets to reach their channels too.
+			closed := int64(0)
+			deadline = time.Now().Add(10 * time.Second)
+			for closed < want && time.Now().Before(deadline) {
+				for _, ch := range channels {
+					select {
+					case c := <-ch:
+						if err := c.Close(); err != nil {
+							t.Fatal(err)
+						}
+						closed++
+					default:
 					}
 				}
+				time.Sleep(time.Millisecond)
 			}
 			if sh.conns.Load() != 0 || len(sh.connNets) != 0 {
 				t.Fatal("closing all sockets left capacity occupied")

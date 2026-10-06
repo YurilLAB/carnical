@@ -7,6 +7,7 @@ when flood protection is enabled (the CLI default); the kernel layer requires in
 |---|---|---|
 | Before connection tracking | SYN packets to the local public TCP endpoint, after IP reassembly | 10,000/s across IPv4 and IPv6, burst 20,000; `edge_syn_global_drop` |
 | Before connection tracking | Per-source SYN budget, including IPv6 address rotation within a /64 | 100/s per IPv4 address or IPv6 /64, burst 200; `edge_syn_source_drop` |
+| Before connection tracking | Configured high-volume CDN/load-balancer peers | 5,000/s per IPv4 address or IPv6 /64, burst 10,000; separate bounded meters, `edge_syn_peer_admitted` and `edge_syn_peer_drop`. No aggregate exemption or fallback to an ordinary bucket. |
 | Before connection tracking | Bounded SYN meter storage | 65,536 keys per family; idle keys expire after 60 seconds. A full set refuses new keys until capacity is reclaimed; existing keys retain their own budget. |
 | Before connection tracking | Invalid SYN+FIN/SYN+RST, null/FIN-only/Xmas flags, impossible TCP sources and UDP to port 443 | `edge_bad_tcp`, `edge_bad_source`, `edge_udp_drop`; ECN SYN flags and valid data-in-SYN are preserved. |
 | Host input | Echo-request floods, including repeated established ICMP identifiers | 20/s combined IPv4/IPv6, burst 40; `edge_echo_admitted`, `edge_echo_drop`. Path-MTU/error messages and valid IPv6 discovery use separate rules. |
@@ -31,7 +32,8 @@ sudo nft list set inet carnical syn6
 ```
 
 Kernel limits do not learn traffic levels. Tune for shared NAT, CDN and load-balancer peers: a trusted application peer
-still consumes the kernel's source and aggregate budgets. Ensure the configured public port matches the listener.
+still consumes the kernel's source and aggregate budgets unless assigned a separate finite peer budget below.
+Ensure the configured public port matches the listener.
 Keep management access available while installing the existing default-drop host policy. Loading this file affects
 the host's networking; running the test below affects only disposable namespaces.
 
@@ -40,7 +42,56 @@ Early refusals increment counters without a log message per packet. General inpu
 10/minute, burst-10 budget per refusal chain. Every refusal chain drops unconditionally after its conditional log rule,
 so exhausting logging capacity cannot admit traffic. `egress_private_drop`, `egress_imds_drop`, `egress_edge_drop` and
 `egress_internal_drop` count those refusals. Export these counter deltas into the deployment's monitoring.
-Normal policy reloads retain named counters/meters; removing the table resets their state.
+Loading the base file directly retains named counters/meters. Use rendered profiles when changing sizes, timeouts, peer ranges
+or meter rates: they replace this table atomically so old state cannot keep obsolete budgets or revoked peers alive. Capture
+counter deltas before a replacement; counters and meters reset. Other nftables tables are unaffected.
+
+## Choosing a budget
+
+The renderer prints a complete policy for review. It never invokes nftables or loads rules. Profiles are starting budgets
+per edge, not measured server capacities. Tune from peak **new TCP connections/SYN packets**, including retries, rather than
+HTTP request counts: keep-alive and HTTP/2 carry many requests over one connection.
+
+| Budget | Small | Standard (base file) | Large |
+|---|---:|---:|---:|
+| Aggregate SYN/s / burst | 1,000 / 2,000 | 10,000 / 20,000 | 100,000 / 200,000 |
+| Ordinary address or IPv6 /64 SYN/s / burst | 50 / 100 | 100 / 200 | 1,000 / 2,000 |
+| Configured peer address or IPv6 /64 SYN/s / burst | 500 / 1,000 | 5,000 / 10,000 | 20,000 / 40,000 |
+| Ordinary meter keys per family | 8,192 | 65,536 | 262,144 |
+| Peer meter keys per family | 1,024 | 4,096 | 4,096 |
+| Meter idle timeout (seconds) | 30 | 60 | 60 |
+| Echo/s / burst (IPv4+IPv6 together) | 20 / 40 | 20 / 40 | 100 / 200 |
+
+Edit the management addresses and resolver in the source policy first. Then render a root-owned deployment file, replacing
+the example peer addresses with verified network peers; leave `--peer` out for a direct edge:
+
+```sh
+python3 carnical/deploy/nftables/render_policy.py --profile small > network.nft
+python3 carnical/deploy/nftables/render_policy.py --profile large \
+  --peer 192.0.2.20 --peer 2001:db8:20::/64 --port 443 > network.nft
+sudo nft -c -f network.nft
+sudo nft -f network.nft
+```
+
+The renderer requires nftables 1.0.9 or later and kernel support for `destroy`; the check command verifies support before
+installation. Load the whole file in one `nft -f` transaction. A large-to-small reload removes old peer entries and old meter
+budgets; splitting replacement into separate delete/add shell commands would lose that atomicity.
+
+`--set NAME=INTEGER` overrides a budget in the table: `syn_global_rate`, `syn_global_burst`, `syn_source_rate`,
+`syn_source_burst`, `syn_peer_rate`, `syn_peer_burst`, `syn_meter_size`, `syn_peer_meter_size`, `syn_meter_ttl` (seconds),
+`echo_rate` and `echo_burst`. Each must be in 1..1,048,576. Invalid ports, noncanonical/scoped CIDRs, all-address peer ranges
+and unknown/duplicate budget names are rejected before any policy is emitted. For example, a measured shared NAT may need
+`--set syn_source_rate=500 --set syn_source_burst=1000` without being designated a proxy peer.
+
+Peer ranges change only the packet budget. They do not trust forwarded HTTP headers or bypass request inspection; configure
+`-trusted-proxies` separately for actual forwarding proxies. Source addresses alone do not authenticate packets. Keep peer
+ranges narrow and administrator-owned, and retain upstream anti-spoofing measures. Malformed packets from a peer still drop.
+
+The Go shield caps both initial and learned connections at 80% of the process's soft descriptor limit. Tune
+`-ddos-max-conns`, request floors, upstream concurrency and evaluation concurrency to memory, CPU and TLS capacity.
+The supplied systemd edge unit also has `MemoryMax=2G` and `LimitNOFILE=65536`; review these for the host. Measure SYN backlog,
+accept queue and connection-tracking pressure. SYN cookies are a fallback against attacks, not a substitute for adequate
+legitimate capacity. Scale multiple edges when one server's measured capacity is insufficient; budgets are local to each node.
 
 ## Validation
 
@@ -96,6 +147,53 @@ that explicit reset only for intentionally refused connections, and passed ten c
 The overall security workflow remains failing on the existing sandbox forbidden-bind probe and unchanged Linux gosec
 results (147 findings). No blanket waiver or reduced security gate was added.
 
+### Small and large deployment tests (2026-10-07)
+
+The expanded existing namespace test uses the renderer's production small/large profiles, the running Carnical binary,
+the kernel policy and the Go connection shield. Request floors and upstream/evaluation concurrency are explicitly sized for
+the test's shared client addresses. It tests keep-alive and new TLS connections; it does not establish that default request
+floors will serve an arbitrary busy NAT without tuning. Packets vary source addresses, IPv6 addresses within a /64, source
+ports, TCP sequences and flags. All traffic stays inside the two disposable namespaces.
+
+| Live workload | Ordinary requests served | Hostile HTTP blocked | Observation |
+|---|---:|---:|---|
+| Small profile, IPv4/IPv6, four workers per family in ordinary traffic, eight during flood | 960/960 | 50/50 SQL injection probes | 6,000 varied packets over three seconds; no ordinary HTTP failures |
+| Large profile, IPv4/IPv6, 32 workers per family in ordinary traffic, 64 during flood | 20,000/20,000 | 50/50 SQL injection probes | 100,000 varied packets over eight seconds; no ordinary HTTP failures |
+| Verified HTTPS with kernel policy, shield and CRS enabled, 16 workers | 1,000/1,000 | 50/50 SQL injection probes | Certificate chain and IP SAN verified; both address families |
+
+In the recorded plain-HTTP run, the small profile dropped 2,000 malformed SYN+FIN packets, 2,000 UDP/443 packets and
+1,751 excess SYNs; 249 syntactically valid SYNs remained within its budget. The large profile dropped 33,334 malformed
+packets, 33,333 UDP/443 packets and 23,396 excess SYNs; 9,937 valid SYNs remained within its budget. All generated flood
+packets were accounted for by the admission/drop counters. A SYN within budget is allowed to attempt a connection; it is
+not evidence that an HTTP attack reached the application. No SQL injection probe reached the origin.
+
+The large profile's ordinary batches completed in about 3.6 seconds each (roughly 1,400 requests/s locally), and the mixed
+flood batch in about seven seconds. Its p99 request latency rose from 10–14 ms in that recorded ordinary run to about
+1,027 ms during the flood. Other repeated runs also showed a tail-latency penalty; these results establish service continuity
+in this workload, not a latency guarantee. Kernel backlog pressure, TLS capacity, connection tracking, origin performance
+and upstream bandwidth still need measurement on the intended server. A 100,000/s configured SYN budget is not a claim of
+100,000/s tested server capacity. This lab does not emulate a multi-node massive website or realistic internet latency.
+
+Additional checks passed:
+
+- 128 concurrent attempts at small limits and 4,096 at large limits across eight listeners, with direct and trusted peers.
+  Large direct traffic admitted exactly 1,639 sockets (the unreserved share of 2,048); trusted peers admitted 2,048. Closing
+  every admitted socket reclaimed capacity. Three consecutive race-enabled runs passed.
+- A simulated soft descriptor limit of 64 kept startup connections to 41 ordinary or 51 trusted/grown connections, rather
+  than admitting all 128. The same regression failed with the previous production code, proving the low-resource fix.
+- Ordinary source bursts and larger configured-peer bursts had no packet-budget refusals in both profiles. Peer rate
+  exhaustion, full peer meters and aggregate exhaustion refused excess traffic without granting an ordinary fallback bucket.
+  Exhaustion fixtures reduce thresholds/size to verify behaviour cheaply; production-profile burst tests retain their budgets.
+- Large-to-small replacement immediately revoked the peer's larger budget. Changing the public port to 9443 preserved the
+  IPv4/IPv6 guards and closed the old port. An unrelated table and counter survived profile replacements.
+- The full Linux shield suite passed with race detection (153.7 seconds), and Windows shield/CLI tests and Go vet passed.
+  The busy-site simulation served 99.91% of returning requests at a learned baseline of 1,184 requests/s, with 11.3x address
+  and 3.8x network scaling, and did not label a tripling of ordinary traffic an attack. The live distributed-flood rerun served
+  180/180 visitors and admitted 19/22,155 flood requests after detection; the monitor control admitted 21,548/21,548.
+
+GitHub's existing required L3/L4 job runs these profile, TLS, reload and malformed-packet checks on every relevant push and
+keeps the detailed logs. Repository-wide findings and the sandbox/YAML timing failures remain separate unresolved checks.
+
 ## References
 
 - [Netfilter hook ordering](https://wiki.nftables.org/wiki-nftables/index.php/Netfilter_hooks): raw priority -300 follows
@@ -103,5 +201,9 @@ results (147 findings). No blanket waiver or reduced security gate was added.
 - [nftables dynamic-set documentation](https://netfilter.org/projects/nftables/manpage.html#_set_statement) and
   [meters](https://wiki.nftables.org/wiki-nftables/index.php/Meters): bounded, expiring keys and per-key rate limits.
 - [RFC 4890](https://www.rfc-editor.org/rfc/rfc4890): IPv6 error and discovery traffic must be treated deliberately when filtering.
+- [nftables scripting](https://wiki.nftables.org/wiki-nftables/index.php/Scripting): load a generated policy in one atomic transaction.
+- [nftables 1.0.9 changes](https://www.netfilter.org/projects/nftables/files/changes-nftables-1.0.9.txt): destroy command support and kernel feature checks.
+- [Linux TCP capacity settings](https://kernel.org/doc/html/latest/networking/ip-sysctl.html): SYN backlog limits and the purpose of SYN-cookie fallback.
+- [Process descriptor limits](https://man7.org/linux/man-pages/man2/getrlimit.2.html): the soft limit constrains descriptors a process can open.
 - [Linux IPv6 input implementation](https://github.com/torvalds/linux/blob/v6.18/net/ipv6/ip6_input.c): early rejection of
   multicast sources and loopback addresses on non-loopback interfaces.

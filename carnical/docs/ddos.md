@@ -72,6 +72,12 @@ new visitors were served. A sudden tripling of real traffic was not flagged.
 The adjustment is bounded, so it cannot be turned into an opening: one address that sends a lot for a long time raises its own
 limit by at most 20x, a rise is learnt at most twice per step, and nothing is learnt during an attack.
 
+The 80% file-descriptor ceiling applies to the initial connection floor as well as later growth. A small process with a soft
+limit of 1,024 therefore admits at most 819 shield connections before the reserved share, even with the default 20,000 floor.
+This ceiling leaves some descriptor headroom; it is not a memory or CPU budget. Set `-ddos-max-conns` lower when necessary,
+and measure origin sockets, TLS handshakes, rule evaluation and memory use before raising it on a large edge. Kernel packet
+budgets are configured separately; see [deployment profiles and live scaling tests](network-protection.md#choosing-a-budget).
+
 ## Who still gets through during an attack
 
 - **Known clients:** 5 successful requests spread over at least a minute, while traffic was ordinary. A standing earned in the

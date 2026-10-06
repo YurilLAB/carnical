@@ -37,7 +37,7 @@ Key Features (Coraza engine):
 Carnical adds:
 
 * **API and body protections** - [OpenAPI contracts and supplemental injection rules](carnical/docs/input-hardening.md), [API schema and rate-limit integration](carnical/docs/apiguard.md), and [strict JSON, XML, GraphQL, multipart and compressed-body inspection](carnical/docs/formats.md).
-* **Proxy and host hardening** - Verified client identities, origin restrictions, bounded rule evaluation, [flood protection with shared connection caps](carnical/docs/ddos.md), [Linux L3/L4 packet filtering](carnical/docs/network-protection.md), and [Linux confinement](carnical/docs/hardening.md).
+* **Proxy and host hardening** - Verified client identities, origin restrictions, bounded rule evaluation, [flood protection with resource-aware connection caps](carnical/docs/ddos.md), [Linux L3/L4 packet filtering with small and large deployment profiles](carnical/docs/network-protection.md), and [Linux confinement](carnical/docs/hardening.md).
 * **Policy and virtual patches** - [Signed configuration and customer policies](carnical/docs/config-and-policy.md), an [authenticated control API](carnical/docs/control-api.md), and [virtual-patch matching and rule importers](carnical/docs/vpatch.md).
 * **Monitoring and validation** - Bypass counters, safer rule logging, varied live attack tests, and [automated security review](docs/security-tooling.md). [Current findings and validation limits](docs/security-findings.md) are documented alongside the results.
 

@@ -2,6 +2,7 @@
 
 import argparse
 import contextlib
+import concurrent.futures
 import http.client
 import http.server
 import ipaddress
@@ -9,6 +10,7 @@ import json
 import os
 import pathlib
 import socket
+import ssl
 import struct
 import subprocess
 import sys
@@ -22,6 +24,8 @@ SERVER_MAC = bytes.fromhex("02ca00000001")
 CLIENT_MAC = bytes.fromhex("02ca00000002")
 V4, V6 = "10.201.0.1", "fd00:ca::1"
 PEER4, PEER6 = "10.201.0.2", "fd00:ca::2"
+sys.path.insert(0, str(POLICY.parent))
+from render_policy import PROFILES, render
 
 
 def run(*args, **kwargs):
@@ -98,6 +102,7 @@ def fragments(src, flags, ident):
 
 def peer():
     print("ready", flush=True)
+    flood_thread, flood_result = None, {}
     with socket.socket(socket.AF_PACKET, socket.SOCK_RAW) as wire:
         wire.settimeout(5)
         for line in sys.stdin:
@@ -109,6 +114,83 @@ def peer():
                     if wire.send(raw) != len(raw):
                         raise RuntimeError("partial packet send")
                 result = {"sent": len(task["frames"])}
+            elif task["kind"] == "flood_start":
+                if flood_thread is not None and flood_thread.is_alive():
+                    raise RuntimeError("flood already running")
+                count = task["count"]
+                duration = task.get("duration", 0)
+                flood_result = {}
+                def flood_packets(count=count, duration=duration):
+                    try:
+                        with socket.socket(socket.AF_PACKET, socket.SOCK_RAW) as attack_wire:
+                            attack_wire.settimeout(5)
+                            attack_wire.bind(("client-test", 0))
+                            begin = time.monotonic()
+                            for index in range(count):
+                                if index % 32 == 0:
+                                    pause = duration * index / count - (time.monotonic() - begin)
+                                    if pause > 0:
+                                        time.sleep(pause)
+                                src = f"fd00:de::{index % 65500 + 1:x}"
+                                packet = frame(src, proto=17 if index % 3 == 1 else 6,
+                                               flags=3 if index % 3 == 0 else 2, ident=index + 1)
+                                raw = bytes.fromhex(packet)
+                                if attack_wire.send(raw) != len(raw):
+                                    raise RuntimeError("partial flood packet send")
+                        flood_result["sent"] = count
+                    except OSError as error:
+                        flood_result["error"] = str(error)
+                flood_thread = threading.Thread(target=flood_packets, daemon=True)
+                flood_thread.start()
+                result = {"started": True}
+            elif task["kind"] == "flood_wait":
+                flood_thread.join(timeout=30)
+                if flood_thread.is_alive():
+                    raise RuntimeError("flood did not finish within 30 seconds")
+                result = flood_result
+            elif task["kind"] == "http_batch":
+                # One connection per worker exercises keep-alive without hiding the number of new handshakes.
+                def visitor(worker):
+                    family = task["family"] or (4 if worker % 2 == 0 else 6)
+                    address = V4 if family == 4 else V6
+                    if task.get("ca_file"):
+                        tls = ssl.create_default_context(cafile=task["ca_file"])
+                        conn = http.client.HTTPSConnection(address, 443, timeout=10, context=tls)
+                    else:
+                        conn = http.client.HTTPConnection(address, 443, timeout=10)
+                    statuses, latencies, errors = {}, [], 0
+                    for index in range(worker, task["count"], task["workers"]):
+                        begin = time.monotonic()
+                        try:
+                            path = "/?q=%27%20OR%201%3D1--" if task.get("attack") else f"/static/{index % 31}.css"
+                            conn.request("GET", path, headers={"Host": "example.test", "User-Agent": "scale-test/1.0"})
+                            response = conn.getresponse()
+                            body = response.read()
+                            status = str(response.status)
+                            statuses[status] = statuses.get(status, 0) + 1
+                            if response.status == 200 and body != b"origin-ok":
+                                errors += 1
+                        except (OSError, http.client.HTTPException):
+                            errors += 1
+                            conn.close()
+                        latencies.append(time.monotonic() - begin)
+                        if task.get("pace"):
+                            time.sleep(task["pace"])
+                    conn.close()
+                    return str(family), statuses, latencies, errors
+                begin = time.monotonic()
+                totals, times, errors, families = {}, [], 0, {}
+                with concurrent.futures.ThreadPoolExecutor(max_workers=task["workers"]) as pool:
+                    for family, statuses, latencies, failed in pool.map(visitor, range(task["workers"])):
+                        errors += failed
+                        times.extend(latencies)
+                        for status, count in statuses.items():
+                            totals[status] = totals.get(status, 0) + count
+                            family_totals = families.setdefault(family, {})
+                            family_totals[status] = family_totals.get(status, 0) + count
+                times.sort()
+                result = {"statuses": totals, "families": families, "errors": errors, "seconds": round(time.monotonic() - begin, 3),
+                          "p99_ms": round(times[min(len(times) - 1, int(len(times) * .99))] * 1000, 2)}
             elif task["kind"] == "serve_origin":
                 server = http.server.ThreadingHTTPServer(("0.0.0.0", 80), Origin)
                 threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -116,7 +198,7 @@ def peer():
             else:
                 # Live HTTP traverses the veth, kernel policy and running Carnical binary.
                 address = V4 if task["family"] == 4 else V6
-                conn = http.client.HTTPConnection(address, 443, timeout=5)
+                conn = http.client.HTTPConnection(address, task.get("port", 443), timeout=5)
                 try:
                     conn.request("GET", task["path"], headers={"Host": "example.test", "Connection": "close"})
                     response = conn.getresponse()
@@ -128,7 +210,6 @@ def peer():
 
 class Lab:
     def __init__(self):
-        self.loaded = False
         self.client = subprocess.Popen(["unshare", "--net", sys.executable, str(pathlib.Path(__file__).resolve()), "--peer"],
                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
         if self.client.stdout.readline().strip() != "ready":
@@ -175,21 +256,20 @@ class Lab:
         if result["sent"] != len(frames):
             raise AssertionError("not all packets sent")
 
-    def load(self, *, small_set=False, low_global=False):
-        text = POLICY.read_text(encoding="utf-8")
+    def load(self, *, small_set=False, low_global=False, profile="standard", peers=False, overrides=None, port=443):
+        settings = dict(overrides or {})
+        if small_set:
+            settings.update(syn_meter_size=4, syn_peer_meter_size=4, syn_meter_ttl=1)
+        if low_global:
+            settings.update(syn_global_rate=10, syn_global_burst=20)
+        ranges = (PEER4, "fd00:ca::/64") if peers is True else (peers or ())
+        text = render(profile, port=port, peers=ranges, overrides=settings)
         # No host accounts are created. Numeric fixture UIDs affect only the isolated namespace's egress policy.
         for index, name in enumerate(["edge", "portal", "ctl", "signer", "audit"], 61001):
             text = text.replace('"carnical-' + name + '"', str(index))
-        if small_set:
-            text = text.replace("size 65536", "size 4").replace("timeout 60s", "timeout 1s")
-        if low_global:
-            text = text.replace("10000/second burst 20000", "10/second burst 20")
-        # flush table intentionally retains named objects on a production reload. Each test needs fresh counters/meters.
-        if self.loaded:
-            run("nft", "delete", "table", "inet", "carnical")
+        # Production rendering replaces this one table atomically; exercise real reloads rather than pre-deleting it.
         run("nft", "--check", "--file", "-", input=text)
         run("nft", "--file", "-", input=text)
-        self.loaded = True
 
     def count(self, name):
         data = json.loads(run("nft", "--json", "list", "counter", "inet", "carnical", name))
@@ -235,37 +315,50 @@ def test(binary):
         raise RuntimeError("network namespace test requires root")
     if os.stat("/proc/self/ns/net").st_ino == os.stat("/proc/1/ns/net").st_ino:
         raise RuntimeError("refusing to change the host network namespace")
+    for arguments in (["--port", "0"], ["--port", "65536"], ["--peer", "0.0.0.0/0"], ["--peer", "::/0"],
+                      ["--peer", "192.0.2.1/24"], ["--peer", "fe80::%x;drop/128"],
+                      ["--set", "syn_source_rate=0"], ["--set", "syn_source_burst=-1"],
+                      ["--set", "syn_meter_size=1048577"], ["--set", "unknown=5"],
+                      ["--set", "syn_source_rate=10", "--set", "syn_source_rate=20"]):
+        result = subprocess.run([sys.executable, str(POLICY.with_name("render_policy.py")), *arguments],
+                                text=True, capture_output=True, timeout=5)
+        equal(result.returncode, 2, "unsafe renderer configuration must be rejected")
+        equal(result.stdout, "", "invalid renderer input must not emit a policy")
+    print("PASS: invalid ports, unbounded/scoped peers and invalid/duplicate budgets rejected before policy output", flush=True)
     with contextlib.ExitStack() as stack:
         lab = Lab()
         stack.callback(lab.close)
         lab.setup()
+        run("nft", "--file", "-", input="table inet carnical_test_canary {\n counter intact { packets 7 bytes 42 }\n}\n")
         origin = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Origin)
         stack.callback(origin.server_close)
         threading.Thread(target=origin.serve_forever, daemon=True).start()
         stack.callback(origin.shutdown)
         log = stack.enter_context(tempfile.TemporaryFile(mode="w+"))
-        waf = subprocess.Popen([str(binary), "-listen", "[::]:443", "-upstream", f"http://127.0.0.1:{origin.server_port}",
-                                "-origin-allow", "127.0.0.0/8", "-mode", "block", "-ddos", "off"], stdout=log, stderr=log)
-        def stop_waf():
+        def stop_waf(waf):
             waf.terminate()
             try:
                 waf.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 waf.kill()
                 waf.wait(timeout=5)
-        stack.callback(stop_waf)
-        deadline = time.monotonic() + 15
-        while True:
-            if waf.poll() is not None:
-                log.seek(0)
-                raise RuntimeError("WAF failed to start: " + log.read())
-            try:
-                with socket.create_connection(("127.0.0.1", 443), timeout=0.1):
-                    break
-            except OSError:
-                if time.monotonic() > deadline:
-                    raise RuntimeError("WAF did not listen")
-                time.sleep(0.05)
+        def start_waf(extra, port=443):
+            waf = subprocess.Popen([str(binary), "-listen", f"[::]:{port}", "-upstream", f"http://127.0.0.1:{origin.server_port}",
+                                    "-origin-allow", "127.0.0.0/8", "-mode", "block", *extra], stdout=log, stderr=log)
+            stack.callback(stop_waf, waf)
+            deadline = time.monotonic() + 15
+            while True:
+                if waf.poll() is not None:
+                    log.seek(0)
+                    raise RuntimeError("WAF failed to start: " + log.read())
+                try:
+                    with socket.create_connection(("127.0.0.1", port), timeout=0.1):
+                        return waf
+                except OSError:
+                    if time.monotonic() > deadline:
+                        raise RuntimeError("WAF did not listen")
+                    time.sleep(0.05)
+        waf = start_waf(["-ddos", "off"])
 
         lab.load()
         for family in (4, 6):
@@ -377,6 +470,140 @@ def test(binary):
                 lab.expect(counter, 16)
         # Six refusals beyond each logging burst must still be refused; successful public-port connections are the control.
         print("PASS: service-UID egress still refuses private/metadata/SMTP/internal traffic after log-budget exhaustion", flush=True)
+
+        # Exercise the same deployed policy at small and large budgets, including shared peers, finite overflow,
+        # ordinary HTTP keep-alive and the entire WAF with its Go connection shield enabled.
+        stop_waf(waf)
+        for profile, workers, requests, packets in (("small", 4, 240, 6000), ("large", 32, 5000, 100000)):
+            budget = PROFILES[profile]
+            lab.load(profile=profile)
+            burst = budget["syn_source_burst"] // 2
+            for family in (4, 6):
+                src = PEER4 if family == 4 else PEER6
+                lab.send([frame(src, ident=i + 1) for i in range(burst)])
+            equal(lab.count("edge_syn_admitted"), 2 * burst, "ordinary source burst")
+            equal(lab.count("edge_syn_source_drop"), 0, "ordinary bursts must not be refused")
+            # A shared address's larger burst cannot be served by the ordinary bucket alone.
+            lab.load(profile=profile, peers=True)
+            burst = budget["syn_peer_burst"] // 2
+            for family in (4, 6):
+                src = PEER4 if family == 4 else PEER6
+                lab.send([frame(src, ident=i + 1) for i in range(burst)])
+            equal(lab.count("edge_syn_peer_admitted"), 2 * burst, "shared peer burst")
+            equal(lab.count("edge_syn_source_drop"), 0, "peers must use their own budget")
+            equal(lab.count("edge_syn_global_drop"), 0, "ordinary peer bursts fit aggregate capacity")
+            lab.send([frame(PEER4, flags=3), frame(PEER6, flags=6), frame(PEER4, proto=17), frame(PEER6, proto=17)])
+            lab.expect("edge_bad_tcp", 2)
+            lab.expect("edge_udp_drop", 2)
+            print(f"PASS: {profile} ordinary and shared-peer bursts admitted without packet-budget refusals", flush=True)
+
+            # Reduce only the peer budget to exhaust it deterministically; keep each profile's aggregate ceiling.
+            lab.load(profile=profile, peers=True, overrides={"syn_peer_rate": 10, "syn_peer_burst": 20})
+            lab.send([frame(PEER4, ident=i + 1) for i in range(200)])
+            lab.expect("edge_syn_peer_drop", 150)
+            equal(lab.count("edge_syn_admitted"), 0, "exhausted peer must not fall back to ordinary budget")
+            lab.load(profile=profile, peers=True, low_global=True)
+            lab.send([frame(PEER6, ident=i + 1) for i in range(200)])
+            lab.expect("edge_syn_global_drop", 150)
+            print(f"PASS: {profile} peer budgets and aggregate ceiling remain enforced (reduced exhaustion fixture)", flush=True)
+
+            lab.load(profile=profile, peers=True)
+            waf = start_waf(["-ddos", "on", "-ddos-rate", "50000", "-ddos-burst", "100000", "-ddos-baseline-rate", "10000",
+                             "-ddos-max-conns", "64" if profile == "small" else "4096",
+                             "-max-evaluations", str(2 * workers), "-max-upstream", str(4 * workers)])
+            for family in (4, 6):
+                result = lab.ask({"kind": "http_batch", "family": family, "count": requests, "workers": workers,
+                                  "pace": .025 if profile == "small" else 0})
+                equal(result["errors"], 0, "ordinary request errors")
+                equal(result["statuses"], {"200": requests}, "ordinary requests must reach the origin")
+                print(f"PASS: {profile} IPv{family} ordinary traffic {json.dumps(result)}", flush=True)
+            lab.ask({"kind": "flood_start", "count": packets, "duration": 3 if profile == "small" else 8})
+            result = lab.ask({"kind": "http_batch", "family": 0, "count": 2 * requests, "workers": 2 * workers,
+                              "pace": .025 if profile == "small" else 0})
+            equal(result["errors"], 0, "legitimate traffic errors during packet flood")
+            equal(result["families"], {"4": {"200": requests}, "6": {"200": requests}}, "both IP families during packet flood")
+            print(f"PASS: {profile} simultaneous IPv4/IPv6 traffic across packet flood {json.dumps(result)}", flush=True)
+            equal(lab.ask({"kind": "flood_wait"}), {"sent": packets}, "varied flood generation")
+            lab.expect("edge_bad_tcp", (packets + 2) // 3)
+            lab.expect("edge_udp_drop", (packets + 1) // 3)
+            syn = sum(lab.count(name) for name in ("edge_syn_admitted", "edge_syn_source_drop", "edge_syn_global_drop"))
+            equal(syn, packets // 3, "every flood SYN must be admitted or refused by a named counter")
+            if profile == "large":
+                lab.expect("edge_syn_source_drop", 20000)
+            else:
+                lab.expect("edge_syn_source_drop", 1500)
+            for family in (4, 6):
+                result = lab.ask({"kind": "http_batch", "family": family, "count": 25, "workers": 1, "attack": True, "pace": .05})
+                equal(result["errors"], 0, "hostile HTTP request transport errors")
+                equal(result["statuses"], {"403": 25}, "SQL injection must still be blocked")
+            counts = {name: lab.count(name) for name in ("edge_bad_tcp", "edge_udp_drop", "edge_syn_admitted",
+                                                        "edge_syn_source_drop", "edge_syn_global_drop")}
+            print(f"PASS: {profile} varied flood {packets} packets accounted for {json.dumps(counts)}; SQL injection 50/50 blocked", flush=True)
+            stop_waf(waf)
+
+        # Revoking a high-volume peer on reload must remove both membership and its old meter budget.
+        lab.load(profile="large", peers=True)
+        lab.send([frame(PEER4)])
+        lab.expect("edge_syn_peer_admitted", 1)
+        lab.load(profile="small")
+        lab.send([frame(PEER4, ident=i + 1) for i in range(300)])
+        equal(lab.count("edge_syn_peer_admitted"), 0, "revoked peer must lose its larger budget")
+        lab.expect("edge_syn_source_drop", 150)
+        equal(lab.count("edge_syn_peer_drop"), 0, "old peer set must not survive replacement")
+        print("PASS: atomic large-to-small reload revokes old peers and applies the smaller budget", flush=True)
+
+        for family in (4, 6):
+            lab.load(small_set=True, peers=("198.51.100.0/24", "fd00::/16"))
+            sources = [f"198.51.100.{i + 10}" if family == 4 else f"fd00:{i + 10:x}::1" for i in range(5)]
+            lab.send([frame(src, ident=i + 1) for i, src in enumerate(sources)])
+            equal(lab.count("edge_syn_peer_admitted"), 4, "bounded peer-meter capacity")
+            lab.expect("edge_syn_peer_drop", 1)
+            equal(lab.count("edge_syn_admitted"), 0, "full peer meter must not fall back to ordinary admission")
+        print("PASS: full IPv4/IPv6 peer-meter sets refuse new keys without gaining another budget", flush=True)
+
+        lab.load(port=9443)
+        waf = start_waf(["-ddos", "off"], port=9443)
+        for family in (4, 6):
+            equal(lab.ask({"kind": "http", "family": family, "path": "/", "port": 9443})["status"], 200, "custom public port")
+        lab.send([frame(PEER4, flags=3, port=9443), frame(PEER6, proto=17, port=9443)])
+        lab.expect("edge_bad_tcp", 1)
+        lab.expect("edge_udp_drop", 1)
+        before = lab.count("edge_syn_admitted")
+        lab.send([frame(PEER4, port=443)])
+        lab.expect("input_denied", 1)
+        equal(lab.count("edge_syn_admitted"), before, "old port must not retain public admission")
+        print("PASS: custom port 9443 serves both IP families with the same guards; old port remains closed", flush=True)
+        stop_waf(waf)
+
+        directory = pathlib.Path(stack.enter_context(tempfile.TemporaryDirectory()))
+        certificate, key = directory / "test-cert.pem", directory / "test-key.pem"
+        run("openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", str(key), "-out", str(certificate),
+            "-days", "1", "-subj", "/CN=example.test", "-addext", f"subjectAltName=DNS:example.test,IP:{V4},IP:{V6}")
+        lab.load(profile="large", peers=True)
+        waf = start_waf(["-ddos", "on", "-ddos-rate", "50000", "-ddos-burst", "100000", "-max-evaluations", "32",
+                         "-tls-cert", str(certificate), "-tls-key", str(key)])
+        result = lab.ask({"kind": "http_batch", "family": 0, "count": 1000, "workers": 16, "ca_file": str(certificate)})
+        equal(result["errors"], 0, "TLS request errors")
+        equal(result["families"], {"4": {"200": 500}, "6": {"200": 500}}, "verified TLS requests")
+        print(f"PASS: verified TLS with kernel policy, shield and CRS enabled {json.dumps(result)}", flush=True)
+        for family in (4, 6):
+            result = lab.ask({"kind": "http_batch", "family": family, "count": 25, "workers": 1,
+                              "attack": True, "pace": .05, "ca_file": str(certificate)})
+            equal(result["errors"], 0, "TLS attack transport errors")
+            equal(result["statuses"], {"403": 25}, "SQL injection over verified TLS")
+        print("PASS: verified TLS SQL injection 50/50 blocked in both IP families", flush=True)
+        # Custom values that equal another field's template defaults must not cascade into that field's replacement.
+        lab.load(peers=(PEER6,), overrides={"syn_meter_size": 4096, "syn_source_rate": 5000, "syn_source_burst": 10000,
+                                          "syn_peer_rate": 20, "syn_peer_burst": 40, "echo_rate": 100, "echo_burst": 200})
+        lab.send([frame(PEER4, ident=i + 1) for i in range(100)])
+        equal(lab.count("edge_syn_admitted"), 100, "custom source budget must remain independent of peer defaults")
+        lab.send([frame(PEER6, ident=i + 1) for i in range(100)])
+        lab.expect("edge_syn_peer_drop", 50)
+        print("PASS: custom overlapping numeric values retain independent source, peer and echo budgets", flush=True)
+        intact = json.loads(run("nft", "--json", "list", "counter", "inet", "carnical_test_canary", "intact"))
+        equal(next(item["counter"]["packets"] for item in intact["nftables"] if "counter" in item), 7,
+              "policy replacements must preserve unrelated tables and state")
+        print("PASS: unrelated nftables table and its counter survive every profile replacement", flush=True)
 
 
 def main():

@@ -39,6 +39,13 @@ accepted; IPv6 control traffic has separate rules. Logging is conditional and re
 The kernel policy remains an explicit deployment step. The Go listener's capacity-accounting fixes require no Coraza API
 change. A dedicated security job tests real packets, race detection and the running WAF in disposable network namespaces.
 
+The proposed policy also supports rendered small/standard/large budgets, a configurable public port and separate bounded
+meters for explicitly configured high-volume proxy peers. Every peer still consumes the aggregate budget and passes the
+malformed-packet checks. Peer exhaustion cannot fall back to an ordinary source bucket. Rendering validates numeric values
+and canonical peer CIDRs without loading rules. A rendered policy atomically replaces only this table, resetting its meters
+and counters so profile changes and peer revocation apply immediately. The listener's initial floor also respects the process
+file-descriptor ceiling. Live scaling, IPv4/IPv6, TLS, peer exhaustion and reload regressions run in the existing CI test home.
+
 ## Technical Discussion
 
 No substantive technical discussion recorded; this record accompanies the owner-authorized change.
@@ -46,6 +53,8 @@ No substantive technical discussion recorded; this record accompanies the owner-
 ## Consequences
 
 - Kernel budgets must be tuned for shared NAT/CDN peers and do not follow the shield's learned baseline.
+- Profile values describe configured admission budgets, not certified throughput; deployment still needs capacity measurement.
+- Rendered profiles require nftables 1.0.9 or later and kernel support for `destroy`; collect counter deltas before replacement.
 - A full meter set refuses new sources until capacity is reclaimed; existing sources keep their budget.
 - Packet filtering on the host cannot prevent an upstream link from being saturated or protect all fragment-queue resources.
 

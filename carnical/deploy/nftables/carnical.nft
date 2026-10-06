@@ -5,12 +5,15 @@
 # The kernel decides by which user owns the socket (meta skuid), so a process cannot talk its way round it. It needs the users
 # to exist first (deploy/sysusers.d/carnical.conf).
 #
-# Edit the three definitions below, then:   nft -c -f carnical.nft   (check)   and   nft -f carnical.nft   (load)
+# Render small/large budgets with render_policy.py; see docs/network-protection.md. This file has the standard defaults.
+# Then:   nft -c -f carnical.nft   (check)   and   nft -f carnical.nft   (load)
 # Load it from a unit that runs before the services, and keep it out of reach of every service user.
 
 define mgmt4 = { 192.0.2.10 }            # addresses that may reach SSH: yours, written in. Documentation addresses stand in.
 define mgmt6 = { 2001:db8::10 }
 define resolver = { 127.0.0.53, 127.0.0.54 }   # what /etc/resolv.conf points at
+
+define edge_port = 443
 
 table inet carnical
 flush table inet carnical
@@ -29,12 +32,30 @@ table inet carnical {
 		timeout 60s
 		size 65536
 	}
+	# Empty until an operator adds verified load-balancer/CDN source ranges. These get a larger, still finite budget.
+	# They are separate from application -trusted-proxies; never put arbitrary visitor ranges here.
+	set edge_peers4 { type ipv4_addr; flags interval; }
+	set edge_peers6 { type ipv6_addr; flags interval; }
+	set syn_peer4 {
+		type ipv4_addr
+		flags dynamic, timeout
+		timeout 60s
+		size 4096
+	}
+	set syn_peer6 {
+		type ipv6_addr
+		flags dynamic, timeout
+		timeout 60s
+		size 4096
+	}
 	counter edge_bad_source {}
 	counter edge_bad_tcp {}
 	counter edge_udp_drop {}
 	counter edge_syn_global_drop {}
 	counter edge_syn_source_drop {}
 	counter edge_syn_admitted {}
+	counter edge_syn_peer_admitted {}
+	counter edge_syn_peer_drop {}
 	counter input_denied {}
 	counter input_logged {}
 	counter edge_discovery_accept {}
@@ -51,8 +72,8 @@ table inet carnical {
 		type filter hook prerouting priority raw; policy accept;
 		iifname "lo" return
 		fib daddr type != local return
-		udp dport 443 counter name edge_udp_drop drop
-		tcp dport 443 jump edge_tcp
+		udp dport $edge_port counter name edge_udp_drop drop
+		tcp dport $edge_port jump edge_tcp
 	}
 	chain edge_tcp {
 		ip saddr { 0.0.0.0/8, 127.0.0.0/8, 224.0.0.0/4, 240.0.0.0/4 } counter name edge_bad_source drop
@@ -66,10 +87,18 @@ table inet carnical {
 	chain edge_syn {
 		# Tune both levels for the deployment, especially shared NAT/CDN peers. No source bypasses the aggregate cap.
 		limit rate over 10000/second burst 20000 packets counter name edge_syn_global_drop drop
+		ip saddr @edge_peers4 goto edge_peer_syn
+		ip6 saddr @edge_peers6 goto edge_peer_syn
 		meta nfproto ipv4 update @syn4 { ip saddr limit rate 100/second burst 200 packets } counter name edge_syn_admitted return
 		meta nfproto ipv6 update @syn6 { ip6 saddr & ffff:ffff:ffff:ffff:: limit rate 100/second burst 200 packets } counter name edge_syn_admitted return
 		# Positive admission above; exhaustion of a source budget OR a full meter set falls through to this drop.
 		counter name edge_syn_source_drop drop
+	}
+	chain edge_peer_syn {
+		meta nfproto ipv4 update @syn_peer4 { ip saddr limit rate 5000/second burst 10000 packets } counter name edge_syn_peer_admitted return
+		meta nfproto ipv6 update @syn_peer6 { ip6 saddr & ffff:ffff:ffff:ffff:: limit rate 5000/second burst 10000 packets } counter name edge_syn_peer_admitted return
+		# Peer exhaustion must not fall back to the ordinary source bucket and gain a second budget.
+		counter name edge_syn_peer_drop drop
 	}
 
 	# Addresses a customer's site must never be reached at, whatever its name resolves to. The proxy refuses them too (the
@@ -100,7 +129,7 @@ table inet carnical {
 		icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert } ip6 hoplimit 255 counter name edge_discovery_accept accept
 		icmpv6 type nd-router-advert ip6 saddr fe80::/10 ip6 hoplimit 255 counter name edge_discovery_accept accept
 		# The only ports that are open to the world: the edge (443). The portal gets its own line when it has an address.
-		tcp dport 443 accept
+		tcp dport $edge_port accept
 		# Administration: from named addresses only.
 		ip saddr $mgmt4 tcp dport 22 ct state new limit rate 6/minute accept
 		ip6 saddr $mgmt6 tcp dport 22 ct state new limit rate 6/minute accept

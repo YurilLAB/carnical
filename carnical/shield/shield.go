@@ -96,7 +96,8 @@ type Config struct {
 	// SubnetRate and SubnetBurst limit each /24 or /48 network (default 500 a second, bursts of 2,000).
 	SubnetRate, SubnetBurst float64
 	// MaxConns is the most connections held open at once (default 20,000). ReservedShare of them (default 0.2) are only
-	// for clients the shield knows, so that a connection flood cannot lock out the site's regular visitors.
+	// for clients the shield knows, so that a connection flood cannot lock out the site's regular visitors. Both the
+	// starting floor and any later growth are capped at 80% of the process's soft file-descriptor limit where known.
 	MaxConns      int
 	ReservedShare float64
 	// MaxConnsCeiling is the most MaxConns can be raised to as the site's average number of connections grows (default
@@ -388,10 +389,11 @@ func (s *Shield) maxConns() int64 {
 	limit := int64(s.cfg.MaxConns)
 	if grown := int64(2 * math.Float64frombits(s.connAvg.Load())); grown > limit {
 		ceiling := int64(s.cfg.MaxConnsCeiling)
-		if s.fdLimit > 0 {
-			ceiling = min(ceiling, s.fdLimit*8/10)
-		}
 		limit = max(limit, min(grown, ceiling))
+	}
+	// The starting floor must respect the process's capacity too, including on small hosts with a low soft limit.
+	if s.fdLimit > 0 {
+		limit = min(limit, s.fdLimit*8/10)
 	}
 	return limit
 }

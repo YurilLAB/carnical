@@ -194,7 +194,7 @@ jobs:
       - name: Install network test tools
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y nftables iproute2
+          sudo apt-get install --no-install-recommends -y nftables iproute2 openssl
       - name: Check shield races and a live distributed flood
         working-directory: carnical
         shell: bash
