@@ -191,13 +191,22 @@ func buildFilter(allowExec bool) ([]unix.SockFilter, error) {
 	a.label("check-socket")
 	a.load(offArg0)
 	for _, fam := range allowedFamilies {
-		a.jeq(fam, "allow", fmt.Sprintf("fam-%d", fam))
+		target := "allow"
+		if fam == unix.AF_INET || fam == unix.AF_INET6 {
+			target = "inet-proto"
+		}
+		a.jeq(fam, target, fmt.Sprintf("fam-%d", fam))
 		a.label(fmt.Sprintf("fam-%d", fam))
 	}
 	a.jeq(unix.AF_NETLINK, "netlink-proto", "kill")
 	a.label("netlink-proto")
 	a.load(offArg0 + 16) // the third argument, protocol: NETLINK_ROUTE is 0
 	a.jeq(unix.NETLINK_ROUTE, "allow", "kill")
+	// Landlock does not restrict Multipath TCP, which can speak ordinary TCP.
+	// Return an unsupported-protocol error so Go safely falls back to TCP.
+	a.label("inet-proto")
+	a.load(offArg0 + 16)
+	a.jeq(unix.IPPROTO_MPTCP, "no-proto", "allow")
 	a.label("after-socket")
 	a.load(offNr)
 
@@ -206,6 +215,8 @@ func buildFilter(allowExec bool) ([]unix.SockFilter, error) {
 	a.load(offArg0)
 	a.jeq(unix.AF_UNIX, "allow", "kill")
 
+	a.label("no-proto")
+	a.ret(seccompRetErrnoBase | uint32(unix.EPROTONOSUPPORT))
 	a.label("allow")
 	a.ret(seccompRetAllow)
 	a.label("kill")

@@ -76,8 +76,9 @@ func TestTheFilterDecidesEachCallAsIntended(t *testing.T) {
 		t.Fatal(err)
 	}
 	const (
-		allow = seccompRetAllow
-		kill  = seccompRetKillProcess
+		allow   = seccompRetAllow
+		kill    = seccompRetKillProcess
+		noProto = seccompRetErrnoBase | uint32(unix.EPROTONOSUPPORT)
 	)
 	tests := []struct {
 		name string
@@ -107,6 +108,12 @@ func TestTheFilterDecidesEachCallAsIntended(t *testing.T) {
 		{"clone into a new network namespace", block, seccompData(auditArch, unix.SYS_CLONE, unix.CLONE_NEWNET), kill},
 		{"socket: IPv4", block, seccompData(auditArch, unix.SYS_SOCKET, unix.AF_INET, unix.SOCK_STREAM, 0), allow},
 		{"socket: IPv6", block, seccompData(auditArch, unix.SYS_SOCKET, unix.AF_INET6, unix.SOCK_STREAM, 0), allow},
+		{"socket: explicit TCP", block, seccompData(auditArch, unix.SYS_SOCKET, unix.AF_INET, unix.SOCK_STREAM, unix.IPPROTO_TCP), allow},
+		{"socket: UDP", block, seccompData(auditArch, unix.SYS_SOCKET, unix.AF_INET6, unix.SOCK_DGRAM, unix.IPPROTO_UDP), allow},
+		{"socket: MPTCP IPv4", block, seccompData(auditArch, unix.SYS_SOCKET, unix.AF_INET, unix.SOCK_STREAM, unix.IPPROTO_MPTCP), noProto},
+		{"socket: MPTCP IPv6 with flags", block, seccompData(auditArch, unix.SYS_SOCKET, unix.AF_INET6, unix.SOCK_STREAM|unix.SOCK_CLOEXEC|unix.SOCK_NONBLOCK, unix.IPPROTO_MPTCP), noProto},
+		{"socket: MPTCP when starting programs is allowed", allowExec, seccompData(auditArch, unix.SYS_SOCKET, unix.AF_INET, unix.SOCK_STREAM, unix.IPPROTO_MPTCP), noProto},
+		{"socket: MPTCP high argument bits", block, seccompData(auditArch, unix.SYS_SOCKET, unix.AF_INET, unix.SOCK_STREAM, 1<<40|unix.IPPROTO_MPTCP), noProto},
 		{"socket: UNIX", block, seccompData(auditArch, unix.SYS_SOCKET, unix.AF_UNIX, unix.SOCK_STREAM, 0), allow},
 		{"socket: netlink, routing", block, seccompData(auditArch, unix.SYS_SOCKET, unix.AF_NETLINK, unix.SOCK_RAW, unix.NETLINK_ROUTE), allow},
 		{"socket: netlink, audit", block, seccompData(auditArch, unix.SYS_SOCKET, unix.AF_NETLINK, unix.SOCK_RAW, unix.NETLINK_AUDIT), kill},
@@ -245,6 +252,14 @@ func TestTheCheckNoticesAWeakenedConfinement(t *testing.T) {
 			res := runProbe(t, bin, "-weaken", tt.weaken)
 			if tt.weaken == "landlock" && res.ABI >= 4 {
 				tt.failing = append(tt.failing, "connect to a port that is not allowed", "listen on a port that is not allowed")
+			}
+			if tt.weaken == "seccomp" {
+				control := runProbe(t, bin, "-unconfined")
+				for _, r := range control.Results {
+					if r.Action == "open a Multipath TCP socket" && r.Got == "allowed" {
+						tt.failing = append(tt.failing, r.Action)
+					}
+				}
 			}
 			if res.Failures == 0 {
 				t.Fatalf("a confinement without %s passed the check", tt.weaken)

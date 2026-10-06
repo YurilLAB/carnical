@@ -158,3 +158,44 @@ The workspace dependency versions require Go 1.26. Module manifests and sums
 now match that minimum and the versions selected by workspace synchronization.
 The full `go run mage.go check` passed, including lint, alternate evaluation
 modes, race-tested HTTP example and CRS integration tests.
+
+### Hosted-kernel and flood-comparison follow-up
+
+The first follow-up hosted run confirmed that distinct ports alone did not
+resolve the forbidden bind failure. Multipath TCP sockets can bypass Landlock
+TCP bind/connect restrictions, as documented by the
+[Landlock maintainers](https://github.com/landlock-lsm/linux/issues/54).
+Seccomp now returns `EPROTONOSUPPORT` for IPv4 and IPv6 MPTCP socket creation.
+Go falls back to ordinary TCP, where Landlock enforces the port policy; the
+fix does not depend on `GODEBUG` or an application choosing the right protocol.
+The real probe explicitly requests MPTCP for allowed and forbidden dial/listen
+operations and checks raw MPTCP socket creation. Its weakened-seccomp control
+requires the raw-socket denial to fail on kernels where the unconfined control
+can create MPTCP sockets.
+
+The filter tests cover IPv4/IPv6, socket flags, high argument bits and both
+execution-policy modes, alongside ordinary TCP and UDP controls. Repeated real
+Linux sandbox runs, the final strengthened control run and vet passed. The
+local WSL kernel lacks MPTCP support, so the hosted kernel is needed to confirm
+the positive raw-MPTCP control as well as the denial. The follow-up Linux scan
+has the same 120 Carnical findings and no package-loading errors or new exceptions.
+
+The hosted flood comparison reported five extra origin requests after the tiny
+accept-queue control had timed out nine requests. Shared origin counters allowed
+delayed work to contaminate later measurements. Each comparison now creates an
+independent origin server and counters; the exact request-count assertions remain in place.
+The complete isolated live network suite passed for IPv4/IPv6, TLS, varied
+packet floods, reloads and injection blocking. All four latency comparisons
+also passed: 80,000 HTTP requests, 200 blocked SQL-injection probes and 400,000
+varied flood packets. The intentionally tiny accept queue reproduced a roughly
+1,025 ms flood p99; the persistent origin with a 256-entry queue and TCP_NODELAY
+measured 44 ms locally. These are fixture comparisons, not a new production
+performance guarantee.
+
+The unconfined ptrace probe now uses `PTRACE_SEIZE`, which
+[does not stop its target](https://man7.org/linux/man-pages/man2/ptrace.2.html),
+instead of `PTRACE_ATTACH`. A successful attach under a privileged
+test account could otherwise leave the probe parent stopped.
+The sandbox suite also passed as root inside private mount, network and PID
+namespaces, confirming the privileged control completes without changing the
+host namespace.

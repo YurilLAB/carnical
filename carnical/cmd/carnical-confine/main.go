@@ -15,6 +15,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -138,6 +139,13 @@ var actions = []action{
 	}},
 
 	// Network.
+	{"open a Multipath TCP socket", always(refused), refusedOrErr, func(e *env) error {
+		fd, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, unix.IPPROTO_MPTCP)
+		if err != nil {
+			return err
+		}
+		return unix.Close(fd)
+	}},
 	{"connect to a port that is not allowed", ifABI(4, refused), allowed, func(e *env) error { return dial(e.forbiddenPort) }},
 	{"listen on a port that is not allowed", ifABI(4, refused), allowed, func(e *env) error { return listen(e.bindNo) }},
 	{"connect to another process's abstract socket", ifABI(6, refused), allowed, func(e *env) error {
@@ -155,7 +163,7 @@ var actions = []action{
 	{"start a program (execve)", always(killed), allowed, func(e *env) error { return syscall.Exec("/bin/true", []string{"true"}, nil) }},
 	// The child that tries to exec is the one the filter ends; this process sees its command fail.
 	{"start a program from a child process", always(refused), allowed, func(e *env) error { return exec.Command("/bin/true").Run() }},
-	{"ptrace another process", always(killed), refusedOrErr, func(e *env) error { return rawErr(unix.SYS_PTRACE, unix.PTRACE_ATTACH, uintptr(e.parentPID), 0) }},
+	{"ptrace another process", always(killed), refusedOrErr, func(e *env) error { return rawErr(unix.SYS_PTRACE, unix.PTRACE_SEIZE, uintptr(e.parentPID), 0) }},
 	{"mount a file system", always(killed), refusedOrErr, func(e *env) error { return unix.Mount("none", e.rw, "tmpfs", 0, "") }},
 	{"create a user namespace", always(killed), refusedOrErr, func(e *env) error { return unix.Unshare(unix.CLONE_NEWUSER) }},
 	{"load the BPF interface", always(killed), refusedOrErr, func(e *env) error { return rawErr(unix.SYS_BPF, 0, 0, 0) }},
@@ -224,7 +232,9 @@ func sock(domain int) error {
 }
 
 func dial(port uint16) error {
-	c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 2*time.Second)
+	d := net.Dialer{Timeout: 2 * time.Second}
+	d.SetMultipathTCP(true)
+	c, err := d.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err == nil {
 		c.Close()
 	}
@@ -232,7 +242,9 @@ func dial(port uint16) error {
 }
 
 func listen(port uint16) error {
-	l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	var lc net.ListenConfig
+	lc.SetMultipathTCP(true)
+	l, err := lc.Listen(context.Background(), "tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err == nil {
 		l.Close()
 	}

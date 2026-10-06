@@ -469,7 +469,15 @@ def test(binary, investigate=False):
                 ("persistent-queue256", Origin, 256, False),
                 ("persistent-nodelay-queue256", Origin, 256, True),
             ):
-                origin.RequestHandlerClass = handler
+                # Timed-out requests in the overloaded control can arrive later.
+                # Give each comparison its own origin and counters, so late work
+                # cannot inflate the next comparison's exact request count.
+                origin.shutdown()
+                origin.server_close()
+                origin = OriginServer(("127.0.0.1", 0), handler)
+                stack.callback(origin.server_close)
+                threading.Thread(target=origin.serve_forever, daemon=True).start()
+                stack.callback(origin.shutdown)
                 origin.socket.listen(backlog)
                 origin.no_delay = no_delay
                 lab.load(profile="large", peers=True)
