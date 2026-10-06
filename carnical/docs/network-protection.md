@@ -80,7 +80,8 @@ budgets; splitting replacement into separate delete/add shell commands would los
 `--set NAME=INTEGER` overrides a budget in the table: `syn_global_rate`, `syn_global_burst`, `syn_source_rate`,
 `syn_source_burst`, `syn_peer_rate`, `syn_peer_burst`, `syn_meter_size`, `syn_peer_meter_size`, `syn_meter_ttl` (seconds),
 `echo_rate` and `echo_burst`. Each must be in 1..1,048,576. Invalid ports, noncanonical/scoped CIDRs, all-address peer ranges
-and unknown/duplicate budget names are rejected before any policy is emitted. For example, a measured shared NAT may need
+and unknown/duplicate budget names are rejected before any policy is emitted. Port 22 is reserved for the existing management
+SSH allowlist; it cannot be selected as the public edge port. For example, a measured shared NAT may need
 `--set syn_source_rate=500 --set syn_source_burst=1000` without being designated a proxy peer.
 
 Peer ranges change only the packet budget. They do not trust forwarded HTTP headers or bypass request inspection; configure
@@ -193,6 +194,8 @@ Additional checks passed:
 
 GitHub's existing required L3/L4 job runs these profile, TLS, reload and malformed-packet checks on every relevant push and
 keeps the detailed logs. Repository-wide findings and the sandbox/YAML timing failures remain separate unresolved checks.
+The hosted Ubuntu 24.04 [scaling job for commit 65b9acde](https://github.com/YurilLAB/coraza/actions/runs/37493305231/job/112371316359)
+passed the full race suite, live distributed flood, both deployment profiles, verified TLS, port changes and reload checks.
 
 ## References
 

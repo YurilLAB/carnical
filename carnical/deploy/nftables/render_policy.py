@@ -25,8 +25,8 @@ def render(profile="standard", *, port=443, peers=(), overrides=None):
         if key not in settings or type(value) is not int or not 1 <= value <= 1048576:
             raise ValueError(f"invalid budget {key}: require an integer in 1..1048576")
         settings[key] = value
-    if type(port) is not int or not 1 <= port <= 65535:
-        raise ValueError("port must be in 1..65535")
+    if type(port) is not int or not 1 <= port <= 65535 or port == 22:
+        raise ValueError("port must be in 1..65535 and differ from the management SSH port 22")
     ranges = {4: [], 6: []}
     for peer in peers:
         if "%" in peer:

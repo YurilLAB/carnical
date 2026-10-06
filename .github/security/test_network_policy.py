@@ -315,7 +315,7 @@ def test(binary):
         raise RuntimeError("network namespace test requires root")
     if os.stat("/proc/self/ns/net").st_ino == os.stat("/proc/1/ns/net").st_ino:
         raise RuntimeError("refusing to change the host network namespace")
-    for arguments in (["--port", "0"], ["--port", "65536"], ["--peer", "0.0.0.0/0"], ["--peer", "::/0"],
+    for arguments in (["--port", "0"], ["--port", "22"], ["--port", "65536"], ["--peer", "0.0.0.0/0"], ["--peer", "::/0"],
                       ["--peer", "192.0.2.1/24"], ["--peer", "fe80::%x;drop/128"],
                       ["--set", "syn_source_rate=0"], ["--set", "syn_source_burst=-1"],
                       ["--set", "syn_meter_size=1048577"], ["--set", "unknown=5"],
