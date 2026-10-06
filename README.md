@@ -1,26 +1,26 @@
 <h1>
-  <img src="https://coraza.io/images/logo_shield_only.png" align="left" height="46px" alt=""/>&nbsp;
-  <span>Coraza - Web Application Firewall</span>
+  <img src="https://coraza.io/images/logo_shield_only.png" align="left" height="46px" alt="Coraza foundation"/>&nbsp;
+  <span>Carnical - Web Application Firewall</span>
 </h1>
 
-[![Regression Tests](https://github.com/corazawaf/coraza/actions/workflows/regression.yml/badge.svg)](https://github.com/corazawaf/coraza/actions/workflows/regression.yml)
-[![Coreruleset Compatibility](https://img.shields.io/badge/Coreruleset%20Compatibility-100%25-brightgreen)](#)
-[![CodeQL](https://github.com/corazawaf/coraza/actions/workflows/codeql-analysis.yml/badge.svg)](https://github.com/corazawaf/coraza/actions/workflows/codeql-analysis.yml)
-[![codecov](https://codecov.io/gh/corazawaf/coraza/branch/main/graph/badge.svg?token=6570804ZC7)](https://codecov.io/gh/corazawaf/coraza)
-[![Project Status: Active – The project has reached a stable, usable state and is being actively developed.](https://www.repostatus.org/badges/latest/active.svg)](https://www.repostatus.org/#active)
-[![OWASP Production Project](https://img.shields.io/badge/owasp-production%20project-brightgreen)](https://owasp.org/www-project-coraza-web-application-firewall)
-[![GoDoc](https://godoc.org/github.com/corazawaf/coraza?status.svg)](https://godoc.org/github.com/corazawaf/coraza/v3)
+[![Regression Tests](https://github.com/YurilLAB/coraza/actions/workflows/regression.yml/badge.svg?branch=edge-crs)](https://github.com/YurilLAB/coraza/actions/workflows/regression.yml)
+[![OWASP Core Rule Set v4](https://img.shields.io/badge/OWASP%20CRS-v4-brightgreen)](carnical/README.md)
+[![Security Review](https://github.com/YurilLAB/coraza/actions/workflows/security.yml/badge.svg?branch=edge-crs)](https://github.com/YurilLAB/coraza/actions/workflows/security.yml)
+[![Project Status: Active](https://www.repostatus.org/badges/latest/active.svg)](https://www.repostatus.org/#active)
+[![Coraza API Docs](https://godoc.org/github.com/corazawaf/coraza?status.svg)](https://godoc.org/github.com/corazawaf/coraza/v3)
 
-Coraza is an open source, enterprise-grade, high performance Web Application Firewall (WAF) ready to protect your beloved applications. It is written in Go, supports ModSecurity SecLang rulesets and is 100% compatible with the OWASP Core Rule Set v4.
+Carnical is the Go-based Web Application Firewall (WAF) for the 5weeks1K project, built on [OWASP Coraza](https://github.com/corazawaf/coraza) and the OWASP Core Rule Set v4. It keeps Coraza's engine and ModSecurity SecLang support, adding a hardened reverse proxy, API protections, layered request inspection and monitoring.
 
-* Website: <https://coraza.io>
-* Forum: [Github Discussions](https://github.com/corazawaf/coraza/discussions)
+See the [Carnical guide](carnical/README.md) for setup and configuration. The Coraza library examples and upstream resources below remain available for engine integrations.
+
+* Upstream Coraza website: <https://coraza.io>
+* Carnical source and issues: [YurilLAB/coraza](https://github.com/YurilLAB/coraza)
 * OWASP Slack Community (#coraza): <https://owasp.org/slack/invite>
 * Rule testing: [Coraza Playground](https://playground.coraza.io)
 
 <br/>
 
-Key Features:
+Key Features (Coraza engine):
 
 * ⇲ **Drop-in** - Coraza is an alternative engine that has partial compatibility with ~~Trustwave~~[OWASP ModSecurity Engine](https://github.com/owasp-modsecurity/modsecurity/) and supports industry-standard SecLang rule sets.
 
@@ -33,6 +33,13 @@ Key Features:
 * ﹡ **Simplicity** - Anyone is able to understand and modify the Coraza source code. It is easy to extend Coraza with new functionality.
 
 * 💬 **Community** - Coraza is a community project, contributions are accepted and all ideas will be considered. Find contributor guidance in the [CONTRIBUTION](https://github.com/corazawaf/coraza/blob/main/CONTRIBUTING.md) document.
+
+Carnical adds:
+
+* **API and body protections** - [OpenAPI contracts and supplemental injection rules](carnical/docs/input-hardening.md), [API schema and rate-limit integration](carnical/docs/apiguard.md), and [strict JSON, XML, GraphQL, multipart and compressed-body inspection](carnical/docs/formats.md).
+* **Proxy and host hardening** - Verified client identities, origin restrictions, bounded rule evaluation, [flood protection](carnical/docs/ddos.md), and [Linux confinement](carnical/docs/hardening.md).
+* **Policy and virtual patches** - [Signed configuration and customer policies](carnical/docs/config-and-policy.md), an [authenticated control API](carnical/docs/control-api.md), and [virtual-patch matching and rule importers](carnical/docs/vpatch.md).
+* **Monitoring and validation** - Bypass counters, safer rule logging, varied live attack tests, and [automated security review](docs/security-tooling.md). [Current findings and validation limits](docs/security-findings.md) are documented alongside the results.
 
 <br/>
 
@@ -185,22 +192,22 @@ Contributions are welcome! Please refer to [CONTRIBUTING.md](./CONTRIBUTING.md) 
 See [Automated security review](docs/security-tooling.md) for this project's
 scanner selection, reports, and local commands.
 
-To report a security issue, please follow [this link](https://github.com/corazawaf/coraza/security/advisories/new) and add a description of the issue, the steps you took to create the issue, affected versions, and, if known, mitigations for the issue.
+For Carnical findings and validation limits, see the [security review](docs/security-findings.md). Report Carnical-specific vulnerabilities privately to this repository's maintainers.
 
-Our vulnerability management team will respond within 3 working days of your report. If the issue is confirmed as a vulnerability, we will open a Security Advisory. This project follows a 90 day disclosure timeline.
+For vulnerabilities in the upstream Coraza engine, follow its [security reporting process](https://github.com/corazawaf/coraza/security/advisories/new) and [disclosure policy](SECURITY.md).
 
 ## Thanks
 
 * OWASP Coreruleset team for the CRS and their help
 * Ivan Ristić for creating ModSecurity
 
-### Coraza on X/Twitter
+### Upstream Coraza on X/Twitter
 
 * [@corazaio](https://twitter.com/corazaio)
 
 ## Donations
 
-For donations, see [Donations site](https://owasp.org/donate/?reponame=www-project-coraza-web-application-firewall&title=OWASP+Coraza+Web+Application+Firewall).
+To support upstream Coraza, see its [Donations site](https://owasp.org/donate/?reponame=www-project-coraza-web-application-firewall&title=OWASP+Coraza+Web+Application+Firewall).
 
 ## Thanks to all the people who have contributed
 

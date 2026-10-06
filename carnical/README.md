@@ -1,8 +1,10 @@
-# Carnical: OWASP CRS on Coraza, as a reverse proxy
+# Carnical: a Web Application Firewall built on Coraza
 
-Carnical is our web application firewall. This folder is our additions to the private copy of [OWASP Coraza](https://github.com/corazawaf/coraza). Nothing upstream is
-rewritten: Coraza is the engine and the OWASP Core Rule Set (CRS) is the rule set. `carnical/` is its own Go module
-(`github.com/YurilLAB/coraza/carnical`), so upstream releases merge without conflicts.
+Carnical is our web application firewall for the 5weeks1K project, built on [OWASP Coraza](https://github.com/corazawaf/coraza)
+and the OWASP Core Rule Set (CRS). This folder adds the reverse proxy, API and body protections, flood mitigation,
+virtual patches, customer policies and monitoring. The fork also includes targeted engine hardening fixes.
+`carnical/` is its own Go module (`github.com/YurilLAB/coraza/carnical`), keeping the application additions separate
+from the Coraza engine. See the [repository overview](../README.md) and [current security findings](../docs/security-findings.md).
 
 | Folder | What it is |
 |---|---|
