@@ -1,5 +1,5 @@
 <h1>
-  <img src="docs/assets/carnival-logo.jpg" align="left" height="46px" alt="Carnical logo"/>&nbsp;
+  <img src="docs/assets/carnival-logo.png" align="left" height="46px" alt="Carnical logo"/>&nbsp;
   <span>Carnical - Web Application Firewall</span>
 </h1>
 

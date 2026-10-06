@@ -1,4 +1,4 @@
-<img src="../docs/assets/carnival-logo.jpg" align="left" height="46px" alt="Carnical logo"/>
+<img src="../docs/assets/carnival-logo.png" align="left" height="46px" alt="Carnical logo"/>
 
 # Carnical: a Web Application Firewall built on Coraza
 
