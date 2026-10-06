@@ -6,6 +6,8 @@ package corazawaf
 import (
 	"io"
 	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/corazawaf/coraza/v3/internal/environment"
@@ -63,6 +65,27 @@ func TestNewTransactionResetsDetectionOnlyInterruption(t *testing.T) {
 }
 
 func TestSetDebugLogPath(t *testing.T) {
+	t.Run("new logs restrict access", func(t *testing.T) {
+		if !environment.HasAccessToFS {
+			t.Skip("filesystem unavailable")
+		}
+		path := filepath.Join(t.TempDir(), "debug.log")
+		w, err := resolveLogPath(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f := w.(*os.File)
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if runtime.GOOS != "windows" && info.Mode().Perm()&0077 != 0 {
+			t.Fatalf("debug log accessible to other users: %o", info.Mode().Perm())
+		}
+	})
 	tests := map[string]struct {
 		path string
 		w    io.Writer

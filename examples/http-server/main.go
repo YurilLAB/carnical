@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package main
 
 import (
@@ -6,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/corazawaf/coraza/v3"
 	txhttp "github.com/corazawaf/coraza/v3/http"
@@ -26,7 +29,9 @@ func exampleHandler(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// The server generates the response
-	w.Write([]byte(resBody))
+	if _, err := w.Write([]byte(resBody)); err != nil {
+		log.Printf("response write failed: %v", err)
+	}
 }
 
 func main() {
@@ -36,7 +41,14 @@ func main() {
 
 	fmt.Println("Server is running. Listening port: 8090")
 
-	log.Fatal(http.ListenAndServe(":8090", nil))
+	server := &http.Server{
+		Addr:              ":8090",
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	log.Fatal(server.ListenAndServe())
 }
 
 func createWAF() coraza.WAF {

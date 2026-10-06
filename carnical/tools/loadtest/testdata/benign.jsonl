@@ -1,0 +1,2 @@
+{"group":"search","note":"Ordinary search query","request":{"method":"GET","uri":"/search?q=books"}}
+{"group":"json","note":"Ordinary JSON API body","request":{"method":"POST","uri":"/api/search","headers":{"Content-Type":"application/json"},"body":"{\"q\":\"books\"}"}}

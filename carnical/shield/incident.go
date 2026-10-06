@@ -3,6 +3,7 @@
 package shield
 
 import (
+	"cmp"
 	"hash/maphash"
 	"math"
 	"net/netip"
@@ -128,7 +129,7 @@ func (d *detector) incidentEvent(kind string, ns int64) Event {
 		for _, e := range inc.labels.e {
 			out.Labels = append(out.Labels, LabelCount{Label: e.label, Requests: uint64(e.count)})
 		}
-		slices.SortFunc(out.Labels, func(a, b LabelCount) int { return int(b.Requests) - int(a.Requests) })
+		slices.SortFunc(out.Labels, func(a, b LabelCount) int { return cmp.Compare(b.Requests, a.Requests) })
 		out.Labels = out.Labels[:min(len(out.Labels), 10)]
 	}
 	if kind == "attack_end" {

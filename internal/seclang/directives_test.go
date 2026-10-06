@@ -281,7 +281,19 @@ func TestDirectives(t *testing.T) {
 		"SecUploadFileMode": {
 			{"", expectErrorOnDirective},
 			{"888", expectErrorOnDirective},
+			{"-1", expectErrorOnDirective},
+			{"40000000000", expectErrorOnDirective},
 			{"700", func(w *corazawaf.WAF) bool { return w.UploadFileMode == 0700 }},
+		},
+		"SecAuditLogDirMode": {
+			{"-1", expectErrorOnDirective},
+			{"40000000000", expectErrorOnDirective},
+			{"750", func(w *corazawaf.WAF) bool { return w.AuditLogWriterConfig.DirMode == 0750 }},
+		},
+		"SecAuditLogFileMode": {
+			{"-1", expectErrorOnDirective},
+			{"40000000000", expectErrorOnDirective},
+			{"640", func(w *corazawaf.WAF) bool { return w.AuditLogWriterConfig.FileMode == 0640 }},
 		},
 		"SecUploadFileLimit": {
 			{"", expectErrorOnDirective},

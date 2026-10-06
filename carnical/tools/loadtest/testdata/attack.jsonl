@@ -1,0 +1,2 @@
+{"category":"sqli","note":"SQL tautology in a form value","request":{"method":"POST","uri":"/api/search","headers":{"Content-Type":"application/x-www-form-urlencoded"},"body":"q=%27+OR+1%3D1+--"}}
+{"category":"xss","note":"Script injection in a search query","request":{"method":"GET","uri":"/search?q=%3Cscript%3Ealert(1)%3C%2Fscript%3E"}}

@@ -57,6 +57,9 @@ func TestTranslatePCRE(t *testing.T) {
 		{name: "extended flag", in: `(?x) a b`, wantErr: "x-flag"},
 		{name: "recursion", in: `(?R)`, wantErr: "recursion"},
 		{name: "unbalanced group", in: `(a`, wantErr: "unparsable"},
+		{name: "Unicode escape beyond scalar range", in: `\x{110000}*+b`, wantErr: "unparsable"},
+		{name: "Unicode escape overflowing rune", in: `\x{ffffffff}*+b`, wantErr: "unparsable"},
+		{name: "Unicode surrogate escape", in: `\x{d800}*+b`, wantErr: "unparsable"},
 		{name: "keep-out", in: `a\Kb`, wantErr: "lookaround"},
 	}
 	for _, tt := range tests {

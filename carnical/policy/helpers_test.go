@@ -162,6 +162,10 @@ func newEdge(t testing.TB, p Policy) *edge {
 	u, _ := url.Parse(app.URL)
 	cfg := proxy.Config{Upstream: u, Origin: loopbackOrigin}
 	c.ApplyTo(&cfg)
+	// These tests exercise policy changes to CRS groups in isolation. Independent
+	// supplemental rules may still deny the same payload after a CRS group is
+	// disabled or set to log; crs tests and live WAF regressions cover that layer.
+	cfg.CRS.DisableLocalRules = true
 	cfg.OnMatch = func(m proxy.Match) {
 		e.mu.Lock()
 		e.matches = append(e.matches, m)

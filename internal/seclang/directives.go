@@ -1088,7 +1088,7 @@ func directiveSecAuditLogDirMode(options *DirectiveOptions) error {
 		return errEmptyOptions
 	}
 
-	auditLogDirMode, err := strconv.ParseInt(options.Opts, 8, 32)
+	auditLogDirMode, err := strconv.ParseUint(options.Opts, 8, 32)
 	if err != nil {
 		return err
 	}
@@ -1112,7 +1112,7 @@ func directiveSecAuditLogFileMode(options *DirectiveOptions) error {
 		return errEmptyOptions
 	}
 
-	auditLogFileMode, err := strconv.ParseInt(options.Opts, 8, 32)
+	auditLogFileMode, err := strconv.ParseUint(options.Opts, 8, 32)
 	if err != nil {
 		return err
 	}
@@ -1302,7 +1302,7 @@ func directiveSecUploadFileMode(options *DirectiveOptions) error {
 		return errEmptyOptions
 	}
 
-	fm, err := strconv.ParseInt(options.Opts, 8, 32)
+	fm, err := strconv.ParseUint(options.Opts, 8, 32)
 	if err != nil {
 		return err
 	}

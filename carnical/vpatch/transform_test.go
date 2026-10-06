@@ -9,6 +9,13 @@ import (
 )
 
 func TestTransforms(t *testing.T) {
+	t.Run("invalid scalar cannot alias a byte", func(t *testing.T) {
+		for _, cp := range []rune{-1, -256, 0xD800, 0x110000} {
+			if got := string(appendCP(nil, cp, false)); got != "\uFFFD" {
+				t.Fatalf("appendCP(%d) = %q", cp, got)
+			}
+		}
+	})
 	bs := string(rune(92)) // a backslash, spelled so that no source tool turns "\u" followed by hex digits into the character
 	tests := []struct {
 		name string

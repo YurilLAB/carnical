@@ -16,6 +16,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -114,7 +115,10 @@ func runConvert(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if *out == "-" {
-		stdout.Write(buf.Bytes())
+		if _, err := stdout.Write(buf.Bytes()); err != nil {
+			fmt.Fprintf(stderr, "carnical-sigs convert: output: %v\n", err)
+			return 1
+		}
 	} else if err := writeFile(*out, buf.Bytes()); err != nil {
 		fmt.Fprintf(stderr, "carnical-sigs convert: %v\n", err)
 		return 1
@@ -181,21 +185,18 @@ func writeFile(path string, data []byte) error {
 	}
 	name := tmp.Name()
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(name)
-		return err
+		closeErr := tmp.Close()
+		removeErr := os.Remove(name)
+		return errors.Join(err, closeErr, removeErr)
 	}
 	if err := tmp.Close(); err != nil {
-		os.Remove(name)
-		return err
+		return errors.Join(err, os.Remove(name))
 	}
 	if err := os.Chmod(name, 0o644); err != nil {
-		os.Remove(name)
-		return err
+		return errors.Join(err, os.Remove(name))
 	}
 	if err := os.Rename(name, path); err != nil {
-		os.Remove(name)
-		return err
+		return errors.Join(err, os.Remove(name))
 	}
 	return nil
 }
@@ -244,7 +245,10 @@ func runLegacy(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if *out == "" {
-		stdout.Write(buf.Bytes())
+		if _, err := stdout.Write(buf.Bytes()); err != nil {
+			fmt.Fprintf(stderr, "carnical-sigs legacy: output: %v\n", err)
+			return 1
+		}
 	} else if err := writeFile(*out, buf.Bytes()); err != nil {
 		fmt.Fprintf(stderr, "carnical-sigs legacy: %v\n", err)
 		return 1

@@ -303,7 +303,7 @@ func resolveLogPath(path string) (io.Writer, error) {
 		return os.Stderr, nil
 	}
 
-	return os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	return os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0600)
 }
 
 // SetDebugLogPath sets the path for the debug log

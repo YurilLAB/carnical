@@ -6,6 +6,7 @@
 package environment
 
 import (
+	"errors"
 	"fmt"
 	"os"
 )
@@ -20,9 +21,7 @@ func IsDirWritable(dir string) error {
 	if err != nil {
 		return fmt.Errorf("create file: %w", err)
 	}
-	defer func() {
-		file.Close()
-		os.Remove(file.Name())
-	}()
-	return nil
+	closeErr := file.Close()
+	removeErr := os.Remove(file.Name())
+	return errors.Join(closeErr, removeErr)
 }

@@ -16,6 +16,8 @@ func TestParseAuditLogParts(t *testing.T) {
 		{"DEFGHZ", nil, true},
 		{"ABCD", nil, true},
 		{"AMZ", nil, true},
+		{"A\u0142Z", nil, true}, // U+0142 truncated to the otherwise valid part B.
+		{"A\xffZ", nil, true},
 	}
 
 	for _, test := range tests {
@@ -52,6 +54,8 @@ func TestApplyAuditLogParts(t *testing.T) {
 		expectedParts    AuditLogParts
 		expectedHasError bool
 	}{
+		{name: "Unicode alias addition", base: AuditLogParts("BC"), modification: "+\u0145", expectedHasError: true},
+		{name: "Unicode alias removal", base: AuditLogParts("BCE"), modification: "-\u0145", expectedHasError: true},
 		{
 			name:             "add single part",
 			base:             AuditLogParts("BC"),

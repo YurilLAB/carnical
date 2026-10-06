@@ -187,7 +187,7 @@ func ParseAuditLogParts(opts string) (AuditLogParts, error) {
 
 	// Validate the middle parts (everything between A and Z)
 	middleParts := opts[1 : len(opts)-1]
-	for _, p := range middleParts {
+	for _, p := range []byte(middleParts) {
 		if !slices.Contains(orderedAuditLogParts, AuditLogPart(p)) {
 			return AuditLogParts(""), fmt.Errorf("invalid audit log parts %q", opts)
 		}
@@ -215,7 +215,7 @@ func ApplyAuditLogParts(base AuditLogParts, modification string) (AuditLogParts,
 	partsToModify := modification[1:]
 
 	// Validate all parts to modify
-	for _, p := range partsToModify {
+	for _, p := range []byte(partsToModify) {
 		// Parts A and Z are mandatory and cannot be added or removed
 		if p == 'A' || p == 'Z' {
 			return nil, fmt.Errorf("audit log parts A and Z are mandatory and cannot be modified")
@@ -233,12 +233,12 @@ func ApplyAuditLogParts(base AuditLogParts, modification string) (AuditLogParts,
 
 	if isAddition {
 		// Add new parts
-		for _, p := range partsToModify {
+		for _, p := range []byte(partsToModify) {
 			partsMap[AuditLogPart(p)] = struct{}{}
 		}
 	} else {
 		// Remove parts
-		for _, p := range partsToModify {
+		for _, p := range []byte(partsToModify) {
 			delete(partsMap, AuditLogPart(p))
 		}
 	}

@@ -264,9 +264,9 @@ func (osOps) writeTemp(dir, prefix string, data []byte) (string, error) {
 	}
 	name := f.Name()
 	fail := func(err error) (string, error) {
-		f.Close()
-		os.Remove(name)
-		return "", err
+		closeErr := f.Close()
+		removeErr := os.Remove(name)
+		return "", errors.Join(err, closeErr, removeErr)
 	}
 	if _, err := f.Write(data); err != nil {
 		return fail(err)
@@ -275,8 +275,7 @@ func (osOps) writeTemp(dir, prefix string, data []byte) (string, error) {
 		return fail(err)
 	}
 	if err := f.Close(); err != nil {
-		os.Remove(name)
-		return "", err
+		return "", errors.Join(err, os.Remove(name))
 	}
 	return name, nil
 }

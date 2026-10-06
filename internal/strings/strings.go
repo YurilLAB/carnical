@@ -30,7 +30,7 @@ const letterBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 func RandomString(n int) string {
 	b := make([]byte, n)
 	for i := range b {
-		b[i] = letterBytes[rand.IntN(len(letterBytes))]
+		b[i] = letterBytes[rand.IntN(len(letterBytes))] // #nosec G404 -- Transaction correlation IDs, not credentials or authorization tokens.
 	}
 	return string(b)
 }

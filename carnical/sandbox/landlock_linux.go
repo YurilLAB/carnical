@@ -1,8 +1,11 @@
 //go:build linux && (amd64 || arm64)
 
+// SPDX-License-Identifier: Apache-2.0
+
 package sandbox
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
@@ -132,11 +135,13 @@ func (r *ruleset) allowPath(path string, rights uint64) error {
 	if rights == 0 {
 		return nil
 	}
-	rule := pathBeneath{allowed: rights, fd: int32(fd)}
+	if fd < 0 || fd > 0x7FFFFFFF {
+		return errors.New("Landlock path descriptor exceeds the kernel ABI range")
+	}
 	// The kernel's struct is packed (12 bytes); Go would pad ours to 16.
 	var packed [12]byte
-	*(*uint64)(unsafe.Pointer(&packed[0])) = rule.allowed
-	*(*int32)(unsafe.Pointer(&packed[8])) = rule.fd
+	binary.NativeEndian.PutUint64(packed[:8], rights)
+	binary.NativeEndian.PutUint32(packed[8:], uint32(fd))
 	if _, _, errno := syscall.Syscall6(sysLandlockAddRule, uintptr(r.fd), landlockRulePathBeneath, uintptr(unsafe.Pointer(&packed[0])), 0, 0, 0); errno != 0 {
 		return fmt.Errorf("landlock_add_rule %s: %w", path, errno)
 	}

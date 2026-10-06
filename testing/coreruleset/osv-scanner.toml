@@ -1,0 +1,6 @@
+# Only this module's manifest receives the exception. It does not apply to
+# production manifests or other advisories affecting x/crypto.
+[[IgnoredVulns]]
+id = "GO-2026-5932"
+ignoreUntil = 2026-11-05
+reason = "OpenPGP is absent from the CRS harness and its test dependency graph on Linux and Windows. CI prohibits importing openpgp or its subpackages; x/crypto remains needed by sprig. See docs/security-findings.md."

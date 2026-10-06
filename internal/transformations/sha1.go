@@ -5,7 +5,7 @@ package transformations
 
 import (
 	"crypto/fips140"
-	"crypto/sha1"
+	"crypto/sha1" // #nosec G505 -- Required SecLang t:sha1 compatibility, never authentication or signature verification.
 	"errors"
 	"io"
 
@@ -46,7 +46,7 @@ func sha1T(data string) (string, bool, error) {
 	if len(data) == 0 {
 		return emptySHA1, true, nil
 	}
-	h := sha1.New()
+	h := sha1.New() // #nosec G401 -- Rule normalization transform; FIPS mode is rejected above.
 	_, err := io.WriteString(h, data)
 	if err != nil {
 		return data, false, err

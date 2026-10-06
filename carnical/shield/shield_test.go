@@ -35,6 +35,15 @@ func TestHLLEstimatesWithinAFewPercent(t *testing.T) {
 }
 
 func TestTopKKeepsTheHeavyHittersAmongNoise(t *testing.T) {
+	t.Run("incident labels retain unsigned counter ordering", func(t *testing.T) {
+		d := &detector{incident: &incidentAcc{}}
+		d.incident.labels = newTopK(2)
+		d.incident.labels.e = []topEntry{{label: "small", count: 1}, {label: "large", count: math.MaxUint32}}
+		event := d.incidentEvent("attack_update", 0)
+		if event.Incident.Labels[0].Label != "large" {
+			t.Fatalf("incorrect incident ordering: %+v", event.Incident.Labels)
+		}
+	})
 	k := newTopK(16)
 	r := rand.New(rand.NewPCG(1, 2))
 	for i := 0; i < 100_000; i++ {

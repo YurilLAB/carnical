@@ -71,7 +71,7 @@ func hexVal(s string) rune {
 // UTF-8. With fold, the full-width ASCII forms (U+FF01 to U+FF5E) and the ideographic space fold to the ASCII they imitate, as
 // Windows "best fit" conversion does, so that a back end on such a stack reading them as ASCII is not a way round a signature.
 func appendCP(b []byte, cp rune, fold bool) []byte {
-	if cp < 0x80 {
+	if cp >= 0 && cp < 0x80 {
 		return append(b, byte(cp))
 	}
 	if fold {
@@ -150,7 +150,7 @@ func percentU(s string, fold bool) string {
 				b = make([]byte, 0, len(s))
 				b = append(b, s[:i]...)
 			}
-			if cp := hexVal(s[i+2 : i+6]); cp < 0x100 {
+			if cp := hexVal(s[i+2 : i+6]); cp >= 0 && cp < 0x100 {
 				b = append(b, byte(cp))
 			} else {
 				b = appendCP(b, cp, fold)

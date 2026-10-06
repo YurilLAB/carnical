@@ -1,5 +1,7 @@
 //go:build linux && (amd64 || arm64)
 
+// SPDX-License-Identifier: Apache-2.0
+
 package sandbox
 
 import (
@@ -218,6 +220,9 @@ func applySeccomp(allowExec bool) error {
 	prog, err := buildFilter(allowExec)
 	if err != nil {
 		return err
+	}
+	if len(prog) == 0 || len(prog) > 4096 {
+		return fmt.Errorf("seccomp program length %d exceeds kernel bounds", len(prog))
 	}
 	fprog := unix.SockFprog{Len: uint16(len(prog)), Filter: &prog[0]}
 	_, _, errno := syscall.Syscall(unix.SYS_SECCOMP, seccompSetModeFilter, seccompFilterFlagTsync, uintptr(unsafe.Pointer(&fprog)))

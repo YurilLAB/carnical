@@ -72,6 +72,14 @@ jobs:
           cache-dependency-path: '**/go.sum'
       - name: Install verified scanner
         run: python3 .github/security/install.py osv-scanner
+      - name: Enforce the scoped OpenPGP exception
+        run: |
+          mkdir -p build/security-reports
+          for target in linux windows; do
+            (cd testing/coreruleset && GOOS="$target" CGO_ENABLED=0 GOWORK=off \
+              go list -mod=readonly -deps -test ./...) > "build/security-reports/imports-$target.txt"
+            python3 .github/security/check_imports.py "build/security-reports/imports-$target.txt"
+          done
       - name: Audit all five dependency manifests
         run: |
           mkdir -p build/security-reports
@@ -85,7 +93,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: osv-dependencies
-          path: build/security-reports/osv.json
+          path: build/security-reports/*
           if-no-files-found: error
           retention-days: 7
 
@@ -129,10 +137,52 @@ jobs:
       - name: Verify installer security boundaries
         run: python3 .github/security/test_install.py
 
+  regressions:
+    name: Runtime regression and live WAF tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CGO_ENABLED: '0'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.26.6'
+          cache-dependency-path: '**/go.sum'
+      - name: Test Coraza and every pure Go application module
+        run: |
+          for module in . carnical examples/http-server testing/coreruleset; do
+            (cd "$module" && go test ./...)
+          done
+      - name: Exercise alternate rule evaluation modes
+        run: |
+          for tag in coraza.no_memoize coraza.rule.multiphase_evaluation coraza.rule.no_regex_multiline; do
+            go test -tags="$tag" ./internal/seclang ./internal/corazawaf ./types
+          done
+      - name: Run varied attacks and benign traffic through the running WAF
+        working-directory: carnical
+        run: |
+          mkdir -p ../build/security-reports
+          go build -o ../build/carnical-ci ./cmd/carnical
+          go run ./tools/loadtest -binary ../build/carnical-ci -corpus tools/loadtest/testdata \
+            -count 10000 -variants -hardening -ddos off \
+            -output ../build/security-reports/live-waf.json
+          python3 ../.github/security/check_live_report.py ../build/security-reports/live-waf.json
+      - name: Preserve the live test report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: live-waf-regressions
+          path: build/security-reports/*
+          if-no-files-found: error
+          retention-days: 7
+
   required:
     name: Security review required
     if: ${{ always() }}
-    needs: [gosec, dependencies, secrets, workflows]
+    needs: [gosec, dependencies, secrets, workflows, regressions]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -142,6 +192,7 @@ jobs:
           DEPENDENCIES: ${{ needs.dependencies.result }}
           SECRETS: ${{ needs.secrets.result }}
           WORKFLOWS: ${{ needs.workflows.result }}
+          REGRESSIONS: ${{ needs.regressions.result }}
         run: |
           {
             echo '| Category | Result |'
@@ -150,10 +201,11 @@ jobs:
             echo "| Dependencies | $DEPENDENCIES |"
             echo "| Secrets | $SECRETS |"
             echo "| Workflows | $WORKFLOWS |"
+            echo "| Runtime and live WAF tests | $REGRESSIONS |"
             echo ''
             echo 'Download the per-category artifacts from this run to inspect findings.'
           } >> "$GITHUB_STEP_SUMMARY"
-          for result in "$GOSEC" "$DEPENDENCIES" "$SECRETS" "$WORKFLOWS"; do
+          for result in "$GOSEC" "$DEPENDENCIES" "$SECRETS" "$WORKFLOWS" "$REGRESSIONS"; do
             if [ "$result" != success ]; then
               echo '::error::A security check failed, was cancelled, or was skipped.'
               exit 1

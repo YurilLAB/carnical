@@ -5,7 +5,7 @@ package transformations
 
 import (
 	"crypto/fips140"
-	"crypto/md5"
+	"crypto/md5" // #nosec G501 -- Required SecLang t:md5 compatibility, never authentication or signature verification.
 	"errors"
 	"io"
 
@@ -37,7 +37,7 @@ func md5T(data string) (string, bool, error) {
 		return emptyMD5, true, nil
 	}
 
-	h := md5.New()
+	h := md5.New() // #nosec G401 -- Rule normalization transform; FIPS mode is rejected above.
 	_, err := io.WriteString(h, data)
 	if err != nil {
 		return data, false, err

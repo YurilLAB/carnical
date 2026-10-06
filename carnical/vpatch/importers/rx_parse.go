@@ -693,7 +693,7 @@ func decodeEscapeChar(s string) (rune, int, error) {
 				return 0, 0, errUnparsable
 			}
 			v, err := strconv.ParseUint(s[3:j], 16, 32)
-			if err != nil {
+			if err != nil || v > utf8.MaxRune || v >= 0xD800 && v <= 0xDFFF {
 				return 0, 0, errUnparsable
 			}
 			return rune(v), j + 1, nil
