@@ -270,11 +270,17 @@ def run(args):
             assert request(unix, "192.0.2.9") == 403
             assert request(unix, "2001:db8::9") == 403
             stop(wafs[-1][0])
-            opened = start_waf("-crowdsec-fail-open")
+            opened = start_waf("-crowdsec-fail-open", "-confine", "-confine-connect", f"{api_port},{origin.server_port},53")
+            cli("decisions", "add", "--ip", "203.0.113.9", "--duration", "1h")
+            wait_for(lambda: request(opened, "203.0.113.9") == 403, "decision update after confinement")
             stop(api)
             time.sleep(3.2)
             assert request(opened, "198.51.100.9") == 200
             assert request(opened, "192.0.2.9") == 403
+            api = subprocess.Popen([str(crowdsec), "-c", str(config), "-no-cs", "-no-capi"], stdout=api_log, stderr=subprocess.STDOUT)
+            wait_for(api_ready, "LAPI restart for confined client")
+            cli("decisions", "add", "--ip", "203.0.113.10", "--duration", "1h")
+            wait_for(lambda: request(opened, "203.0.113.10") == 403, "confined reconnect and resync")
             for proc, log in wafs:
                 stop(proc); log.flush()
             for path in logs:
@@ -282,7 +288,7 @@ def run(args):
                 assert api_key not in text, "bouncer key leaked in WAF logs"
             print(json.dumps({"crowdsec": VERSION, "benign_allowed": good, "ip_bans_blocked": banned,
                               "varied_sql_blocked": attacks, "batch_origin_received": batch_origin_received,
-                              "tcp_unix_ipv6_deletion_overlap_expiry_outage_recovery": "passed"}))
+                              "tcp_unix_ipv6_deletion_overlap_expiry_outage_recovery_confinement": "passed"}))
         finally:
             for proc, log in wafs:
                 stop(proc); log.close()

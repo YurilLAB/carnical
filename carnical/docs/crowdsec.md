@@ -20,11 +20,11 @@ for **each Carnical process**. Do not share this key with the firewall bouncer o
 another Carnical replica: the stream cursor is stored per bouncer in LAPI.
 
 ```sh
-sudo install -d -m 0750 /etc/crowdsec/bouncers
-sudo sh -c 'umask 077; cscli bouncers add carnical-edge-1 -o raw > /etc/crowdsec/bouncers/carnical-edge-1.key'
 # For the supplied systemd user; adapt the group for another deployment.
-sudo chown root:carnical-edge /etc/crowdsec/bouncers/carnical-edge-1.key
-sudo chmod 0640 /etc/crowdsec/bouncers/carnical-edge-1.key
+sudo install -d -o root -g carnical-edge -m 0750 /etc/carnical-crowdsec
+sudo sh -c 'umask 077; cscli bouncers add carnical-edge-1 -o raw > /etc/carnical-crowdsec/carnical-edge-1.key'
+sudo chown root:carnical-edge /etc/carnical-crowdsec/carnical-edge-1.key
+sudo chmod 0640 /etc/carnical-crowdsec/carnical-edge-1.key
 ```
 
 Supply the key through a private file, never as a flag value or in source control.
@@ -35,9 +35,9 @@ An initial authenticated, complete decision snapshot must succeed before listeni
 even with `-crowdsec-fail-open` enabled.
 
 ```sh
-carnical -upstream https://application.example -mode block \
+carnical -upstream https://application.example -mode block -listen 127.0.0.1:8082 \
   -crowdsec-api http://127.0.0.1:8080 \
-  -crowdsec-key-file /etc/crowdsec/bouncers/carnical-edge-1.key
+  -crowdsec-key-file /etc/carnical-crowdsec/carnical-edge-1.key
 ```
 
 The default Carnical listener also uses port 8080. Choose a different `-listen`
@@ -115,7 +115,7 @@ peers just to test a forwarding header.
 
 The repository's `.github/security/test_crowdsec.py --binary build/carnical-ci`
 starts an isolated real CrowdSec LAPI, creates its own test credentials, checks
-TCP/Unix sockets, IPv6, overlap, expiry, outages and recovery, and sends 20,000
+TCP/Unix sockets, IPv6, overlap, expiry, outages, recovery and updates after process confinement, and sends 20,000
 mixed requests plus 200 varied SQL probes through the running WAF. CI also runs
 race tests with a 100,000-entry decision list and malformed/overflowing updates.
 
