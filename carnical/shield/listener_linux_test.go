@@ -5,10 +5,14 @@
 package shield
 
 import (
+	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/netip"
+	"sync"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -83,14 +87,18 @@ func TestAConnectionThatSendsNothingNeverReachesTheProxy(t *testing.T) {
 
 func TestConnectionLimitsPerNetworkAndForBannedAddresses(t *testing.T) {
 	now := time.Now()
-	s := newTestShield(t, &now, func(c *Config) { c.SubnetConns = 3; c.DeferAccept = -1 })
+	s := newTestShield(t, &now, func(c *Config) { c.SubnetConns = 3; c.DeferAccept = -1; c.MaxSources = 1024 })
 	ln, accepted := listen(t, s)
 	addr := ln.Addr().String()
+	var held []net.Conn
 	for i := 0; i < 3; i++ {
 		dialFrom(t, "127.0.5."+string(rune('1'+i)), addr)
-		if waitAccept(accepted, time.Second) == nil {
+		c := waitAccept(accepted, time.Second)
+		if c == nil {
 			t.Fatalf("connection %d of 3 from the network was refused", i+1)
 		}
+		held = append(held, c)
+		t.Cleanup(func() { c.Close() })
 	}
 	fourth := dialFrom(t, "127.0.5.9", addr)
 	if waitAccept(accepted, 500*time.Millisecond) != nil {
@@ -99,6 +107,36 @@ func TestConnectionLimitsPerNetworkAndForBannedAddresses(t *testing.T) {
 	fourth.SetReadDeadline(time.Now().Add(time.Second))
 	if _, err := fourth.Read(make([]byte, 1)); err == nil {
 		t.Fatal("the refused connection was left open")
+	}
+	// Churn through the actual request history until this network is forgotten. Its sockets still occupy capacity.
+	p := netip.MustParsePrefix("127.0.5.0/24")
+	s.Admit(req("GET", "/"), p.Addr())
+	for i := 0; i < 16384; i++ {
+		s.Admit(req("GET", "/"), netip.AddrFrom4([4]byte{198, byte(i >> 8), byte(i), 1}))
+		if !s.subnets.peek(p, func(*subnet) {}) {
+			break
+		}
+	}
+	if s.subnets.peek(p, func(*subnet) {}) {
+		t.Fatal("control: request history did not evict the network")
+	}
+	dialFrom(t, "127.0.5.10", addr)
+	if c := waitAccept(accepted, 500*time.Millisecond); c != nil {
+		c.Close()
+		t.Fatal("request-history churn bypassed the open-connection limit")
+	}
+	held[0].Close()
+	held[0].Close() // closing twice must only release one slot
+	dialFrom(t, "127.0.5.11", addr)
+	if c := waitAccept(accepted, time.Second); c == nil {
+		t.Fatal("closing a socket did not release capacity")
+	} else {
+		t.Cleanup(func() { c.Close() })
+	}
+	dialFrom(t, "127.0.5.12", addr)
+	if c := waitAccept(accepted, 500*time.Millisecond); c != nil {
+		c.Close()
+		t.Fatal("double close released a second slot")
 	}
 	dialFrom(t, "127.0.6.1", addr)
 	if waitAccept(accepted, time.Second) == nil {
@@ -110,14 +148,93 @@ func TestConnectionLimitsPerNetworkAndForBannedAddresses(t *testing.T) {
 	if waitAccept(accepted, 500*time.Millisecond) != nil {
 		t.Fatal("a banned address got a connection")
 	}
+
+	// Real simultaneous accepts on separate listeners exercise the shared capacity reservation, with and without trust.
+	for _, trusted := range []bool{false, true} {
+		name := "concurrent listeners"
+		if trusted {
+			name = "trusted peers share global cap"
+		}
+		t.Run(name, func(t *testing.T) {
+			fixed := time.Now()
+			sh := newTestShield(t, &fixed, func(c *Config) {
+				c.MaxConns, c.SubnetConns, c.ConnBurst, c.DeferAccept = 16, 1000, 1000, -1
+				if trusted {
+					c.Trusted = []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")}
+				}
+			})
+			listeners := make([]net.Listener, 8)
+			channels := make([]chan net.Conn, len(listeners))
+			for i := range listeners {
+				listeners[i], channels[i] = listen(t, sh)
+			}
+			const attempts = 128
+			start := make(chan struct{})
+			clients := make(chan net.Conn, attempts)
+			dialErrors := make(chan error, attempts)
+			var wg sync.WaitGroup
+			for i := 0; i < attempts; i++ {
+				wg.Go(func() {
+					<-start
+					c, err := net.DialTimeout("tcp", listeners[i%len(listeners)].Addr().String(), 2*time.Second)
+					if err != nil {
+						dialErrors <- err
+					} else {
+						clients <- c
+					}
+				})
+			}
+			close(start)
+			wg.Wait()
+			close(clients)
+			for c := range clients {
+				t.Cleanup(func() { c.Close() })
+			}
+			close(dialErrors)
+			for err := range dialErrors {
+				// The listener may reset a refused socket before the client finishes Dial.
+				if !errors.Is(err, syscall.ECONNRESET) {
+					t.Errorf("dial: %v", err)
+				}
+			}
+			deadline := time.Now().Add(2 * time.Second)
+			for sh.conns.Load()+int64(sh.counters.connsRefused.Load()) < attempts && time.Now().Before(deadline) {
+				time.Sleep(time.Millisecond)
+			}
+			want := int64(13) // 16 minus the three slots reserved for known clients
+			if trusted {
+				want = 16
+			}
+			snap := sh.Snapshot()
+			if snap.Connections != want || snap.ConnsRefused != uint64(attempts-want) {
+				t.Fatalf("admitted %d, refused %d; want %d, %d", snap.Connections, snap.ConnsRefused, want, attempts-want)
+			}
+			for _, ch := range channels {
+				for len(ch) > 0 {
+					if err := (<-ch).Close(); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if sh.conns.Load() != 0 || len(sh.connNets) != 0 {
+				t.Fatal("closing all sockets left capacity occupied")
+			}
+		})
+	}
 }
 
 // When connections run short, idle keep-alive connections of clients the shield does not know are closed to make room;
 // nobody is refused while one of those can go.
 func TestIdleConnectionsOfStrangersMakeRoom(t *testing.T) {
 	now := time.Now()
-	clock := &now
-	s := newTestShield(t, clock, func(c *Config) { c.MaxConns = 20; c.ReservedShare = 0.5; c.DeferAccept = -1 })
+	var clock atomic.Int64
+	clock.Store(now.UnixNano())
+	s := newTestShield(t, &now, func(c *Config) {
+		c.MaxConns = 20
+		c.ReservedShare = 0.5
+		c.DeferAccept = -1
+		c.Now = func() time.Time { return time.Unix(0, clock.Load()) }
+	})
 	raw, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -138,7 +255,7 @@ func TestIdleConnectionsOfStrangersMakeRoom(t *testing.T) {
 		idle = append(idle, c)
 	}
 	time.Sleep(200 * time.Millisecond) // the server marks them idle
-	*clock = clock.Add(2 * time.Second)
+	clock.Add(int64(2 * time.Second))
 	newcomer := dialFrom(t, "127.0.9.1", addr)
 	newcomer.Write([]byte("GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"))
 	newcomer.SetReadDeadline(time.Now().Add(2 * time.Second))

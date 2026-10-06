@@ -7,6 +7,9 @@ and the OWASP Core Rule Set (CRS). It runs as a reverse proxy between clients an
 HTTP traffic before forwarding it. Its protections include API and body validation, flood mitigation, virtual patches,
 configurable policies and monitoring, alongside targeted hardening fixes to the Coraza engine.
 
+Transport protections reserve connection capacity before TLS or HTTP processing, keep live subnet counts through address
+churn, and enforce a global cap across listeners and trusted proxies. See [flood protection](docs/ddos.md) for tuning and limits.
+
 `carnical/` is its own Go module (`github.com/YurilLAB/coraza/carnical`), keeping the application additions separate
 from the Coraza engine. See the [repository overview](../README.md) and [current security findings](../docs/security-findings.md).
 

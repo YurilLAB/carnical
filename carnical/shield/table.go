@@ -119,13 +119,12 @@ func sourceLast(s *source) int64 { return s.last }
 // subnet is what the shield remembers about one /24 (IPv4) or /48 (IPv6).
 type subnet struct {
 	req    bucket
-	conns  int32
 	last   int64
 	winSec int64
 	winN   uint32
 }
 
-func subnetIdle(s *subnet, now int64) bool { return s.conns <= 0 && now-s.last > 60e9 }
+func subnetIdle(s *subnet, now int64) bool { return now-s.last > 60e9 }
 
 func subnetLast(s *subnet) int64 { return s.last }
 

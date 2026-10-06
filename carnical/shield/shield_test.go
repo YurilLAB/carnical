@@ -374,6 +374,11 @@ func TestConfigValidation(t *testing.T) {
 	}{
 		{"defaults", func(*Config) {}, true},
 		{"negative rate", func(c *Config) { c.RequestRate = -1 }, false},
+		{"NaN connection rate", func(c *Config) { c.ConnRate = math.NaN() }, false},
+		{"NaN reserved share", func(c *Config) { c.ReservedShare = math.NaN() }, false},
+		{"infinite network scale", func(c *Config) { c.Detector.MaxScale = math.Inf(1) }, false},
+		{"infinite burst", func(c *Config) { c.ConnBurst = math.Inf(-1) }, false},
+		{"scaled rate overflow", func(c *Config) { c.ConnRate, c.ConnBurst = math.MaxFloat64, math.MaxFloat64 }, false},
 		{"network slower than an address", func(c *Config) { c.RequestRate, c.SubnetRate = 100, 50 }, false},
 		{"too few connections", func(c *Config) { c.MaxConns = 4 }, false},
 		{"challenge too hard", func(c *Config) { c.ChallengeBits = 30 }, false},

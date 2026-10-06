@@ -12,7 +12,7 @@ import (
 // Listener wraps the proxy's listening socket. Each connection is judged the moment it is accepted, before a goroutine,
 // a TLS handshake or a buffer is spent on it; a refused one is closed with a reset (no TIME_WAIT left behind here).
 // On Linux the listening socket is also set so that the kernel does not hand over a connection until the client has
-// sent its first bytes: a connection flood that never sends anything never reaches the proxy at all.
+// sent its first bytes or the defer timeout expires. Silent connections still need server read deadlines.
 func (s *Shield) Listener(ln net.Listener) net.Listener {
 	if s.cfg.DeferAccept > 0 {
 		setDeferAccept(ln, s.cfg.DeferAccept)
@@ -87,40 +87,27 @@ func (s *Shield) admitConn(c net.Conn) net.Conn {
 	}
 	ns := s.now().UnixNano()
 	sc := &conn{Conn: c, s: s, key: sourceKey(a), subnet: netOf(a), trusted: s.trusted(a)}
-	if sc.trusted {
-		s.conns.Add(1)
-		s.det.count(ns, func(w *window) { w.connsIn++ })
-		return sc
-	}
 	attack := s.det.info.Load() != nil && !s.cfg.MonitorOnly
 	refused := false
 	scaleSrc, scaleNet := s.det.scales()
-	s.sources.do(sc.key, ns, func(src *source) {
-		src.last = ns
-		sc.known = s.isKnown(src, ns, s.det.info.Load())
-		rate, burst := s.cfg.ConnRate*scaleSrc, s.cfg.ConnBurst*scaleSrc
-		if attack && !sc.known {
-			rate, burst = rate/4, max(burst/4, 1) // strangers open connections more slowly during an attack
-		}
-		refused = src.bannedUntil > ns || !src.conn.take(ns, rate, burst)
-	})
-	if !refused {
-		limit := s.maxConns()
-		if !sc.known {
-			limit -= int64(float64(limit) * s.cfg.ReservedShare)
-		}
-		if s.conns.Load() >= limit {
-			s.evictIdle(ns, 16)
-			refused = s.conns.Load() >= limit
-		}
+	if !sc.trusted {
+		s.sources.do(sc.key, ns, func(src *source) {
+			src.last = ns
+			sc.known = s.isKnown(src, ns, s.det.info.Load())
+			rate, burst := s.cfg.ConnRate*scaleSrc, s.cfg.ConnBurst*scaleSrc
+			if attack && !sc.known {
+				rate, burst = rate/4, max(burst/4, 1) // strangers open connections more slowly during an attack
+			}
+			refused = src.bannedUntil > ns || !src.conn.take(ns, rate, burst)
+		})
 	}
 	if !refused {
-		s.subnets.do(sc.subnet, ns, func(n *subnet) {
-			n.last = ns
-			if refused = float64(n.conns) >= float64(s.cfg.SubnetConns)*scaleNet; !refused {
-				n.conns++
-			}
-		})
+		admitted, full := s.reserveConn(sc, scaleNet)
+		if !admitted && full {
+			s.evictIdle(ns, 16)
+			admitted, _ = s.reserveConn(sc, scaleNet)
+		}
+		refused = !admitted
 	}
 	if refused {
 		s.counters.connsRefused.Add(1)
@@ -128,7 +115,6 @@ func (s *Shield) admitConn(c net.Conn) net.Conn {
 		reset(c)
 		return nil
 	}
-	s.conns.Add(1)
 	s.det.count(ns, func(w *window) { w.connsIn++ })
 	if s.cfg.UserTimeout > 0 {
 		setUserTimeout(c, s.cfg.UserTimeout)
@@ -136,18 +122,42 @@ func (s *Shield) admitConn(c net.Conn) net.Conn {
 	return sc
 }
 
+// reserveConn checks and reserves both capacities in one critical section. full means idle eviction may help.
+func (s *Shield) reserveConn(c *conn, scaleNet float64) (admitted, full bool) {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	limit := s.maxConns()
+	if !c.known && !c.trusted {
+		limit -= int64(float64(limit) * s.cfg.ReservedShare)
+	}
+	if s.conns.Load() >= limit {
+		return false, true
+	}
+	if !c.trusted {
+		n := s.connNets[c.subnet]
+		if float64(n) >= float64(s.cfg.SubnetConns)*scaleNet {
+			return false, false
+		}
+		s.connNets[c.subnet] = n + 1
+	}
+	s.conns.Add(1)
+	return true, false
+}
+
 func (s *Shield) release(c *conn) {
+	s.connMu.Lock()
 	s.conns.Add(-1)
+	if !c.trusted {
+		if n := s.connNets[c.subnet]; n > 1 {
+			s.connNets[c.subnet] = n - 1
+		} else {
+			delete(s.connNets, c.subnet)
+		}
+	}
+	s.connMu.Unlock()
 	s.idleMu.Lock()
 	s.idle.remove(c)
 	s.idleMu.Unlock()
-	if !c.trusted {
-		s.subnets.peek(c.subnet, func(n *subnet) {
-			if n.conns > 0 {
-				n.conns--
-			}
-		})
-	}
 }
 
 // ConnState is for http.Server.ConnState: it keeps the list of idle keep-alive connections, oldest first, so that when

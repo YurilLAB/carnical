@@ -9,12 +9,19 @@ traffic as a whole. It is on by default in `cmd/carnical` (`-ddos on`); `-ddos m
 | Point | What it does | Rule IDs |
 |---|---|---|
 | Connection accepted (`Shield.Listener`) | Per-address connection rate (20/s, bursts of 60; a quarter of that for strangers during an attack). At most 1,024 connections per /24 (IPv4) or /48 (IPv6). At most 20,000 connections, with a fifth kept back for known clients. When connections run short, idle keep-alive connections of unknown clients are closed first. Banned addresses are reset at once. A refused connection is reset (RST), so it leaves no TIME_WAIT. | connection refusals are counted, not logged one by one |
-| Socket (Linux) | `TCP_DEFER_ACCEPT` (10 s): a connection that sends nothing is never handed to the proxy. `TCP_USER_TIMEOUT` (30 s): a client that stops acknowledging data (slow read, zero window) is dropped by the kernel. | |
+| Socket (Linux) | `TCP_DEFER_ACCEPT` (10 s): delays handing silent connections to the proxy until data arrives or the kernel timeout expires; server read deadlines are still required. `TCP_USER_TIMEOUT` (30 s): a client that stops acknowledging data (slow read, zero window) is dropped by the kernel. | |
 | Request, before any other check (`Shield.Admit`) | At least 50 requests a second per address (bursts of 200) and 500 per /24 or /48, at all times; these rise automatically to follow the site's own busiest addresses and networks (see "Limits that follow your traffic"). During an attack: requests that look like the attack share 5 a second in total; clients the shield does not know share the site's usual rate; known clients and browsers that passed the check go on as normal. Addresses refused 30 times during an attack are banned for 10 minutes. | 5004001 address rate, 5004002 network rate, 5004003 attack cluster, 5004004 unknown-client budget, 5004005 check shown, 5004006/5004007 check failed/passed, 5004008 banned |
 | Response (`Shield.Done`) | Status and time from the application: how clients become known, and how the detector sees the application struggling. | |
 
 A refusal is 429 (rate) or 503 with `Retry-After`, `Cache-Control: no-store` and `Connection: close`. The shield never writes
 a log line per refused request (in a flood that is a second flood, into the log); it writes a few lines per attack.
+
+Connection capacity is reserved atomically across every listener that shares a `Shield`. Live counts per /24 or /48 are
+kept separately from the bounded request-history tables, so churn through many addresses cannot reset them. Closing the
+last socket removes the network's live entry; these entries are bounded by admitted sockets. Trusted CDN/load-balancer
+peers bypass source and subnet limits and may use the reserved share, but still share the global connection cap. Refusals
+remain available as `Snapshot.ConnsRefused`, without one log entry per socket. Non-finite rates and scaling settings are
+rejected at configuration time.
 
 ## Detecting an attack from many addresses and countries
 

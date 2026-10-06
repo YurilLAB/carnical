@@ -144,8 +144,8 @@ type Config struct {
 	// MaxSources bounds how many addresses are remembered (default 262,144; about 30 MB).
 	MaxSources int
 
-	// Trusted are the load balancers or CDN in front of the proxy: their connections are not limited (the visitors
-	// behind them are, by the address the proxy works out for each request).
+	// Trusted are the load balancers or CDN in front of the proxy: their connections bypass per-source and per-network
+	// limits, but share the global connection cap (visitors are limited by the verified address of each request).
 	Trusted []netip.Prefix
 	// Detector tunes attack detection.
 	Detector DetectorConfig
@@ -212,6 +212,31 @@ func (c *Config) defaults() {
 // Validate reports a setting that cannot work.
 func (c Config) Validate() error {
 	c.defaults()
+	for _, field := range []struct {
+		name  string
+		value float64
+	}{
+		{"RequestRate", c.RequestRate}, {"RequestBurst", c.RequestBurst},
+		{"SubnetRate", c.SubnetRate}, {"SubnetBurst", c.SubnetBurst},
+		{"ReservedShare", c.ReservedShare}, {"ClusterShare", c.ClusterShare},
+		{"ConnRate", c.ConnRate}, {"ConnBurst", c.ConnBurst},
+		{"ClusterRate", c.ClusterRate}, {"UnknownFactor", c.UnknownFactor}, {"MinUnknownRate", c.MinUnknownRate},
+		{"Detector.MinAttackRate", c.Detector.MinAttackRate}, {"Detector.Sigmas", c.Detector.Sigmas},
+		{"Detector.LimitMargin", c.Detector.LimitMargin}, {"Detector.MaxScale", c.Detector.MaxScale},
+		{"Detector.RateFactor", c.Detector.RateFactor}, {"Detector.ExitFactor", c.Detector.ExitFactor},
+		{"Detector.InitialRate", c.Detector.InitialRate},
+		{"scaled connection rate", c.ConnRate * c.Detector.MaxScale},
+		{"scaled connection burst", c.ConnBurst * c.Detector.MaxScale},
+		{"scaled network connections", float64(c.SubnetConns) * c.Detector.MaxScale},
+		{"scaled request rate", c.RequestRate * c.Detector.MaxScale},
+		{"scaled request burst", c.RequestBurst * c.Detector.MaxScale},
+		{"scaled network rate", c.SubnetRate * c.Detector.MaxScale},
+		{"scaled network burst", c.SubnetBurst * c.Detector.MaxScale},
+	} {
+		if math.IsNaN(field.value) || math.IsInf(field.value, 0) {
+			return fmt.Errorf("shield: %s must be finite", field.name)
+		}
+	}
 	switch {
 	case c.RequestRate < 0 || c.RequestBurst < 1 || c.SubnetRate < 0 || c.SubnetBurst < 1:
 		return errors.New("shield: request rates must be positive and bursts at least 1")
@@ -255,6 +280,10 @@ type Shield struct {
 	connAvg atomic.Uint64 // float64 bits: the moving average of the number of open connections
 	connN   atomic.Int64
 	fdLimit int64
+	// connMu makes capacity reservation atomic across listeners. Live network counts are separate from the evictable
+	// request history: address churn must not reset a network's open-connection count. Zero counts are removed.
+	connMu   sync.Mutex
+	connNets map[netip.Prefix]int64
 
 	budgetMu sync.Mutex
 	epoch    uint32
@@ -288,7 +317,8 @@ func New(cfg Config) (*Shield, error) {
 	}
 	cfg.defaults()
 	cfg.Trusted = append([]netip.Prefix(nil), cfg.Trusted...)
-	s := &Shield{cfg: cfg, key: newKey(), det: newDetector(cfg.Detector), stop: make(chan struct{}), bans: make(chan banReq, 256)}
+	s := &Shield{cfg: cfg, key: newKey(), det: newDetector(cfg.Detector), stop: make(chan struct{}), bans: make(chan banReq, 256),
+		connNets: make(map[netip.Prefix]int64)}
 	s.sources = newTable[netip.Addr, source](cfg.MaxSources, sourceIdle, sourceLast)
 	s.subnets = newTable[netip.Prefix, subnet](cfg.MaxSources/4, subnetIdle, subnetLast)
 	s.det.labeler, s.det.onEvent = cfg.Labeler, cfg.OnEvent
