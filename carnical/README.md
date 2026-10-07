@@ -56,6 +56,15 @@ Go imports. See the [repository overview](../README.md) and [current security fi
 
 ## Run it
 
+For a reusable site file, preflight checks and client DNS handover, use the [website onboarding guide](docs/website-onboarding.md).
+
+```sh
+cp docs/examples/site-local.json site.json
+go run ./cmd/carnical -config site.json -check
+go run ./cmd/carnical -config site.json -check -check-origin
+go run ./cmd/carnical -config site.json
+```
+
 Use Go 1.26 or later (the workspace selects Go 1.26.6). From the repository root, with a local application on port 8081:
 
 ```sh

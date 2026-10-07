@@ -21,6 +21,22 @@ import (
 // Socket activation: systemd opens port 443 and hands the proxy the open socket, so the proxy needs no privilege (no
 // capability to bind a low port) and, once confined, cannot open a listening socket of its own.
 func TestTheProxyServesOnASocketSystemdHandsOver(t *testing.T) {
+	t.Run("packaged socket contract", func(t *testing.T) {
+		unit, err := os.ReadFile("../../deploy/systemd/carnical-edge.socket")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Count(string(unit), "ListenStream=") != 1 || !strings.Contains(string(unit), "ListenStream=[::]:443") || !strings.Contains(string(unit), "BindIPv6Only=both") {
+			t.Fatal("packaged unit must pass one dual-stack listener")
+		}
+		service, err := os.ReadFile("../../deploy/systemd/carnical-edge.service")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(service), "ExecStartPre=/usr/local/bin/carnical -check -systemd-socket -confine") {
+			t.Fatal("service omits startup preflight")
+		}
+	})
 	goBin, err := exec.LookPath("go")
 	if err != nil {
 		t.Skip("no go command to build with")
@@ -34,7 +50,7 @@ func TestTheProxyServesOnASocketSystemdHandsOver(t *testing.T) {
 	app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "reached the application") }))
 	defer app.Close()
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := net.Listen("tcp", "[::]:0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,26 +81,31 @@ func TestTheProxyServesOnASocketSystemdHandsOver(t *testing.T) {
 	}()
 
 	client := &http.Client{Timeout: 10 * time.Second}
-	deadline := time.Now().Add(20 * time.Second)
-	for {
-		resp, err := client.Get("http://" + ln.Addr().String() + "/page")
-		if err == nil {
-			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			if resp.StatusCode != 200 || !strings.Contains(string(body), "reached the application") {
-				t.Fatalf("status %d, body %q\n%s", resp.StatusCode, body, logs.String())
+	defer client.CloseIdleConnections()
+	for _, tc := range []struct{ name, host string }{{"IPv4", "127.0.0.1"}, {"IPv6", "::1"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			deadline := time.Now().Add(20 * time.Second)
+			for {
+				resp, err := client.Get("http://" + net.JoinHostPort(tc.host, fmt.Sprint(ln.Addr().(*net.TCPAddr).Port)) + "/page")
+				if err == nil {
+					body, _ := io.ReadAll(resp.Body)
+					resp.Body.Close()
+					if resp.StatusCode != 200 || !strings.Contains(string(body), "reached the application") {
+						t.Fatalf("status %d, body %q\n%s", resp.StatusCode, body, logs.String())
+					}
+					break
+				}
+				select {
+				case err := <-exited:
+					t.Fatalf("the proxy exited: %v\n%s", err, logs.String())
+				default:
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("no answer: %v\n%s", err, logs.String())
+				}
+				time.Sleep(100 * time.Millisecond)
 			}
-			break
-		}
-		select {
-		case err := <-exited:
-			t.Fatalf("the proxy exited: %v\n%s", err, logs.String())
-		default:
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no answer: %v\n%s", err, logs.String())
-		}
-		time.Sleep(100 * time.Millisecond)
+		})
 	}
 	if !strings.Contains(logs.String(), `"msg":"confined"`) {
 		t.Fatalf("the proxy did not confine itself:\n%s", logs.String())

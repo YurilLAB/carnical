@@ -17,6 +17,7 @@ User=carnical-edge
 Group=carnical-edge
 # Arguments live in one file, so that a site is added without editing the unit (and without weakening it).
 EnvironmentFile=/etc/carnical/edge.env
+ExecStartPre=/usr/local/bin/carnical -check -systemd-socket -confine -upload-dir /var/lib/carnical/edge/uploads $CARNICAL_ARGS
 ExecStart=/usr/local/bin/carnical -systemd-socket -confine -upload-dir /var/lib/carnical/edge/uploads $CARNICAL_ARGS
 Restart=on-failure
 RestartSec=2

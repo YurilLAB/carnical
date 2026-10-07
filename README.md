@@ -36,6 +36,8 @@ Key Features (Coraza engine):
 
 Carnical adds:
 
+* **Website onboarding** - [Reusable site files and startup checks](carnical/docs/website-onboarding.md), optional origin DNS/TCP/TLS verification, and an operator/client guide for DNS cutover, certificates and rollback.
+
 * **API contracts and request validation** - [Explicit OpenAPI contracts](carnical/docs/input-hardening.md) validate supported parameters and JSON schemas. [Strict format inspection](carnical/docs/formats.md) covers JSON, XML/SOAP, GraphQL, forms, multipart, NDJSON, optional YAML and bounded gzip/deflate decoding, with checks for ambiguous parsing and resource exhaustion. API quotas are opt-in; discovery and learning are available through the [API guard library](carnical/docs/apiguard.md).
 * **Proxy hardening** - Verified client identities, origin address restrictions, request-target and framing checks, upload safeguards, bounded rule evaluation and supplemental injection rules reduce differences between what the WAF inspects and what the application receives.
 * **Flood protection** - [Connection admission before TLS/HTTP processing](carnical/docs/ddos.md), per-address and subnet budgets, reserved capacity for known clients, and limits that respect the host's file-descriptor budget. The optional [Linux nftables layer](carnical/docs/network-protection.md) adds SYN filtering before connection tracking, bounded packet counters and small/standard/large deployment budgets.

@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "flags": {
+    "listen": "127.0.0.1:8080",
+    "upstream": "http://127.0.0.1:8081",
+    "origin-allow": "127.0.0.1/32",
+    "mode": "detect",
+    "formats-mode": "monitor"
+  }
+}

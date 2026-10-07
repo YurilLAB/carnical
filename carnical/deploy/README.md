@@ -6,6 +6,8 @@ the evidence are in `../docs/hardening.md`; this page is the order to do things 
 
 Tested on Linux 6.18 with systemd 259 (Ubuntu 26.04 under WSL2). Not yet on Ubuntu 22.04, Ubuntu 24.04 or Debian 12; see "Differences between systems" below.
 
+For the edge in front of one website, start with the [site configuration and client handover guide](../docs/website-onboarding.md). The service now validates its effective settings before startup; local checks do not replace confined live forwarding tests.
+
 ## What is here
 
 | File | What it does |
@@ -35,7 +37,7 @@ Tested on Linux 6.18 with systemd 259 (Ubuntu 26.04 under WSL2). Not yet on Ubun
 
 2. Install the programs as root, owned by root and not writable by anyone else: `install -o root -g root -m 0755 carnical carnical-audit carnical-confine /usr/local/bin/`.
 3. `install -m 0644 sysusers.d/carnical.conf /etc/sysusers.d/ && systemd-sysusers`, then the same for `tmpfiles.d` and `systemd-tmpfiles --create`.
-4. Put `zones.json` in `/etc/carnical/` (see `docs/segmentation.md`; with everything on one machine each part is a zone, each listener names its `user`, and a socket that systemd opened is owned by root, so list `root,carnical-edge`). Put the edge's arguments in `/etc/carnical/edge.env` as `CARNICAL_ARGS="-upstream ... -mode block ..."`.
+4. Put `zones.json` in `/etc/carnical/` (see `docs/segmentation.md`; with everything on one machine each part is a zone, each listener names its `user`, and a socket that systemd opened is owned by root, so list `root,carnical-edge`). Install the reviewed site file as `/etc/carnical/site.json` (root-owned, edge-group-readable, mode 0640) and put `CARNICAL_ARGS="-config /etc/carnical/site.json"` in `/etc/carnical/edge.env`. Direct flag lists remain supported. See the [site examples](../docs/website-onboarding.md) for certificates, origin addresses and checks.
 5. `install -m 0644 sysctl/90-carnical.conf /etc/sysctl.d/ && sysctl --system`. `install -m 0644 modprobe/carnical.conf /etc/modprobe.d/`.
 6. Edit the management addresses and resolver at the top of `nftables/carnical.nft`. [Render a deployment profile](../docs/network-protection.md#choosing-a-budget) with budgets matching the measured edge capacity and verified CDN/load-balancer peers, review the output, check it, then load it: `nft -c -f /etc/carnical/network.nft && nft -f /etc/carnical/network.nft`. Rendered profiles require nftables 1.0.9 or later and kernel support for `destroy`; `nft -c` verifies support. Load the complete file in one transaction. It resets this table's counters/meters so changed limits and revoked peer ranges take effect. Load it from a unit that runs before the services, and keep the file where no service user can write it.
 7. `./honeytokens.sh`, then `install -m 0640 auditd/carnical.rules /etc/audit/rules.d/ && augenrules --load`. The last line of the rules locks them until the next boot.

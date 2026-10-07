@@ -40,6 +40,9 @@ func main() {
 }
 
 func run() error {
+	configFile := flag.String("config", "", "operator site JSON configuration (maximum 64 KiB; explicit CLI flags override it)")
+	check := flag.Bool("check", false, "validate settings and local files, then exit without listening or applying confinement")
+	checkOrigin := flag.Bool("check-origin", false, "with -check, also verify origin DNS, TCP and HTTPS certificate within 10s (sends no HTTP request)")
 	listen := flag.String("listen", "127.0.0.1:8080", "address to listen on")
 	upstream := flag.String("upstream", "", "the website to protect, such as http://127.0.0.1:8081 (required)")
 	upstreamHost := flag.String("upstream-host", "", "Host header to send to the upstream (default: the visitor's)")
@@ -115,6 +118,17 @@ func run() error {
 		fmt.Printf("OWASP CRS %s (archive sha256 %s, signed by %s)\n", info.Version, info.ArchiveSHA256, info.SignerFingerprint)
 		return nil
 	}
+	if flag.NArg() != 0 {
+		return errors.New("unexpected positional arguments; use named flags")
+	}
+	if *configFile != "" {
+		if err := loadSiteConfig(*configFile, flag.CommandLine); err != nil {
+			return err
+		}
+	}
+	if *checkOrigin && !*check {
+		return errors.New("-check-origin requires -check")
+	}
 	if *upstream == "" {
 		return errors.New("-upstream is required")
 	}
@@ -173,10 +187,12 @@ func run() error {
 	}
 	if cs != nil {
 		defer cs.Close()
-		if err := cs.Sync(context.Background()); err != nil {
-			return err
-		} // authentication and complete snapshot required at startup
-		log.Info("CrowdSec connected", "entries", cs.Stats().Entries, "skipped", cs.Stats().Skipped, "fail_open", *csFailOpen)
+		if !*check {
+			if err := cs.Sync(context.Background()); err != nil {
+				return err
+			} // authentication and complete snapshot required at startup
+			log.Info("CrowdSec connected", "entries", cs.Stats().Entries, "skipped", cs.Stats().Skipped, "fail_open", *csFailOpen)
+		}
 	}
 	if apiInspector != nil {
 		log.Info("API contract loaded", "mode", *apiSpecMode, "sha256", apiReport.Hash, "routes", apiReport.Routes,
@@ -222,18 +238,7 @@ func run() error {
 		}
 		server.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert}}
 	}
-	var ln net.Listener
-	if *fromSystemd {
-		if ln, err = systemdListener(); err != nil {
-			return err
-		}
-	} else if ln, err = net.Listen("tcp", *listen); err != nil {
-		return err
-	}
-	defer ln.Close()
-	if guard != nil {
-		ln = guard.Listener(ln)
-	}
+	var confinement sandbox.Policy
 	if *confine {
 		ports, err := parsePorts(*confineConnect)
 		if err != nil {
@@ -250,11 +255,32 @@ func run() error {
 				return errors.New("CrowdSec API TCP port must be listed in -confine-connect")
 			}
 		}
-		policy := sandbox.Policy{ReadOnly: splitList(*confineRead), ConnectTCP: ports, BindTCP: []uint16{}, Require: !*confineBestEffort}
+		confinement = sandbox.Policy{ReadOnly: splitList(*confineRead), ConnectTCP: ports, BindTCP: []uint16{}, Require: !*confineBestEffort}
 		if *uploadDir != "" {
-			policy.ReadWrite = []string{*uploadDir}
+			confinement.ReadWrite = []string{*uploadDir}
 		}
-		rep, err := sandbox.Apply(policy)
+	}
+	if err := checkDeployment(*listen, target, proxy.OriginPolicy{Allow: origin}, *fromSystemd, *checkOrigin); err != nil {
+		return err
+	}
+	if *check {
+		log.Info("configuration checked", "mode", *mode, "formats_mode", *formatsMode, "origin_checked", *checkOrigin, "tls", *certFile != "", "sandbox_applied", false)
+		return nil
+	}
+	var ln net.Listener
+	if *fromSystemd {
+		if ln, err = systemdListener(); err != nil {
+			return err
+		}
+	} else if ln, err = net.Listen("tcp", *listen); err != nil {
+		return err
+	}
+	defer ln.Close()
+	if guard != nil {
+		ln = guard.Listener(ln)
+	}
+	if *confine {
+		rep, err := sandbox.Apply(confinement)
 		if err != nil {
 			return err
 		}

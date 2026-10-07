@@ -147,3 +147,4 @@ Superseding does not delete the old record. Set its status and let the history s
 | [0076](0076-carnical-result-cache-capacity.md) | Owner-authorized development | 2026-10-07 | unreleased | ⚡ | Bound the virtual-patch regex result cache |
 
 Categories: **F**eature · **P**arity · **⚡** Perf · **R**efactor
+| [0077](0077-carnical-site-configuration.md) | — | — | unreleased (post-v3.8.1) | F | Reusable Carnical site configuration and deployment preflight |

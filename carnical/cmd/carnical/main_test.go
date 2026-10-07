@@ -8,6 +8,8 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
+	"flag"
 	"fmt"
 	"io"
 	"log/slog"
@@ -37,6 +39,100 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build: %v\n%s", err, out)
 	}
+
+	t.Run("site configuration parser", func(t *testing.T) {
+		tests := []struct {
+			name, data string
+			bad        bool
+		}{
+			{name: "empty settings", data: "{\"version\":1,\"flags\":{}}", bad: false},
+			{name: "boolean string option", data: "{\"version\":1,\"flags\":{\"upstream\":true}}", bad: true},
+			{name: "all flag kinds", data: "{\"version\":1,\"flags\":{\"upstream\":\"http://example.test\",\"local-rules\":false,\"max-body\":2048,\"max-upstream\":2,\"ddos-rate\":0.5,\"eval-budget\":\"500ms\"}}", bad: false},
+			{name: "unknown field", data: "{\"version\":1,\"flags\":{},\"other\":1}", bad: true},
+			{name: "wrong version", data: "{\"version\":2,\"flags\":{}}", bad: true},
+			{name: "null root", data: "null", bad: true},
+			{name: "array root", data: "[]", bad: true},
+			{name: "null flags", data: "{\"version\":1,\"flags\":null}", bad: true},
+			{name: "missing version", data: "{\"flags\":{}}", bad: true},
+			{name: "missing flags", data: "{\"version\":1}", bad: true},
+			{name: "duplicate root field", data: "{\"version\":1,\"version\":1,\"flags\":{}}", bad: true},
+			{name: "escaped duplicate flag", data: "{\"version\":1,\"flags\":{\"mode\":\"block\",\"\\u006dode\":\"off\"}}", bad: true},
+			{name: "duplicate flags object", data: "{\"version\":1,\"flags\":{},\"flags\":{}}", bad: true},
+			{name: "null flag", data: "{\"version\":1,\"flags\":{\"mode\":null}}", bad: true},
+			{name: "unknown flag", data: "{\"version\":1,\"flags\":{\"mod\":\"block\"}}", bad: true},
+			{name: "case alias", data: "{\"version\":1,\"flags\":{\"MODE\":\"block\"}}", bad: true},
+			{name: "nested string", data: "{\"version\":1,\"flags\":{\"mode\":{\"value\":\"block\"}}}", bad: true},
+			{name: "string boolean", data: "{\"version\":1,\"flags\":{\"local-rules\":\"false\"}}", bad: true},
+			{name: "number boolean", data: "{\"version\":1,\"flags\":{\"local-rules\":0}}", bad: true},
+			{name: "string integer", data: "{\"version\":1,\"flags\":{\"max-body\":\"2048\"}}", bad: true},
+			{name: "fractional integer", data: "{\"version\":1,\"flags\":{\"max-body\":1.5}}", bad: true},
+			{name: "integer overflow", data: "{\"version\":1,\"flags\":{\"max-body\":9223372036854775808}}", bad: true},
+			{name: "float overflow", data: "{\"version\":1,\"flags\":{\"ddos-rate\":1e999}}", bad: true},
+			{name: "invalid duration", data: "{\"version\":1,\"flags\":{\"eval-budget\":\"later\"}}", bad: true},
+			{name: "numeric duration", data: "{\"version\":1,\"flags\":{\"eval-budget\":2}}", bad: true},
+			{name: "recursive config", data: "{\"version\":1,\"flags\":{\"config\":\"next.json\"}}", bad: true},
+			{name: "file check action", data: "{\"version\":1,\"flags\":{\"check\":true}}", bad: true},
+			{name: "file network action", data: "{\"version\":1,\"flags\":{\"check-origin\":true}}", bad: true},
+			{name: "file version action", data: "{\"version\":1,\"flags\":{\"version\":true}}", bad: true},
+			{name: "trailing document", data: "{\"version\":1,\"flags\":{}} {}", bad: true},
+			{name: "truncated document", data: "{\"version\":1,\"flags\":{\"mode\":\"block\"}", bad: true},
+			{name: "invalid UTF8", data: "{\"version\":1,\"flags\":{\"mode\":\"" + string([]byte{0xff}) + "\"}}", bad: true},
+			{name: "over size limit", data: "{\"version\":1,\"flags\":{}}" + strings.Repeat(" ", maxSiteConfigBytes), bad: true},
+		}
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				flags := flag.NewFlagSet("site", flag.ContinueOnError)
+				upstream := flags.String("upstream", "", "")
+				flags.String("mode", "detect", "")
+				localRules := flags.Bool("local-rules", true, "")
+				flags.Int64("max-body", 1<<20, "")
+				flags.Int("max-upstream", 256, "")
+				flags.Float64("ddos-rate", 50, "")
+				flags.Duration("eval-budget", time.Second, "")
+				flags.String("config", "", "")
+				flags.Bool("check", false, "")
+				flags.Bool("check-origin", false, "")
+				flags.Bool("version", false, "")
+				if err := flags.Parse([]string{"-upstream", "http://override.test", "-local-rules=false"}); err != nil {
+					t.Fatal(err)
+				}
+				path := filepath.Join(t.TempDir(), "site.json")
+				if err := os.WriteFile(path, []byte(tc.data), 0600); err != nil {
+					t.Fatal(err)
+				}
+				err := loadSiteConfig(path, flags)
+				if (err != nil) != tc.bad {
+					t.Fatalf("error %v, want invalid=%v", err, tc.bad)
+				}
+				if !tc.bad && (*upstream != "http://override.test" || *localRules) {
+					t.Fatal("file replaced explicit CLI settings")
+				}
+			})
+		}
+		t.Run("symlink file", func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "site.json")
+			if err := os.WriteFile(path, []byte(`{"version":1,"flags":{}}`), 0600); err != nil {
+				t.Fatal(err)
+			}
+			link := filepath.Join(dir, "link.json")
+			if err := os.Symlink(path, link); err != nil {
+				if runtime.GOOS == "windows" {
+					t.Skip("Windows symlink creation requires host privilege")
+				}
+				t.Fatal(err)
+			}
+			if err := loadSiteConfig(link, flag.NewFlagSet("site", flag.ContinueOnError)); err == nil {
+				t.Fatal("symlink accepted as configuration")
+			}
+		})
+		t.Run("nonregular file", func(t *testing.T) {
+			if err := loadSiteConfig(t.TempDir(), flag.NewFlagSet("site", flag.ContinueOnError)); err == nil {
+				t.Fatal("directory accepted as config")
+			}
+		})
+	})
+
 	type received struct {
 		body, encoding string
 		length         int64
@@ -55,6 +151,8 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 		w.WriteHeader(200)
 	}))
 	defer app.Close()
+	tlsApp := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { requests <- received{target: r.RequestURI} }))
+	defer tlsApp.Close()
 	client := &http.Client{Timeout: time.Second}
 	defer client.CloseIdleConnections()
 	const good = `{"note":"SECRET_TOKEN_CLI_TEST","a":1}`
@@ -85,6 +183,9 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 		return "--B\r\nContent-Disposition: form-data; name=\"file\"; filename=\"" + name + "\"\r\nContent-Type: text/plain\r\n\r\n" + content + "\r\n--B--\r\n"
 	}
 	tests := []struct {
+		site                                                                        string
+		preflight                                                                   bool
+		trustOrigin                                                                 bool
 		apiSpec                                                                     string
 		headers                                                                     map[string]string
 		alsoRules                                                                   []int
@@ -99,6 +200,23 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 		allowEncoding, fails, policyDir                                             bool
 		status                                                                      int
 	}{
+		{name: "site check accepts trusted origin certificate", site: `{"version":1,"flags":{"upstream":"$TLSORIGIN","origin-allow":"127.0.0.1/32"}}`, extraArgs: []string{"-check", "-check-origin"}, preflight: true, trustOrigin: true},
+		{name: "site check rejects untrusted origin certificate", site: `{"version":1,"flags":{"upstream":"$TLSORIGIN","origin-allow":"127.0.0.1/32"}}`, extraArgs: []string{"-check", "-check-origin"}, fails: true},
+		{name: "site check rejects private DNS without allowance", site: `{"version":1,"flags":{"upstream":"$DNSORIGIN"}}`, extraArgs: []string{"-check", "-check-origin"}, fails: true},
+		{name: "site shipped local example", site: "local-example", method: "GET", target: "/page", status: 200},
+		{name: "site config serves good request", site: "{\"version\":1,\"flags\":{\"upstream\":\"$ORIGIN\",\"origin-allow\":\"127.0.0.1/32\",\"mode\":\"block\",\"formats-mode\":\"block\",\"local-rules\":true,\"max-body\":1048576,\"ddos-rate\":50.5,\"eval-budget\":\"2s\"}}", method: "GET", target: "/page", status: 200},
+		{name: "site config blocks injection", site: "{\"version\":1,\"flags\":{\"upstream\":\"$ORIGIN\",\"origin-allow\":\"127.0.0.1/32\",\"mode\":\"block\",\"formats-mode\":\"block\"}}", method: "GET", target: "/page?q=%3Cscript%3Ealert(1)%3C/script%3E", status: 403},
+		{name: "site config format enforcement", site: "{\"version\":1,\"flags\":{\"upstream\":\"$ORIGIN\",\"origin-allow\":\"127.0.0.1/32\",\"mode\":\"block\",\"formats-mode\":\"block\"}}", ct: "application/json", body: "{\"a\":1,\"a\":2}", status: 400},
+		{name: "explicit false overrides file true", site: "{\"version\":1,\"flags\":{\"upstream\":\"$ORIGIN\",\"origin-allow\":\"127.0.0.1/32\",\"mode\":\"off\",\"allow-request-encoding\":true}}", mode: "off", extraArgs: []string{"-allow-request-encoding=false"}, status: 200},
+		{name: "explicit enforcement overrides file monitor", site: "{\"version\":1,\"flags\":{\"upstream\":\"$ORIGIN\",\"origin-allow\":\"127.0.0.1/32\",\"mode\":\"off\",\"formats-mode\":\"monitor\"}}", mode: "block", ct: "application/json", body: "{\"a\":1,\"a\":2}", status: 400},
+		{name: "site config private origin needs allowance", site: "{\"version\":1,\"flags\":{\"upstream\":\"$ORIGIN\"}}", fails: true},
+		{name: "site check does not listen or require inherited socket", site: "{\"version\":1,\"flags\":{\"upstream\":\"$ORIGIN\",\"origin-allow\":\"127.0.0.1/32\",\"systemd-socket\":true}}", preflight: true, extraArgs: []string{"-check"}},
+		{name: "site check verifies origin connectivity without HTTP", site: "{\"version\":1,\"flags\":{\"upstream\":\"$ORIGIN\",\"origin-allow\":\"127.0.0.1/32\"}}", preflight: true, extraArgs: []string{"-check", "-check-origin"}},
+		{name: "site check validates confine port list", site: "{\"version\":1,\"flags\":{\"upstream\":\"$ORIGIN\",\"origin-allow\":\"127.0.0.1/32\",\"confine\":true,\"confine-connect\":\"invalid\"}}", fails: true, extraArgs: []string{"-check"}},
+		{name: "site check permits named listening port", extraArgs: []string{"-check", "-listen", "127.0.0.1:http"}, preflight: true},
+		{name: "check validates listen syntax", extraArgs: []string{"-check", "-listen", "invalid"}, fails: true},
+		{name: "check validates upstream port", extraArgs: []string{"-check", "-upstream", "http://127.0.0.1:0"}, fails: true},
+		{name: "check origin requires check", extraArgs: []string{"-check-origin"}, fails: true},
 		{name: "contract correct URL query", mode: "block", apiSpec: "example", method: "GET", target: "/api/import?src=https%3A%2F%2Fassets.example.test%2Fpublic%2Fphoto.png", status: 200},
 		{name: "contract correct JSON URL", mode: "block", apiSpec: "example", target: "/api/import", ct: "application/json", body: `{"src":"https://assets.example.test/public/photo.png"}`, status: 200},
 		{name: "contract attacker host", mode: "block", apiSpec: "example", method: "GET", target: "/api/import?src=https%3A%2F%2Fevil.example%2Fpublic%2Fphoto.png", status: 400, logRule: `"rule":5003103`},
@@ -245,6 +363,9 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.trustOrigin && runtime.GOOS != "linux" {
+				t.Skip("Linux SSL_CERT_FILE tests system-root overrides; Windows uses the native certificate store")
+			}
 			for len(requests) > 0 {
 				<-requests // a failing previous subtest must not contaminate this one's origin evidence
 			}
@@ -257,6 +378,20 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 				t.Fatal(err)
 			}
 			args := []string{"-listen", addr, "-upstream", app.URL, "-origin-allow", "127.0.0.0/8", "-mode", "off"}
+			if tc.site == "local-example" {
+				data, err := os.ReadFile("../../docs/examples/site-local.json")
+				if err != nil {
+					t.Fatal(err)
+				}
+				tc.site = strings.ReplaceAll(string(data), "http://127.0.0.1:8081", app.URL)
+			}
+			if tc.site != "" {
+				path := filepath.Join(t.TempDir(), "site.json")
+				if err := os.WriteFile(path, []byte(strings.NewReplacer("$ORIGIN", app.URL, "$TLSORIGIN", tlsApp.URL, "$DNSORIGIN", strings.ReplaceAll(app.URL, "127.0.0.1", "localhost")).Replace(tc.site)), 0600); err != nil {
+					t.Fatal(err)
+				}
+				args = []string{"-listen", addr, "-config", path}
+			}
 			args = append(args, tc.extraArgs...)
 			if tc.apiSpec != "" {
 				data := []byte(tc.apiSpec)
@@ -297,6 +432,14 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
 			cmd := exec.CommandContext(ctx, bin, args...)
+			if tc.trustOrigin {
+				path := filepath.Join(t.TempDir(), "ca.pem")
+				data := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: tlsApp.Certificate().Raw})
+				if err := os.WriteFile(path, data, 0600); err != nil {
+					t.Fatal(err)
+				}
+				cmd.Env = append(os.Environ(), "SSL_CERT_FILE="+path)
+			}
 			logPath := filepath.Join(t.TempDir(), "proxy.log")
 			logs, err := os.Create(logPath)
 			if err != nil {
@@ -304,6 +447,24 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 			}
 			defer logs.Close()
 			cmd.Stdout, cmd.Stderr = logs, logs
+			if tc.preflight {
+				if err := cmd.Run(); err != nil {
+					data, _ := os.ReadFile(logPath)
+					t.Fatalf("preflight failed: %v\n%s", err, data)
+				}
+				data, _ := os.ReadFile(logPath)
+				if !bytes.Contains(data, []byte(`"msg":"configuration checked"`)) {
+					t.Fatal("missing preflight result")
+				}
+				if conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond); err == nil {
+					conn.Close()
+					t.Fatal("preflight opened a listener")
+				}
+				if len(requests) != 0 {
+					t.Fatal("preflight sent an HTTP request")
+				}
+				return
+			}
 			if tc.fails {
 				if err := cmd.Run(); err == nil || ctx.Err() != nil {
 					t.Fatalf("invalid configuration did not fail promptly: %v", err)
