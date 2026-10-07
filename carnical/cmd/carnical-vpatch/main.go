@@ -13,10 +13,12 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -606,39 +608,37 @@ func cmdConvert(args []string, stdout, stderr io.Writer) error {
 	if p.Version == "" {
 		p.Version = time.Now().UTC().Format("2006.01.02")
 	}
-	// write to a temporary name and rename, so that a failed conversion never leaves half a pack at the target
-	tmp := *out + ".tmp"
-	f, err := os.Create(tmp)
+	// Create a private, exclusive temporary file in the output directory.
+	// The directory must be operator-controlled, as for any published pack.
+	f, err := os.CreateTemp(filepath.Dir(*out), ".carnical-vpatch-*")
 	if err != nil {
 		return err
 	}
+	tmp := f.Name()
 	if strings.HasSuffix(*out, ".json") {
 		err = vpatch.WritePackJSON(f, p)
 	} else {
 		err = vpatch.WritePack(f, p)
 	}
-	if cerr := f.Close(); err == nil {
-		err = cerr
+	var chk vpatch.Pack
+	if err == nil {
+		// Validate the exact file we wrote before it replaces a working pack.
+		// Keep the handle open so validation cannot resolve a different path.
+		if _, err = f.Seek(0, io.SeekStart); err == nil {
+			chk, err = vpatch.ReadPack(f)
+		}
+		if err != nil {
+			err = fmt.Errorf("converted pack failed validation: %w", err)
+		}
 	}
-	if err != nil {
-		os.Remove(tmp)
-		return err
+	if err := errors.Join(err, f.Close()); err != nil {
+		return errors.Join(err, os.Remove(tmp))
 	}
 	if err := os.Rename(tmp, *out); err != nil {
-		os.Remove(tmp)
-		return err
+		return errors.Join(err, os.Remove(tmp))
 	}
-	back, err := os.Open(*out)
-	if err != nil {
-		return err
-	}
-	chk, err := vpatch.ReadPack(back)
-	back.Close()
-	if err != nil {
-		return fmt.Errorf("the pack was written but does not read back: %w", err)
-	}
-	fmt.Fprintf(stdout, "wrote %s: %d of %d signatures (tiers %v), hash %s\n", *out, len(chk.Signatures), len(sigs), tl, chk.Hash)
-	return nil
+	_, err = fmt.Fprintf(stdout, "wrote %s: %d of %d signatures (tiers %v), hash %s\n", *out, len(chk.Signatures), len(sigs), tl, chk.Hash)
+	return err
 }
 
 func baseName(p string) string {

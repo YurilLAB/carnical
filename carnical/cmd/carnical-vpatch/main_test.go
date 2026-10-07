@@ -4,8 +4,12 @@ package main
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -55,6 +59,14 @@ func TestCommands(t *testing.T) {
 	ben := write(t, dir, "benign.jsonl", benign)
 	atk := write(t, dir, "attack.jsonl", attacks)
 	pack := filepath.Join(dir, "out.yaml")
+	neighbourOut := filepath.Join(dir, "neighbour.json")
+	neighbour := write(t, dir, "neighbour.json.tmp", "unrelated contents")
+	aliasedInput := write(t, dir, "alias.yaml.tmp", library)
+	aliasOut := filepath.Join(dir, "alias.yaml")
+	failedOut := filepath.Join(dir, "output-directory")
+	if err := os.Mkdir(failedOut, 0o700); err != nil {
+		t.Fatal(err)
+	}
 
 	tests := []struct {
 		name     string
@@ -75,6 +87,10 @@ func TestCommands(t *testing.T) {
 		{"replay wrong software scope", []string{"replay", "-sigs", scopedLib, "-scope", "jira", "-attack", atk}, 1, nil, "no signatures loaded"},
 		{"replay samples", []string{"replay", "-sigs", lib, "-samples", smp, "-tiers", "verified,experimental"}, 0, []string{"benign: 1 of 2", "attack: 2 of 2"}, ""},
 		{"convert", []string{"convert", "-in", lib, "-out", pack, "-tiers", "verified,community"}, 0, []string{"wrote", "3 of 4 signatures", "hash "}, ""},
+		{"convert keeps neighbouring file", []string{"convert", "-in", lib, "-out", neighbourOut}, 0, []string{"wrote", "1 of 4 signatures"}, ""},
+		{"load converted JSON", []string{"load", "-in", neighbourOut}, 0, []string{"read 1 signatures", "loaded 1 "}, ""},
+		{"convert keeps input at legacy temporary name", []string{"convert", "-in", aliasedInput, "-format", "legacy", "-out", aliasOut}, 0, []string{"wrote"}, ""},
+		{"rename failure", []string{"convert", "-in", lib, "-out", failedOut}, 1, nil, "rename"},
 		{"load the converted pack", []string{"load", "-in", pack, "-tiers", "verified,community"}, 0, []string{"read 3 signatures", "loaded 2 ", "rejected: 1"}, ""},
 		{"no arguments", nil, 2, nil, "usage"},
 		{"unknown command", []string{"frobnicate"}, 2, nil, "unknown command"},
@@ -101,7 +117,66 @@ func TestCommands(t *testing.T) {
 			}
 		})
 	}
-	if _, err := os.Stat(pack + ".tmp"); err == nil {
-		t.Error("a temporary file was left behind")
+	t.Run("oversized pack preserves previous output", func(t *testing.T) {
+		// Pack serialization can exceed the reader cap even for a valid legacy
+		// feed; publishing must preserve the existing usable configuration.
+		original, err := os.ReadFile(neighbourOut)
+		if err != nil {
+			t.Fatal(err)
+		}
+		output := write(t, dir, "oversized.json", string(original))
+		input := filepath.Join(dir, "large.jsonl")
+		f, err := os.Create(input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pattern := strings.Repeat("a", 8192)
+		for i := 0; i < 8200; i++ {
+			if _, err := fmt.Fprintf(f, `{"id":"large-%d","category":"probe","severity":"high","operator":"contains","pattern":%q,"targets":["path"],"_status":"verified"}`+"\n", i, pattern); err != nil {
+				_ = f.Close()
+				t.Fatal(err)
+			}
+		}
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if code, _, errOut := do(t, "convert", "-in", input, "-out", output); code != 1 || !strings.Contains(errOut, "larger than") {
+			t.Fatalf("unexpected oversized conversion result: %d, %s", code, errOut)
+		}
+		if got, err := os.ReadFile(output); err != nil || !bytes.Equal(got, original) {
+			t.Fatalf("failed conversion replaced the previous pack: size %d, %v", len(got), err)
+		}
+	})
+	t.Run("closed report output", func(t *testing.T) {
+		report, err := os.CreateTemp(dir, "closed-report-*")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := report.Close(); err != nil {
+			t.Fatal(err)
+		}
+		err = cmdConvert([]string{"-in", lib, "-out", filepath.Join(dir, "closed-report.yaml")}, report, io.Discard)
+		if !errors.Is(err, os.ErrClosed) {
+			t.Fatalf("lost report write failure: %v", err)
+		}
+	})
+	if runtime.GOOS != "windows" {
+		for _, path := range []string{pack, neighbourOut, aliasOut} {
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if info.Mode().Perm() != 0o600 {
+				t.Errorf("pack permissions = %o, want 600", info.Mode().Perm())
+			}
+		}
+	}
+	for path, want := range map[string]string{neighbour: "unrelated contents", aliasedInput: library} {
+		if data, err := os.ReadFile(path); err != nil || string(data) != want {
+			t.Errorf("conversion changed neighbouring/input file %s: %q, %v", path, data, err)
+		}
+	}
+	if temps, err := filepath.Glob(filepath.Join(dir, ".carnical-vpatch-*")); err != nil || len(temps) != 0 {
+		t.Errorf("temporary output files remain: %v, %v", temps, err)
 	}
 }

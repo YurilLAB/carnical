@@ -363,3 +363,34 @@ compiler; the hosted Ubuntu job supplies that check.
 The ADR validator now normalizes Windows CRLF before inspecting sections. The
 previous checker rejected 60 existing records on Windows; all 75 records now
 pass on Windows and Linux, including the indexed YAML work-budget decision.
+
+## Virtual-patch conversion publication — 7 October 2026
+
+The pack converter now exclusively creates a private temporary file in the
+operator-selected output directory and validates it through that same open
+handle before publication. Failure cleanup preserves serialization, validation,
+close and removal errors; failed reporting returns an error after publication.
+The output directory must remain operator-controlled. Converted packs now use
+0600 on Unix; installations using a separate service account must explicitly
+grant it read access. Windows continues to use filesystem ACLs.
+
+Regression controls reproduced loss of a neighbouring file and an input using
+the previous temporary filename before the fix. A second control reproduced
+a large valid legacy feed replacing a working pack with an output above the
+64 MiB reader cap. Both defects no longer reproduce. JSON/YAML round trips,
+existing-target replacement, input preservation, rename failure cleanup and
+closed report output are covered in the existing command suite.
+
+Independent source investigation and candidate review were completed; the
+review's publication-before-validation defect was confirmed before correction.
+The converter and virtual-patch short suites pass on Windows and Linux, and
+focused vet passes. Actual converter processes on both platforms preserve
+neighbouring/input files, load both output formats, support in-place conversion
+and leave no temporary pack files. Linux checks private modes and an actual
+failed-output sink. No new scanner exceptions were added.
+
+The application rescan has 111 Linux and 83 Windows findings, four fewer per
+target, with no package-loading errors. The core remains at zero. The hosted
+run at commit 32f18269 passed both native suites, runtime/tag/live WAF tests,
+Ubuntu race checks, CrowdSec, L3/L4, dependencies, secrets and workflow
+validation. Application scanner findings still fail the security gate.

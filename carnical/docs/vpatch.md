@@ -38,6 +38,11 @@ go run ./cmd/carnical-vpatch -h
 
 `carnical-vpatch` supplies pack compilation, inspection and corpus replay commands. Its help documents the accepted input
 formats and tier flags. These tools read local files; they do not send scanner requests to an external site.
+`convert` writes through an exclusive temporary file in the selected output directory. Converted packs are created with
+private permissions (0600 on Unix; Windows uses filesystem ACLs). Use an operator-controlled directory and explicitly grant
+read access to a separate service account when installing a pack. The converter validates the temporary pack through its
+open handle before publication; a serialization, validation or rename failure preserves the previous output. A failed report
+write returns an error even if the valid pack has already been published.
 For replay, supply `-scope jira` (or the site's other software tags) to activate scoped rules. A replay that loads no
 signatures fails with an error instead of reporting empty detection and index-equivalence results as a successful check.
 
