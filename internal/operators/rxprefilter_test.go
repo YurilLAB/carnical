@@ -1731,18 +1731,29 @@ func TestInternalNodeCoverage(t *testing.T) {
 	})
 
 	t.Run("newIndexedMatcher/needle_longer_than_255", func(t *testing.T) {
-		// When the shortest needle exceeds 255 bytes the shift table is capped at
-		// 255 to fit in a uint8. The matcher must still find an exact match.
-		needle := strings.Repeat("a", 300)
-		m := newIndexedMatcher([]string{needle}, false)
-		if m.minLen != 300 {
-			t.Errorf("minLen = %d, want 300", m.minLen)
-		}
-		if !m.match(needle) {
-			t.Error("should match exact needle")
-		}
-		if m.match(strings.Repeat("a", 299)) {
-			t.Error("should not match 299-byte input against 300-byte needle")
+		// A capped shift must still find long literals at every alignment,
+		// including mixed-case input and a second needle with a different suffix.
+		for _, length := range []int{255, 256, 257, 300, 512} {
+			for _, ci := range []bool{false, true} {
+				t.Run(fmt.Sprintf("len%d/ci%t", length, ci), func(t *testing.T) {
+					needle := strings.Repeat("abc", length/3) + strings.Repeat("d", length%3)
+					other := needle[:length-1] + "z"
+					m := newIndexedMatcher([]string{needle, other}, ci)
+					for offset := 0; offset <= 512; offset++ {
+						for _, value := range []string{needle, other} {
+							if ci {
+								value = strings.ToUpper(value)
+							}
+							if !m.match(strings.Repeat("x", offset) + value + "tail") {
+								t.Fatalf("missed needle at offset %d", offset)
+							}
+						}
+					}
+					if m.match(needle[:length-1]) || m.match(strings.Repeat("x", length+512)) {
+						t.Fatal("matched absent or truncated needle")
+					}
+				})
+			}
 		}
 	})
 

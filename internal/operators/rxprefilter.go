@@ -800,7 +800,13 @@ func newIndexedMatcher(needles []string, ci bool) *indexedMatcher {
 
 	for _, n := range norms {
 		for j := 0; j < im.minLen; j++ {
-			sh := uint8(im.minLen - 1 - j)
+			distance := im.minLen - 1 - j
+			// Entries beyond the representable shift cannot improve the initial
+			// capped shift. Skipping them avoids wrapping a large distance to zero.
+			if distance < 0 || distance > 255 {
+				continue
+			}
+			sh := uint8(distance)
 			c := n[j]
 			if sh < im.shift[c] {
 				im.shift[c] = sh

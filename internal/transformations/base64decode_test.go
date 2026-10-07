@@ -15,6 +15,8 @@ var b64DecodeTests = []struct {
 	input    string
 	expected string
 }{
+	{name: "high bytes in every output position", input: "////", expected: "\xff\xff\xff"},
+	{name: "unpadded high bytes", input: "//8", expected: "\xff\xff"},
 	{
 		name:     "Valid",
 		input:    "VGVzdENhc2U=",

@@ -101,9 +101,9 @@ func doBase64decode(src string, ext bool) string {
 		x = (x << 6) | int(decodedChar&0x3F)
 		n++
 		if n == 4 {
-			dst.WriteByte(byte(x >> 16))
-			dst.WriteByte(byte(x >> 8))
-			dst.WriteByte(byte(x))
+			dst.WriteByte(byte((x >> 16) & 0xff))
+			dst.WriteByte(byte((x >> 8) & 0xff))
+			dst.WriteByte(byte(x & 0xff))
 			n = 0
 			x = 0
 		}
@@ -113,11 +113,11 @@ func doBase64decode(src string, ext bool) string {
 	switch n {
 	case 2:
 		x <<= 12
-		dst.WriteByte(byte(x >> 16))
+		dst.WriteByte(byte((x >> 16) & 0xff))
 	case 3:
 		x <<= 6
-		dst.WriteByte(byte(x >> 16))
-		dst.WriteByte(byte(x >> 8))
+		dst.WriteByte(byte((x >> 16) & 0xff))
+		dst.WriteByte(byte((x >> 8) & 0xff))
 	}
 
 	return dst.String()

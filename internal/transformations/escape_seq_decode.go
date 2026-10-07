@@ -92,7 +92,7 @@ func doEscapeSeqDecode(input string, pos int) (string, bool) {
 				// value would make strconv return an out of range error along with
 				// the saturated value 0xff, corrupting every sequence above \377.
 				bc, _ := strconv.ParseUint(input[i+1:i+j], 8, 16)
-				data[d] = byte(bc)
+				data[d] = byte(bc & 0xff)
 				d += 1
 				i += j
 				changed = true

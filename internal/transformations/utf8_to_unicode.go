@@ -37,7 +37,7 @@ func doUTF8ToUnicode(input string, pos int) string {
 	copy(res, input[0:pos])
 
 	for _, c := range input[pos:] {
-		if c < utf8.RuneSelf {
+		if c >= 0 && c < utf8.RuneSelf {
 			res = append(res, byte(c))
 			continue
 		}
@@ -47,7 +47,7 @@ func doUTF8ToUnicode(input string, pos int) string {
 		for i := 0; i < 4-cHexLen; i++ {
 			res = append(res, '0')
 		}
-		res = strconv.AppendUint(res, uint64(c), 16)
+		res = strconv.AppendInt(res, int64(c), 16)
 	}
 
 	return strings.WrapUnsafe(res)

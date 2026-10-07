@@ -246,7 +246,7 @@ func matchesArbitraryBytes(expr string) bool {
 		}
 
 		v, mb, _, err := strconv.UnquoteChar(sub, 0)
-		if err != nil || mb {
+		if err != nil || mb || v < 0 || v > 255 {
 			// Wasn't a byte escape sequence, shouldn't happen in practice.
 			decoded = append(decoded, expr[i])
 			continue
