@@ -65,7 +65,7 @@ func configureFormats(mode, path string, encoding bool) (*formats.Inspector, err
 	}
 	p := formats.Policy{}
 	if path != "" {
-		file, err := os.Open(path)
+		file, err := os.Open(path) // #nosec G304 -- Operator-selected policy is read before listening; regular-file, size and strict policy checks follow.
 		if err != nil {
 			return nil, fmt.Errorf("-formats-policy: %w", err)
 		}

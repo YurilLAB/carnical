@@ -81,6 +81,20 @@ func TestAConnectionThatSendsNothingNeverReachesTheProxy(t *testing.T) {
 		t.Fatal("a connection that sent data was not handed over")
 	}
 
+	t.Run("optional socket tuning failures are visible", func(t *testing.T) {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := ln.Close(); err != nil {
+			t.Fatal(err)
+		}
+		before := s.Snapshot().SocketOptionErrors
+		s.Listener(ln)
+		if s.Snapshot().SocketOptionErrors != before+1 {
+			t.Fatal("failed optional socket tuning was not counted")
+		}
+	})
 	// Control: without the shield the same silent connection is accepted at once.
 	plain, plainAccepted := listen(t, nil)
 	dialFrom(t, "127.0.0.1", plain.Addr().String(), false)

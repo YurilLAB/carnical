@@ -25,7 +25,7 @@ func configureAPI(path, mode, formatsMode string) (*apiguard.Guard, apiguard.Rep
 	if mode == "block" && formatsMode != "block" {
 		return nil, rep, errors.New("-api-spec-mode block requires -formats-mode block for structural validation")
 	}
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304 -- Operator-selected API spec is read before listening; regular-file, size and schema checks follow.
 	if err != nil {
 		return nil, rep, fmt.Errorf("-api-spec: %w", err)
 	}

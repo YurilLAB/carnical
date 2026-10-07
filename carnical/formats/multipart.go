@@ -403,7 +403,7 @@ func decodeExtValue(v string) (string, bool) {
 			if i+2 >= len(enc) || !isHexDigit(enc[i+1]) || !isHexDigit(enc[i+2]) {
 				return "", false
 			}
-			out = append(out, byte(hexVal(enc[i+1])<<4|hexVal(enc[i+2])))
+			out = append(out, byte((hexVal(enc[i+1])<<4|hexVal(enc[i+2]))&0xff))
 			i += 2
 			continue
 		}

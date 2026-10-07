@@ -21,7 +21,7 @@ func openStore(t *testing.T, dir string) *FileSeqStore {
 }
 
 func TestFileStoreSurvivesARestart(t *testing.T) {
-	dir := t.TempDir()
+	dir := filepath.Join(t.TempDir(), "seq")
 	s := openStore(t, dir)
 	if last, err := s.Last(tenantA); err != nil || last != 0 {
 		t.Fatalf("a new stream: %d, %v", last, err)
@@ -77,10 +77,64 @@ func TestFileStoreFilesAreOnePerStreamAndPrivate(t *testing.T) {
 			t.Errorf("a temporary file was left behind: %s", n)
 		}
 	}
+	if os.PathSeparator == '/' {
+		for _, mode := range []fs.FileMode{0o700, 0o750, 0o702, 0o777} {
+			t.Run(mode.String(), func(t *testing.T) {
+				dir := filepath.Join(t.TempDir(), "seq")
+				if err := os.Mkdir(dir, mode); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(dir, mode); err != nil {
+					t.Fatal(err)
+				}
+				leftover := filepath.Join(dir, tenantA+".tmp-interrupted")
+				if err := os.WriteFile(leftover, []byte("keep until directory validation"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				store, err := OpenFileSeqStore(dir)
+				if mode == 0o700 {
+					if err != nil || store == nil {
+						t.Fatalf("private directory rejected: %v", err)
+					}
+					if err := store.Advance(tenantA, 1); err != nil {
+						t.Fatal(err)
+					}
+					return
+				}
+				if !errors.Is(err, ErrStore) || store != nil {
+					t.Fatalf("shared directory accepted: store=%v err=%v", store != nil, err)
+				}
+				if _, err := os.Stat(leftover); err != nil {
+					t.Fatalf("rejected directory modified: %v", err)
+				}
+				if fi, err := os.Stat(dir); err != nil || fi.Mode().Perm() != mode {
+					t.Fatalf("permissions changed: %v %v", fi, err)
+				}
+			})
+		}
+		t.Run("symlink directory", func(t *testing.T) {
+			parent := t.TempDir()
+			target := filepath.Join(parent, "private")
+			if err := os.Mkdir(target, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			link := filepath.Join(parent, "seq")
+			if err := os.Symlink(target, link); err != nil {
+				t.Fatal(err)
+			}
+			for _, path := range []string{link, link + string(os.PathSeparator), link + string(os.PathSeparator) + "."} {
+				t.Run(path, func(t *testing.T) {
+					if store, err := OpenFileSeqStore(path); !errors.Is(err, ErrStore) || store != nil {
+						t.Errorf("symlink directory %q accepted: store=%v err=%v", path, store != nil, err)
+					}
+				})
+			}
+		})
+	}
 }
 
 func TestStreamNamesAreChecked(t *testing.T) {
-	for _, store := range []SeqStore{NewMemSeqStore(), openStore(t, t.TempDir())} {
+	for _, store := range []SeqStore{NewMemSeqStore(), openStore(t, filepath.Join(t.TempDir(), "seq"))} {
 		for name, stream := range map[string]string{
 			"empty":                             "",
 			"a path":                            "../" + tenantA,
@@ -100,10 +154,10 @@ func TestStreamNamesAreChecked(t *testing.T) {
 			}
 		}
 	}
-	if err := openStore(t, t.TempDir()).Advance(tenantA, 0); err == nil {
+	if err := openStore(t, filepath.Join(t.TempDir(), "seq")).Advance(tenantA, 0); err == nil {
 		t.Error("sequence 0 recorded")
 	}
-	if err := openStore(t, t.TempDir()).Advance(tenantA, MaxSequence+1); err == nil {
+	if err := openStore(t, filepath.Join(t.TempDir(), "seq")).Advance(tenantA, MaxSequence+1); err == nil {
 		t.Error("a sequence over the maximum recorded")
 	}
 }
@@ -165,7 +219,7 @@ func TestADamagedRecordIsNeverReadAsANumber(t *testing.T) {
 }
 
 func TestADamagedFileFailsClosedAndResetRepairsIt(t *testing.T) {
-	dir := t.TempDir()
+	dir := filepath.Join(t.TempDir(), "seq")
 	s := openStore(t, dir)
 	if err := s.Advance(tenantA, 50); err != nil {
 		t.Fatal(err)
@@ -269,7 +323,7 @@ func (c *crashOps) syncDir(dir string) error {
 func TestAPowerCutNeverLowersTheStoredSequence(t *testing.T) {
 	for _, step := range []string{"partial-write", "write", "rename"} {
 		t.Run("cut at "+step, func(t *testing.T) {
-			dir := t.TempDir()
+			dir := filepath.Join(t.TempDir(), "seq")
 			before := openStore(t, dir)
 			if err := before.Advance(tenantA, 5); err != nil {
 				t.Fatal(err)
@@ -314,8 +368,11 @@ func TestAPowerCutNeverLowersTheStoredSequence(t *testing.T) {
 		})
 	}
 	t.Run("a cut during the very first write leaves no record, not a number", func(t *testing.T) {
-		dir := t.TempDir()
-		crashing, _ := openFileSeqStore(dir, &crashOps{at: "partial-write"})
+		dir := filepath.Join(t.TempDir(), "seq")
+		crashing, err := openFileSeqStore(dir, &crashOps{at: "partial-write"})
+		if err != nil {
+			t.Fatal(err)
+		}
 		if err := crashing.Advance(tenantA, 9); !errors.Is(err, ErrStore) {
 			t.Fatal(err)
 		}
@@ -359,7 +416,7 @@ func (f failOps) readFile(p string) ([]byte, error) {
 func TestADiskErrorIsNotAnAcceptance(t *testing.T) {
 	for _, fail := range []string{"write", "rename", "syncdir", "read"} {
 		t.Run(fail, func(t *testing.T) {
-			dir := t.TempDir()
+			dir := filepath.Join(t.TempDir(), "seq")
 			if err := openStore(t, dir).Advance(tenantA, 5); err != nil {
 				t.Fatal(err)
 			}
@@ -378,9 +435,12 @@ func TestADiskErrorIsNotAnAcceptance(t *testing.T) {
 		})
 	}
 	t.Run("an envelope is not accepted when its record cannot be written", func(t *testing.T) {
-		s, _ := openFileSeqStore(t.TempDir(), failOps{fail: "write"})
+		s, err := openFileSeqStore(filepath.Join(t.TempDir(), "seq"), failOps{fail: "write"})
+		if err != nil {
+			t.Fatal(err)
+		}
 		r := newRig(t, s)
-		_, err := r.ver.Accept(r.sign(t, tenantA, edgeID, 1), t0.Add(1))
+		_, err = r.ver.Accept(r.sign(t, tenantA, edgeID, 1), t0.Add(1))
 		if !errors.Is(err, ErrStore) {
 			t.Fatalf("Accept = %v", err)
 		}
@@ -391,7 +451,10 @@ func TestADiskErrorIsNotAnAcceptance(t *testing.T) {
 }
 
 func TestFileStoreCleansUpAfterAnInterruptedWriteOnOpen(t *testing.T) {
-	dir := t.TempDir()
+	dir := filepath.Join(t.TempDir(), "seq")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	os.WriteFile(filepath.Join(dir, tenantA+".tmp-12345"), []byte("half"), 0o600)
 	os.WriteFile(filepath.Join(dir, "unrelated.txt"), []byte("keep"), 0o600)
 	openStore(t, dir)

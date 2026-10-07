@@ -708,12 +708,12 @@ func decodeEscapeChar(s string) (rune, int, error) {
 		return rune(v), 2 + n, nil
 	case '0', '1', '2', '3', '4', '5', '6', '7':
 		n := 1
-		v := int(e - '0')
+		v := rune(e - '0')
 		for n < 3 && 1+n < len(s) && s[1+n] >= '0' && s[1+n] <= '7' {
-			v = v*8 + int(s[1+n]-'0')
+			v = v*8 + rune(s[1+n]-'0')
 			n++
 		}
-		return rune(v), 1 + n, nil
+		return v, 1 + n, nil
 	case 'c':
 		if len(s) >= 3 {
 			return rune(s[2]) & 0x1f, 3, nil

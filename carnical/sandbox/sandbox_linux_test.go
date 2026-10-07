@@ -3,8 +3,10 @@
 package sandbox
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -154,6 +156,52 @@ func TestEveryJumpFitsAndNoneGoesBackwards(t *testing.T) {
 	if last := prog[len(prog)-1]; last.Code != bpfRetK || last.K != seccompRetKillProcess {
 		t.Fatal("the program does not end by refusing")
 	}
+	for _, tc := range []struct {
+		name                                       string
+		distance                                   int
+		unconditional, missing, backwards, wantErr bool
+	}{
+		{name: "conditional jump at byte limit", distance: 255},
+		{name: "conditional jump beyond byte limit", distance: 256, wantErr: true},
+		{name: "unconditional jump beyond byte limit", distance: 256, unconditional: true},
+		{name: "unconditional jump beyond 32 bits", unconditional: true, wantErr: true},
+		{name: "undefined target", missing: true, wantErr: true},
+		{name: "backwards target", backwards: true, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := newAsm()
+			if tc.unconditional {
+				a.jump("target")
+			} else {
+				a.jeq(1, "target", "target")
+			}
+			for i := 0; i < tc.distance; i++ {
+				a.ret(seccompRetAllow)
+			}
+			if !tc.missing {
+				a.label("target")
+			}
+			if tc.backwards {
+				a.labels["target"] = 0
+			}
+			if tc.unconditional && tc.distance == 0 {
+				a.labels["target"] = math.MaxInt
+			}
+			a.ret(seccompRetKillProcess)
+			assembled, err := a.program()
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("program returned %v, want error %t", err, tc.wantErr)
+			}
+			if err != nil {
+				return
+			}
+			data := [64]byte{}
+			binary.NativeEndian.PutUint32(data[:], 1)
+			if got := evalBPF(t, assembled, data); got != seccompRetKillProcess {
+				t.Fatalf("jump changed decision: %x", got)
+			}
+		})
+	}
 }
 
 // ---- the real thing, on this kernel: the probe runs each action in a confined child process ----
@@ -220,6 +268,24 @@ func TestConfinementHoldsOnThisKernel(t *testing.T) {
 	if killed < 10 {
 		t.Errorf("only %d actions were ended by the filter", killed)
 	}
+
+	t.Run("failed report output is not a successful check", func(t *testing.T) {
+		full, err := os.OpenFile("/dev/full", os.O_WRONLY, 0)
+		if err != nil {
+			t.Skip("no failing output device: " + err.Error())
+		}
+		var stderr bytes.Buffer
+		cmd := exec.Command(bin, "check", "-json")
+		cmd.Stdout, cmd.Stderr = full, &stderr
+		err = cmd.Run()
+		if closeErr := full.Close(); closeErr != nil {
+			t.Fatal(closeErr)
+		}
+		exit, ok := err.(*exec.ExitError)
+		if !ok || exit.ExitCode() != 2 || stderr.Len() == 0 {
+			t.Fatalf("failed report returned %v, stderr %q", err, stderr.String())
+		}
+	})
 
 	// The control: the same actions with no confinement all go through. If they did not, the confined run would
 	// be showing a broken probe and not a working restriction.

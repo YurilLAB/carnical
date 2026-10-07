@@ -50,6 +50,20 @@ func TestConfigValidation(t *testing.T) {
 		{"learning that needs no observations", func(c *Config) { c.Learn.MinObservations = -3 }, "minObservations"},
 		{"more required clients than the evidence can follow", func(c *Config) { c.Learn.MinClients = maxSlots + 1 }, "minClients"},
 		{"a client share over a hundred percent", func(c *Config) { c.Learn.MaxClientShare = 101 }, "maxClientShare"},
+		{"learning observation ceiling", func(c *Config) { c.Learn.MinObservations = 1_000_000 }, ""},
+		{"learning observation overflow", func(c *Config) { c.Learn.MinObservations = 1_000_001 }, "minObservations"},
+		{"required observation ceiling", func(c *Config) { c.Learn.RequiredMinObservations = 1_000_000 }, ""},
+		{"required observation overflow", func(c *Config) { c.Learn.RequiredMinObservations = 1_000_001 }, "requiredMinObservations"},
+		{"negative required observations", func(c *Config) { c.Learn.RequiredMinObservations = -1 }, "requiredMinObservations"},
+		{"minimum client share", func(c *Config) { c.Learn.MaxClientShare = 1 }, ""},
+		{"maximum client share", func(c *Config) { c.Learn.MaxClientShare = 100 }, ""},
+		{"negative client share", func(c *Config) { c.Learn.MaxClientShare = -1 }, "maxClientShare"},
+		{"minimum required percentage", func(c *Config) { c.Learn.RequiredPercent = 50 }, ""},
+		{"maximum required percentage", func(c *Config) { c.Learn.RequiredPercent = 100 }, ""},
+		{"excessive required percentage", func(c *Config) { c.Learn.RequiredPercent = 101 }, "requiredPercent"},
+		{"negative required percentage", func(c *Config) { c.Learn.RequiredPercent = -1 }, "requiredPercent"},
+		{"agreement count ceiling", func(c *Config) { c.Discovery.AgreeMinimum = 1_000_000 }, ""},
+		{"excessive agreement count", func(c *Config) { c.Discovery.AgreeMinimum = 1_000_001 }, "agreeMinimum"},
 		{"a required percentage that makes everything optional", func(c *Config) { c.Learn.RequiredPercent = 10 }, "requiredPercent"},
 		{"more routes than the model can hold", func(c *Config) { c.Learn.MaxRoutes = MaxRoutes + 1 }, "maxRoutes"},
 		{"fewer than two distinct values", func(c *Config) { c.Learn.DistinctValues = 1 }, "distinctValues"},
@@ -72,6 +86,15 @@ func TestConfigValidation(t *testing.T) {
 				t.Fatalf("refused: %v", err)
 			case tt.want != "" && (err == nil || !strings.Contains(err.Error(), tt.want)):
 				t.Fatalf("err = %v, want one containing %q", err, tt.want)
+			}
+			if tt.want == "" {
+				g, err := New(c)
+				if err != nil {
+					t.Fatalf("New refused valid config: %v", err)
+				}
+				if err := g.SetConfig(c); err != nil {
+					t.Fatalf("SetConfig refused valid config: %v", err)
+				}
 			}
 			// A refused configuration must also be refused by New and SetConfig.
 			if tt.want != "" {

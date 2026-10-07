@@ -15,7 +15,9 @@ import (
 // sent its first bytes or the defer timeout expires. Silent connections still need server read deadlines.
 func (s *Shield) Listener(ln net.Listener) net.Listener {
 	if s.cfg.DeferAccept > 0 {
-		setDeferAccept(ln, s.cfg.DeferAccept)
+		if err := setDeferAccept(ln, s.cfg.DeferAccept); err != nil {
+			s.counters.socketOptionErrors.Add(1)
+		}
 	}
 	return &listener{Listener: ln, s: s}
 }
@@ -72,17 +74,20 @@ func remoteAddr(c net.Conn) (netip.Addr, bool) {
 }
 
 // reset closes a connection with a RST rather than a FIN.
-func reset(c net.Conn) {
+func (s *Shield) reset(c net.Conn) {
 	if tc, ok := c.(*net.TCPConn); ok {
-		tc.SetLinger(0)
+		if err := tc.SetLinger(0); err != nil {
+			s.counters.socketOptionErrors.Add(1)
+		}
 	}
+	// #nosec G104 -- Refused connection cleanup; admission is already denied and there is no caller recovery path. Close is attempted even if SetLinger fails.
 	c.Close()
 }
 
 func (s *Shield) admitConn(c net.Conn) net.Conn {
 	a, ok := remoteAddr(c)
 	if !ok {
-		reset(c)
+		s.reset(c)
 		return nil
 	}
 	ns := s.now().UnixNano()
@@ -112,12 +117,14 @@ func (s *Shield) admitConn(c net.Conn) net.Conn {
 	if refused {
 		s.counters.connsRefused.Add(1)
 		s.det.count(ns, func(w *window) { w.connsIn++; w.connsRefused++ })
-		reset(c)
+		s.reset(c)
 		return nil
 	}
 	s.det.count(ns, func(w *window) { w.connsIn++ })
 	if s.cfg.UserTimeout > 0 {
-		setUserTimeout(c, s.cfg.UserTimeout)
+		if err := setUserTimeout(c, s.cfg.UserTimeout); err != nil {
+			s.counters.socketOptionErrors.Add(1)
+		}
 	}
 	return sc
 }
@@ -194,6 +201,7 @@ func (s *Shield) evictIdle(ns int64, n int) {
 	s.idleMu.Unlock()
 	for _, c := range victims {
 		s.counters.evicted.Add(1)
+		// #nosec G104 -- The evicted connection has no request to recover; conn.Close releases its reservation once even if socket close reports an error.
 		c.Close()
 	}
 }

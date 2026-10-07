@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -726,7 +727,7 @@ func TestAThousandEnvelopesPresentedAtOnce(t *testing.T) {
 	stores := map[string]func(t *testing.T) SeqStore{
 		"memory": func(t *testing.T) SeqStore { return NewMemSeqStore() },
 		"file": func(t *testing.T) SeqStore {
-			s, err := OpenFileSeqStore(t.TempDir())
+			s, err := OpenFileSeqStore(filepath.Join(t.TempDir(), "seq"))
 			if err != nil {
 				t.Fatal(err)
 			}

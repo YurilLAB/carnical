@@ -162,7 +162,7 @@ func multipartBody(contentType string, files []sampleFile) []byte {
 func latin1OrUTF8(s string) []byte {
 	b := make([]byte, 0, len(s))
 	for _, r := range s {
-		if r > 0xFF {
+		if r < 0 || r > 0xFF {
 			return []byte(s)
 		}
 		b = append(b, byte(r))

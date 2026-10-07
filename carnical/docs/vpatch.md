@@ -19,6 +19,12 @@ selection; experimental matches cannot block unless `ExperimentalMayBlock` is al
 real benign traffic before enabling them. `Scope` selects software tags and `Exclude` suppresses ID prefixes, allowing
 integrations already running CRS to omit duplicated CRS signatures.
 
+Compiled indexes use checked 32-bit indices and offsets, including cumulative literal-table offsets and flattened
+transformation views. Per-request class-mask dimensions and their uint64 backing bytes must also fit native integer
+arithmetic; 32-bit deployments can therefore reject a rule set that fits on 64-bit hosts. If an entire index cannot fit, `Load` retains the previous active snapshot and reports a rejection
+with an empty ID; the report's loaded counts describe that retained snapshot. This representation check is not a general
+memory budget for signature compilation.
+
 Regular expressions, transformation views, extracted values, output verdicts and per-request matching work are bounded.
 The default regex-input work allowance is 4 MiB and the default verdict cap is 16. Work exhaustion reports rule 5100001;
 `BlockOnWorkLimit` makes it refuse requests in block mode. `Stats()` exposes request, match, refusal and limit totals.
@@ -43,6 +49,10 @@ From the `carnical` module:
 go run ./cmd/carnical-sigs convert -format crowdsec -in rule.yaml -out signatures.jsonl -report conversion.json
 go run ./cmd/carnical-vpatch -h
 ```
+
+`carnical-sigs` also keeps converted signature files, conversion reports and legacy comparison reports private
+(0600 on Unix; Windows access depends on directory ACLs). These outputs can contain private rule patterns and metadata.
+Use an operator-controlled directory and explicitly grant read access when another account needs these files.
 
 `carnical-vpatch` supplies pack compilation, inspection and corpus replay commands. Its help documents the accepted input
 formats and tier flags. These tools read local files; they do not send scanner requests to an external site.

@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -117,22 +118,20 @@ func needsRaw(req *http.Request) bool {
 }
 
 func rawDo(req *http.Request) (*http.Response, error) {
-	conn, err := net.DialTimeout("tcp", req.URL.Host, 10*time.Second)
+	conn, err := net.DialTimeout("tcp", req.URL.Host, 10*time.Second) // #nosec G704 -- run owns a 127.0.0.1 listener; prepare requires path-only corpus targets and keeps URL authority separate from Host.
 	if err != nil {
 		return nil, err
 	}
 	if err = conn.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
-		conn.Close()
-		return nil, err
+		return nil, errors.Join(err, conn.Close())
 	}
 	var body []byte
 	if req.Body != nil {
 		body, err = io.ReadAll(req.Body)
-		req.Body.Close()
+		err = errors.Join(err, req.Body.Close())
 	}
 	if err != nil {
-		conn.Close()
-		return nil, err
+		return nil, errors.Join(err, conn.Close())
 	}
 	var head strings.Builder
 	fmt.Fprintf(&head, "%s %s HTTP/1.1\r\nHost: %s\r\n", req.Method, req.URL.RequestURI(), req.Host)
@@ -154,21 +153,18 @@ func rawDo(req *http.Request) (*http.Response, error) {
 	}
 	head.WriteString("\r\n")
 	if _, err = io.WriteString(conn, head.String()+string(body)); err != nil {
-		conn.Close()
-		return nil, err
+		return nil, errors.Join(err, conn.Close())
 	}
 	// Signal the end of intentionally incomplete framing without waiting for a
 	// timeout, while keeping the read side open for the server's refusal.
 	if tcp, ok := conn.(*net.TCPConn); ok && (req.Header.Get("Content-Length") != "" || req.Header.Get("Transfer-Encoding") != "") {
 		if err = tcp.CloseWrite(); err != nil {
-			conn.Close()
-			return nil, err
+			return nil, errors.Join(err, conn.Close())
 		}
 	}
 	res, err := http.ReadResponse(bufio.NewReader(conn), req)
 	if err != nil {
-		conn.Close()
-		return nil, err
+		return nil, errors.Join(err, conn.Close())
 	}
 	res.Body = &rawBody{ReadCloser: res.Body, conn: conn}
 	return res, nil
@@ -179,10 +175,10 @@ type rawBody struct {
 	conn net.Conn
 }
 
-func (b *rawBody) Close() error { err := b.ReadCloser.Close(); _ = b.conn.Close(); return err }
+func (b *rawBody) Close() error { return errors.Join(b.ReadCloser.Close(), b.conn.Close()) }
 
 func fileHash(path string) (string, error) {
-	f, e := os.Open(path)
+	f, e := os.Open(path) // #nosec G304 -- Only CLI-selected binary/corpus paths reach this offline checksum reader.
 	if e != nil {
 		return "", e
 	}
@@ -195,7 +191,7 @@ func fileHash(path string) (string, error) {
 }
 
 func readCorpus(path string, attack bool) ([]testCase, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304 -- CLI -corpus selects the directory; callers append fixed benign.jsonl/attack.jsonl filenames.
 	if err != nil {
 		return nil, err
 	}
@@ -392,14 +388,14 @@ func run() error {
 		return err
 	}
 	logPath := *output + ".waf.log"
-	logFile, err := os.Create(logPath)
+	logFile, err := os.Create(logPath) // #nosec G304 -- Operator-selected CLI -output determines this local log path; corpus/request data cannot change it.
 	if err != nil {
 		return err
 	}
 	defer logFile.Close()
 	args := []string{"-listen", addr, "-upstream", origin.URL, "-origin-allow", "127.0.0.1/32", "-mode", "block", "-formats-mode", "block", "-inspect-responses", "-formats-stats-interval", "5s"}
 	args = append(args, "-ddos", *ddos, fmt.Sprintf("-local-rules=%t", *localRules))
-	cmd := exec.Command(*binary, args...)
+	cmd := exec.Command(*binary, args...) // #nosec G204 -- CLI -binary intentionally selects the compiled WAF executable; corpus data never supplies executable/arguments and no shell is used.
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	if err = cmd.Start(); err != nil {
@@ -416,9 +412,9 @@ func run() error {
 	for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); {
 		res, e := client.Get(target + "/__loadtest_ready")
 		if e == nil {
-			_, _ = io.Copy(io.Discard, res.Body)
-			res.Body.Close()
-			if res.StatusCode == 200 {
+			_, e = io.Copy(io.Discard, res.Body)
+			e = errors.Join(e, res.Body.Close())
+			if e == nil && res.StatusCode == 200 {
 				ready = true
 				break
 			}
@@ -504,7 +500,7 @@ func run() error {
 				if e == nil {
 					status = res.StatusCode
 					_, e = io.Copy(io.Discard, res.Body)
-					res.Body.Close()
+					e = errors.Join(e, res.Body.Close())
 				}
 				latency := time.Since(t).Microseconds()
 				mu.Lock()
@@ -659,7 +655,7 @@ func run() error {
 	}
 	sort.Slice(rep.CategoryResults, func(i, j int) bool { return rep.CategoryResults[i].Category < rep.CategoryResults[j].Category })
 	sort.Slice(rep.AdmittedAttacks, func(i, j int) bool { return rep.AdmittedAttacks[i].Name < rep.AdmittedAttacks[j].Name })
-	lf, e := os.Open(logPath)
+	lf, e := os.Open(logPath) // #nosec G304 -- Reads only the WAF log created from the same operator-selected CLI -output path.
 	if e != nil {
 		return fmt.Errorf("read WAF log: %w", e)
 	}

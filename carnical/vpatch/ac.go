@@ -3,6 +3,7 @@
 package vpatch
 
 import (
+	"math"
 	"sort"
 	"strings"
 )
@@ -66,13 +67,33 @@ func (n *buildNode) child(b byte) int32 {
 
 // newAutomaton builds the matcher for lits, where literal i is reported as pattern i. A literal must not be empty and must be
 // lower case; the caller guarantees both (it builds them from validated anchors).
-func newAutomaton(lits []string) *automaton {
-	nodes := make([]buildNode, 1, 1+len(lits)*4)
+func newAutomaton(lits []string) (*automaton, error) {
+	// Pattern offset tables need one additional sentinel entry.
+	if _, err := addIndex32(len(lits), 1); err != nil {
+		return nil, err
+	}
+	// A trie has at most one root plus the sum of literal byte lengths. Edges are fewer than nodes; outputs equal len(lits).
+	nodeBound := int32(1)
+	for _, lit := range lits {
+		var err error
+		nodeBound, err = addIndex32(int(nodeBound), len(lit))
+		if err != nil {
+			return nil, err
+		}
+	}
+	// Node offset tables also need a sentinel; checking its size keeps n+1 safe on 32-bit hosts.
+	if _, err := addIndex32(int(nodeBound), 1); err != nil {
+		return nil, err
+	}
+	// Preserve the usual capacity hint while preventing int overflow on 32-bit hosts.
+	capacity := 1 + min(len(lits), (math.MaxInt-1)/4)*4
+	nodes := make([]buildNode, 1, capacity)
 	for id, lit := range lits {
 		cur := int32(0)
 		for i := 0; i < len(lit); i++ {
 			next := nodes[cur].child(lit[i])
 			if next < 0 {
+				// #nosec G115 -- Preflight bounds root plus all literal bytes to MaxInt32; trie nodes cannot exceed that bound.
 				next = int32(len(nodes))
 				nodes = append(nodes, buildNode{})
 				nodes[cur].edges = append(nodes[cur].edges, buildEdge{lit[i], next})
@@ -133,7 +154,9 @@ func newAutomaton(lits []string) *automaton {
 		}
 	}
 	for i := range nodes {
+		// #nosec G115 -- Preflight bounds total trie edges below MaxInt32, including every cumulative offset.
 		a.edgeStart[i+1] = a.edgeStart[i] + int32(len(nodes[i].edges))
+		// #nosec G115 -- There is one output per literal; preflight bounds the total and all cumulative offsets to MaxInt32.
 		a.outStart[i+1] = a.outStart[i] + int32(len(nodes[i].out))
 	}
 	a.edgeByte = make([]byte, a.edgeStart[n])
@@ -146,7 +169,7 @@ func newAutomaton(lits []string) *automaton {
 		}
 		copy(a.outPat[a.outStart[i]:], nodes[i].out)
 	}
-	return a
+	return a, nil
 }
 
 func (a *automaton) next(s int32, c byte) int32 {

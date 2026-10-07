@@ -1,8 +1,10 @@
 # Flood protection (`shield`)
 
 Coraza and the Core Rule Set judge one request at a time, so they cannot see a flood. The shield (`carnical/shield`) sees the
-traffic as a whole. It is on by default in `cmd/carnical` (`-ddos on`); `-ddos monitor` detects and logs without acting, and
-`-ddos off` removes it.
+traffic as a whole. It is on by default in `cmd/carnical` (`-ddos on`). `-ddos monitor` detects and logs attacks without
+applying attack-specific mitigation; baseline per-address, per-network and connection capacity limits still apply.
+`-ddos off` removes the shield. For payload-detection benchmarks, use `off` so single-source load generation does not
+exhaust connection or request budgets; test flood mitigation separately with realistic client populations.
 
 ## Where it acts
 
@@ -21,7 +23,9 @@ kept separately from the bounded request-history tables, so churn through many a
 last socket removes the network's live entry; these entries are bounded by admitted sockets. Trusted CDN/load-balancer
 peers bypass source and subnet limits and may use the reserved share, but still share the global connection cap. Refusals
 remain available as `Snapshot.ConnsRefused`, without one log entry per socket. Non-finite rates and scaling settings are
-rejected at configuration time.
+rejected at configuration time. `Snapshot.WriteErrors` counts failed shield response body writes, and
+`Snapshot.SocketOptionErrors` counts failures to apply optional TCP settings (including reset linger). A failure does not
+turn a refusal into admission. Socket tuning is best effort; server read/write deadlines remain required.
 
 ## Detecting an attack from many addresses and countries
 

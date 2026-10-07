@@ -176,7 +176,8 @@ func countsLine(m map[string]int) string {
 	return strings.Join(parts, ", ")
 }
 
-// writeFile writes through a temporary file in the same directory and renames it, so an interrupted run never leaves half a file.
+// writeFile publishes a complete, privately created file through same-directory rename.
+// The output directory must be operator-controlled; Windows access uses directory ACLs.
 func writeFile(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, ".carnical-sigs-*")
@@ -190,9 +191,6 @@ func writeFile(path string, data []byte) error {
 		return errors.Join(err, closeErr, removeErr)
 	}
 	if err := tmp.Close(); err != nil {
-		return errors.Join(err, os.Remove(name))
-	}
-	if err := os.Chmod(name, 0o644); err != nil {
 		return errors.Join(err, os.Remove(name))
 	}
 	if err := os.Rename(name, path); err != nil {
@@ -258,7 +256,7 @@ func runLegacy(args []string, stdout, stderr io.Writer) int {
 }
 
 func readSigs(path string) ([]vpatch.Signature, error) {
-	fh, err := os.Open(path)
+	fh, err := os.Open(path) // #nosec G304 -- Offline CLI -sigs selects a local JSONL input; no request-controlled file path reaches this reader.
 	if err != nil {
 		return nil, err
 	}

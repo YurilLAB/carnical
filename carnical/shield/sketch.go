@@ -30,8 +30,8 @@ func newHLL(p uint8) hll { return hll{p: p, reg: make([]uint8, 1<<p)} }
 
 func (h *hll) add(x uint64) {
 	idx := x >> (64 - h.p)
-	w := x<<h.p | 1<<(h.p-1) // the sentinel bit bounds the run of zeros
-	if r := uint8(bits.LeadingZeros64(w)) + 1; r > h.reg[idx] {
+	w := x<<h.p | 1<<(h.p-1)                                    // the sentinel bit bounds the run of zeros
+	if r := uint8(bits.LeadingZeros64(w)) + 1; r > h.reg[idx] { // #nosec G115 -- LeadingZeros64 returns 0..64; adding one still fits uint8.
 		h.reg[idx] = r
 	}
 }
@@ -127,14 +127,14 @@ func newSeenFilter() seenFilter {
 	return seenFilter{cur: make([]uint64, seenBits/64), old: make([]uint64, seenBits/64)}
 }
 
-func bloomIdx(h uint64, i int) uint64 {
+func bloomIdx(h, i uint64) uint64 {
 	h1, h2 := h, h>>32|h<<32|1
-	return (h1 + uint64(i)*h2) % seenBits
+	return (h1 + i*h2) % seenBits
 }
 
 func (f *seenFilter) has(h uint64) bool {
 	in := func(b []uint64) bool {
-		for i := 0; i < 3; i++ {
+		for i := uint64(0); i < 3; i++ {
 			j := bloomIdx(h, i)
 			if b[j/64]&(1<<(j%64)) == 0 {
 				return false
@@ -146,7 +146,7 @@ func (f *seenFilter) has(h uint64) bool {
 }
 
 func (f *seenFilter) add(h uint64) {
-	for i := 0; i < 3; i++ {
+	for i := uint64(0); i < 3; i++ {
 		j := bloomIdx(h, i)
 		f.cur[j/64] |= 1 << (j % 64)
 	}

@@ -53,6 +53,37 @@ func loadOne(t *testing.T, opts Options, s ...Signature) *Engine {
 // TestConditionSemantics is the table of what a condition means: every operator, every target, the transforms in context, Negate,
 // Also, and the named targets, each with rows that match and rows that must not.
 func TestConditionSemantics(t *testing.T) {
+	t.Run("transform class masks span words", func(t *testing.T) {
+		names := []string{"lowercase", "normpath", "urldecode1"}
+		var signatures []Signature
+		for i := 0; i < 81; i++ {
+			code := i
+			var transforms []string
+			for step := 0; step < 4; step++ {
+				transforms = append(transforms, names[code%3])
+				code /= 3
+			}
+			signatures = append(signatures, sig(fmt.Sprintf("MASK-%03d", i), cond("contains", "/danger", tg("path"), transforms...)))
+		}
+		e := loadOne(t, Options{}, signatures...)
+		ki := &e.cur.Load().kinds[kPath]
+		if len(ki.classes) != 81 || ki.words != 2 {
+			t.Fatalf("class mask dimensions: %d classes, %d words", len(ki.classes), ki.words)
+		}
+		for _, tc := range []struct {
+			path string
+			want int
+		}{{"/danger/attack", 81}, {"/ordinary", 0}} {
+			t.Run(tc.path, func(t *testing.T) {
+				request := mkReq("GET", tc.path, nil, "")
+				for _, hits := range [][]Hit{e.Match(request), e.MatchBruteForce(request)} {
+					if len(hits) != tc.want {
+						t.Fatalf("%s: %d matches, want %d", tc.path, len(hits), tc.want)
+					}
+				}
+			})
+		}
+	})
 	form := map[string]string{"content-type": "application/x-www-form-urlencoded"}
 	jsonH := map[string]string{"content-type": "application/json"}
 	tests := []struct {
@@ -364,6 +395,72 @@ func TestInspectCapsTheVerdicts(t *testing.T) {
 }
 
 func TestLoadReportAndRejections(t *testing.T) {
+	t.Run("index representation boundaries", func(t *testing.T) {
+		for _, tc := range []struct {
+			total, count int
+			want         int32
+			valid        bool
+		}{
+			{0, 0, 0, true},
+			{math.MaxInt32 - 1, 1, math.MaxInt32, true},
+			{math.MaxInt32, 1, 0, false},
+			{-1, 1, 0, false},
+			{1, -1, 0, false},
+			{math.MaxInt, math.MaxInt, 0, false},
+		} {
+			t.Run(fmt.Sprintf("endpoint-%d-plus-%d", tc.total, tc.count), func(t *testing.T) {
+				got, err := addIndex32(tc.total, tc.count)
+				if (err == nil) != tc.valid || got != tc.want {
+					t.Fatalf("index endpoint for %d + %d: %d (%v)", tc.total, tc.count, got, err)
+				}
+			})
+		}
+		for _, tc := range []struct {
+			n     int
+			valid bool
+		}{{-1, false}, {0, true}, {math.MaxInt32, true}, {math.MaxInt, math.MaxInt == math.MaxInt32}} {
+			t.Run(fmt.Sprintf("index-%d", tc.n), func(t *testing.T) {
+				got, err := index32(tc.n)
+				if (err == nil) != tc.valid || (tc.valid && int(got) != tc.n) {
+					t.Fatalf("index %d became %d (%v)", tc.n, got, err)
+				}
+			})
+		}
+	})
+	t.Run("class mask representation boundaries", func(t *testing.T) {
+		for _, tc := range []struct {
+			classes, words   int64
+			valid32, valid64 bool
+		}{
+			{-1, 0, false, false},
+			{0, 0, true, true},
+			{1, 1, true, true},
+			{63, 1, true, true},
+			{64, 1, true, true},
+			{65, 2, true, true},
+			{131071, 2048, true, true},
+			{131072, 2048, false, true},
+			{185364, 2897, false, true},
+			{370728, 5793, false, true},
+			{8589934591, 134217728, false, true},
+			{8589934592, 134217728, false, false},
+			{int64(math.MaxInt), 0, false, false},
+		} {
+			t.Run(fmt.Sprintf("classes-%d", tc.classes), func(t *testing.T) {
+				if tc.classes > int64(math.MaxInt) {
+					t.Skip("class count exceeds native int")
+				}
+				valid := tc.valid64
+				if math.MaxInt == math.MaxInt32 {
+					valid = tc.valid32
+				}
+				got, err := classMaskWords(int(tc.classes))
+				if (err == nil) != valid || (valid && int64(got) != tc.words) {
+					t.Fatalf("mask for %d classes: %d words (%v)", tc.classes, got, err)
+				}
+			})
+		}
+	})
 	good := sig("GOOD", cond("contains", "/x", tg("path")))
 	bad := []Signature{
 		sig("", cond("contains", "/x", tg("path"))),

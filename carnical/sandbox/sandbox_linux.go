@@ -108,7 +108,7 @@ func Threads() ([]ThreadStatus, error) {
 		if err != nil {
 			continue
 		}
-		f, err := os.Open(filepath.Join(dir, "status"))
+		f, err := os.Open(filepath.Join(dir, "status")) // #nosec G304 -- dir comes only from the fixed /proc/self/task/* glob with a numeric thread ID.
 		if err != nil {
 			continue // the thread ended while we were looking
 		}
@@ -127,7 +127,9 @@ func Threads() ([]ThreadStatus, error) {
 				st.Seccomp, _ = strconv.Atoi(val)
 			}
 		}
-		f.Close()
+		if err := errors.Join(sc.Err(), f.Close()); err != nil {
+			return nil, fmt.Errorf("read thread %d status: %w", tid, err)
+		}
 		out = append(out, st)
 	}
 	if len(out) == 0 {

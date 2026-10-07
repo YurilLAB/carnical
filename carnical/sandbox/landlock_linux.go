@@ -108,6 +108,7 @@ func newRuleset(abi int, handleFS, handleNet, scoped uint64) (*ruleset, error) {
 	case abi >= 4:
 		size = 16
 	}
+	// #nosec G103 -- Existing kernel ABI binding: a live fixed-size uint64 array, ABI-selected 8/16/24-byte size, pointer converted in the syscall argument.
 	fd, _, errno := syscall.Syscall(sysLandlockCreateRuleset, uintptr(unsafe.Pointer(&attr[0])), size, 0)
 	if errno != 0 {
 		return nil, fmt.Errorf("landlock_create_ruleset: %w", errno)
@@ -115,7 +116,10 @@ func newRuleset(abi int, handleFS, handleNet, scoped uint64) (*ruleset, error) {
 	return &ruleset{fd: int(fd), abi: abi, fs: handleFS}, nil
 }
 
-func (r *ruleset) close() { unix.Close(r.fd) }
+func (r *ruleset) close() {
+	// #nosec G104 -- Cleanup of the ruleset descriptor after enforcement or a reported setup failure; closing cannot undo the installed policy.
+	unix.Close(r.fd)
+}
 
 // allowPath grants rights on a file or directory and everything beneath it.
 func (r *ruleset) allowPath(path string, rights uint64) error {
@@ -142,6 +146,7 @@ func (r *ruleset) allowPath(path string, rights uint64) error {
 	var packed [12]byte
 	binary.NativeEndian.PutUint64(packed[:8], rights)
 	binary.NativeEndian.PutUint32(packed[8:], uint32(fd))
+	// #nosec G103 -- Existing kernel ABI binding: live 12-byte packed path rule with native-endian fields and a range-checked descriptor.
 	if _, _, errno := syscall.Syscall6(sysLandlockAddRule, uintptr(r.fd), landlockRulePathBeneath, uintptr(unsafe.Pointer(&packed[0])), 0, 0, 0); errno != 0 {
 		return fmt.Errorf("landlock_add_rule %s: %w", path, errno)
 	}
@@ -150,6 +155,7 @@ func (r *ruleset) allowPath(path string, rights uint64) error {
 
 func (r *ruleset) allowPort(port uint16, rights uint64) error {
 	rule := netPort{allowed: rights, port: uint64(port)}
+	// #nosec G103 -- Existing kernel ABI binding: live pair of uint64 fields; the uint16 port is widened exactly. Pointer stays in the syscall argument.
 	if _, _, errno := syscall.Syscall6(sysLandlockAddRule, uintptr(r.fd), landlockRuleNetPort, uintptr(unsafe.Pointer(&rule)), 0, 0, 0); errno != 0 {
 		return fmt.Errorf("landlock_add_rule port %d: %w", port, errno)
 	}

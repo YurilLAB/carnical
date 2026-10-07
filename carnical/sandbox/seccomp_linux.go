@@ -7,6 +7,7 @@ package sandbox
 import (
 	"errors"
 	"fmt"
+	"math"
 	"syscall"
 	"unsafe"
 
@@ -135,6 +136,9 @@ func (a *asm) program() ([]unix.SockFilter, error) {
 			return nil, err
 		}
 		if f.isUncnd {
+			if t < 0 || t > math.MaxUint32 {
+				return nil, errors.New("seccomp: an unconditional jump exceeds 32 bits")
+			}
 			a.ins[f.at].K = uint32(t)
 			continue
 		}
@@ -142,7 +146,7 @@ func (a *asm) program() ([]unix.SockFilter, error) {
 		if err != nil {
 			return nil, err
 		}
-		if t > 255 || fo > 255 {
+		if t < 0 || fo < 0 || t > 255 || fo > 255 {
 			return nil, errors.New("seccomp: a conditional jump is further than 255 instructions")
 		}
 		a.ins[f.at].Jt, a.ins[f.at].Jf = uint8(t), uint8(fo)
@@ -235,7 +239,8 @@ func applySeccomp(allowExec bool) error {
 	if len(prog) == 0 || len(prog) > 4096 {
 		return fmt.Errorf("seccomp program length %d exceeds kernel bounds", len(prog))
 	}
-	fprog := unix.SockFprog{Len: uint16(len(prog)), Filter: &prog[0]}
+	fprog := unix.SockFprog{Len: uint16(len(prog)), Filter: &prog[0]} // #nosec G115 -- The preceding check bounds program length to 1..4096.
+	// #nosec G103 -- Existing kernel ABI binding using unix.SockFprog and a live 1..4096-entry filter; conversion occurs directly in the syscall argument.
 	_, _, errno := syscall.Syscall(unix.SYS_SECCOMP, seccompSetModeFilter, seccompFilterFlagTsync, uintptr(unsafe.Pointer(&fprog)))
 	if errno != 0 {
 		return fmt.Errorf("seccomp: %w", errno)

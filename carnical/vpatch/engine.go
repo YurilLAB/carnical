@@ -3,9 +3,11 @@
 package vpatch
 
 import (
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"hash/maphash"
+	"math"
 	"math/bits"
 	"runtime"
 	"sort"
@@ -169,6 +171,7 @@ func New(opts Options) *Engine {
 func (e *Engine) Name() string { return "vpatch" }
 
 // A Rejection is a signature that was not loaded because it is not valid, with the reason in plain words.
+// An empty ID denotes a whole-batch indexing failure; the previous snapshot remains active.
 type Rejection struct {
 	ID     string
 	Reason string
@@ -285,12 +288,13 @@ func (e *Engine) excluded(id string) bool {
 
 func verdictNumber(id string) int {
 	h := fnv.New32a()
-	h.Write([]byte(id))
+	h.Write([]byte(id)) // #nosec G104 -- hash.Hash.Write always consumes its input and never returns an error.
 	return idFirst + int(h.Sum32()%idSpan)
 }
 
 // Load compiles the signatures and replaces what the engine runs with them, atomically: a request that is being matched finishes
 // against the set it started with. A signature that is not valid is left out and listed in the report; the rest load.
+// If the whole index cannot fit its representation, the previous snapshot is retained and the report includes a rejection with no ID.
 func (e *Engine) Load(sigs []Signature) LoadReport {
 	start := time.Now()
 	e.loadMu.Lock()
@@ -454,8 +458,14 @@ func (e *Engine) Load(sigs []Signature) LoadReport {
 		rep.Rejected = append(rep.Rejected, Rejection{ID: r.id, Reason: r.reason})
 	}
 
-	snap := buildSnapshot(good, e.opts.mutateAnchors)
-	snap.loadedAt = time.Now()
+	snap, err := buildSnapshot(good, e.opts.mutateAnchors)
+	if err != nil {
+		rep.Rejected = append(rep.Rejected, Rejection{Reason: err.Error()})
+		snap = e.cur.Load()
+	} else {
+		snap.loadedAt = time.Now()
+		e.cur.Store(snap)
+	}
 	for t, n := range snap.byTier {
 		rep.Loaded[t] = n
 		rep.LoadedTotal += n
@@ -463,7 +473,6 @@ func (e *Engine) Load(sigs []Signature) LoadReport {
 	rep.Unindexed = len(snap.unindexed)
 	rep.Indexed = len(snap.sigs) - rep.Unindexed
 	rep.Literals = snap.literals
-	e.cur.Store(snap)
 	rep.Elapsed = time.Since(start)
 	return rep
 }
@@ -478,31 +487,81 @@ func safeCompileRx(pattern, flags string) (res *rxResult) {
 	return &rxResult{prog: prog, err: err}
 }
 
-// buildSnapshot indexes the compiled signatures.
-func buildSnapshot(preps []*prepared, mutate func([]string) []string) *snapshot {
+var errIndexCapacity = errors.New("compiled signature index exceeds its representable capacity")
+
+// index32 checks a nonnegative index or cumulative offset before narrowing it.
+func index32(n int) (int32, error) {
+	if n < 0 || n > math.MaxInt32 {
+		return 0, errIndexCapacity
+	}
+	return int32(n), nil
+}
+
+// addIndex32 checks before addition too, so the arithmetic is safe on 32-bit hosts.
+func addIndex32(total, count int) (int32, error) {
+	if total < 0 || count < 0 || total > math.MaxInt32 || count > math.MaxInt32-total {
+		return 0, errIndexCapacity
+	}
+	return index32(total + count)
+}
+
+// classMaskWords bounds the rectangular per-request mask, including its uint64 backing bytes, before publication.
+func classMaskWords(classes int) (int, error) {
+	if classes < 0 {
+		return 0, errIndexCapacity
+	}
+	words := classes / 64
+	if classes%64 != 0 {
+		words++
+	}
+	// Divide before multiplying so neither classes*words nor its eight-byte elements can overflow native int.
+	if words != 0 && classes > math.MaxInt/8/words {
+		return 0, errIndexCapacity
+	}
+	return words, nil
+}
+
+// buildSnapshot indexes the compiled signatures without publishing a partially built index.
+func buildSnapshot(preps []*prepared, mutate func([]string) []string) (*snapshot, error) {
+	if _, err := index32(len(preps)); err != nil {
+		return nil, err
+	}
 	s := &snapshot{cacheSeed: maphash.MakeSeed(), byTier: map[string]int{}, byID: make(map[string]int32, len(preps))}
 	s.chains = []chainC{{parent: -1}}
 	chainIDs := map[string]int32{"": 0}
-	var intern func(names []string, fns []transformFn) int32
-	intern = func(names []string, fns []transformFn) int32 {
+	var intern func(names []string, fns []transformFn) (int32, error)
+	intern = func(names []string, fns []transformFn) (int32, error) {
 		if len(names) == 0 {
-			return 0
+			return 0, nil
 		}
 		key := strings.Join(names, ",")
 		if id, ok := chainIDs[key]; ok {
-			return id
+			return id, nil
 		}
-		parent := intern(names[:len(names)-1], fns[:len(fns)-1])
-		id := int32(len(s.chains))
+		parent, err := intern(names[:len(names)-1], fns[:len(fns)-1])
+		if err != nil {
+			return 0, err
+		}
+		// Request-local transformed values use a flattened kind*chain index stored in int32.
+		if len(s.chains) >= math.MaxInt32/numKinds {
+			return 0, errIndexCapacity
+		}
+		id, err := index32(len(s.chains))
+		if err != nil {
+			return 0, err
+		}
 		s.chains = append(s.chains, chainC{parent: parent, fn: fns[len(fns)-1]})
 		chainIDs[key] = id
-		return id
+		return id, nil
 	}
 
 	// Flatten the conditions and compute each one's anchors.
 	s.sigs = make([]sigC, 0, len(preps))
 	for _, p := range preps {
-		si := int32(len(s.sigs))
+		si, err := index32(len(s.sigs))
+		if err != nil {
+			return nil, err
+		}
 		sc := sigC{
 			id: p.sig.ID, category: p.sig.Category, severity: p.sig.Severity, tier: p.tier,
 			action: p.sig.Action, cves: p.sig.CVEs, idNum: verdictNumber(p.sig.ID), driver: -1,
@@ -514,7 +573,10 @@ func buildSnapshot(preps []*prepared, mutate func([]string) []string) *snapshot 
 		for ci := range p.conds {
 			c := p.conds[ci]
 			c.sig = si
-			c.chain = intern(c.tnames, c.fns)
+			c.chain, err = intern(c.tnames, c.fns)
+			if err != nil {
+				return nil, err
+			}
 			switch c.op {
 			case opRx:
 				if !c.neg && c.prog != nil {
@@ -531,7 +593,11 @@ func buildSnapshot(preps []*prepared, mutate func([]string) []string) *snapshot 
 					s.needUploads = true
 				}
 			}
-			sc.conds = append(sc.conds, int32(len(s.conds)))
+			end, err := addIndex32(len(s.conds), 1)
+			if err != nil {
+				return nil, err
+			}
+			sc.conds = append(sc.conds, end-1)
 			s.conds = append(s.conds, c)
 		}
 		sort.SliceStable(sc.conds, func(a, b int) bool { return s.conds[sc.conds[a]].cost < s.conds[sc.conds[b]].cost })
@@ -612,7 +678,11 @@ func buildSnapshot(preps []*prepared, mutate func([]string) []string) *snapshot 
 			}
 			cls, ok := t.classes[c.chain]
 			if !ok {
-				cls = int32(len(t.classes))
+				var err error
+				cls, err = index32(len(t.classes))
+				if err != nil {
+					return nil, err
+				}
 				t.classes[c.chain] = cls
 				s.kinds[tg.kind].classes = append(s.kinds[tg.kind].classes, c.chain)
 			}
@@ -624,7 +694,11 @@ func buildSnapshot(preps []*prepared, mutate func([]string) []string) *snapshot 
 			for _, l := range c.anchors {
 				id, ok := t.ids[l]
 				if !ok {
-					id = int32(len(t.lits))
+					var err error
+					id, err = index32(len(t.lits))
+					if err != nil {
+						return nil, err
+					}
 					t.ids[l] = id
 					t.lits = append(t.lits, l)
 					t.entries = append(t.entries, nil)
@@ -638,17 +712,29 @@ func buildSnapshot(preps []*prepared, mutate func([]string) []string) *snapshot 
 			continue
 		}
 		ki := &s.kinds[k]
-		ki.auto = newAutomaton(t.lits)
+		words, err := classMaskWords(len(ki.classes))
+		if err != nil {
+			return nil, err
+		}
+		auto, err := newAutomaton(t.lits)
+		if err != nil {
+			return nil, err
+		}
+		ki.auto = auto
 		ki.nPat = len(t.lits)
-		ki.words = (len(ki.classes) + 63) / 64
+		ki.words = words
 		ki.patStart = make([]int32, len(t.lits)+1)
 		for i, es := range t.entries {
-			ki.patStart[i+1] = ki.patStart[i] + int32(len(es))
+			end, err := addIndex32(int(ki.patStart[i]), len(es))
+			if err != nil {
+				return nil, err
+			}
+			ki.patStart[i+1] = end
 			ki.pats = append(ki.pats, es...)
 		}
 		s.literals += len(t.lits)
 	}
-	return s
+	return s, nil
 }
 
 // sanitize makes text safe to put in a log line: control characters become spaces and it is cut to n bytes.

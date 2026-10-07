@@ -66,6 +66,7 @@ func (g *Guard) shadow(c *candidate, rv *reqView, client uint32, cfg *Config) {
 			fits = len(g.checkRoute(rt, rv, &caps, &declaredIDs, c.model)) == 0
 		}
 	}
+	// #nosec G115 -- Observe supplies Guard's validated private config: agreement 1..1,000,000 and share 1..100 after defaults.
 	rule := evRule{minObs: uint32(cfg.Discovery.AgreeMinimum), minClients: cfg.Learn.MinClients, maxShare: uint32(cfg.Learn.MaxClientShare)}
 	c.mu.Lock()
 	if fits {

@@ -44,7 +44,10 @@ var ErrNotLinux = errors.New("this check needs a Linux machine")
 // OS reads the real machine.
 type OS struct{}
 
-func (OS) ReadFile(path string) ([]byte, error)  { return os.ReadFile(path) }
+func (OS) ReadFile(path string) ([]byte, error) {
+	// #nosec G304 -- Host auditing intentionally reads local system files selected by checks/operator configuration, never HTTP input.
+	return os.ReadFile(path)
+}
 func (OS) Glob(pattern string) ([]string, error) { return filepath.Glob(pattern) }
 func (OS) Readlink(path string) (string, error)  { return os.Readlink(path) }
 
@@ -58,6 +61,7 @@ func (OS) Stat(path string) (Info, error) {
 }
 
 func (OS) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	// #nosec G204 -- The host-check adapter runs system tools chosen by checks/operator configuration with separate argv and no shell.
 	return exec.CommandContext(ctx, name, args...).Output()
 }
 

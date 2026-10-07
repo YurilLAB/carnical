@@ -199,7 +199,7 @@ func (fs *formScanner) decode(dst, src []byte, at int, isName bool) ([]byte, boo
 				dst = append(dst, c)
 				continue
 			}
-			b := byte(hexVal(src[i+1])<<4 | hexVal(src[i+2]))
+			b := byte((hexVal(src[i+1])<<4 | hexVal(src[i+2])) & 0xff)
 			if isFormControl(b, isName) && f.hit(fs.rules.control, at+i, dEscapedControl) {
 				return dst, false
 			}
@@ -267,7 +267,7 @@ func unescapeQuery(s string) (string, bool) {
 			if i+2 >= len(s) || !isHexDigit(s[i+1]) || !isHexDigit(s[i+2]) {
 				return "", false
 			}
-			out = append(out, byte(hexVal(s[i+1])<<4|hexVal(s[i+2])))
+			out = append(out, byte((hexVal(s[i+1])<<4|hexVal(s[i+2]))&0xff))
 			i += 2
 		default:
 			out = append(out, c)

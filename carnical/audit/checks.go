@@ -99,6 +99,7 @@ func ZoneReach(zm Map, dial Dialer) Check {
 					conn, err := dial(cctx, "tcp", p.addr)
 					reached := err == nil
 					if conn != nil {
+						// #nosec G104 -- The probe measures Dial reachability; cleanup errors must not turn an established connection into an apparent denial.
 						conn.Close()
 					}
 					allowed := zm.Allowed(zm.Here, p.zone)

@@ -73,7 +73,7 @@ func run() error {
 	scriptContent := flag.Bool("allow-script-content", false, "allow uploads that contain a PHP, ASP or JSP opening tag; refused by default")
 	keepBanners := flag.Bool("keep-banners", false, "keep X-Powered-By and Server headers from the application")
 	keepCaching := flag.Bool("keep-caching", false, "do not add Cache-Control: private, no-store to responses that set a cookie or look like a stylesheet but are HTML")
-	ddosMode := flag.String("ddos", "on", "flood protection: on (detect attacks, including ones spread over many addresses, and mitigate them), monitor (detect and log only), or off")
+	ddosMode := flag.String("ddos", "on", "flood protection: on (detect attacks, including ones spread over many addresses, and mitigate them), monitor (detect and log; baseline connection/request limits still apply), or off")
 	ddosRate := flag.Float64("ddos-rate", 50, "the least requests a second one address may make, at all times; raised automatically to follow the busiest addresses on a busy site")
 	ddosBurst := flag.Float64("ddos-burst", 200, "burst of requests one address may make at once")
 	ddosConns := flag.Int("ddos-max-conns", 20000, "the least connections held open at once, raised with the site's average; a fifth are kept for clients that used the site before")

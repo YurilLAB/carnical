@@ -80,17 +80,8 @@ type limiter struct {
 
 func newLimiter(maxKeys int, epoch time.Time) *limiter {
 	l := &limiter{seed: maphash.MakeSeed(), macKey: make([]byte, 32), epoch: epoch, perShard: max(maxKeys/rlShards, 1)}
-	if _, err := rand.Read(l.macKey); err != nil {
-		// Without a random key the credential hash could be guessed offline. The key is also mixed with the table's own seed, which
-		// the runtime picks at random, so this still is not predictable.
-		var h maphash.Hash
-		h.SetSeed(l.seed)
-		h.WriteString("apiguard")
-		sum := h.Sum64()
-		for i := range l.macKey {
-			l.macKey[i] = byte(sum >> (8 * (i % 8)))
-		}
-	}
+	// Go 1.26 crypto/rand.Read fills the key or terminates the process. Never replace it with a shorter non-cryptographic seed.
+	_, _ = rand.Read(l.macKey) // Read always fills the buffer and returns nil on the supported Go toolchain.
 	l.macs.New = func() any { return hmac.New(sha256.New, l.macKey) }
 	for i := range l.shards {
 		l.shards[i].m = make(map[rlKey]*rlEntry)

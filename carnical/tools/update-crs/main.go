@@ -99,8 +99,10 @@ func hash(data []byte) string { sum := sha256.Sum256(data); return hex.EncodeToS
 func fetch(version, local string) (archive, sig []byte, source string) {
 	name := "coreruleset-" + version + "-minimal.tar.gz"
 	if local != "" {
+		// #nosec G304 -- Offline updater input selected by -archive; the pinned release signature is verified before any installation.
 		a, err := os.ReadFile(local)
 		check(err)
+		// #nosec G304 -- Detached signature beside the operator-selected local archive, never a request-supplied path.
 		s, err := os.ReadFile(local + ".asc")
 		check(err)
 		return a, s, "local file " + filepath.Base(local)
@@ -145,6 +147,7 @@ func verify(gpg, keyFile string, archive, sig []byte) error {
 		return err
 	}
 	defer os.RemoveAll(work)
+	// #nosec G304 -- keyFile is the operator-selected CRS package release key; its fingerprint must equal the compiled pin.
 	key, err := os.ReadFile(keyFile)
 	if err != nil {
 		return err
@@ -158,6 +161,7 @@ func verify(gpg, keyFile string, archive, sig []byte) error {
 		return err
 	}
 	run := func(args ...string) (string, error) {
+		// #nosec G204 -- The operator chooses the GPG executable. All verification arguments and relative input names are fixed; no shell is used.
 		cmd := exec.Command(gpg, append([]string{"--homedir", "home", "--batch", "--no-tty"}, args...)...)
 		cmd.Dir = work
 		var buf bytes.Buffer
@@ -246,6 +250,7 @@ func install(out, version, source string, archive, sig []byte, files map[string]
 	if err := os.RemoveAll(staging); err != nil {
 		return err
 	}
+	// #nosec G301 -- This directory contains public, signature-verified OWASP CRS distribution assets, with no private configuration or keys.
 	if err := os.MkdirAll(staging, 0o755); err != nil {
 		return err
 	}
@@ -254,6 +259,7 @@ func install(out, version, source string, archive, sig []byte, files map[string]
 		if strings.ContainsAny(name, `/\`) || name == "" || name[0] == '.' || name[0] == '_' {
 			return fmt.Errorf("unexpected file name %q", name)
 		}
+		// #nosec G306 -- Public CRS distribution assets must remain readable for embedding; private verification files use 0600.
 		if err := os.WriteFile(filepath.Join(staging, name), data, 0o644); err != nil {
 			return err
 		}
@@ -277,5 +283,6 @@ func install(out, version, source string, archive, sig []byte, files map[string]
 	if err != nil {
 		return err
 	}
+	// #nosec G306 -- Public release provenance records the release/source, hashes, pinned public fingerprint and verification time.
 	return os.WriteFile(filepath.Join(out, "provenance.json"), append(raw, '\n'), 0o644)
 }

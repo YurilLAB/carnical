@@ -48,7 +48,10 @@ func TestAutomatonAgainstTheDefinition(t *testing.T) {
 				lits = append(lits, l)
 			}
 		}
-		a := newAutomaton(lits)
+		a, err := newAutomaton(lits)
+		if err != nil {
+			t.Fatal(err)
+		}
 		for j := 0; j < 20; j++ {
 			var b strings.Builder
 			for k, m := 0, r.Intn(40); k < m; k++ {
@@ -87,7 +90,10 @@ func TestAutomatonRows(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			a := newAutomaton(tc.lits)
+			a, err := newAutomaton(tc.lits)
+			if err != nil {
+				t.Fatal(err)
+			}
 			got := scanAll(a, tc.text, len(tc.lits))
 			if len(got) != len(tc.want) {
 				t.Fatalf("got %v, want %v", got, tc.want)
@@ -103,7 +109,10 @@ func TestAutomatonRows(t *testing.T) {
 
 // A pattern is reported once per stamp, and again under a new stamp.
 func TestAutomatonStamps(t *testing.T) {
-	a := newAutomaton([]string{"ab"})
+	a, err := newAutomaton([]string{"ab"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	seen := make([]uint32, 1)
 	if got := a.scan("abab", 1, seen, nil); len(got) != 1 {
 		t.Fatalf("%v", got)
@@ -124,7 +133,10 @@ func FuzzAutomaton(f *testing.F) {
 		if lit == "" {
 			return
 		}
-		a := newAutomaton([]string{lit, lit + "x"})
+		a, err := newAutomaton([]string{lit, lit + "x"})
+		if err != nil {
+			t.Fatal(err)
+		}
 		got := scanAll(a, text, 2)
 		want := naive([]string{lit, lit + "x"}, text)
 		if len(got) != len(want) {

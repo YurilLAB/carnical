@@ -78,6 +78,7 @@ func OpenFileAudit(path string, now func() time.Time) (*FileAudit, error) {
 	if now == nil {
 		now = time.Now
 	}
+	// #nosec G304 -- Caller-selected local audit file; Unix mode is checked and the existing hash chain is verified before accepting events. No HTTP field selects this path.
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_APPEND|os.O_CREATE, 0o600)
 	if err != nil {
 		return nil, err

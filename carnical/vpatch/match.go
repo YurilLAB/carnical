@@ -226,6 +226,7 @@ func (c *matchCtx) scanKind(k int, ki *kindIndex) {
 	if len(c.dtext) < nc {
 		c.dtext = make([]string, nc)
 	}
+	// The snapshot builder checks nc*w and the uint64 backing bytes before publishing this index.
 	if len(c.dmask) < nc*w {
 		c.dmask = make([]uint64, nc*w)
 	}
@@ -269,7 +270,7 @@ func (c *matchCtx) scanText(k int, ki *kindIndex, text string, mask []uint64) {
 	hits := ki.auto.scan(text, c.stamp, c.patMark[k], c.hitBuf[:0])
 	for _, p := range hits {
 		for _, e := range ki.pats[ki.patStart[p]:ki.patStart[p+1]] {
-			if mask[e.class>>6]&(1<<(uint(e.class)&63)) != 0 {
+			if mask[e.class>>6]&(1<<(e.class&63)) != 0 {
 				c.mark(e.cond)
 			}
 		}
@@ -296,6 +297,7 @@ func (c *matchCtx) tvals(k int, chain int32) []string {
 		out = append(out, ch.fn(s))
 	}
 	e.vals, e.epoch = out, c.epoch
+	// #nosec G115 -- buildSnapshot bounds len(chains)*numKinds to MaxInt32; idx already accessed that flattened request-local table.
 	c.touched = append(c.touched, int32(idx))
 	return out
 }
@@ -430,6 +432,7 @@ func (c *matchCtx) rxMatch(cd *condC, ci int32, s string) bool {
 	var slot *atomic.Uint64
 	var key uint64
 	if e.cache != nil {
+		// #nosec G115 -- ci is the nonnegative int32 index of an already accessed snapshot condition; widening to uint64 is exact.
 		key = (maphash.String(c.snap.cacheSeed, s) ^ (uint64(ci)+1)*0x9E3779B97F4A7C15) &^ 1
 		slot = &e.cache[(key>>1)&e.cacheMask]
 		if v := slot.Load(); v&^1 == key && v != 0 {

@@ -449,5 +449,140 @@ candidate review found no surviving reload identity defect.
 Live full-WAF checks on each platform send 300 varied requests through regex
 replacement, reversal and flag changes: 100 refused and 200 forwarded, with
 exactly 200 origin requests. Focused race checks were added to the hosted Ubuntu
-job because local execution lacks a C compiler. Hosted validation of that new
-check is pending this commit's push. No scanner exception was added.
+job because local execution lacks a C compiler. Hosted run [37614453568](https://github.com/YurilLAB/carnical/actions/runs/37614453568)
+passed the new race check and both native suites, runtime/tag/live WAF tests, CrowdSec, L3/L4, dependencies,
+secrets and workflow validation. The application Gosec inventory still fails both scanner jobs and the aggregate gate.
+No scanner exception was added for the reload fix.
+
+## Batched application triage — 7–8 October 2026
+
+This batch was validated locally before publication. Fresh application
+scans contain zero Linux and zero Windows reports, with no package-loading errors,
+down from 100 unique reports at the start of this batch. Reports were either
+fixed or given a narrow, source-verified explanation; this does not mean 100
+exploitable vulnerabilities were discovered or fixed. The core and API guard
+remain clean. Required scanner rules and jobs remain enabled.
+
+The signature converter now preserves its exclusive temporary file's private
+permissions for signatures, conversion reports and legacy comparisons, including
+replacement of an existing public output. All three sinks previously became 0644
+on Unix; the regression reproduced this for new, private and public existing
+files. They now remain 0600. A separate Unix account could open a public control
+in the same traversable directory but was denied all three private outputs.
+Owner conversion/comparison still succeeds, produces readable JSON and cleans up
+failed publication. Independent source investigation and candidate review found
+no surviving permission-boundary defect. Windows privacy remains an ACL and
+operator-controlled directory responsibility.
+
+Narrowing operations now expose existing bounds or retain the original value
+in a suitably typed variable: API client fingerprints, percent-escape decoding,
+Latin-1 corpus bytes, octal regex escapes, Bloom positions and literal masks.
+API configuration boundary rows exercise New and SetConfig. The unused weak-key
+fallback in the API limiter was removed: the supported Go 1.26 crypto/rand.Read
+contract already fills the key or terminates the process, so that fallback was
+not a demonstrated reachable entropy bypass. See [Go's crypto/rand contract](https://pkg.go.dev/crypto/rand#Read).
+
+Seccomp assembly rejects offsets outside their serialized widths before casting;
+existing program-length limits remain enforced. Boundary regressions cover
+255/256 conditional offsets, larger unconditional jumps, missing/backwards
+labels and 32-bit overflow. Real Linux confinement tests, unconfined controls
+and deliberately weakened layers pass. The program limit agrees with
+[the Linux kernel seccomp implementation](https://github.com/torvalds/linux/blob/master/kernel/seccomp.c).
+The sandbox package builds for Linux/ARM64. No sandbox layer was removed.
+
+The request runner preserves request-body, response-body and socket cleanup
+errors. An incomplete readiness response cannot count as ready, and a failed
+measured exchange cannot count as a completed refusal. Local HTTP regressions
+cover normal responses, truncated bodies, request read/close failures, malformed
+framing and corpus targets resembling external authorities. Reviewed exceptions
+are limited to validated private configuration, infallible hash writes, fixed
+procfs paths and offline operator-selected file/process/destination boundaries.
+Reviewed public CRS asset permissions remain readable; private verification files
+remain private. Existing Landlock/seccomp pointer bindings were checked against
+fixed kernel ABI layouts and [Go's syscall pointer rules](https://pkg.go.dev/unsafe#Pointer);
+no new unsafe binding was added. Authenticated clearance cookies remain usable
+on plain HTTP, and direct TLS cookies are Secure; untrusted forwarding headers
+do not change that decision. No broad scanner exclusion or baseline was introduced.
+
+The confinement checker previously returned success when its JSON report was
+sent to /dev/full. It now returns status 2 with an error; the live regression
+passes while ordinary confined/unconfined reports remain valid. Fixture creation
+errors are also returned before probes run. Its FlagSets already use ExitOnError;
+the corresponding annotations document that existing failure behavior.
+
+The sequence-store constructor now checks its private-directory requirement
+before cleanup. Existing group/other permissions and directory symlinks are
+rejected without changing permissions or removing files. Independent review
+identified trailing-separator/dot spellings that initially passed the check;
+those regressions failed before path normalization and now pass. The full
+configuration suite passes on both platforms, including restart, corruption,
+interrupted writes and concurrent signed-envelope acceptance. Windows ACLs,
+trusted parent paths and continued ownership remain deployment responsibilities;
+this library is not automatically installed by the standalone WAF. A proposed
+cross-user tampering proof was blocked by automatic security review and was not
+run; validation used ordinary filesystem-permission regressions.
+
+The virtual-patch builder checks index widths, cumulative offsets, sentinel sizes
+and flattened transform-table dimensions before narrowing or overflowing native
+integers. A further independent review identified unchecked per-request class-mask
+multiplication and backing-byte size on 32-bit hosts. The builder now rejects
+those dimensions before publication; arithmetic boundary rows and actual matching
+with 81 transform classes spanning two mask words pass on Windows, Linux and
+Windows/386. No large allocation was attempted. A fresh candidate review found no surviving
+index defect after that correction. A whole-batch representation
+failure retains the prior active snapshot
+and is reported with an empty-ID rejection. Native Windows/Linux matching suites
+and 32-bit Windows boundary checks pass; actual billion-entry allocations were
+not attempted, and these checks are not a general compilation memory cap. Live
+reload checks through the full WAF pass on both platforms: 100 refused probes
+and 200 admitted controls per platform, with exactly 200 origin requests.
+
+Shield response-write and optional TCP-setting failures are now visible in
+Snapshot.WriteErrors and Snapshot.SocketOptionErrors. Failure-path tests keep
+refusal statuses, successful responses and HEAD requests correct, and a closed
+Linux TCP listener produces the expected socket-option error count. Native
+Windows/Linux shield suites pass. Thread-status reads also propagate scanner
+and file-close errors instead of silently returning a partial status.
+
+The complete Carnical module suites and full vet pass on native Windows and Linux.
+After the final mask-size change, the complete virtual-patch short suites, its
+importers and pack CLI passed again on both platforms, along with full vet.
+All four CI-scanned modules have zero Gosec findings and no package-loading errors
+for both target operating systems. Workflow validation, installer boundary tests
+and all 76 ADR records pass. Local race execution remains unavailable without a C
+compiler; the held batch still needs the hosted race jobs after publication.
+
+An initial Linux
+format timing assertion failed while builds/scans/tests were running together;
+the complete format suite passed when rerun in isolation without relaxing its
+thresholds. Each platform then completed 10,000 varied full-WAF requests with
+zero transport errors or unavailable responses, and both reports pass the actual
+CI supported-injection/control validator. Each run forwarded 4,672/5,000 benign
+labels and refused 4,714/5,000 attack labels; 286 attack-labelled admissions and
+328 benign-labelled refusals remain in the context-dependent corpus for triage.
+They are not erased or presented as complete attack coverage. The final source
+was rebuilt and rerun on 8 October with the same totals and passing validators.
+The remaining labels are organized below; exploitation still depends on the
+application and its configuration.
+
+| Category | Attack-labelled requests reaching origin | Benign-labelled requests refused |
+| --- | ---: | ---: |
+| HTTP parameter pollution | 96 | 0 |
+| Probe paths | 12 | 0 |
+| Remote file inclusion | 168 | 0 |
+| WordPress paths | 10 | 0 |
+| Prototype pollution | 0 | 284 |
+| XPath | 0 | 44 |
+
+These counts are per platform and do not turn corpus labels into confirmed
+bypasses or false positives. The final reload test also passed on each platform
+with 100 refused probes, 200 admitted controls and 200 observed origin requests.
+
+Single-source runs with shield on or monitor exhausted its baseline connection
+budgets and were rejected as invalid payload measurements (9,217/9,412 transport
+errors on Windows). Monitor disables attack-specific mitigation but retains
+baseline limits; CLI help and flood documentation now make that distinction
+explicit. The payload runs use the same ddos-off setting as hosted CI; separate
+live kernel tests validate confinement. At publication, the last hosted run still
+has two Gosec jobs and their aggregate gate failing; the committed batch requires
+a new hosted run, including its race and integration checks.

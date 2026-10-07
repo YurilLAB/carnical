@@ -14,13 +14,14 @@ import (
 // not support flushing a directory (some network file systems answer EINVAL) is treated as having done it, which is the
 // most that can be said of it; a real failure is an error.
 func syncDirectory(dir string) error {
+	// #nosec G304 -- The store flushes its operator-selected directory, validated as private before opening the store.
 	d, err := os.Open(dir)
 	if err != nil {
 		return err
 	}
-	defer d.Close()
-	if err := d.Sync(); err != nil && !errors.Is(err, syscall.EINVAL) {
-		return err
+	syncErr := d.Sync()
+	if errors.Is(syncErr, syscall.EINVAL) {
+		syncErr = nil
 	}
-	return nil
+	return errors.Join(syncErr, d.Close())
 }

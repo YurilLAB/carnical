@@ -116,6 +116,7 @@ func parseTiers(s string) ([]string, error) {
 }
 
 func readSignatures(path, format string) ([]vpatch.Signature, error) {
+	// #nosec G304 -- Offline CLI input selected by the operator; ReadPack/ReadLegacy validate and bound its contents.
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -294,7 +295,7 @@ func cmdValidate(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	samples, err := vpatch.ReadSamples(sf)
-	sf.Close()
+	err = errors.Join(err, sf.Close())
 	if err != nil {
 		return err
 	}
@@ -411,6 +412,7 @@ func cmdReplay(args []string, stdout, stderr io.Writer) error {
 		if path == "" {
 			return nil, nil
 		}
+		// #nosec G304 -- The operator chooses this offline corpus file; ReadCorpus bounds and validates the records.
 		f, err := os.Open(path)
 		if err != nil {
 			return nil, err

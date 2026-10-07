@@ -163,6 +163,7 @@ func collectFiles(root string, exts []string, maxFiles int, rep *Report) ([]stri
 
 // readBounded reads a whole file, but refuses one larger than max bytes (and never reads more than max+1 bytes to find out).
 func readBounded(path string, max int64) ([]byte, error) {
+	// #nosec G304 -- Read-only local conversion inputs/repository metadata; the operator selects the conversion root, and files must be regular and size-limited.
 	fh, err := os.Open(path)
 	if err != nil {
 		return nil, err

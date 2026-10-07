@@ -96,6 +96,7 @@ func newLearner(cfg func() *Config, clock func() time.Time, seed uint64) *learne
 }
 
 func (c *Config) rule() evRule {
+	// #nosec G115 -- Guard.New/SetConfig validate before publishing this private config: observations <= 1,000,000, share <= 100; both positive after defaults.
 	return evRule{minObs: uint32(c.Learn.MinObservations), minClients: c.Learn.MinClients, maxShare: uint32(c.Learn.MaxClientShare)}
 }
 
@@ -119,10 +120,10 @@ func (l *learner) clientID(r *inspect.Request) uint32 {
 	switch {
 	case a.Is4():
 		b := a.As4()
-		return uint32(hashOf(l.seed.Load(), b[:3]))
+		return uint32(hashOf(l.seed.Load(), b[:3]) & 0xffffffff)
 	case a.Is6():
 		b := a.As16()
-		return uint32(hashOf(l.seed.Load(), b[:6]))
+		return uint32(hashOf(l.seed.Load(), b[:6]) & 0xffffffff)
 	}
 	return 0
 }
@@ -569,6 +570,7 @@ func (l *learner) buildView(rt *lroute, cfg *Config) *Route {
 	if !d.Ev.OK {
 		return nil
 	}
+	// #nosec G115 -- Only Guard's validated private config reaches rebuild/buildView: required observations 1..1,000,000, percentage 50..100.
 	reqMin, reqPct := uint32(cfg.Learn.RequiredMinObservations), uint32(cfg.Learn.RequiredPercent)
 	r := &Route{Method: rt.method, Path: rt.tmpl, State: StateEnforceable, StrictQuery: true}
 	names := make([]string, 0, len(d.Query))

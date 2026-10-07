@@ -106,6 +106,7 @@ func (l *connLimiter) state(c net.Conn, s http.ConnState) {
 			if l.onLimit != nil {
 				l.onLimit(ip)
 			}
+			// #nosec G104 -- Admission was already refused and counted; Close is terminal cleanup with no request to recover.
 			c.Close()
 			return
 		}

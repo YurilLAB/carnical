@@ -115,7 +115,9 @@ func (e *Envelope) SigningBytes() []byte {
 	b = lp(b, []byte(e.Tenant))
 	b = lp(b, []byte(e.Audience))
 	b = lp(b, binary.BigEndian.AppendUint64(nil, e.Sequence))
+	// #nosec G115 -- The documented wire format preserves signed Unix seconds as 64-bit two's complement.
 	b = lp(b, binary.BigEndian.AppendUint64(nil, uint64(e.NotBefore.Unix())))
+	// #nosec G115 -- Same signed 64-bit wire encoding as not_before; no timestamp bits are lost.
 	b = lp(b, binary.BigEndian.AppendUint64(nil, uint64(e.NotAfter.Unix())))
 	b = lp(b, []byte(e.KeyID))
 	b = lp(b, e.Payload)
@@ -124,6 +126,7 @@ func (e *Envelope) SigningBytes() []byte {
 
 // lp appends a 4-byte big-endian length and then the bytes.
 func lp(dst, b []byte) []byte {
+	// #nosec G115 -- Signer/Verifier check envelope fields (payload <= 2 MiB); key lists have at most 50 validated keys and 500 fixed-length revoked IDs.
 	dst = binary.BigEndian.AppendUint32(dst, uint32(len(b)))
 	return append(dst, b...)
 }

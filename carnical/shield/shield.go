@@ -303,6 +303,7 @@ type Shield struct {
 
 type counters struct {
 	allowed, refused, challenged, solved, banned, connsRefused, evicted, banErrors atomic.Uint64
+	writeErrors, socketOptionErrors                                                atomic.Uint64
 }
 
 type banReq struct {
@@ -602,7 +603,9 @@ func (s *Shield) Write(w http.ResponseWriter, r *http.Request, d Decision) {
 		h.Set("Content-Type", d.resp.contentType)
 		w.WriteHeader(d.Status)
 		if r.Method != http.MethodHead {
-			w.Write([]byte(d.resp.body))
+			if _, err := w.Write([]byte(d.resp.body)); err != nil {
+				s.counters.writeErrors.Add(1)
+			}
 		}
 		return
 	case Challenge:
@@ -613,7 +616,9 @@ func (s *Shield) Write(w http.ResponseWriter, r *http.Request, d Decision) {
 		h.Set("Retry-After", "5")
 		w.WriteHeader(d.Status)
 		if r.Method != http.MethodHead {
-			w.Write([]byte(body))
+			if _, err := w.Write([]byte(body)); err != nil {
+				s.counters.writeErrors.Add(1)
+			}
 		}
 		return
 	}
@@ -624,7 +629,9 @@ func (s *Shield) Write(w http.ResponseWriter, r *http.Request, d Decision) {
 	}
 	w.WriteHeader(d.Status)
 	if r.Method != http.MethodHead {
-		w.Write([]byte(http.StatusText(d.Status) + "\n"))
+		if _, err := w.Write([]byte(http.StatusText(d.Status) + "\n")); err != nil {
+			s.counters.writeErrors.Add(1)
+		}
 	}
 }
 
@@ -677,8 +684,10 @@ type Snapshot struct {
 	Allowed, Refused, Challenged, Solved    uint64
 	Banned, ConnsRefused, Evicted           uint64
 	BanErrors                               uint64
-	Current                                 *Incident
-	Recent                                  []Incident
+	// WriteErrors counts failed response body writes; SocketOptionErrors counts failed optional TCP tuning.
+	WriteErrors, SocketOptionErrors uint64
+	Current                         *Incident
+	Recent                          []Incident
 }
 
 // Snapshot returns the current state.
@@ -699,6 +708,7 @@ func (s *Shield) Snapshot() Snapshot {
 	c := &s.counters
 	snap.Allowed, snap.Refused, snap.Challenged = c.allowed.Load(), c.refused.Load(), c.challenged.Load()
 	snap.Solved, snap.Banned, snap.ConnsRefused, snap.Evicted, snap.BanErrors = c.solved.Load(), c.banned.Load(), c.connsRefused.Load(), c.evicted.Load(), c.banErrors.Load()
+	snap.WriteErrors, snap.SocketOptionErrors = c.writeErrors.Load(), c.socketOptionErrors.Load()
 	return snap
 }
 

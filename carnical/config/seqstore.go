@@ -108,15 +108,28 @@ type fileOps interface {
 }
 
 // OpenFileSeqStore opens (creating it if need be) the directory the files are kept in, and removes the temporary files
-// an earlier interrupted write left behind.
+// an earlier interrupted write left behind. Existing directories must be real directories and grant no group/other
+// permissions on Unix. Windows deployments must restrict access with ACLs. The operator must also protect the parent path.
 func OpenFileSeqStore(dir string) (*FileSeqStore, error) { return openFileSeqStore(dir, osOps{}) }
 
 func openFileSeqStore(dir string, ops fileOps) (*FileSeqStore, error) {
 	if dir == "" {
 		return nil, errors.New("config: no directory given for the sequence record")
 	}
+	// Use one normalized spelling for validation and every subsequent filesystem operation.
+	dir = filepath.Clean(dir)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, storeFailure(err)
+	}
+	fi, err := ops.lstat(dir)
+	if err != nil {
+		return nil, storeFailure(err)
+	}
+	if !fi.IsDir() {
+		return nil, storeFailure(errors.New("sequence directory must be a real directory, not a symbolic link"))
+	}
+	if os.PathSeparator == '/' && fi.Mode().Perm()&0o077 != 0 {
+		return nil, storeFailure(errors.New("sequence directory must not grant group or other permissions"))
 	}
 	s := &FileSeqStore{dir: dir, ops: ops}
 	entries, err := ops.readDir(dir)
@@ -247,14 +260,15 @@ func (s *FileSeqStore) write(stream string, seq uint64) error {
 type osOps struct{}
 
 func (osOps) readFile(path string) ([]byte, error) {
+	// #nosec G304 -- Private store directory plus a validated fixed-form stream ID; this reader is bounded to 1 KiB.
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
 	// A record is under 200 bytes. Reading at most a little more is how an oversized file is noticed without reading all of it,
 	// and it is rejected by parseRecord.
-	return io.ReadAll(io.LimitReader(f, 1024))
+	data, err := io.ReadAll(io.LimitReader(f, 1024))
+	return data, errors.Join(err, f.Close())
 }
 
 func (osOps) writeTemp(dir, prefix string, data []byte) (string, error) {

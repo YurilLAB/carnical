@@ -34,9 +34,8 @@ const tokenTTL = 5 * time.Minute
 
 func newKey() []byte {
 	k := make([]byte, 32)
-	if _, err := rand.Read(k); err != nil {
-		panic("shield: no randomness: " + err.Error())
-	}
+	// crypto/rand.Read always fills the buffer and returns nil on Go 1.26; it has no recoverable entropy error.
+	_, _ = rand.Read(k)
 	return k
 }
 
@@ -53,8 +52,10 @@ func (s *Shield) mac(kind string, data []byte, key netip.Addr) []byte {
 // the source, so that a token cannot be solved once and used from every address of a botnet.
 func (s *Shield) token(key netip.Addr, now time.Time) string {
 	raw := make([]byte, 17, 33)
+	// #nosec G115 -- Encode all 64 bits of signed Unix seconds; solved reverses this two's-complement wire encoding.
 	binary.BigEndian.PutUint64(raw, uint64(now.Unix()))
 	rand.Read(raw[8:16])
+	// #nosec G115 -- New validates the private immutable difficulty to 8..24 before accepting requests.
 	raw[16] = byte(s.cfg.ChallengeBits)
 	raw = append(raw, s.mac("c1", raw, key)...)
 	return base64.RawURLEncoding.EncodeToString(raw)
@@ -74,6 +75,7 @@ func (s *Shield) solved(token, n string, key netip.Addr, now time.Time) bool {
 	if !hmac.Equal(raw[17:], s.mac("c1", raw[:17], key)) {
 		return false
 	}
+	// #nosec G115 -- Recover the signed seconds encoded by token; the MAC was checked before decoding.
 	issued := time.Unix(int64(binary.BigEndian.Uint64(raw)), 0)
 	if now.Before(issued.Add(-time.Minute)) || now.After(issued.Add(tokenTTL)) {
 		return false
@@ -91,6 +93,7 @@ var uaSeed = maphash.MakeSeed()
 // clearance is the cookie value that admits this source with this browser until exp.
 func (s *Shield) clearance(key netip.Addr, ua string, exp time.Time) string {
 	raw := make([]byte, 16, 32)
+	// #nosec G115 -- Preserve the signed Unix seconds as a 64-bit two's-complement wire value.
 	binary.BigEndian.PutUint64(raw, uint64(exp.Unix()))
 	binary.BigEndian.PutUint64(raw[8:], maphash.String(uaSeed, ua))
 	raw = append(raw, s.mac("k1", raw, key)...)
@@ -112,6 +115,7 @@ func (s *Shield) cleared(r *http.Request, key netip.Addr, now time.Time) bool {
 	if !hmac.Equal(raw[16:], s.mac("k1", raw[:16], key)) {
 		return false
 	}
+	// #nosec G115 -- Reverse clearance's signed 64-bit time encoding only after its MAC is verified.
 	return now.Before(time.Unix(int64(binary.BigEndian.Uint64(raw)), 0))
 }
 
@@ -144,6 +148,7 @@ func (s *Shield) verify(r *http.Request, key netip.Addr, now time.Time) Decision
 			inc.solved++
 		}
 	})
+	// #nosec G124 -- Plain HTTP deployments intentionally support this authenticated, source-bound flood clearance cookie; direct TLS always marks it Secure.
 	cookie := &http.Cookie{Name: cookieName, Value: s.clearance(key, r.Header.Get("User-Agent"), now.Add(s.cfg.ClearanceFor)),
 		Path: "/", MaxAge: int(s.cfg.ClearanceFor / time.Second), HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: r.TLS != nil}
 	return Decision{Action: Respond, ID: idChallengeSolved, Status: http.StatusSeeOther,

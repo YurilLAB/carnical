@@ -4,8 +4,10 @@ package shield
 
 import (
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/binary"
+	"io"
 	"math"
 	"math/rand/v2"
 	"net/http"
@@ -266,6 +268,26 @@ func TestChallengeTokensAndClearance(t *testing.T) {
 	if s.cleared(withCookie("UA"), other, now) || s.cleared(withCookie("other UA"), me, now) || s.cleared(withCookie("UA"), me, now.Add(s.cfg.ClearanceFor+time.Second)) {
 		t.Fatal("the cookie admits another address, another browser, or after it expired")
 	}
+	for _, tc := range []struct {
+		name      string
+		tls       bool
+		forwarded string
+	}{
+		{"plain HTTP", false, ""},
+		{"direct TLS", true, ""},
+		{"untrusted forwarded scheme", false, "https"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := req("GET", VerifyPath+"?t="+tok+"&n="+n, "X-Forwarded-Proto", tc.forwarded)
+			if tc.tls {
+				r.TLS = &tls.ConnectionState{}
+			}
+			got := s.verify(r, me, now)
+			if got.Status != http.StatusSeeOther || got.resp.cookie == nil || got.resp.cookie.Secure != tc.tls || !got.resp.cookie.HttpOnly {
+				t.Fatalf("cookie transport flags: %+v", got.resp)
+			}
+		})
+	}
 	bad := s.verify(req("GET", VerifyPath+"?t="+tok+"&n="+solveWrong(tok, 8)), me, now)
 	if bad.Status != http.StatusForbidden || bad.resp.cookie != nil {
 		t.Fatal("a wrong answer earned a cookie")
@@ -417,6 +439,23 @@ func TestPerAddressAndPerNetworkLimitsApplyOutsideAnAttack(t *testing.T) {
 	for i := 2; i < 12; i++ {
 		total += allowed("203.0.113."+strconv.Itoa(i), 10)
 	}
+	t.Run("response write failures remain refusals and are counted", func(t *testing.T) {
+		d := s.Admit(req("GET", "/"), netip.MustParseAddr("203.0.113.1"))
+		for _, decision := range []Decision{d, s.verify(req("GET", VerifyPath), netip.MustParseAddr("203.0.113.1"), now), {Action: Challenge, Status: http.StatusServiceUnavailable, key: netip.MustParseAddr("203.0.113.1")}} {
+			before := s.Snapshot().WriteErrors
+			writer := failedResponseWriter{httptest.NewRecorder()}
+			s.Write(writer, req("GET", "/"), decision)
+			if writer.Code != decision.Status || s.Snapshot().WriteErrors != before+1 {
+				t.Fatalf("failed write: status=%d errors=%d", writer.Code, s.Snapshot().WriteErrors)
+			}
+			control := httptest.NewRecorder()
+			s.Write(control, req("GET", "/"), decision)
+			s.Write(writer, req("HEAD", "/"), decision)
+			if control.Code != decision.Status || control.Body.Len() == 0 || s.Snapshot().WriteErrors != before+1 {
+				t.Fatal("successful response or HEAD counted as a failed write")
+			}
+		}
+	})
 	if total != 20 { // the /24's burst of 30, less the 10 the first address used
 		t.Fatalf("the network let %d through, want 20", total)
 	}
@@ -433,3 +472,8 @@ func TestPerAddressAndPerNetworkLimitsApplyOutsideAnAttack(t *testing.T) {
 		}
 	}
 }
+
+// failedResponseWriter models a disconnected client after the response status was committed.
+type failedResponseWriter struct{ *httptest.ResponseRecorder }
+
+func (failedResponseWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
