@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Command carnical-audit runs the segmentation checks: the walls between Carnical's zones and between its customers.
 //
 // It is meant to run a few times a day from each place that matters (the edge, and an outside vantage point that acts
@@ -11,10 +13,12 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
-	"math/rand/v2"
+	"math/big"
 	"net"
 	"os"
 	"os/signal"
@@ -49,6 +53,11 @@ func run() int {
 	schedule := flag.String("print-schedule", "", "print how to run this on a schedule (systemd or schtasks) and exit; nothing is installed")
 	flag.Parse()
 
+	if *jitter < 0 || (*watch && *every <= 0) {
+		fmt.Fprintln(os.Stderr, "carnical-audit: jitter must not be negative and a watch interval must be positive")
+		return 2
+	}
+
 	if *schedule != "" {
 		text, ok := scheduleText(*schedule)
 		if !ok {
@@ -68,7 +77,7 @@ func run() int {
 		return 2
 	}
 	zm, err := audit.LoadMap(f)
-	f.Close()
+	err = errors.Join(err, f.Close())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "carnical-audit:", err)
 		return 2
@@ -97,8 +106,13 @@ func run() int {
 	code := 0
 	for {
 		if *jitter > 0 {
+			delay, err := rand.Int(rand.Reader, big.NewInt(int64(*jitter)))
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "carnical-audit: jitter:", err)
+				return 1
+			}
 			select {
-			case <-time.After(rand.N(*jitter)):
+			case <-time.After(time.Duration(delay.Int64())):
 			case <-ctx.Done():
 				return code
 			}
@@ -175,32 +189,51 @@ func writeBaselines(dir string, replace bool) int {
 
 func report(rep audit.Report, logFile, statusFile string, allowSkips bool) int {
 	counts := rep.Counts()
+	outputFailed := false
 	for _, r := range rep.Results {
 		line := fmt.Sprintf("%-5s %-26s %d cases", r.Status, r.Check, r.Checked)
 		if r.Note != "" {
 			line += " (" + r.Note + ")"
 		}
-		fmt.Println(line)
-		for _, p := range r.Problems {
-			fmt.Println("        -", p)
+		if _, err := fmt.Println(line); err != nil {
+			fmt.Fprintln(os.Stderr, "carnical-audit: the console:", err)
+			outputFailed = true
 		}
-	}
-	if logFile != "" {
-		if b, err := json.Marshal(rep); err == nil {
-			if f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
-				f.Write(append(b, '\n'))
-				f.Close()
-			} else {
-				fmt.Fprintln(os.Stderr, "carnical-audit: the log:", err)
+		for _, p := range r.Problems {
+			if _, err := fmt.Println("        -", p); err != nil {
+				fmt.Fprintln(os.Stderr, "carnical-audit: the console:", err)
+				outputFailed = true
 			}
 		}
 	}
-	ok := rep.OK(allowSkips)
-	if statusFile != "" {
-		writeStatus(statusFile, rep, ok)
+	if logFile != "" {
+		if err := writeLog(logFile, rep); err != nil {
+			fmt.Fprintln(os.Stderr, "carnical-audit: the log:", err)
+			outputFailed = true
+		}
 	}
+	statusSafe := true
+	if logFile != "" && statusFile != "" {
+		same, err := sameOutputFile(logFile, statusFile)
+		if err != nil || same {
+			if same {
+				err = errors.New("log and status outputs must be different files")
+			}
+			fmt.Fprintln(os.Stderr, "carnical-audit: the output paths:", err)
+			outputFailed = true
+			statusSafe = false // Do not replace the requested log history.
+		}
+	}
+	ok := rep.OK(allowSkips) && !outputFailed
+	if statusFile != "" && statusSafe {
+		if err := writeStatus(statusFile, rep, ok); err != nil {
+			fmt.Fprintln(os.Stderr, "carnical-audit: the status file:", err)
+			outputFailed = true
+		}
+	}
+
 	switch {
-	case counts[audit.Fail]+counts[audit.Error] > 0 || len(rep.Results) == 0:
+	case outputFailed || counts[audit.Fail]+counts[audit.Error] > 0 || len(rep.Results) == 0:
 		return 1
 	case !ok:
 		return 3
@@ -208,26 +241,89 @@ func report(rep audit.Report, logFile, statusFile string, allowSkips bool) int {
 	return 0
 }
 
-// writeStatus replaces the status file in one step, so a reader never sees half of it.
-func writeStatus(path string, rep audit.Report, ok bool) {
+// sameOutputFile checks after log creation, including filesystem case and symlink aliases.
+// Output directories are operator-owned; concurrent changes to those directories are not supported.
+func sameOutputFile(logPath, statusPath string) (bool, error) {
+	logAbs, err := filepath.Abs(logPath)
+	if err != nil {
+		return false, err
+	}
+	statusAbs, err := filepath.Abs(statusPath)
+	if err != nil {
+		return false, err
+	}
+	if logAbs == statusAbs {
+		return true, nil
+	}
+	logInfo, err := os.Stat(logAbs)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	statusInfo, err := os.Stat(statusAbs)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return os.SameFile(logInfo, statusInfo), nil
+}
+
+// writeLog appends a complete report and surfaces write, sync and close failures.
+func writeLog(path string, rep audit.Report) error {
+	b, err := json.Marshal(rep)
+	if err != nil {
+		return err
+	}
+	// #nosec G304 -- path is an operator-supplied CLI output; no request or tenant input selects it.
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(append(b, '\n'))
+	if err == nil {
+		err = f.Sync()
+	}
+	return errors.Join(err, f.Close())
+}
+
+// writeStatus writes a complete temporary file before replacing the destination.
+func writeStatus(path string, rep audit.Report, ok bool) (err error) {
 	problems := rep.Problems()
 	if problems == nil {
 		problems = []string{} // "[]" and not "null", for whatever reads the file
 	}
-	b, _ := json.MarshalIndent(struct {
+	b, err := json.MarshalIndent(struct {
 		When     time.Time `json:"when"`
 		OK       bool      `json:"ok"`
 		Counts   any       `json:"counts"`
 		Problems []string  `json:"problems"`
 	}{rep.Started, ok, rep.Counts(), problems}, "", "  ")
-	tmp := filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+".tmp")
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		fmt.Fprintln(os.Stderr, "carnical-audit: the status file:", err)
-		return
+	if err != nil {
+		return err
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		fmt.Fprintln(os.Stderr, "carnical-audit: the status file:", err)
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+"-*")
+	if err != nil {
+		return err
 	}
+	tmp := f.Name()
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, os.Remove(tmp))
+		}
+	}()
+	_, err = f.Write(b)
+	if err == nil {
+		err = f.Sync()
+	}
+	err = errors.Join(err, f.Close())
+	if err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 func scheduleText(kind string) (string, bool) {

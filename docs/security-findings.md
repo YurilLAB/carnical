@@ -199,3 +199,39 @@ test account could otherwise leave the probe parent stopped.
 The sandbox suite also passed as root inside private mount, network and PID
 namespaces, confirming the privileged control completes without changing the
 host namespace.
+
+## Audit reporting follow-up — 7 October 2026
+
+The latest preceding hosted run passed runtime/live-WAF, CrowdSec, network,
+dependency, secrets and workflow checks. Its Linux and Windows security jobs
+failed on 140 and 112 gosec findings respectively.
+
+The audit command could report success after requested log or status writes
+failed. Its deterministic status temporary file also overwrote another writer's
+file. An independent source review found two additional monitoring defects:
+failed console output still returned success, and aliased log/status paths
+replaced the requested log history. These are reproduced reporting-correctness
+defects, without a demonstrated remote exploitation route.
+
+The shared report boundary now propagates serialization, write, sync, close
+and rename errors to exit 1. A console/log failure makes a successfully written
+status unhealthy without changing check counts. Unique mode-0600 temporary
+files avoid reusing another writer's name and are removed on failure. Aliased
+outputs are rejected before the status replacement; output directories must
+remain under operator control. Concurrent hostile directory changes are not
+covered. Watch mode retries and can recover after an output failure.
+
+The delay flag promises unpredictable scheduling; it now samples with
+[crypto/rand.Int](https://pkg.go.dev/crypto/rand#Int), preserving the existing
+zero-to-jitter exclusive upper bound. Negative jitter and nonpositive watch
+intervals return usage exit 2 instead of silently disabling delay or looping.
+
+Regression tests reproduced the original defects before the fix and pass on
+native Windows and real Linux. Live Windows command comparisons verify exit
+codes, preserved JSONL history, status health and watch recovery using an inert
+loopback listener. Linux uses `/dev/full` as a genuine failed-write control.
+Focused vet and both target-platform gosec scans pass for the audit command.
+The complete root/application rescan has no package-loading errors and reports
+135 Linux and 107 Windows findings: five fewer on each target. One reviewed
+G304 exception is limited to the operator-selected CLI log path; no tenant or
+HTTP request input selects it. Remaining findings still fail the security gate.
