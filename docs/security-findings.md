@@ -281,3 +281,23 @@ its result is validated by the hosted job after push. Other scanner findings
 remain enabled. The preceding hosted run passed all runtime/live, network,
 CrowdSec, dependency, secrets and workflow jobs, while both gosec targets still
 failed on the remaining inventory.
+
+## Native Windows rule loading and logger regression checks — 7 October 2026
+
+The full native Windows engine suite reproduced failures loading embedded rules,
+nested includes and absolute operator data files. Rule paths now use the io/fs
+slash-separated namespace. Native separators and drive-qualified absolute paths
+are handled by the default OS filesystem adapter; custom filesystem names retain
+literal backslashes. Tests retain include-recursion limits, reject out-of-root
+reads and preserve filesystem error identities instead of matching OS-specific
+error text. See [Go's filesystem path contract](https://pkg.go.dev/io/fs#ValidPath).
+
+Lazy audit-writer initialization now records success through the existing checked
+initializer, preventing repeated initialization from abandoning open log handles.
+Failed initialization remains retryable. Tests explicitly close their audit/debug
+outputs before removing temporary directories. WAF cache disposal semantics for
+in-flight transactions remain unchanged.
+
+The complete engine suite passes on native Windows and Linux. CI runs the complete engine suite on both native runner platforms,
+with focused race checks on Ubuntu. Other unreviewed scanner findings still fail
+the required gate.

@@ -395,7 +395,7 @@ func (w *WAF) SetAuditLogWriter(alw plugintypes.AuditLogWriter) {
 // it will be initialized
 func (w *WAF) AuditLogWriter() plugintypes.AuditLogWriter {
 	if !w.auditLogWriterInitialized {
-		if err := w.auditLogWriter.Init(w.AuditLogWriterConfig); err != nil {
+		if err := w.InitAuditLogWriter(); err != nil {
 			w.Logger.Error().Err(err).Msg("Failed to initialize audit log")
 		}
 	}

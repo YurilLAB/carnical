@@ -9,11 +9,13 @@ package seclang
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/corazawaf/coraza/v3/debuglog"
 	"github.com/corazawaf/coraza/v3/internal/auditlog"
 	"github.com/corazawaf/coraza/v3/internal/corazawaf"
 	utils "github.com/corazawaf/coraza/v3/internal/strings"
@@ -38,7 +40,13 @@ func TestSecAuditLogDirectivesConcurrent(t *testing.T) {
 
 	id := utils.RandomString(10)
 
-	if err := waf.AuditLogWriter().Write(&auditlog.Log{
+	writer := waf.AuditLogWriter()
+	defer func() {
+		if err := writer.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	if err := writer.Write(&auditlog.Log{
 		Parts_: types.AuditLogParts("ABCDEFGHIJKZ"),
 		Transaction_: auditlog.Transaction{
 			ID_: id,
@@ -64,9 +72,23 @@ func TestSecAuditLogDirectivesConcurrent(t *testing.T) {
 	}
 }
 
+// outputCapture preserves the logger behavior and gives this test ownership of
+// the output opened by SecDebugLog, so it can close it before TempDir cleanup.
+type outputCapture struct {
+	debuglog.Logger
+	output io.Writer
+}
+
+func (l *outputCapture) WithOutput(w io.Writer) debuglog.Logger {
+	l.output = w
+	return l.Logger.WithOutput(w)
+}
+
 func TestDebugDirectives(t *testing.T) {
 	waf := corazawaf.NewWAF()
 	tmp := filepath.Join(t.TempDir(), "tmp.log")
+	logger := &outputCapture{Logger: waf.Logger}
+	waf.Logger = logger
 	p := NewParser(waf)
 	err := directiveSecDebugLog(&DirectiveOptions{
 		WAF:  waf,
@@ -75,6 +97,13 @@ func TestDebugDirectives(t *testing.T) {
 	if err != nil {
 		t.Error(err)
 	}
+	t.Cleanup(func() {
+		if f, ok := logger.output.(*os.File); ok {
+			if err := f.Close(); err != nil {
+				t.Error(err)
+			}
+		}
+	})
 	if err := directiveSecDebugLogLevel(&DirectiveOptions{
 		WAF:  waf,
 		Opts: "3",

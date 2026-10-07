@@ -184,7 +184,7 @@ jobs:
           retention-days: 7
 
   audit-regressions:
-    name: Audit reporting (${{ matrix.os }})
+    name: Native engine and audit reporting (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     strategy:
@@ -204,7 +204,7 @@ jobs:
       - name: Check audit formatters, writers and reporting failures
         shell: bash
         run: |
-          go test ./internal/auditlog -count=1
+          go test ./... -count=1
           go -C carnical test ./cmd/carnical-audit ./audit/... -count=1
       - name: Check audit races
         if: runner.os == 'Linux'
@@ -212,7 +212,7 @@ jobs:
           CGO_ENABLED: '1'
         shell: bash
         run: |
-          go test -race ./internal/auditlog -count=1
+          go test -race ./internal/auditlog ./internal/corazawaf ./internal/operators ./internal/seclang ./testing -count=1
           go -C carnical test -race ./cmd/carnical-audit ./audit/... -count=1
 
   crowdsec-regressions:

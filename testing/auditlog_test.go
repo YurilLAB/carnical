@@ -19,8 +19,19 @@ import (
 	"github.com/corazawaf/coraza/v3/internal/seclang"
 )
 
+func closeAuditLog(t *testing.T, waf *corazawaf.WAF) {
+	t.Helper()
+	if err := waf.AuditLogWriter().Close(); err != nil {
+		t.Error(err)
+	}
+	if err := waf.Close(); err != nil {
+		t.Error(err)
+	}
+}
+
 func TestAuditLogMessages(t *testing.T) {
 	waf := corazawaf.NewWAF()
+	defer closeAuditLog(t, waf)
 	parser := seclang.NewParser(waf)
 
 	file, err := os.CreateTemp(t.TempDir(), "tmp.log")
@@ -41,7 +52,6 @@ func TestAuditLogMessages(t *testing.T) {
 	`); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(file.Name())
 
 	tx := waf.NewTransaction()
 	tx.AddGetRequestArgument("test", "test")
@@ -72,6 +82,7 @@ func TestAuditLogMessages(t *testing.T) {
 
 func TestAuditLogRelevantOnly(t *testing.T) {
 	waf := corazawaf.NewWAF()
+	defer closeAuditLog(t, waf)
 	parser := seclang.NewParser(waf)
 	if err := parser.FromString(`
 		SecRuleEngine DetectionOnly
@@ -109,13 +120,13 @@ func TestAuditLogRelevantOnly(t *testing.T) {
 
 func TestAuditLogRelevantOnlyOk(t *testing.T) {
 	waf := corazawaf.NewWAF()
+	defer closeAuditLog(t, waf)
 	parser := seclang.NewParser(waf)
 	file, err := os.CreateTemp(t.TempDir(), "tmp.log")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer file.Close()
-	defer os.Remove(file.Name())
 	if err := parser.FromString(fmt.Sprintf("SecAuditLog %s", file.Name())); err != nil {
 		t.Fatal(err)
 	}
@@ -149,6 +160,7 @@ func TestAuditLogRelevantOnlyNoAuditlogNoRelevantStatus(t *testing.T) {
 	// When a rule matches with noauditlog AND the response status does not match
 	// SecAuditLogRelevantStatus, no audit log should be written.
 	waf := corazawaf.NewWAF()
+	defer closeAuditLog(t, waf)
 	parser := seclang.NewParser(waf)
 	if err := parser.FromString(`
 		SecRuleEngine DetectionOnly
@@ -187,6 +199,7 @@ func TestAuditLogRelevantOnlyNoAuditlogButRelevantStatus(t *testing.T) {
 	// SecAuditLogRelevantStatus, the audit log should still be written (OR semantics).
 	// Regression test for https://github.com/corazawaf/coraza/issues/1576
 	waf := corazawaf.NewWAF()
+	defer closeAuditLog(t, waf)
 	parser := seclang.NewParser(waf)
 	if err := parser.FromString(`
 		SecRuleEngine DetectionOnly
@@ -222,6 +235,7 @@ func TestAuditLogRelevantOnlyNoAuditlogButRelevantStatus(t *testing.T) {
 
 func TestAuditLogOnWithNoLog(t *testing.T) {
 	waf := corazawaf.NewWAF()
+	defer closeAuditLog(t, waf)
 	parser := seclang.NewParser(waf)
 	if err := parser.FromString(`
 		SecRuleEngine DetectionOnly
@@ -264,6 +278,7 @@ func TestAuditLogOnWithNoLog(t *testing.T) {
 
 func TestAuditLogOnNoLogAuditLog(t *testing.T) {
 	waf := corazawaf.NewWAF()
+	defer closeAuditLog(t, waf)
 	parser := seclang.NewParser(waf)
 	if err := parser.FromString(`
 		SecRuleEngine DetectionOnly
@@ -308,6 +323,7 @@ func TestAuditLogOnNoLogAuditLog(t *testing.T) {
 
 func TestAuditLogRequestMethodURIProtocol(t *testing.T) {
 	waf := corazawaf.NewWAF()
+	defer closeAuditLog(t, waf)
 	parser := seclang.NewParser(waf)
 	if err := parser.FromString(`
 		SecRuleEngine DetectionOnly
@@ -362,6 +378,7 @@ func TestAuditLogRequestMethodURIProtocol(t *testing.T) {
 
 func TestAuditLogRequestBody(t *testing.T) {
 	waf := corazawaf.NewWAF()
+	defer closeAuditLog(t, waf)
 	parser := seclang.NewParser(waf)
 	if err := parser.FromString(`
 		SecRuleEngine DetectionOnly
@@ -416,6 +433,7 @@ func TestAuditLogRequestBody(t *testing.T) {
 // print the error message in the audit log as part of the H section.
 func TestAuditLogHFlag(t *testing.T) {
 	waf := corazawaf.NewWAF()
+	defer closeAuditLog(t, waf)
 	parser := seclang.NewParser(waf)
 	if err := parser.FromString(`
 		SecRuleEngine DetectionOnly
@@ -465,6 +483,7 @@ func TestAuditLogHFlag(t *testing.T) {
 
 func TestAuditLogWithKFlagWithoutHFlag(t *testing.T) {
 	waf := corazawaf.NewWAF()
+	defer closeAuditLog(t, waf)
 	parser := seclang.NewParser(waf)
 	if err := parser.FromString(`
 		SecRuleEngine DetectionOnly
@@ -513,6 +532,7 @@ func TestAuditLogWithKFlagWithoutHFlag(t *testing.T) {
 }
 func TestAuditLogRelevantOnlyDetectionOnly(t *testing.T) {
 	waf := corazawaf.NewWAF()
+	defer closeAuditLog(t, waf)
 	parser := seclang.NewParser(waf)
 	if err := parser.FromString(`
 		SecRuleEngine DetectionOnly

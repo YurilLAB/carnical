@@ -4,12 +4,15 @@
 package corazawaf
 
 import (
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
 
+	"github.com/corazawaf/coraza/v3/experimental/plugins/plugintypes"
 	"github.com/corazawaf/coraza/v3/internal/environment"
 	"github.com/corazawaf/coraza/v3/types"
 )
@@ -200,6 +203,54 @@ func TestValidate(t *testing.T) {
 				if err != nil {
 					t.Fatalf("unexpected error: %s", err.Error())
 				}
+			}
+		})
+	}
+}
+
+// countingAuditWriter detects duplicate initialization without leaking a file.
+type countingAuditWriter struct {
+	attempts int
+	fail     bool
+}
+
+func (w *countingAuditWriter) Init(plugintypes.AuditLogConfig) error {
+	w.attempts++
+	if w.fail {
+		return errors.New("initialization failed")
+	}
+	return nil
+}
+func (*countingAuditWriter) Write(plugintypes.AuditLog) error { return nil }
+func (*countingAuditWriter) Close() error                     { return nil }
+
+func TestAuditLogWriter(t *testing.T) {
+	for _, failFirst := range []bool{false, true} {
+		t.Run(fmt.Sprint(failFirst), func(t *testing.T) {
+			waf := NewWAF()
+			defer waf.Close()
+			writer := &countingAuditWriter{fail: failFirst}
+			waf.SetAuditLogWriter(writer)
+			if waf.AuditLogWriter() != writer {
+				t.Fatal("wrong writer")
+			}
+			if failFirst {
+				if waf.auditLogWriterInitialized {
+					t.Fatal("failed initialization marked successful")
+				}
+				writer.fail = false
+			}
+			waf.AuditLogWriter()
+			waf.AuditLogWriter()
+			want := 1
+			if failFirst {
+				want = 2
+			}
+			if writer.attempts != want {
+				t.Fatalf("initialized %d times, want %d", writer.attempts, want)
+			}
+			if err := waf.InitAuditLogWriter(); err == nil {
+				t.Fatal("explicit reinitialization must fail")
 			}
 		})
 	}

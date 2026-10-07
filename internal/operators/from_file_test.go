@@ -47,13 +47,15 @@ func TestLoadFromFileNoExist(t *testing.T) {
 func TestLoadFromFileAbsolutePath(t *testing.T) {
 	testDir, testFile := getTestFile(t)
 
-	content, err := loadFromFile(path.Join(testDir, testFile), nil, io.OSFS{})
-	if err != nil {
-		t.Error(err)
-	}
+	for _, filename := range []string{path.Join(testDir, testFile), filepath.Join(testDir, testFile)} {
+		content, err := loadFromFile(filename, nil, io.OSFS{})
+		if err != nil {
+			t.Error(err)
+		}
 
-	if want, have := fileContent, string(content); want != have {
-		t.Errorf("unexpected content, want %q, have %q", want, have)
+		if want, have := fileContent, string(content); want != have {
+			t.Errorf("unexpected content, want %q, have %q", want, have)
+		}
 	}
 }
 
@@ -71,15 +73,22 @@ func TestLoadFromFileRelativePath(t *testing.T) {
 }
 
 func TestLoadFromCustomFS(t *testing.T) {
-	fs := fstest.MapFS{}
-	fs["animals/bear.txt"] = &fstest.MapFile{Data: []byte("pooh"), Mode: 0755}
-
-	content, err := loadFromFile("bear.txt", []string{"animals"}, fs)
-	if err != nil {
-		t.Errorf("failed to load from file: %s", err.Error())
+	root := fstest.MapFS{
+		"animals/bear.txt":          &fstest.MapFile{Data: []byte("pooh"), Mode: 0755},
+		"animals/literal\\bear.txt": &fstest.MapFile{Data: []byte("pooh"), Mode: 0755},
 	}
-
-	if want, have := "pooh", string(content); want != have {
-		t.Errorf("unexpected content, want %q, have %q", want, have)
+	for _, filename := range []string{"bear.txt", "literal\\bear.txt"} {
+		content, err := loadFromFile(filename, []string{"animals"}, root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(content) != "pooh" {
+			t.Fatalf("unexpected content %q", content)
+		}
+	}
+	for _, filename := range []string{"../../bear.txt", "/bear.txt"} {
+		if _, err := loadFromFile(filename, []string{"animals"}, root); err == nil {
+			t.Fatalf("accepted out-of-root path %q", filename)
+		}
 	}
 }

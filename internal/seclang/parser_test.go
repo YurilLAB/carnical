@@ -7,12 +7,13 @@ import (
 	"bufio"
 	"bytes"
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/jcchavezs/mergefs"
 	"github.com/jcchavezs/mergefs/io"
@@ -142,12 +143,12 @@ func TestLoadConfigurationFileWithMultiFs(t *testing.T) {
 
 	err = p.FromFile("../doesnotexist.conf")
 	// Go and TinyGo have different error messages
-	if !strings.Contains(err.Error(), "no such file or directory") && !strings.Contains(err.Error(), "file does not exist") {
+	if !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("expected not found error. Got: %s", err.Error())
 	}
 
 	err = p.FromFile("/tmp/doesnotexist.conf")
-	if !strings.Contains(err.Error(), "no such file or directory") && !strings.Contains(err.Error(), "file does not exist") {
+	if !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("expected not found error. Got: %s", err.Error())
 	}
 
@@ -271,6 +272,35 @@ func TestChains(t *testing.T) {
 }
 
 func TestEmbedFS(t *testing.T) {
+	t.Run("literal backslash in custom filesystem", func(t *testing.T) {
+		waf := coraza.NewWAF()
+		defer waf.Close()
+		p := NewParser(waf)
+		p.SetRoot(fstest.MapFS{
+			"literal\\dir/parent.conf": &fstest.MapFile{Data: []byte("Include child.conf")},
+			"literal\\dir/child.conf":  &fstest.MapFile{Data: []byte("SecAction \"id:1,deny,phase:1\"")},
+		})
+		if err := p.FromFile("literal\\dir/parent.conf"); err != nil {
+			t.Fatal(err)
+		}
+		if waf.Rules.Count() != 1 {
+			t.Fatalf("expected one rule, got %d", waf.Rules.Count())
+		}
+	})
+	t.Run("root boundaries", func(t *testing.T) {
+		for _, filename := range []string{"../coraza.conf-recommended", "/coraza.conf-recommended"} {
+			waf := coraza.NewWAF()
+			defer waf.Close()
+			p := NewParser(waf)
+			p.SetRoot(testdata)
+			if err := p.FromFile(filename); err == nil {
+				t.Fatalf("accepted out-of-root path %q", filename)
+			}
+			if waf.Rules.Count() != 0 {
+				t.Fatal("loaded rules from outside root")
+			}
+		}
+	})
 	waf := coraza.NewWAF()
 	p := NewParser(waf)
 	root, err := fs.Sub(testdata, "testdata")

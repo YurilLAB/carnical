@@ -8,13 +8,22 @@ import (
 	"io/fs"
 	"os"
 	"path"
+	"path/filepath"
+
+	"github.com/corazawaf/coraza/v3/internal/io"
 )
 
 var errEmptyDirs = errors.New("empty dirs")
 
-func loadFromFile(filepath string, dirs []string, root fs.FS) ([]byte, error) {
-	if path.IsAbs(filepath) {
-		return fs.ReadFile(root, filepath)
+func loadFromFile(filename string, dirs []string, root fs.FS) ([]byte, error) {
+	nativePaths := false
+	switch root.(type) {
+	case io.OSFS, *io.OSFS:
+		nativePaths = true
+		filename = filepath.ToSlash(filename)
+	}
+	if path.IsAbs(filename) || (nativePaths && filepath.IsAbs(filename)) {
+		return fs.ReadFile(root, filename)
 	}
 
 	if len(dirs) == 0 {
@@ -30,7 +39,10 @@ func loadFromFile(filepath string, dirs []string, root fs.FS) ([]byte, error) {
 	)
 
 	for _, p := range dirs {
-		absFilepath := path.Join(p, filepath)
+		if nativePaths {
+			p = filepath.ToSlash(p)
+		}
+		absFilepath := path.Join(p, filename)
 		content, err = fs.ReadFile(root, absFilepath)
 		if err != nil {
 			if os.IsNotExist(err) {
