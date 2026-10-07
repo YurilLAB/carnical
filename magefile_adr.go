@@ -103,6 +103,9 @@ func Adr() error {
 }
 
 func checkADR(name, num, body string) []string {
+	// Git may check Markdown out with CRLF on Windows. Section boundaries
+	// must be interpreted identically on every platform.
+	body = strings.ReplaceAll(body, "\r\n", "\n")
 	var out []string
 	bad := func(format string, args ...any) {
 		out = append(out, name+": "+fmt.Sprintf(format, args...))
