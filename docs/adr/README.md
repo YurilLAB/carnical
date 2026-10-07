@@ -144,5 +144,6 @@ Superseding does not delete the old record. Set its status and let the history s
 | [0073](0073-carnical-kernel-packet-guards.md) | Owner-authorized development | 2026-10-07 | unreleased | F | Bounded kernel SYN guards, echo limits and packet monitoring |
 | [0074](0074-carnical-crowdsec-ip-decisions.md) | Owner-authorized development | 2026-10-07 | unreleased | F | Bounded CrowdSec LAPI IP and range ban integration |
 | [0075](0075-carnical-yaml-parser-work-budget.md) | Owner-authorized development | 2026-10-07 | unreleased | ⚡ | Bound YAML collection work before parsing request bodies |
+| [0076](0076-carnical-result-cache-capacity.md) | Owner-authorized development | 2026-10-07 | unreleased | ⚡ | Bound the virtual-patch regex result cache |
 
 Categories: **F**eature · **P**arity · **⚡** Perf · **R**efactor

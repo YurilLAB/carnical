@@ -24,6 +24,11 @@ The default regex-input work allowance is 4 MiB and the default verdict cap is 1
 `BlockOnWorkLimit` makes it refuse requests in block mode. `Stats()` exposes request, match, refusal and limit totals.
 Callers must still provide bounded request bodies and preserve the proxy's inspected/forwarded request contract.
 
+The regex result cache defaults to 32,768 entries (256 KiB). A negative `ResultCache` disables it; positive capacities round
+up to a power of two, with a per-engine ceiling of 1,048,576 entries (8 MiB). Oversized requests use the ceiling and produce
+a `LoadReport.Warnings` entry. Evictions can cause repeated regex work and earlier work-limit findings, so size the work
+allowance for uncached traffic and review load warnings. The ceiling does not bound the memory used by loaded signatures.
+
 The `importers` packages convert supported CrowdSec AppSec rules, Suricata/Snort HTTP rules, nuclei templates and a SecLang
 subset. Input is parsed, never executed. Conversion reports record unsupported constructs, constraints lost by conversion
 and tier changes. A converted signature is not evidence that the originating scanner's entire test was reproduced. Keep

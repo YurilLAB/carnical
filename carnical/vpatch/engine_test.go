@@ -4,6 +4,7 @@ package vpatch
 
 import (
 	"fmt"
+	"math"
 	"net/http"
 	"strings"
 	"sync"
@@ -163,6 +164,60 @@ func TestConditionSemantics(t *testing.T) {
 }
 
 func TestOptionsTiersScopeSeverityExpiry(t *testing.T) {
+	// Constructor capacity is a Go options contract, independent of request/rule profiles.
+	t.Run("result cache capacity", func(t *testing.T) {
+		cases := []struct {
+			name            string
+			requested, want int
+			warn            bool
+		}{
+			{"default", 0, 32768, false},
+			{"disabled", -1, 0, false},
+			{"minimum integer", math.MinInt, 0, false},
+			{"single entry", 1, 1, false},
+			{"power of two", 2, 2, false},
+			{"round upward", 3, 4, false},
+			{"below default", 32767, 32768, false},
+			{"above default", 32769, 65536, false},
+			{"below cap", 1048575, 1048576, false},
+			{"at cap", 1048576, 1048576, false},
+			{"above cap", 1048577, 1048576, true},
+			{"large power of two", 1 << 30, 1048576, true},
+			{"maximum integer", math.MaxInt, 1048576, true},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				e := New(Options{ResultCache: tc.requested, Mode: ModeBlock})
+				if got := len(e.cache); got != tc.want {
+					t.Fatalf("cache entries = %d, want %d", got, tc.want)
+				}
+				if tc.want > 0 && e.cacheMask != uint64(tc.want-1) {
+					t.Fatalf("cache mask = %d, want %d", e.cacheMask, tc.want-1)
+				}
+				for load := 0; load < 2; load++ {
+					rep := e.Load([]Signature{sig("CACHE", cond("rx", "^/danger/[0-9]+$", tg("path")))})
+					if rep.LoadedTotal != 1 || len(rep.Rejected) != 0 || (len(rep.Warnings) != 0) != tc.warn {
+						t.Fatalf("load report = %+v", rep)
+					}
+					for repeat := 0; repeat < 2; repeat++ {
+						for _, req := range []struct {
+							path  string
+							block bool
+						}{{"/danger/42", true}, {"/danger/43", true}, {"/safe/42", false}, {"/danger/x", false}} {
+							result := e.Inspect(mkReq("GET", req.path, nil, ""))
+							blocked := false
+							for _, verdict := range result.Verdicts {
+								blocked = blocked || verdict.Block
+							}
+							if blocked != req.block {
+								t.Fatalf("%s: blocked=%v, want %v", req.path, blocked, req.block)
+							}
+						}
+					}
+				}
+			})
+		}
+	})
 	base := func(id, tier string, scope []string, sev, expires string) Signature {
 		s := sig(id, cond("contains", "/x", tg("path")))
 		s.Tier, s.Scope, s.Severity, s.Expires = tier, scope, sev, expires

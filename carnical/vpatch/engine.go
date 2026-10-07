@@ -49,6 +49,8 @@ const (
 	DefaultMaxVerdicts = 16
 	// DefaultResultCache is the default size of the result table, in entries (256 KiB).
 	DefaultResultCache = 1 << 15
+	// MaxResultCache is the maximum size of the result table, in entries (8 MiB).
+	MaxResultCache = 1 << 20
 )
 
 // Options configure an Engine. The zero value is a valid, cautious engine: verified signatures only, every unscoped signature,
@@ -78,7 +80,8 @@ type Options struct {
 	Exclude []string
 	// ResultCache is the number of entries of the table that remembers, for a regular expression and a value, whether it matched,
 	// so that a value that comes again (the same User-Agent, the same page) is not matched again. Zero means DefaultResultCache;
-	// negative switches the table off. It is rounded up to a power of two and costs eight bytes an entry.
+	// negative switches the table off. Positive values are capped at MaxResultCache before rounding up to a power of two,
+	// costing eight bytes an entry. Load reports a warning when the requested capacity exceeds the cap.
 	ResultCache int
 	// Now supplies the date used for Expires. Tests set it; nil means the clock.
 	Now func() time.Time
@@ -150,12 +153,15 @@ func New(opts Options) *Engine {
 		if n == 0 {
 			n = DefaultResultCache
 		}
+		n = min(n, MaxResultCache)
 		size := 1
+		var mask uint64
 		for size < n {
 			size <<= 1
+			mask = mask<<1 | 1
 		}
 		e.cache = make([]atomic.Uint64, size)
-		e.cacheMask = uint64(size - 1)
+		e.cacheMask = mask
 	}
 	e.cur.Store(&snapshot{})
 	return e
@@ -295,6 +301,9 @@ func (e *Engine) Load(sigs []Signature) LoadReport {
 		Loaded:     map[string]int{},
 		Skipped:    map[string]int{},
 		Translated: map[string]int{},
+	}
+	if e.opts.ResultCache > MaxResultCache {
+		rep.Warnings = append(rep.Warnings, fmt.Sprintf("ResultCache exceeds the maximum; capped at %d entries", MaxResultCache))
 	}
 	for t := range e.tiers {
 		switch t {

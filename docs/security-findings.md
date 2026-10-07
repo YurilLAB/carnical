@@ -394,3 +394,30 @@ target, with no package-loading errors. The core remains at zero. The hosted
 run at commit 32f18269 passed both native suites, runtime/tag/live WAF tests,
 Ubuntu race checks, CrowdSec, L3/L4, dependencies, secrets and workflow
 validation. Application scanner findings still fail the security gate.
+
+## Virtual-patch result-cache capacity — 7 October 2026
+
+A public Go constructor call with ResultCache set to the largest positive integer
+was isolated in its own process and confirmed to remain in the rounding loop.
+The same path completed for ordinary and disabled capacities. No in-tree HTTP,
+policy or control entry point supplies this option.
+
+Positive capacities now cap at 1,048,576 entries (8 MiB) before rounding, with
+a load-report warning for oversized requests. Default and negative/off behavior
+are preserved. The original trigger and large power-of-two and just-over-ceiling
+controls now complete. This bounds the result table per engine, not signature
+allocations or multiple engines. Evictions can increase regex work and cause
+earlier work-limit findings; see ADR-0076 and the integration guide.
+
+Independent source investigation and candidate review found no remaining
+capacity-boundary defect. Existing options tests cover the ceiling, rounding,
+integer extrema, repeated loads, collisions and blocking/benign decisions.
+The short virtual-patch suite passes on Windows and Linux; options tests also
+execute on native Windows/386. Vet and all 76 ADR records pass. A full running
+proxy with embedded CRS and the inspector handled 400 varied requests on each
+platform: 200 refused, 200 admitted, and exactly 200 observed at the origin.
+
+The application inventory is now 110 Linux and 82 Windows findings, with no
+package-loading errors and no new scanner exceptions. The hosted run at
+49a82bbe passed every native/runtime/integration and supply-chain job; the
+remaining application findings keep both Gosec jobs and the aggregate gate red.
