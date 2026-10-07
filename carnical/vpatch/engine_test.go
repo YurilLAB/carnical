@@ -405,8 +405,9 @@ func TestLoadReportAndRejections(t *testing.T) {
 // TestLoadReplacesTheSetWhileRequestsAreMatched runs requests during repeated Loads: every answer must be the answer of one of the two
 // sets, never a mixture, and nothing may panic or race (run with -race).
 func TestLoadReplacesTheSetWhileRequestsAreMatched(t *testing.T) {
-	setA := []Signature{sig("A1", cond("contains", "/x", tg("path"))), sig("A2", cond("contains", "/x", tg("path")))}
-	setB := []Signature{sig("B1", cond("contains", "/x", tg("path"))), sig("B2", cond("contains", "/x", tg("path"))), sig("B3", cond("contains", "/x", tg("path")))}
+	// Shared anchors reach both regexes; their true/false positions exchange on reload.
+	setA := []Signature{sig("A1", cond("rx", "^/x$", tg("path"))), sig("A2", cond("rx", "^/x[0-9]+$", tg("path")))}
+	setB := []Signature{sig("B1", cond("rx", "^/x[0-9]+$", tg("path"))), sig("B2", cond("rx", "^/x$", tg("path"))), sig("B3", cond("rx", "^/x$", tg("path")))}
 	e := New(Options{})
 	e.Load(setA)
 	var stop atomic.Bool
@@ -419,8 +420,8 @@ func TestLoadReplacesTheSetWhileRequestsAreMatched(t *testing.T) {
 			r := mkReq("GET", "/x?a=1", map[string]string{"user-agent": "t"}, "")
 			for !stop.Load() {
 				hits := e.Match(r)
-				ok := len(hits) == 2 && hits[0].ID == "A1" && hits[1].ID == "A2"
-				ok = ok || (len(hits) == 3 && hits[0].ID == "B1" && hits[2].ID == "B3")
+				ok := len(hits) == 1 && hits[0].ID == "A1"
+				ok = ok || (len(hits) == 2 && hits[0].ID == "B2" && hits[1].ID == "B3")
 				if !ok {
 					bad.Add(1)
 				}

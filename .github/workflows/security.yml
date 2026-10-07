@@ -206,7 +206,7 @@ jobs:
         run: |
           go test ./... -count=1
           go -C carnical test ./cmd/carnical-audit ./audit/... -count=1
-      - name: Check audit races
+      - name: Check audit, parser and virtual-patch races
         if: runner.os == 'Linux'
         env:
           CGO_ENABLED: '1'
@@ -215,6 +215,7 @@ jobs:
           go test -race ./internal/auditlog ./internal/corazawaf ./internal/operators ./internal/seclang ./testing -count=1
           go -C carnical test -race ./cmd/carnical-audit ./audit/... -count=1
           go -C carnical test -race ./formats -run '^Test(YAML|PolicyValidate|YAMLCollectionWorkThroughProxy)$' -count=1
+          go -C carnical test -race ./vpatch -run '^Test(TheResultTableNeverChangesAnAnswer|LoadReplacesTheSetWhileRequestsAreMatched|OptionsTiersScopeSeverityExpiry)$' -count=1
 
   crowdsec-regressions:
     name: CrowdSec live integration

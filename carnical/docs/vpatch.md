@@ -28,6 +28,9 @@ The regex result cache defaults to 32,768 entries (256 KiB). A negative `ResultC
 up to a power of two, with a per-engine ceiling of 1,048,576 entries (8 MiB). Oversized requests use the ceiling and produce
 a `LoadReport.Warnings` entry. Evictions can cause repeated regex work and earlier work-limit findings, so size the work
 allowance for uncached traffic and review load warnings. The ceiling does not bound the memory used by loaded signatures.
+Each successful load uses a fresh snapshot-specific cache identity, so old regex answers cannot deterministically carry over
+to replacement rules, even when an older request finishes later. Loads start cold for regex result caching; compiled
+expressions can still be reused. The table retains its existing keyed fingerprint design.
 
 The `importers` packages convert supported CrowdSec AppSec rules, Suricata/Snort HTTP rules, nuclei templates and a SecLang
 subset. Input is parsed, never executed. Conversion reports record unsupported constructs, constraints lost by conversion

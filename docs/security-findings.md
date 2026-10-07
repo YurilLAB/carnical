@@ -421,3 +421,33 @@ The application inventory is now 110 Linux and 82 Windows findings, with no
 package-loading errors and no new scanner exceptions. The hosted run at
 49a82bbe passed every native/runtime/integration and supply-chain job; the
 remaining application findings keep both Gosec jobs and the aggregate gate red.
+
+## Virtual-patch regex reload identity — 7 October 2026
+
+A default-cache engine previously reused a regex non-match after a replacement
+regex at the same condition index should match. Cache-disabled controls produced
+the correct answer. Both full-proxy reproductions forwarded the first newly
+blocked path after warming 50 non-matches, confirmed by origin request counts.
+The indexed and brute-force APIs shared this defect; brute force was not used
+as the independent oracle.
+
+Each immutable snapshot now owns a fresh hash seed for cached regex results.
+In-flight requests keep their original snapshot identity, so late old results
+can evict a current slot but cannot deterministically alias a replacement rule.
+The existing per-engine capped atomic table remains shared; compiled expressions
+remain reusable. Each load starts cold for result caching and can increase
+regex work. The table retains its pre-existing probabilistic fingerprint design.
+
+Focused regressions failed before the change for stale false/true answers,
+changed flags, one-slot late writes and exchanged true/false regex positions
+during concurrent reloads. They now pass. The existing equivalence test contains
+self-contained reload checks; external dataset absence skips only its dataset
+subtest. Windows and Linux short suites for the engine, importers and pack CLI
+pass, as do focused vet and workflow validation. Independent investigation and
+candidate review found no surviving reload identity defect.
+
+Live full-WAF checks on each platform send 300 varied requests through regex
+replacement, reversal and flag changes: 100 refused and 200 forwarded, with
+exactly 200 origin requests. Focused race checks were added to the hosted Ubuntu
+job because local execution lacks a C compiler. Hosted validation of that new
+check is pending this commit's push. No scanner exception was added.

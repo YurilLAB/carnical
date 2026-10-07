@@ -430,7 +430,7 @@ func (c *matchCtx) rxMatch(cd *condC, ci int32, s string) bool {
 	var slot *atomic.Uint64
 	var key uint64
 	if e.cache != nil {
-		key = (maphash.String(e.seed, s) ^ (uint64(ci)+1)*0x9E3779B97F4A7C15) &^ 1
+		key = (maphash.String(c.snap.cacheSeed, s) ^ (uint64(ci)+1)*0x9E3779B97F4A7C15) &^ 1
 		slot = &e.cache[(key>>1)&e.cacheMask]
 		if v := slot.Load(); v&^1 == key && v != 0 {
 			return v&1 == 1

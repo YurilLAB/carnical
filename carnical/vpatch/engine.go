@@ -108,10 +108,9 @@ type Engine struct {
 
 	// cache is the table of remembered results (see Options.ResultCache): a hash of the expression and the value, with the result
 	// in the lowest bit. A slot can be overwritten by another pair at any time, which only costs a repeat of the work; the
-	// hash is keyed with a random seed, so no one can aim at a slot.
+	// hash is keyed with a random per-snapshot seed, isolating replacement rules from older snapshots.
 	cache     []atomic.Uint64
 	cacheMask uint64
-	seed      maphash.Seed
 
 	requests, evaluated, hitsN, blocked, limited, truncated atomic.Uint64
 }
@@ -148,7 +147,6 @@ func New(opts Options) *Engine {
 	if e.opts.Now == nil {
 		e.opts.Now = time.Now
 	}
-	e.seed = maphash.MakeSeed()
 	if n := e.opts.ResultCache; n >= 0 {
 		if n == 0 {
 			n = DefaultResultCache
@@ -221,6 +219,8 @@ type Stats struct {
 
 // snapshot is the compiled signature set a request is matched against. It is never modified after it is published.
 type snapshot struct {
+	// cacheSeed isolates regex results from older snapshots, including late in-flight writes.
+	cacheSeed  maphash.Seed
 	sigs       []sigC
 	conds      []condC
 	condDriver []int32 // per condition: the signature it nominates as a candidate, or -1
@@ -480,7 +480,7 @@ func safeCompileRx(pattern, flags string) (res *rxResult) {
 
 // buildSnapshot indexes the compiled signatures.
 func buildSnapshot(preps []*prepared, mutate func([]string) []string) *snapshot {
-	s := &snapshot{byTier: map[string]int{}, byID: make(map[string]int32, len(preps))}
+	s := &snapshot{cacheSeed: maphash.MakeSeed(), byTier: map[string]int{}, byID: make(map[string]int32, len(preps))}
 	s.chains = []chainC{{parent: -1}}
 	chainIDs := map[string]int32{"": 0}
 	var intern func(names []string, fns []transformFn) int32

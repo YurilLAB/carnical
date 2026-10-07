@@ -310,20 +310,93 @@ func TestEquivalenceTestDetectsABrokenIndex(t *testing.T) {
 
 // TestTheResultTableNeverChangesAnAnswer: remembered results are only a shortcut.
 func TestTheResultTableNeverChangesAnAnswer(t *testing.T) {
-	sigs := library(t)
-	on := New(Options{Tiers: allTiers})
-	off := New(Options{Tiers: allTiers, ResultCache: -1})
-	on.Load(sigs)
-	off.Load(sigs)
-	r := rand.New(rand.NewSource(3))
-	reqs := requestsForEquivalence(t, on, 1500)
-	for pass := 0; pass < 2; pass++ { // the second pass is answered from the table
-		for i, q := range reqs {
-			a, b := on.Match(q), off.Match(q)
-			if len(a) != len(b) {
-				t.Fatalf("pass %d request %d: %d hits with the table, %d without", pass, i, len(a), len(b))
-			}
-			_ = r
+	t.Run("reload identity", func(t *testing.T) {
+		makeSig := func(pattern, flags string) Signature {
+			s := sig("R", cond("rx", pattern, tg("path")))
+			s.Condition.Flags = flags
+			return s
 		}
-	}
+		cases := []struct {
+			name, path         string
+			before, after      Signature
+			oldMatch, newMatch bool
+		}{
+			{"stale negative", "/reload/abc", makeSig("^/reload/[0-9]+$", ""), makeSig("^/reload/[a-z]+$", ""), false, true},
+			{"stale positive", "/reload/abc", makeSig("^/reload/[a-z]+$", ""), makeSig("^/reload/[0-9]+$", ""), true, false},
+			{"flags added", "/reload/abc", makeSig("^/reload/[A-Z]+$", ""), makeSig("^/reload/[A-Z]+$", "i"), false, true},
+			{"flags removed", "/reload/abc", makeSig("^/reload/[A-Z]+$", "i"), makeSig("^/reload/[A-Z]+$", ""), true, false},
+		}
+		for _, capacity := range []int{-1, 0, 1} {
+			for _, tc := range cases {
+				t.Run(fmt.Sprintf("cache %d/%s", capacity, tc.name), func(t *testing.T) {
+					e := New(Options{Mode: ModeBlock, ResultCache: capacity})
+					for _, step := range []struct {
+						s     Signature
+						match bool
+					}{{tc.before, tc.oldMatch}, {tc.after, tc.newMatch}, {tc.after, tc.newMatch}, {tc.before, tc.oldMatch}} {
+						rep := e.Load([]Signature{step.s})
+						if rep.LoadedTotal != 1 || len(rep.Rejected) != 0 {
+							t.Fatalf("load: %+v", rep)
+						}
+						for repeat := 0; repeat < 2; repeat++ {
+							r := mkReq("GET", tc.path, nil, "")
+							hits := e.Match(r)
+							want := 0
+							if step.match {
+								want = 1
+							}
+							if len(hits) != want || (want == 1 && hits[0].ID != "R") {
+								t.Fatalf("hits=%v, want match=%v", hits, step.match)
+							}
+							result := e.Inspect(r)
+							blocked := false
+							for _, v := range result.Verdicts {
+								blocked = blocked || v.Block
+							}
+							if blocked != step.match {
+								t.Fatalf("block=%v, want %v", blocked, step.match)
+							}
+						}
+					}
+				})
+			}
+		}
+	})
+	t.Run("late old-snapshot write", func(t *testing.T) {
+		e := loadOne(t, Options{ResultCache: 1}, sig("R", cond("rx", "^/reload/[0-9]+$", tg("path"))))
+		old := e.getCtx(e.cur.Load())
+		old.maxWork = DefaultMaxWork
+		defer func() { old.release(); e.pool.Put(old) }()
+		rep := e.Load([]Signature{sig("R", cond("rx", "^/reload/[a-z]+$", tg("path")))})
+		if rep.LoadedTotal != 1 || len(rep.Rejected) != 0 {
+			t.Fatalf("load: %+v", rep)
+		}
+		// The old request finishes after publication, potentially overwriting the shared slot.
+		if old.rxMatch(&old.snap.conds[0], 0, "/reload/abc") {
+			t.Fatal("old snapshot unexpectedly matched")
+		}
+		if hits := e.Match(mkReq("GET", "/reload/abc", nil, "")); len(hits) != 1 || hits[0].ID != "R" {
+			t.Fatalf("new snapshot lost its match: %v", hits)
+		}
+	})
+
+	t.Run("dataset equivalence", func(t *testing.T) {
+		sigs := library(t)
+		on := New(Options{Tiers: allTiers})
+		off := New(Options{Tiers: allTiers, ResultCache: -1})
+		on.Load(sigs)
+		off.Load(sigs)
+		r := rand.New(rand.NewSource(3))
+		reqs := requestsForEquivalence(t, on, 1500)
+		for pass := 0; pass < 2; pass++ { // the second pass is answered from the table
+			for i, q := range reqs {
+				a, b := on.Match(q), off.Match(q)
+				if len(a) != len(b) {
+					t.Fatalf("pass %d request %d: %d hits with the table, %d without", pass, i, len(a), len(b))
+				}
+				_ = r
+			}
+		}
+
+	})
 }
