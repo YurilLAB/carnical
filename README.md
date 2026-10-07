@@ -3,9 +3,9 @@
   <span>Carnical - Web Application Firewall</span>
 </h1>
 
-[![Regression Tests](https://github.com/YurilLAB/coraza/actions/workflows/regression.yml/badge.svg?branch=edge-crs)](https://github.com/YurilLAB/coraza/actions/workflows/regression.yml)
+[![Regression Tests](https://github.com/YurilLAB/carnical/actions/workflows/regression.yml/badge.svg?branch=edge-crs)](https://github.com/YurilLAB/carnical/actions/workflows/regression.yml)
 [![OWASP Core Rule Set v4](https://img.shields.io/badge/OWASP%20CRS-v4-brightgreen)](carnical/README.md)
-[![Security Review](https://github.com/YurilLAB/coraza/actions/workflows/security.yml/badge.svg?branch=edge-crs)](https://github.com/YurilLAB/coraza/actions/workflows/security.yml)
+[![Security Review](https://github.com/YurilLAB/carnical/actions/workflows/security.yml/badge.svg?branch=edge-crs)](https://github.com/YurilLAB/carnical/actions/workflows/security.yml)
 [![Project Status: Active](https://www.repostatus.org/badges/latest/active.svg)](https://www.repostatus.org/#active)
 [![Coraza API Docs](https://godoc.org/github.com/corazawaf/coraza?status.svg)](https://godoc.org/github.com/corazawaf/coraza/v3)
 
@@ -14,7 +14,7 @@ Carnical is an independent Go-based Web Application Firewall (WAF), built on [OW
 See the [Carnical guide](carnical/README.md) for setup and configuration, including optional [CrowdSec IP bans](carnical/docs/crowdsec.md). The Coraza library examples and upstream resources below remain available for engine integrations.
 
 * Upstream Coraza website: <https://coraza.io>
-* Carnical source and issues: [YurilLAB/coraza](https://github.com/YurilLAB/coraza)
+* Carnical source and issues: [YurilLAB/carnical](https://github.com/YurilLAB/carnical)
 * OWASP Slack Community (#coraza): <https://owasp.org/slack/invite>
 * Rule testing: [Coraza Playground](https://playground.coraza.io)
 
@@ -36,10 +36,13 @@ Key Features (Coraza engine):
 
 Carnical adds:
 
-* **API and body protections** - [OpenAPI contracts and supplemental injection rules](carnical/docs/input-hardening.md), [API schema and rate-limit integration](carnical/docs/apiguard.md), and [strict JSON, XML, GraphQL, multipart and compressed-body inspection](carnical/docs/formats.md).
-* **Proxy and host hardening** - Verified client identities, origin restrictions, bounded rule evaluation, [flood protection with resource-aware connection caps](carnical/docs/ddos.md), [Linux L3/L4 packet filtering with deployment profiles and measured flood latency](carnical/docs/network-protection.md), and [Linux confinement](carnical/docs/hardening.md).
-* **Policy and virtual patches** - [Signed configuration and customer policies](carnical/docs/config-and-policy.md), an [authenticated control API](carnical/docs/control-api.md), and [virtual-patch matching and rule importers](carnical/docs/vpatch.md).
-* **Monitoring and validation** - Bypass counters, safer rule logging, varied live attack tests, and [automated security review](docs/security-tooling.md). [Current findings and validation limits](docs/security-findings.md) are documented alongside the results.
+* **API contracts and request validation** - [Explicit OpenAPI contracts](carnical/docs/input-hardening.md) validate supported parameters and JSON schemas. [Strict format inspection](carnical/docs/formats.md) covers JSON, XML/SOAP, GraphQL, forms, multipart, NDJSON, optional YAML and bounded gzip/deflate decoding, with checks for ambiguous parsing and resource exhaustion. API quotas are opt-in; discovery and learning are available through the [API guard library](carnical/docs/apiguard.md).
+* **Proxy hardening** - Verified client identities, origin address restrictions, request-target and framing checks, upload safeguards, bounded rule evaluation and supplemental injection rules reduce differences between what the WAF inspects and what the application receives.
+* **Flood protection** - [Connection admission before TLS/HTTP processing](carnical/docs/ddos.md), per-address and subnet budgets, reserved capacity for known clients, and limits that respect the host's file-descriptor budget. The optional [Linux nftables layer](carnical/docs/network-protection.md) adds SYN filtering before connection tracking, bounded packet counters and small/standard/large deployment budgets.
+* **CrowdSec IP bans** - Optional [CrowdSec Local API integration](carnical/docs/crowdsec.md) enforces IPv4/IPv6 address and CIDR bans on every HTTP request, with background updates, local expiry, overlapping-decision handling and configurable outage behavior.
+* **Policies and virtual patches** - [Signed configuration and customer policies](carnical/docs/config-and-policy.md), an [authenticated control API](carnical/docs/control-api.md), and [virtual-patch matching and rule importers](carnical/docs/vpatch.md). External rule packs are supplied separately.
+* **Linux process confinement** - [Landlock, seccomp and no-new-privileges](carnical/docs/hardening.md) restrict the running proxy. Seccomp refuses Multipath TCP sockets so they cannot bypass Landlock's TCP port restrictions; ordinary TCP remains supported.
+* **Monitoring and security validation** - Structured rule events, bounded format and CrowdSec counters, network-policy counters, varied live attack/load tests, and [automated source, dependency, secret and workflow checks](docs/security-tooling.md). [Current findings and validation limits](docs/security-findings.md) record remaining gaps and scanner findings.
 
 <br/>
 
@@ -56,12 +59,28 @@ The Coraza Project maintains implementations and plugins for the following serve
 
 ## Prerequisites
 
-* Recent Go version (see [go.mod](./go.mod)) or tinygo compiler.
-* Linux distribution (Debian or Centos recommended), Windows or Mac.
+* Go 1.26 or later; the workspace and CI use Go 1.26.6 (see [go.work](go.work) and [Carnical go.mod](carnical/go.mod)). TinyGo applies to supported Coraza engine integrations.
+* Linux, Windows or macOS for the Go proxy. Kernel packet filtering and process confinement require Linux and their deployment setup.
+
+## Run Carnical
+
+Clone the repository and start Carnical with a local test application listening on port 8081:
+
+```sh
+git clone https://github.com/YurilLAB/carnical.git
+cd carnical/carnical
+go run ./cmd/carnical -upstream http://127.0.0.1:8081 -origin-allow 127.0.0.1/32
+```
+
+The listener defaults to `127.0.0.1:8080`, CRS to `detect`, request-format checks to `monitor`, and flood protection to `on`.
+After reviewing findings and tuning exclusions, enable content blocking with `-mode block -formats-mode block`.
+Proxy safety checks, flood protection and configured CrowdSec bans have independent enforcement.
+The loopback origin allowance above is for this local example; allow only the origin ranges the deployment needs.
+See the [Carnical guide](carnical/README.md) for TLS, API contracts, CrowdSec and Linux deployment.
 
 ## Coraza Core Usage
 
-Coraza can be used as a library for your Go program to implement a security middleware or integrate it with existing application & webservers.
+Coraza can be used as a library for your Go program to implement a security middleware or integrate it with existing application & webservers. The engine retains its upstream `github.com/corazawaf/coraza/v3` import path; the workspace builds Carnical against the local engine.
 
 ```go
 package main

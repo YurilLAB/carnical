@@ -1,6 +1,6 @@
 # Automated security review
 
-The private `YurilLAB/coraza` repository uses one tool per review category.
+The [Carnical repository](https://github.com/YurilLAB/carnical) uses one tool per review category.
 
 | Category | Tool | Coverage |
 | --- | --- | --- |
@@ -10,9 +10,9 @@ The private `YurilLAB/coraza` repository uses one tool per review category.
 | Workflow validation | [actionlint](https://github.com/rhysd/actionlint), v1.7.12 | Actions syntax, expressions, and shellcheck on the Linux runner |
 | Updating dependencies/actions | [Dependabot](https://docs.github.com/en/code-security/dependabot/working-with-dependabot/dependabot-options-reference) | Weekly reviewable PRs targeting `edge-crs`; no automatic merges |
 
-The inherited CodeQL workflow is replaced. GitHub requires
-[Code Security for private repository code scanning](https://docs.github.com/en/code-security/reference/code-scanning/troubleshoot-analysis-errors/private-repository-enablement),
-and this repository has no enabled entitlement. Semgrep CE was evaluated locally:
+The inherited CodeQL workflow was replaced while the repository was private and
+lacked GitHub Code Security entitlement. The current workflow retains gosec as
+the core scanner, with one tool per category. Semgrep CE was evaluated locally:
 v1.179.0 reported partial parsing of the valid `hashOf[T ~string | ~[]byte]`
 function in `carnical/apiguard/learn.go`. Choosing gosec also avoids overlapping
 core scanners on this Go project. SonarQube and Bearer are alternatives to core
@@ -21,7 +21,7 @@ analysis rather than additional required services.
 Scanners run within the checkout. No source is uploaded to a scanner SaaS/AI
 service. OSV queries vulnerability/package services; release and Go module
 downloads, GitHub artifacts, and Actions caches still use the network. Scanner
-subscriptions are not required; private Actions minutes/artifact storage remain
+subscriptions are not required; Actions minutes/artifact storage remain
 subject to the account's GitHub limits.
 
 ## Runs and reports
@@ -142,7 +142,7 @@ and test-harness compatibility. The OpenPGP advisory has no fixed version and
 needs a package-level usage review. This tooling change does not hide findings
 or alter runtime/dependency versions.
 
-The first [hosted validation run](https://github.com/YurilLAB/coraza/actions/runs/37423931304)
+The first [hosted validation run](https://github.com/YurilLAB/carnical/actions/runs/37423931304)
 at commit `806f67f9` reproduced the local results: 183 Linux and 145 Windows gosec
 findings, and the same three dependency advisories. All eight gosec SARIF reports
 and the OSV inventory were downloaded and inspected. Secret detection, workflow

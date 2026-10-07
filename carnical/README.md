@@ -13,23 +13,31 @@ The optional [Linux deployment policy](docs/network-protection.md) adds SYN budg
 filtering, bounded flood counters and echo limits that preserve IPv6 discovery. Small and large deployment profiles provide
 finite budgets for ordinary sources and configured high-volume proxy peers; connection caps also respect small hosts' file limits.
 
-Optional [CrowdSec integration](docs/crowdsec.md) applies live IPv4 and IPv6 IP/range bans from its Local API, with
-background updates, local expiry, outage controls and bounded monitoring.
+Optional [CrowdSec integration](docs/crowdsec.md) applies live IPv4 and IPv6 IP/range bans from its Local API on every HTTP
+request, including keep-alive connections. It uses background updates, local expiry, outage controls and bounded monitoring.
+The request path uses a local ban cache; CrowdSec runs as a separate service.
 
-`carnical/` is its own Go module (`github.com/YurilLAB/coraza/carnical`), keeping the application additions separate
-from the Coraza engine. See the [repository overview](../README.md) and [current security findings](../docs/security-findings.md).
+[Strict format inspection](docs/formats.md) checks parser ambiguity, body/query limits and decompression before CRS.
+[Explicit API contracts](docs/input-hardening.md) enforce supported OpenAPI parameters and JSON body schemas; per-client API
+quotas are opt-in. Discovery and learning are provided by the [API guard library](docs/apiguard.md), rather than the CLI.
+On supported Linux deployments, process confinement combines Landlock and seccomp, including denial of Multipath TCP sockets
+to preserve the configured TCP bind/connect restrictions.
+
+The source repository is [YurilLAB/carnical](https://github.com/YurilLAB/carnical). `carnical/` remains a separate Go module
+with its existing `github.com/YurilLAB/coraza/carnical` module path for compatibility; the repository rename does not change
+Go imports. See the [repository overview](../README.md) and [current security findings](../docs/security-findings.md).
 
 | Folder | What it is |
 |---|---|
 | `crs/` | The CRS embedded in the binary, with proof of where it came from, and typed settings (mode, paranoia level, thresholds, body limit, allowed methods, exclusions) turned into the directives that configure it. |
 | `proxy/` | A reverse proxy: every request goes through Coraza and the CRS, clean ones are forwarded to one upstream. |
 | `crowdsec/` | Optional CrowdSec LAPI ban cache, checked against verified visitor IPs before request inspection. |
-| `cmd/carnical/` | The program: `carnical -upstream http://127.0.0.1:8081 -mode block`. |
+| `cmd/carnical/` | The program: `carnical -upstream http://127.0.0.1:8081 -origin-allow 127.0.0.1/32 -mode block`. |
 | `tools/update-crs/` | Fetches a CRS release, checks its GPG signature against the CRS project's pinned key, and replaces the embedded copy. |
 | `audit/`, `cmd/carnical-audit/` | The segmentation checks: the walls between zones and between customers, run a few times a day. `carnical-audit -zones zones.json`. |
 | `docs/backend-integration.md` | Backend and web UI integration requirements. |
 | `docs/segmentation.md` | Zones, who may talk to whom, how customers are kept apart, and the checks and their schedule. Read this next. |
-| `sandbox/`, `cmd/carnical-confine/` | The proxy confining itself from the inside (Landlock, seccomp, no new privileges), and a probe that tries 34 forbidden actions from inside it. |
+| `sandbox/`, `cmd/carnical-confine/` | The proxy confining itself from the inside (Landlock, seccomp, no new privileges), and a probe that checks forbidden filesystem, network and process operations, including Multipath TCP. |
 | `audit/host/` | Checks of the machine itself: kernel settings, mounts, services' sandboxes, network and audit rules, listeners, processes, integrity, setuid files, whether the running edge is confined. |
 | `deploy/` | systemd units, nftables policy by user, sysctls, module blacklist, audit rules, users and directories, honeytokens, and the order to install them in. |
 | `docs/hardening.md` | What stops an attacker who is already on the machine as a service user, what would show it, what was verified and what was not. |
@@ -48,11 +56,18 @@ from the Coraza engine. See the [repository overview](../README.md) and [current
 
 ## Run it
 
+Use Go 1.26 or later (the workspace selects Go 1.26.6). From the repository root, with a local application on port 8081:
+
+```sh
+cd carnical
+go run ./cmd/carnical -upstream http://127.0.0.1:8081 -origin-allow 127.0.0.1/32
+go run ./cmd/carnical -upstream http://127.0.0.1:8081 -origin-allow 127.0.0.1/32 -mode block -formats-mode block
+go run ./cmd/carnical -version
 ```
-go run ./cmd/carnical -upstream http://127.0.0.1:8081 -listen :8080            # detect: log what the rules find, block nothing
-go run ./cmd/carnical -upstream http://127.0.0.1:8081 -mode block              # block at the anomaly threshold
-go run ./cmd/carnical -version                                                  # which CRS is embedded
-```
+
+The first command listens on `127.0.0.1:8080` with CRS detection and format monitoring; the second enables both content
+blocking layers. Proxy safety checks and flood mitigation still enforce independently in detection mode. Private origins
+need an explicit `-origin-allow`; the loopback allowance here is only for the local example.
 
 Start every new site in `detect`, read the log for a few days, add exclusions for what is wrongly flagged, then switch to `block`.
 Options: `-paranoia 1..4`, `-inbound-threshold`, `-max-body`, `-allowed-methods`, `-inspect-responses`, `-trusted-proxies`,
@@ -65,12 +80,13 @@ Local injection rules also run at PL1 with the selected CRS mode and threshold. 
 The executable enables request-format findings in monitor mode by default. Use `-formats-mode block` to enforce strict JSON, XML/SOAP, GraphQL, forms, multipart, NDJSON and text checks independently of CRS mode. `-formats-policy formats.json` loads validated per-site limits and rule actions before listening; the file must be regular and at most 1 MiB. The CLI mode overrides the policy's `monitor` field. `-allow-request-encoding` enables one bounded gzip or deflate layer; the origin and CRS receive the decompressed bytes with corrected framing. `-formats-mode off` cannot be combined with a policy file or compression opt-in. See [format policy](docs/formats.md) and [validation evidence](docs/enterprise-validation.md).
 
 ```
-go run ./cmd/carnical -upstream http://127.0.0.1:8081 -mode block -formats-mode block -allow-request-encoding
+go run ./cmd/carnical -upstream http://127.0.0.1:8081 -origin-allow 127.0.0.1/32 -mode block -formats-mode block -allow-request-encoding
 ```
 
 API rate limits are opt-in: `-api-per-minute 120` gives each verified client address one shared sliding-minute budget across `/api` and `/graphql`. `-api-rate-paths /api,/internal/orders` changes the path prefixes; `/` covers every route. Prefixes match whole path segments and conservatively include case, slash and matrix-parameter variants, while the forwarded target stays unchanged. Every method counts, before body reading and rule evaluation. An exceeded quota returns 429, rule 5000042, `Retry-After: 60` and `Cache-Control: no-store`; exhausted state returns 503 and rule 5000041. Login and API budgets are separate. State is local to one process, capped at 50,000 active identities and 200,000 admitted events across both protections, and expires after one minute. Restarting resets it; a deployment with several edges needs shared enforcement upstream for a fleet-wide quota. Configure `-trusted-proxies` only for the actual proxy peers; visitor-supplied identity headers cannot rotate a direct client's budget.
 
-Paranoia levels on the 715-request corpus from the earlier research (468 deliberately tricky benign requests, 247 attacks):
+Historical paranoia-level comparison on the initial 715-request corpus (468 deliberately tricky benign requests, 247 attacks),
+measured before the later format and supplemental-rule improvements. These are reference results, not current protection rates:
 
 | Level | Benign requests wrongly blocked | Attacks detected |
 |---|---|---|
@@ -114,8 +130,10 @@ The [750,000-request variant run](docs/loadtest-750k-variants-2026-10-06.md) add
 [admitted-variant inventory](docs/loadtest-750k-variants-admitted-2026-10-06.md) groups every admission by category and
 variation. Use `-variants` for this suite and its even attack/benign request split.
 
-- The CRS has no rule for XML external entities, and Coraza's XML processor hands rules the text pieces of an element separately, so a keyword split by an empty CDATA section is not seen whole.
-- Uploaded file contents, trailers (dropped, so never forwarded) and SQL in a URL path segment are not inspected; CRS is generic and does not carry CVE-specific virtual patches for WordPress plugins.
+- XML declaration/entity and split-text defenses require format enforcement (`-formats-mode block`); CRS alone does not supply those structural checks. Formats start in monitor mode.
+- Upload checks reject executable names and PHP/ASP/JSP markers; they are not a general malware scanner. Trailers are dropped and protocol upgrades (including WebSocket) are unsupported. SQL appearing only in URL path segments is outside the argument-focused injection checks; application-specific CVE rules require separately supplied virtual patches.
+- Kernel filtering requires the Linux deployment policy and measured budgets. It cannot recover bandwidth already saturated before traffic reaches the host. Per-process rate limits and ban caches require deployment planning across multiple replicas.
+- Live tests still record application-dependent attack admissions and benign refusals, and unreviewed gosec findings still fail CI. See [current findings](../docs/security-findings.md) before treating a test pass as a complete security assessment.
 - A body of hostile input costs CPU in proportion to its size (several seconds for 1 MiB of adversarial text). Keep `-max-body` as small as the site allows.
 - Developing on Windows: run the tests under WSL or Linux. Coraza's own suite has Windows-only failures, and one of them (`normalisePath`, fixed in this fork) silently disabled the CRS's OS-file rule on Windows.
 
@@ -134,6 +152,7 @@ throwaway keyring, not yours), extracts only expected regular files, and writes 
 - `go.work`: one line adding `./carnical`, and a `toolchain` line so the workspace builds with a Go release that has the standard-library fixes (go1.26.4 had seven that affect a proxy: HTTP/2 cleartext check, quadratic URL path resolution, XML recursion; `govulncheck ./...` reports none on go1.26.6).
 - `internal/corazawaf/rulegroup.go`, `rule.go`, `transaction.go`: rule evaluation stops when the transaction's context is done, and a blocking engine refuses the transaction (503). Nothing in the engine looked at the context before, so a request that was expensive to inspect could not be cut short. The proxy gives each evaluation phase a budget through it (`proxy/deadline.go`). A test in `rulegroup_test.go` covers the three cases.
 - `internal/transformations/normalise_path.go`: `path.Clean` instead of `filepath.Clean`, so the transformation gives the same result on every OS.
+- Further engine hardening validates audit-log part names and file modes, restricts new debug-log permissions and reports cleanup failures. See the [security findings review](../docs/security-findings.md) for confirmed fixes and remaining work.
 
 ## Licence
 

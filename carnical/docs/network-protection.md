@@ -140,7 +140,7 @@ Existing repository-wide security findings remain tracked in [the findings repor
 The new ADR passes the repository's validator in isolation; the whole ADR collection still fails on 60 older records
 missing the required technical-discussion section.
 
-The hosted Ubuntu 24.04 [L3/L4 job](https://github.com/YurilLAB/coraza/actions/runs/37479256414/job/112322767126) passed its
+The hosted Ubuntu 24.04 [L3/L4 job](https://github.com/YurilLAB/carnical/actions/runs/37479256414/job/112322767126) passed its
 full race suite, live flood and packet checks. Its mitigated flood served 180/180 regular visitor requests and admitted
 19/22,571 flood requests after detection; the monitor control admitted 20,495/20,495. The broader runtime job also exposed
 a test timing issue where a correct reset arrived during `Dial`, before the test could check refusal. The test now accepts
@@ -196,7 +196,7 @@ Additional checks passed:
 
 GitHub's existing required L3/L4 job runs these profile, TLS, reload and malformed-packet checks on every relevant push and
 keeps the detailed logs. Repository-wide findings and the sandbox/YAML timing failures remain separate unresolved checks.
-The hosted Ubuntu 24.04 [scaling job for commit 65b9acde](https://github.com/YurilLAB/coraza/actions/runs/37493305231/job/112371316359)
+The hosted Ubuntu 24.04 [scaling job for commit 65b9acde](https://github.com/YurilLAB/carnical/actions/runs/37493305231/job/112371316359)
 passed the full race suite, live distributed flood, both deployment profiles, verified TLS, port changes and reload checks.
 
 ### Investigating the one-second tail

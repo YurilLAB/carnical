@@ -41,7 +41,7 @@ Supply a local OpenAPI JSON/YAML file using `-api-spec`. It is read once before 
 5 MiB. No URL is fetched. The guard runs after format inspection, including decompression, and before CRS.
 
 ```powershell
-go run ./cmd/carnical -upstream http://127.0.0.1:8081 -mode block -formats-mode block -api-spec ./site-api.json
+go run ./cmd/carnical -upstream http://127.0.0.1:8081 -origin-allow 127.0.0.1/32 -mode block -formats-mode block -api-spec ./site-api.json
 ```
 
 `-api-spec-mode block` is the default and requires `-formats-mode block`. It independently checks JSON validity and
@@ -57,13 +57,12 @@ without enforcing them; it does not make unsupported constraints valid. The spec
 the guard's API classification; it is not a deny-list for every non-API path.
 
 ```powershell
-go run ./cmd/carnical -upstream http://127.0.0.1:8081 -api-spec ./site-api.json -api-spec-mode monitor
+go run ./cmd/carnical -upstream http://127.0.0.1:8081 -origin-allow 127.0.0.1/32 -api-spec ./site-api.json -api-spec-mode monitor
 ```
 
 [The example](examples/api-contract.json) declares a bounded integer lookup, an explicit repeated array and a resource
-URL constrained to one HTTPS host and a narrow public-image path. **It is an example, not the 5Weeks1K API contract.**
-Replace its routes, properties and destinations with the real definitions. No actual 5Weeks1K OpenAPI file was present
-in the searched workspace at validation time.
+URL constrained to one HTTPS host and a narrow public-image path. It is a generic example contract.
+Replace its routes, properties and destinations with the protected application's actual definitions.
 
 ## Application-dependent admissions
 
