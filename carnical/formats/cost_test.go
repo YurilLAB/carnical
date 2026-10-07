@@ -93,11 +93,24 @@ var yamlShapes = []shape{
 		return sb.String()
 	}},
 	{"yaml short keys", "application/yaml", "/x", func(n int) string { return repeatTo("a: 1\n", n) }},
-	// This body stays below both caps, so the new token bound must still allow
-	// the parser's most expensive mapping case to be measured.
+	// The previous near-node-limit shape now exercises the pair preflight.
+	// The following shapes still reach parsing at the pair limit.
 	{"yaml mapping below node cap", "application/yaml", "/x", func(n int) string {
 		return repeatTo("a: 1\n", min(n, 4999*5)) // one mapping + two nodes per pair: 9999
 	}},
+	{"yaml duplicate mapping at pair cap", "application/yaml", "/x", func(n int) string { return repeatTo("a: 1\n", min(n, maxYAMLCollectionWork*5)) }},
+	{"yaml unique mapping at pair cap", "application/yaml", "/x", func(n int) string {
+		var sb strings.Builder
+		for i := 0; i < maxYAMLCollectionWork; i++ {
+			fmt.Fprintf(&sb, "k%d: 1\n", i)
+		}
+		return sb.String()
+	}},
+	{"yaml explicit null keys at work cap", "application/yaml", "/x", func(n int) string { return strings.Repeat("? a\n", maxYAMLCollectionWork) }},
+	{"yaml shorthand null map at work cap", "application/yaml", "/x", func(n int) string {
+		return "{" + strings.TrimSuffix(strings.Repeat("a,", maxYAMLCollectionWork), ",") + "}\n"
+	}},
+	{"yaml block null sequence at work cap", "application/yaml", "/x", func(n int) string { return strings.Repeat("-\n", maxYAMLCollectionWork) }},
 	{"yaml flow list", "application/yaml", "/x", func(n int) string { return "[" + repeatTo("1,", n) + "1]\n" }},
 	{"yaml flow maps", "application/yaml", "/x", func(n int) string { return "{" + repeatTo("a: [1, {b: c}],", n) + "z: 1}\n" }},
 	{"yaml sequence of maps", "application/yaml", "/x", func(n int) string { return repeatTo("- {a: 1, b: 2}\n", n) }},
@@ -135,7 +148,8 @@ func TestYAMLAtItsDefaultCapIsBounded(t *testing.T) {
 	for _, s := range yamlShapes {
 		t.Run(s.name, func(t *testing.T) {
 			// Leave room for each shape's closing delimiters and final line.
-			// Every body must reach parsing rather than trip the byte cap first.
+			// Bodies must reach the structural preflight rather than trip the byte cap.
+			// The at-work-cap shapes reach parsing; over-budget shapes stop early.
 			r := row{ct: s.ct, body: s.make((32 << 10) - 64), tweak: allowYAML}
 			in := New(r.policy(nil, true))
 			if len(r.body) > in.pol.YAML.MaxBytes {

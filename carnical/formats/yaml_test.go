@@ -122,7 +122,63 @@ var yamlRows = register("yaml", []row{
 	{name: "utf-16", ct: yamlType, body: "\xff\xfe" + utf16le("a: 1\n"), want: idWide, tweak: allowYAML},
 })
 
-func TestYAML(t *testing.T) { runTable(t, yamlRows) }
+func TestYAML(t *testing.T) {
+	runTable(t, yamlRows)
+	t.Run("mapping work budget", func(t *testing.T) {
+		for _, mode := range []Action{Block, Monitor, Off} {
+			p := Policy{AllowedTypes: []string{yamlType}, Rules: map[string]Action{"yaml-limit": mode, "yaml-duplicate-key": Off}}
+			if mode == Monitor {
+				p.Monitor = true
+			}
+			in := New(p)
+			if in.Err() != nil {
+				t.Fatal(in.Err())
+			}
+			for _, count := range []int{1023, 1024, 1025, 4999} {
+				for _, kind := range []string{"duplicate", "unique", "explicit keys", "flow nulls", "block nulls"} {
+					var sb strings.Builder
+					for i := 0; i < count; i++ {
+						if kind == "unique" {
+							fmt.Fprintf(&sb, "k%d: 1\n", i)
+						} else {
+							sb.WriteString("a: 1\n")
+						}
+					}
+					if kind == "explicit keys" {
+						sb.Reset()
+						sb.WriteString(strings.Repeat("? a\n", count))
+					}
+					if kind == "flow nulls" {
+						sb.Reset()
+						sb.WriteString("{" + strings.TrimSuffix(strings.Repeat("a,", count), ",") + "}\n")
+					}
+					if kind == "block nulls" {
+						sb.Reset()
+						sb.WriteString(strings.Repeat("-\n", count))
+					}
+					f := &finder{in: in}
+					parsed := in.yamlTree(f, sb.String(), &in.pol.YAML)
+					if parsed != (count <= 1024) {
+						t.Fatalf("mode=%s pairs=%d kind=%s parsed=%t", mode, count, kind, parsed)
+					}
+					wantVerdicts := 0
+					if count > 1024 && mode != Off {
+						wantVerdicts = 1
+					}
+					if len(f.verdicts) != wantVerdicts {
+						t.Fatalf("mode=%s pairs=%d verdicts=%v", mode, count, f.verdicts)
+					}
+					if wantVerdicts == 1 {
+						v := f.verdicts[0]
+						if v.ID != idYAMLLimit || v.Block != (mode == Block) || !strings.Contains(v.Message, "too much collection parser work (limit 1024)") {
+							t.Fatalf("incorrect limit verdict: %+v", v)
+						}
+					}
+				}
+			}
+		}
+	})
+}
 
 func TestYAMLBillionLaughsIsRefusedWithoutExpanding(t *testing.T) {
 	in := New(Policy{AllowedTypes: append(defaultAllowedTypes(), yamlType), YAML: YAMLLimits{MaxAnchors: 100, MaxAliases: 100}})
@@ -152,7 +208,7 @@ func FuzzYAML(f *testing.F) {
 func BenchmarkYAML(b *testing.B) {
 	var sb strings.Builder
 	sb.WriteString("users:\n")
-	for i := 0; sb.Len() < 30<<10; i++ {
+	for i := 0; sb.Len() < 12<<10; i++ {
 		fmt.Fprintf(&sb, "  - id: %d\n    name: Alice Example\n    email: alice@example.test\n    tags: [a, b, c]\n    active: true\n", 1000+i)
 	}
 	benchRow(b, row{ct: yamlType, body: sb.String(), tweak: func(p *Policy) { allowYAML(p); p.YAML.MaxNodes = 1_000_000 }})

@@ -138,6 +138,7 @@ const (
 	dTooManyAnchors
 	dTooManyAliases
 	dParserFailed
+	dTooMuchCollectionWork
 
 	dCount
 )
@@ -261,8 +262,9 @@ var detailText = [dCount]string{
 	dBadCompressionHeader: "the compression header is not valid",
 	dBadStream:            "the compressed data is not valid",
 
-	dBodyTooLong:    "the body is larger than the limit for this format",
-	dTooManyAnchors: "too many anchors",
-	dTooManyAliases: "too many aliases",
-	dParserFailed:   "the parser could not read the document",
+	dBodyTooLong:           "the body is larger than the limit for this format",
+	dTooManyAnchors:        "too many anchors",
+	dTooManyAliases:        "too many aliases",
+	dParserFailed:          "the parser could not read the document",
+	dTooMuchCollectionWork: "too much collection parser work",
 }

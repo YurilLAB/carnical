@@ -57,7 +57,7 @@ func (in *Inspector) yamlTree(f *finder, src string, lim *YAMLLimits) (ok bool) 
 		f.hitLimit(rYAMLLimit, dTooManyValues, lim.MaxNodes, -1)
 		return false
 	}
-	anchors, aliases, flow, maxDepth, mappings := 0, 0, 0, 0, 0
+	anchors, aliases, flow, maxDepth, mappings, collectionWork := 0, 0, 0, 0, 0, 0
 	var cols []int
 	lastLine := -1
 	// documents counts the documents in the stream from the tokens, because the parser merges empty ones: an explicit start marker
@@ -92,6 +92,17 @@ func (in *Inspector) yamlTree(f *finder, src string, lim *YAMLLimits) (ok bool) 
 			if !inDocument {
 				documents++
 				inDocument = true
+			}
+		}
+		// These structural tokens bound block-map suffix copying and implicit
+		// null insertion in block sequences and shorthand flow mappings. Count
+		// conservatively, including valued entries, before constructing any AST.
+		switch tk.Type {
+		case token.MappingValueType, token.MappingKeyType, token.MappingStartType, token.CollectEntryType, token.SequenceEntryType:
+			collectionWork++
+			if collectionWork > lim.MaxCollectionWork {
+				f.hitLimit(rYAMLLimit, dTooMuchCollectionWork, lim.MaxCollectionWork, off)
+				return false
 			}
 		}
 		switch tk.Type {

@@ -354,3 +354,54 @@ func TestARuleSetToOffIsSilent(t *testing.T) {
 		t.Fatalf("%d findings: %+v", n, e.seen.all())
 	}
 }
+
+// Live proxy tests verify origin delivery and policy-controlled match logging, which engine profiles cannot observe.
+func TestYAMLCollectionWorkThroughProxy(t *testing.T) {
+	for _, body := range []string{
+		strings.Repeat("a: 1\n", 4999),
+		strings.Repeat("? a\n", 4999),
+		"{" + strings.TrimSuffix(strings.Repeat("a,", 4999), ",") + "}\n",
+		strings.Repeat("-\n", 9999),
+	} {
+		t.Run(strconv.Itoa(len(body)), func(t *testing.T) {
+			for _, mode := range []formats.Action{formats.Block, formats.Monitor, formats.Off} {
+				t.Run(string(mode), func(t *testing.T) {
+					p := formats.Policy{AllowedTypes: []string{"application/yaml"}, Rules: map[string]formats.Action{"yaml-limit": mode, "yaml-duplicate-key": formats.Off}}
+					if mode == formats.Monitor {
+						p.Monitor = true
+					}
+					e := startEdge(t, p, true)
+					status := e.send(t, post("/api", "application/yaml", nil, body))
+					want, delivered := 200, 1
+					if mode == formats.Block {
+						want, delivered = 400, 0
+					}
+					if status != want {
+						t.Fatalf("status %d, want %d", status, want)
+					}
+					got := e.app.requests()
+					if len(got) != delivered {
+						t.Fatalf("application received %d requests, want %d", len(got), delivered)
+					}
+					if delivered == 1 && string(got[0].body) != body {
+						t.Fatal("forwarded body changed")
+					}
+					matches := e.seen.all()
+					if mode == formats.Off {
+						if len(matches) != 0 {
+							t.Fatalf("disabled finding recorded: %+v", matches)
+						}
+					} else if len(matches) != 1 || matches[0].RuleID != 5002503 || matches[0].Disruptive != (mode == formats.Block) || !strings.Contains(matches[0].Message, "limit 1024") {
+						t.Fatalf("wrong finding: %+v", matches)
+					}
+					if status := e.send(t, post("/api", "application/yaml", nil, "name: alice\n")); status != 200 {
+						t.Fatalf("valid YAML status %d", status)
+					}
+					if n := len(e.app.requests()); n != delivered+1 {
+						t.Fatalf("valid YAML did not reach application: %d", n)
+					}
+				})
+			}
+		})
+	}
+}

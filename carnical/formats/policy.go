@@ -113,13 +113,17 @@ type EncodingLimits struct {
 	AllowRawDeflate bool `json:"allow_raw_deflate,omitempty"`
 }
 
+// maxYAMLCollectionWork bounds quadratic collection parsing and implicit-null insertion work.
+const maxYAMLCollectionWork = 1024
+
 // YAMLLimits bound a YAML document, when YAML is allowed at all.
 type YAMLLimits struct {
-	MaxBytes   int `json:"max_bytes,omitempty"`   // default 32768
-	MaxDepth   int `json:"max_depth,omitempty"`   // default 32
-	MaxNodes   int `json:"max_nodes,omitempty"`   // default 10000
-	MaxAnchors int `json:"max_anchors,omitempty"` // anchors (&name) defined (default 4)
-	MaxAliases int `json:"max_aliases,omitempty"` // aliases (*name) used (default 8)
+	MaxBytes          int `json:"max_bytes,omitempty"`           // default 32768
+	MaxDepth          int `json:"max_depth,omitempty"`           // default 32
+	MaxNodes          int `json:"max_nodes,omitempty"`           // default 10000
+	MaxCollectionWork int `json:"max_collection_work,omitempty"` // structural work units; default and ceiling 1024
+	MaxAnchors        int `json:"max_anchors,omitempty"`         // anchors (&name) defined (default 4)
+	MaxAliases        int `json:"max_aliases,omitempty"`         // aliases (*name) used (default 8)
 }
 
 // FormLimits bound URL-encoded parameters in a body or URL query, independently for each channel.
@@ -221,6 +225,7 @@ func (p Policy) withDefaults() Policy {
 	def(&p.YAML.MaxBytes, 32<<10)
 	def(&p.YAML.MaxDepth, 32)
 	def(&p.YAML.MaxNodes, 10000)
+	def(&p.YAML.MaxCollectionWork, maxYAMLCollectionWork)
 	def(&p.YAML.MaxAnchors, 4)
 	def(&p.YAML.MaxAliases, 8)
 
@@ -318,6 +323,7 @@ func (p Policy) Validate() error {
 		{"ndjson.max_lines", p.NDJSON.MaxLines, ceilCount},
 		{"encoding.max_output", p.Encoding.MaxOutput, ceilBytes}, {"encoding.max_ratio", p.Encoding.MaxRatio, 100000},
 		{"yaml.max_bytes", p.YAML.MaxBytes, ceilBytes}, {"yaml.max_depth", p.YAML.MaxDepth, ceilDepth}, {"yaml.max_nodes", p.YAML.MaxNodes, ceilCount},
+		{"yaml.max_collection_work", p.YAML.MaxCollectionWork, maxYAMLCollectionWork},
 		{"yaml.max_anchors", p.YAML.MaxAnchors, 10000}, {"yaml.max_aliases", p.YAML.MaxAliases, 10000},
 		{"form.max_params", p.Form.MaxParams, ceilCount}, {"form.max_name_len", p.Form.MaxNameLen, 65536}, {"form.max_value_len", p.Form.MaxValueLen, ceilBytes},
 		{"form.max_bracket_depth", p.Form.MaxBracketDepth, 1000},

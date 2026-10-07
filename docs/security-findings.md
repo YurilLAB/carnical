@@ -301,3 +301,27 @@ in-flight transactions remain unchanged.
 The complete engine suite passes on native Windows and Linux. CI runs the complete engine suite on both native runner platforms,
 with focused race checks on Ubuntu. Other unreviewed scanner findings still fail
 the required gate.
+
+## YAML collection parser-work budget — 7 October 2026
+
+The Ubuntu runtime job reproduced a 24,995-byte, 4,999-pair YAML body costing
+250.968 ms. Source review found quadratic block-mapping suffix copying in
+goccy/go-yaml v1.19.2. Independent review also identified omitted-value explicit
+keys, shorthand flow maps and block sequences that bypass a colon-only counter
+and can trigger suffix copying or repeated implicit-null insertion. Regression
+tests reproduced the initial counter accepting 1025 explicit keys.
+
+YAML `max_collection_work` now defaults to 1024, with the same policy ceiling.
+It counts colon tokens, explicit key markers, opening flow maps, commas and block
+sequence entries before parsing, regardless of the finding's rule action. This
+conservatively bounds collection work and reports the actual work-unit budget.
+Existing byte/node/depth/tag/alias checks remain in force. Wide collections may
+now be refused. Monitor and rule-off modes retain forwarding semantics and stop
+further YAML inspection at the budget.
+
+On the same Windows machine the original body measured about 60 ms before and
+2.45 ms after the initial bound; these are local measurements, not a production
+latency guarantee. The 250 ms assertion remains unchanged. The real proxy tests
+check ordinary and omitted-value variants, block/monitor/off behavior, exact
+forwarded bytes, logged findings and independent origin request counts. See
+[ADR-0075](adr/0075-carnical-yaml-parser-work-budget.md).

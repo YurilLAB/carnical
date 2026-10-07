@@ -214,6 +214,7 @@ jobs:
         run: |
           go test -race ./internal/auditlog ./internal/corazawaf ./internal/operators ./internal/seclang ./testing -count=1
           go -C carnical test -race ./cmd/carnical-audit ./audit/... -count=1
+          go -C carnical test -race ./formats -run '^Test(YAML|PolicyValidate|YAMLCollectionWorkThroughProxy)$' -count=1
 
   crowdsec-regressions:
     name: CrowdSec live integration
