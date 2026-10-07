@@ -7,6 +7,7 @@ package e2e
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -259,20 +260,29 @@ func runHealthChecks(healthChecks []healthCheck) error {
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
 
-		req, _ := http.NewRequest(http.MethodGet, healthCheck.url, nil)
-		for range ticker.C {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(healthCheckTimeout)*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthCheck.url, nil)
+		if err != nil {
+			return fmt.Errorf("invalid health check URL: %w", err)
+		}
+		for {
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("timeout waiting for response from %s: %w", healthCheck.url, ctx.Err())
+			case <-ticker.C:
+			}
 			if healthCheck.expectedCode != configCheckStatusCode {
 				//  The default e2e header is not added if we are checking that the expected config is loaded
-				req.Header.Add("coraza-e2e", "ok")
+				req.Header.Set("coraza-e2e", "ok")
 			}
 			resp, err := client.Do(req)
 			fmt.Printf("[Wait] Waiting for %s. Timeout: %ds\n", healthCheck.url, timeout)
 			if err == nil {
-				_, err = io.Copy(io.Discard, resp.Body)
-				if err != nil {
-					return err
+				_, readErr := io.Copy(io.Discard, resp.Body)
+				if err := errors.Join(readErr, resp.Body.Close()); err != nil {
+					return fmt.Errorf("reading health check response: %w", err)
 				}
-				resp.Body.Close()
 
 				if resp.StatusCode == healthCheck.expectedCode {
 					fmt.Printf("[Ok] Check successful, got status code %d\n", resp.StatusCode)
@@ -325,8 +335,7 @@ func runTests(tests []testCase) error {
 		// Check status code first so stream checks can still read the body
 		if test.expectedStatusCode != nil {
 			if err := test.expectedStatusCode(resp.StatusCode); err != nil {
-				_ = resp.Body.Close()
-				return err
+				return errors.Join(err, resp.Body.Close())
 			}
 
 			fmt.Printf("[Ok] Got expected status code %d\n", resp.StatusCode)
@@ -334,8 +343,7 @@ func runTests(tests []testCase) error {
 
 		// If a streaming checker is provided, use it and skip io.ReadAll
 		if test.streamCheck != nil {
-			err := test.streamCheck(resp)
-			_ = resp.Body.Close()
+			err := errors.Join(test.streamCheck(resp), resp.Body.Close())
 			if err != nil {
 				return err
 			}
@@ -346,14 +354,16 @@ func runTests(tests []testCase) error {
 
 		// Default path: read the entire body and validate with expectedBody if provided
 		respBody, errReadRespBody := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		// A phase-3 denial can abort the body. Read errors are only expected
+		// when no body assertion is requested; cleanup errors always fail.
+		if test.expectedBody == nil {
+			errReadRespBody = nil
+		}
+		if err := errors.Join(errReadRespBody, resp.Body.Close()); err != nil {
+			return fmt.Errorf("could not read or close response body: %w", err)
+		}
 
 		if test.expectedBody != nil {
-			// Some servers might abort the request before sending the body (E.g. triggering a phase 3 rule with deny action)
-			// Therefore, we check if we properly read the body only if we expect a body to be received.
-			if errReadRespBody != nil {
-				return fmt.Errorf("could not read response body: %v", err)
-			}
 
 			if err := test.expectedBody(len(respBody), respBody); err != nil {
 				return err

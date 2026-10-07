@@ -6,7 +6,10 @@
 package e2e
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -128,6 +131,28 @@ func Test_runHealthChecks(t *testing.T) {
 	if err := runHealthChecks(healthChecks); err != nil {
 		t.Fatalf("runHealthChecks failed: %v", err)
 	}
+	t.Run("stalled response body", func(t *testing.T) {
+		stalled := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Length", "1")
+			w.WriteHeader(http.StatusOK)
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+		}))
+		defer stalled.Close()
+		started := time.Now()
+		err := runHealthChecks([]healthCheck{{url: stalled.URL, expectedCode: http.StatusOK}})
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("lost health check deadline: %v", err)
+		}
+		if time.Since(started) > time.Duration(healthCheckTimeout+5)*time.Second {
+			t.Fatal("body read exceeded the overall health check deadline")
+		}
+	})
+	t.Run("invalid URL", func(t *testing.T) {
+		if err := runHealthChecks([]healthCheck{{url: "http://localhost/\n"}}); err == nil {
+			t.Fatal("accepted an invalid health check URL")
+		}
+	})
 }
 
 func Test_runTests(t *testing.T) {
@@ -137,6 +162,9 @@ func Test_runTests(t *testing.T) {
 		case "/ok":
 			w.WriteHeader(http.StatusOK)
 			fmt.Fprint(w, "OK")
+		case "/truncated":
+			w.Header().Set("Content-Length", "10")
+			_, _ = io.WriteString(w, "cut")
 		case "/nulled":
 			// Return a nulled (all-zero) body of length 4
 			w.WriteHeader(http.StatusOK)
@@ -191,5 +219,23 @@ func Test_runTests(t *testing.T) {
 	}
 	if err := runTests(tests); err != nil {
 		t.Fatalf("runTests failed: %v", err)
+	}
+
+	// A real server disconnect verifies that callers can identify transport
+	// failure while phase-3 interruptions without a body assertion stay valid.
+	for _, expectBody := range []bool{true, false} {
+		t.Run(fmt.Sprintf("truncated/expectBody%t", expectBody), func(t *testing.T) {
+			test := testCase{requestURL: ts.URL + "/truncated", requestMethod: http.MethodGet, expectedStatusCode: expectStatusCode(200)}
+			if expectBody {
+				test.expectedBody = expectEmptyBody()
+			}
+			err := runTests([]testCase{test})
+			if expectBody && !errors.Is(err, io.ErrUnexpectedEOF) {
+				t.Fatalf("lost response read failure: %v", err)
+			}
+			if !expectBody && err != nil {
+				t.Fatalf("unexpected interruption failure: %v", err)
+			}
+		})
 	}
 }
