@@ -6,6 +6,10 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/ed25519"
+	cryptorand "crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
@@ -13,10 +17,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/big"
 	"math/rand"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,6 +33,7 @@ import (
 
 	"github.com/YurilLAB/coraza/carnical/formats"
 	"github.com/YurilLAB/coraza/carnical/inspect"
+	"github.com/YurilLAB/coraza/carnical/proxy"
 )
 
 // This is executable startup and TCP forwarding behavior, which cannot be expressed as an engine profile.
@@ -73,6 +80,7 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 			{name: "recursive config", data: "{\"version\":1,\"flags\":{\"config\":\"next.json\"}}", bad: true},
 			{name: "file check action", data: "{\"version\":1,\"flags\":{\"check\":true}}", bad: true},
 			{name: "file network action", data: "{\"version\":1,\"flags\":{\"check-origin\":true}}", bad: true},
+			{name: "file HTTP action", data: `{"version":1,"flags":{"check-origin-http":true}}`, bad: true},
 			{name: "file version action", data: "{\"version\":1,\"flags\":{\"version\":true}}", bad: true},
 			{name: "trailing document", data: "{\"version\":1,\"flags\":{}} {}", bad: true},
 			{name: "truncated document", data: "{\"version\":1,\"flags\":{\"mode\":\"block\"}", bad: true},
@@ -92,6 +100,7 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 				flags.String("config", "", "")
 				flags.Bool("check", false, "")
 				flags.Bool("check-origin", false, "")
+				flags.Bool("check-origin-http", false, "")
 				flags.Bool("version", false, "")
 				if err := flags.Parse([]string{"-upstream", "http://override.test", "-local-rules=false"}); err != nil {
 					t.Fatal(err)
@@ -153,6 +162,183 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 	defer app.Close()
 	tlsApp := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { requests <- received{target: r.RequestURI} }))
 	defer tlsApp.Close()
+
+	// The authenticated origin uses a dedicated CA plus an exact certificate
+	// identity allowlist. A different identity signed by that CA is still denied.
+	type originCredential struct {
+		cert            *x509.Certificate
+		pair            tls.Certificate
+		certPEM, keyPEM []byte
+	}
+	issue := func(template *x509.Certificate, issuer *originCredential) originCredential {
+		_, key, err := ed25519.GenerateKey(cryptorand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		parent, signingKey := template, key
+		if issuer != nil {
+			parent, signingKey = issuer.cert, issuer.pair.PrivateKey.(ed25519.PrivateKey)
+		}
+		der, err := x509.CreateCertificate(cryptorand.Reader, template, parent, key.Public(), signingKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		parsed, err := x509.ParseCertificate(der)
+		if err != nil {
+			t.Fatal(err)
+		}
+		private, err := x509.MarshalPKCS8PrivateKey(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+		keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: private})
+		pair, err := tls.X509KeyPair(certPEM, keyPEM)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return originCredential{parsed, pair, certPEM, keyPEM}
+	}
+	now := time.Now()
+	ca := issue(&x509.Certificate{SerialNumber: big.NewInt(1), NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}, nil)
+	foreignCA := issue(&x509.Certificate{SerialNumber: big.NewInt(2), NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}, nil)
+	serverIdentity := issue(&x509.Certificate{SerialNumber: big.NewInt(3), NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, DNSNames: []string{"localhost"}, IPAddresses: []net.IP{net.ParseIP("127.0.0.1")}}, &ca)
+	identities := map[string]originCredential{}
+	for _, tc := range []struct {
+		name          string
+		serial        int64
+		ca            *originCredential
+		usage         x509.ExtKeyUsage
+		before, after time.Time
+	}{
+		{"good", 4, &ca, x509.ExtKeyUsageClientAuth, now.Add(-time.Hour), now.Add(time.Hour)},
+		{"wrong-site", 5, &ca, x509.ExtKeyUsageClientAuth, now.Add(-time.Hour), now.Add(time.Hour)},
+		{"foreign", 4, &foreignCA, x509.ExtKeyUsageClientAuth, now.Add(-time.Hour), now.Add(time.Hour)},
+		{"expired", 6, &ca, x509.ExtKeyUsageClientAuth, now.Add(-2 * time.Hour), now.Add(-time.Hour)},
+		{"future", 7, &ca, x509.ExtKeyUsageClientAuth, now.Add(time.Hour), now.Add(2 * time.Hour)},
+		{"server-only", 8, &ca, x509.ExtKeyUsageServerAuth, now.Add(-time.Hour), now.Add(time.Hour)},
+	} {
+		t.Run("origin credential fixture "+tc.name, func(t *testing.T) {
+			identities[tc.name] = issue(&x509.Certificate{SerialNumber: big.NewInt(tc.serial), NotBefore: tc.before, NotAfter: tc.after, ExtKeyUsage: []x509.ExtKeyUsage{tc.usage}}, tc.ca)
+		})
+	}
+
+	t.Run("origin file protections", func(t *testing.T) {
+		for _, tc := range []struct {
+			name                               string
+			mode                               os.FileMode
+			symlink, directory, oversized, bad bool
+		}{
+			{name: "private key", mode: 0600},
+			{name: "read-only service group", mode: 0640},
+			{name: "world-readable key", mode: 0644, bad: true},
+			{name: "group-writable key", mode: 0660, bad: true},
+			{name: "symlink key", mode: 0600, symlink: true, bad: true},
+			{name: "directory key", directory: true, bad: true},
+			{name: "oversized key", mode: 0600, oversized: true, bad: true},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				if runtime.GOOS == "windows" && (tc.mode == 0644 || tc.mode == 0660) {
+					t.Skip("Unix permissions do not describe Windows ACLs")
+				}
+				dir := t.TempDir()
+				path := filepath.Join(dir, "edge.key")
+				data := identities["good"].keyPEM
+				if tc.oversized {
+					data = bytes.Repeat([]byte(" "), (64<<10)+1)
+				}
+				if tc.directory {
+					path = dir
+				} else {
+					if err := os.WriteFile(path, data, tc.mode); err != nil {
+						t.Fatal(err)
+					}
+					if runtime.GOOS != "windows" {
+						if err := os.Chmod(path, tc.mode); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				if tc.symlink {
+					link := filepath.Join(dir, "link.key")
+					if err := os.Symlink(path, link); err != nil {
+						if runtime.GOOS == "windows" {
+							t.Skip("Windows symlink creation requires host privilege")
+						}
+						t.Fatal(err)
+					}
+					path = link
+				}
+				got, err := readOriginFile(path, 64<<10, true)
+				if (err != nil) != tc.bad {
+					t.Fatalf("key acceptance: error=%v want refused=%v", err, tc.bad)
+				}
+				if !tc.bad && !bytes.Equal(got, data) {
+					t.Fatal("key bytes changed")
+				}
+			})
+		}
+	})
+	roots := x509.NewCertPool()
+	roots.AddCert(ca.cert)
+	originCalls := make(chan received, 64)
+	authOrigin := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if len(r.TLS.VerifiedChains) == 0 || r.TLS.PeerCertificates[0].SerialNumber.Cmp(big.NewInt(4)) != 0 {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		if r.URL.Path != "/__cli_test_ready" {
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				http.Error(w, "bad body", 400)
+				return
+			}
+			originCalls <- received{string(body), r.Header.Get("Content-Encoding"), r.ContentLength, r.RequestURI}
+		}
+		w.WriteHeader(200)
+	}))
+	authOrigin.TLS = &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{serverIdentity.pair}, ClientCAs: roots, ClientAuth: tls.RequireAndVerifyClientCert, SessionTicketsDisabled: true}
+	authOrigin.StartTLS()
+	defer authOrigin.Close()
+
+	t.Run("origin certificate snapshot survives input mutation", func(t *testing.T) {
+		identity := identities["good"].pair
+		identity.Certificate = [][]byte{bytes.Clone(identity.Certificate[0])}
+		// A supplied Leaf is not authority; parse the actual certificate bytes.
+		identity.Leaf = identities["foreign"].cert
+		target, err := url.Parse(authOrigin.URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := (proxy.OriginTLS{Roots: roots, Certificate: &identity}).ClientConfig(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clear(identity.Certificate[0])
+		transport := &http.Transport{TLSClientConfig: cfg}
+		defer transport.CloseIdleConnections()
+		client := &http.Client{Transport: transport, Timeout: 3 * time.Second}
+		request, err := http.NewRequest(http.MethodHead, authOrigin.URL+"/", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response, err := client.Do(request)
+		if err != nil {
+			t.Fatalf("input mutation changed the TLS identity: %v", err)
+		}
+		if err := response.Body.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("authenticated origin returned %d", response.StatusCode)
+		}
+		select {
+		case <-originCalls:
+		default:
+			t.Fatal("authenticated request did not reach the origin")
+		}
+	})
+
 	client := &http.Client{Timeout: time.Second}
 	defer client.CloseIdleConnections()
 	const good = `{"note":"SECRET_TOKEN_CLI_TEST","a":1}`
@@ -186,6 +372,8 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 		site                                                                        string
 		preflight                                                                   bool
 		trustOrigin                                                                 bool
+		originAuth                                                                  string
+		probeHTTP                                                                   bool
 		apiSpec                                                                     string
 		headers                                                                     map[string]string
 		alsoRules                                                                   []int
@@ -200,6 +388,19 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 		allowEncoding, fails, policyDir                                             bool
 		status                                                                      int
 	}{
+		{name: "origin authentication forwards good traffic", originAuth: "good", method: "GET", target: "/page", status: 200, repeat: 4},
+		{name: "origin identity does not skip inspection", originAuth: "good", method: "GET", target: "/page?q=%3Cscript%3Ealert(1)%3C/script%3E", extraArgs: []string{"-mode", "block"}, mode: "block", status: 403},
+		{name: "origin certificate preflight confirms HTTP acceptance", originAuth: "good", extraArgs: []string{"-check", "-check-origin", "-check-origin-http"}, preflight: true, probeHTTP: true},
+		{name: "origin refuses missing certificate", originAuth: "none", extraArgs: []string{"-check", "-check-origin", "-check-origin-http"}, fails: true},
+		{name: "origin refuses foreign CA certificate", originAuth: "foreign", extraArgs: []string{"-check", "-check-origin", "-check-origin-http"}, fails: true},
+		{name: "origin refuses different identity from its CA", originAuth: "wrong-site", extraArgs: []string{"-check", "-check-origin", "-check-origin-http"}, fails: true},
+		{name: "origin expired certificate refuses startup", originAuth: "expired", extraArgs: []string{"-check"}, fails: true},
+		{name: "origin future certificate refuses startup", originAuth: "future", extraArgs: []string{"-check"}, fails: true},
+		{name: "origin server certificate cannot serve as client identity", originAuth: "server-only", extraArgs: []string{"-check"}, fails: true},
+		{name: "origin key mismatch refuses startup", originAuth: "mismatch", extraArgs: []string{"-check"}, fails: true},
+		{name: "origin certificate needs paired key", extraArgs: []string{"-origin-client-cert", "missing.pem", "-check"}, fails: true},
+		{name: "origin TLS settings refuse plaintext upstream", extraArgs: []string{"-origin-ca-file", "missing.pem", "-check"}, fails: true},
+		{name: "HTTP preflight requires explicit actions", extraArgs: []string{"-check-origin-http"}, fails: true},
 		{name: "site check accepts trusted origin certificate", site: `{"version":1,"flags":{"upstream":"$TLSORIGIN","origin-allow":"127.0.0.1/32"}}`, extraArgs: []string{"-check", "-check-origin"}, preflight: true, trustOrigin: true},
 		{name: "site check rejects untrusted origin certificate", site: `{"version":1,"flags":{"upstream":"$TLSORIGIN","origin-allow":"127.0.0.1/32"}}`, extraArgs: []string{"-check", "-check-origin"}, fails: true},
 		{name: "site check rejects private DNS without allowance", site: `{"version":1,"flags":{"upstream":"$DNSORIGIN"}}`, extraArgs: []string{"-check", "-check-origin"}, fails: true},
@@ -366,6 +567,9 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 			if tc.trustOrigin && runtime.GOOS != "linux" {
 				t.Skip("Linux SSL_CERT_FILE tests system-root overrides; Windows uses the native certificate store")
 			}
+			for len(originCalls) > 0 {
+				<-originCalls
+			}
 			for len(requests) > 0 {
 				<-requests // a failing previous subtest must not contaminate this one's origin evidence
 			}
@@ -393,6 +597,35 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 				args = []string{"-listen", addr, "-config", path}
 			}
 			args = append(args, tc.extraArgs...)
+
+			if tc.originAuth != "" {
+				dir := t.TempDir()
+				caPath := filepath.Join(dir, "origin-ca.pem")
+				if err := os.WriteFile(caPath, ca.certPEM, 0600); err != nil {
+					t.Fatal(err)
+				}
+				args = append(args, "-upstream", authOrigin.URL, "-origin-ca-file", caPath)
+				if tc.originAuth != "none" {
+					name := tc.originAuth
+					if name == "mismatch" {
+						name = "good"
+					}
+					identity := identities[name]
+					certPath, keyPath := filepath.Join(dir, "edge.pem"), filepath.Join(dir, "edge.key")
+					key := identity.keyPEM
+					if tc.originAuth == "mismatch" {
+						key = identities["wrong-site"].keyPEM
+					}
+					if err := os.WriteFile(certPath, identity.certPEM, 0600); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(keyPath, key, 0600); err != nil {
+						t.Fatal(err)
+					}
+					args = append(args, "-origin-client-cert", certPath, "-origin-client-key", keyPath)
+				}
+			}
+
 			if tc.apiSpec != "" {
 				data := []byte(tc.apiSpec)
 				if tc.apiSpec == "example" {
@@ -460,6 +693,18 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 					conn.Close()
 					t.Fatal("preflight opened a listener")
 				}
+				if tc.probeHTTP {
+					select {
+					case got := <-originCalls:
+						if got.target != "/" || got.body != "" {
+							t.Fatal("HTTP probe changed target or sent a body")
+						}
+					default:
+						t.Fatal("HTTP probe did not reach authenticated origin")
+					}
+				} else if len(originCalls) != 0 {
+					t.Fatal("local preflight sent HTTP")
+				}
 				if len(requests) != 0 {
 					t.Fatal("preflight sent an HTTP request")
 				}
@@ -472,6 +717,9 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 				if conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond); err == nil {
 					conn.Close()
 					t.Fatal("invalid configuration opened a listener")
+				}
+				if len(originCalls) != 0 {
+					t.Fatal("refused origin identity reached the application")
 				}
 				return
 			}
@@ -542,8 +790,12 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 				if want == 429 && (resp.Header.Get("Retry-After") != "60" || resp.Header.Get("Cache-Control") != "no-store") {
 					t.Fatal("rate refusal lacks retry or cache policy")
 				}
+				originRequests := requests
+				if tc.originAuth != "" {
+					originRequests = originCalls
+				}
 				select {
-				case got := <-requests:
+				case got := <-originRequests:
 					if want != 200 {
 						t.Fatal("refused request reached the origin")
 					}

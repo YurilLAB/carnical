@@ -36,7 +36,7 @@ Key Features (Coraza engine):
 
 Carnical adds:
 
-* **Website onboarding** - [Reusable site files and startup checks](carnical/docs/website-onboarding.md), optional origin DNS/TCP/TLS verification, and an operator/client guide for DNS cutover, certificates and rollback.
+* **Website onboarding** - [Reusable site files and startup checks](carnical/docs/website-onboarding.md), origin DNS/TCP/TLS and HTTP checks, WAF-to-origin mutual TLS, and an operator/client guide for DNS cutover, certificates and rollback.
 
 * **API contracts and request validation** - [Explicit OpenAPI contracts](carnical/docs/input-hardening.md) validate supported parameters and JSON schemas. [Strict format inspection](carnical/docs/formats.md) covers JSON, XML/SOAP, GraphQL, forms, multipart, NDJSON, optional YAML and bounded gzip/deflate decoding, with checks for ambiguous parsing and resource exhaustion. API quotas are opt-in; discovery and learning are available through the [API guard library](carnical/docs/apiguard.md).
 * **Proxy hardening** - Verified client identities, origin address restrictions, request-target and framing checks, upload safeguards, bounded rule evaluation and supplemental injection rules reduce differences between what the WAF inspects and what the application receives.
@@ -79,6 +79,18 @@ After reviewing findings and tuning exclusions, enable content blocking with `-m
 Proxy safety checks, flood protection and configured CrowdSec bans have independent enforcement.
 The loopback origin allowance above is for this local example; allow only the origin ranges the deployment needs.
 See the [Carnical guide](carnical/README.md) for TLS, API contracts, CrowdSec and Linux deployment.
+
+## Protect a website
+
+1. Give the operator the website names (for example, `example.com` and `www.example.com`) and its current hosting/origin address. Complete the operator's domain-ownership check.
+2. After the operator confirms certificates, origin authentication and live checks are ready, point those names' **A and AAAA records** at the supplied Carnical addresses or supported DNS target. Keep a copy of the previous records for an agreed rollback.
+3. Check pages, login, forms, uploads and APIs through the protected domain. Report any blocked legitimate requests to the operator.
+
+Clients do not need to install the WAF or change application code. The operator
+keeps a separate origin address and configures the origin to accept only the
+approved WAF identity and ingress paths. DNS changes alone cannot prevent direct
+access to a public origin. The [onboarding guide](carnical/docs/website-onboarding.md)
+includes the site file, certificate setup, cutover checks and rollback steps.
 
 ## Coraza Core Usage
 

@@ -100,7 +100,7 @@ func loadSiteConfig(path string, flags *flag.FlagSet) error {
 					return fmt.Errorf("duplicate site configuration flag %q", name)
 				}
 				setting := flags.Lookup(name)
-				if setting == nil || name == "config" || name == "check" || name == "check-origin" || name == "version" {
+				if setting == nil || name == "config" || name == "check" || name == "check-origin" || name == "check-origin-http" || name == "version" {
 					return fmt.Errorf("unsupported site configuration flag %q", name)
 				}
 				value, err := dec.Token()

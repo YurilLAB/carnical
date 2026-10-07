@@ -12,6 +12,7 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -47,6 +48,8 @@ type Config struct {
 	// cannot be pointed at this machine, the cloud metadata service or the private network; list a range in
 	// Origin.Allow for an origin that is really there.
 	Origin OriginPolicy
+	// OriginTLS verifies the upstream and optionally authenticates this edge with a client certificate.
+	OriginTLS OriginTLS
 	// UpstreamHost is the Host header sent to the upstream. Empty keeps the visitor's Host, which is what a site
 	// that serves several names expects; set it when the upstream is a shared machine, so a visitor cannot reach
 	// another site there by choosing a different Host.
@@ -130,6 +133,7 @@ type Match struct {
 type Edge struct {
 	crowdSecLogSecond atomic.Int64
 	cfg               Config
+	originTLS         *tls.Config
 	waf               coraza.WAF
 	handler           http.Handler
 	slots             chan struct{}
@@ -149,6 +153,10 @@ func New(cfg Config) (*Edge, error) {
 		return nil, errors.New("the upstream must be an http or https address with a host")
 	case u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") || u.Opaque != "":
 		return nil, errors.New("the upstream must not carry a user name, a path, a query or a fragment")
+	}
+	originTLS, err := cfg.OriginTLS.ClientConfig(u)
+	if err != nil {
+		return nil, err
 	}
 	for _, p := range cfg.Origin.Allow {
 		if !p.IsValid() || p.Bits() == 0 {
@@ -175,7 +183,7 @@ func New(cfg Config) (*Edge, error) {
 	if err != nil {
 		return nil, err
 	}
-	e := &Edge{cfg: cfg, hosts: map[string]bool{}, deny: map[string]bool{}}
+	e := &Edge{cfg: cfg, originTLS: originTLS, hosts: map[string]bool{}, deny: map[string]bool{}}
 	for _, h := range cfg.AllowedHosts {
 		if n := normHost(h); n != "" {
 			e.hosts[n] = true
@@ -500,6 +508,7 @@ func checkTarget(r *http.Request) error {
 func (e *Edge) forward() http.Handler {
 	target := e.cfg.Upstream
 	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = e.originTLS
 	transport.Proxy = nil // never an environment proxy
 	// Every connection is checked at the moment it is made, against the address it will really use.
 	dialer := e.cfg.Origin.Dialer()

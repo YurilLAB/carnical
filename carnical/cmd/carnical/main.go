@@ -42,6 +42,10 @@ func main() {
 func run() error {
 	configFile := flag.String("config", "", "operator site JSON configuration (maximum 64 KiB; explicit CLI flags override it)")
 	check := flag.Bool("check", false, "validate settings and local files, then exit without listening or applying confinement")
+	checkOriginHTTP := flag.Bool("check-origin-http", false, "with -check -check-origin, send HEAD / to confirm origin HTTP acceptance; no redirects")
+	originCert := flag.String("origin-client-cert", "", "PEM client certificate for authenticated HTTPS origin access")
+	originKey := flag.String("origin-client-key", "", "private PEM key for -origin-client-cert (loaded before confinement)")
+	originCA := flag.String("origin-ca-file", "", "PEM origin CA bundle (default: system roots; server verification always enabled)")
 	checkOrigin := flag.Bool("check-origin", false, "with -check, also verify origin DNS, TCP and HTTPS certificate within 10s (sends no HTTP request)")
 	listen := flag.String("listen", "127.0.0.1:8080", "address to listen on")
 	upstream := flag.String("upstream", "", "the website to protect, such as http://127.0.0.1:8081 (required)")
@@ -129,6 +133,9 @@ func run() error {
 	if *checkOrigin && !*check {
 		return errors.New("-check-origin requires -check")
 	}
+	if *checkOriginHTTP && (!*check || !*checkOrigin) {
+		return errors.New("-check-origin-http requires -check and -check-origin")
+	}
 	if *upstream == "" {
 		return errors.New("-upstream is required")
 	}
@@ -156,6 +163,10 @@ func run() error {
 	target, err := url.Parse(*upstream)
 	if err != nil {
 		return fmt.Errorf("-upstream: %w", err)
+	}
+	originTLS, err := configureOriginTLS(target, *originCert, *originKey, *originCA)
+	if err != nil {
+		return err
 	}
 	trusted, err := proxy.ParseTrusted(*trustedList)
 	if err != nil {
@@ -207,7 +218,7 @@ func run() error {
 		defer guard.Close()
 	}
 	edge, err := proxy.New(proxy.Config{
-		Upstream: target, Origin: proxy.OriginPolicy{Allow: origin}, UpstreamHost: *upstreamHost, CRS: settings, TrustedProxies: trusted, AllowUpgrade: *allowUpgrade,
+		Upstream: target, Origin: proxy.OriginPolicy{Allow: origin}, OriginTLS: originTLS, UpstreamHost: *upstreamHost, CRS: settings, TrustedProxies: trusted, AllowUpgrade: *allowUpgrade,
 		MaxUpstreamInFlight: *maxUpstream, LogDetails: *details, EvalBudget: *evalBudget, MaxEvaluations: *maxEval, MaxFormBody: *maxForm,
 		AllowedHosts: splitList(*hosts), Paths: proxy.PathPolicy{AllowEncodedSlash: *encodedSlash, AllowPathParams: *pathParams},
 		DenyHeaders: splitList(*denyHeaders), WordPress: proxy.WordPressPolicy{Enabled: *wordpress, AllowXMLRPC: *xmlrpc, LoginPerMinute: *loginRate},
@@ -260,11 +271,12 @@ func run() error {
 			confinement.ReadWrite = []string{*uploadDir}
 		}
 	}
-	if err := checkDeployment(*listen, target, proxy.OriginPolicy{Allow: origin}, *fromSystemd, *checkOrigin); err != nil {
+	if err := checkDeployment(deploymentCheck{listen: *listen, target: target, policy: proxy.OriginPolicy{Allow: origin},
+		originTLS: originTLS, host: *upstreamHost, systemd: *fromSystemd, probe: *checkOrigin, probeHTTP: *checkOriginHTTP}); err != nil {
 		return err
 	}
 	if *check {
-		log.Info("configuration checked", "mode", *mode, "formats_mode", *formatsMode, "origin_checked", *checkOrigin, "tls", *certFile != "", "sandbox_applied", false)
+		log.Info("configuration checked", "mode", *mode, "formats_mode", *formatsMode, "origin_checked", *checkOrigin, "origin_http_checked", *checkOriginHTTP, "origin_client_identity", originTLS.Certificate != nil, "tls", *certFile != "", "sandbox_applied", false)
 		return nil
 	}
 	var ln net.Listener

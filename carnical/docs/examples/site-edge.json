@@ -2,12 +2,14 @@
   "version": 1,
   "flags": {
     "upstream": "https://origin.example.com",
-    "upstream-host": "example.com",
+    "upstream-host": "origin.example.com",
     "hosts": "example.com,www.example.com",
     "mode": "detect",
     "formats-mode": "monitor",
     "tls-cert": "/etc/carnical/tls/site.crt",
     "tls-key": "/etc/carnical/tls/site.key",
-    "confine-connect": "80,443,53"
+    "confine-connect": "80,443,53",
+    "origin-client-cert": "/etc/carnical/origin/edge.crt",
+    "origin-client-key": "/etc/carnical/origin/edge.key"
   }
 }

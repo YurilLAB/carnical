@@ -266,7 +266,7 @@ jobs:
       - name: Install network test tools
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y nftables iproute2 openssl
+          sudo apt-get install --no-install-recommends -y nftables iproute2 openssl nginx
       - name: Check shield races and a live distributed flood
         working-directory: carnical
         shell: bash
@@ -276,6 +276,11 @@ jobs:
           go test -race ./proxy -run TestAFloodFromAThousandAddressesThroughTheProxy -count=1 -v \
             | tee ../build/security-reports/live-flood.log
           CGO_ENABLED=0 go build -o ../build/carnical-network-linux ./cmd/carnical
+      - name: Validate origin authentication with real NGINX and WAF traffic
+        shell: bash
+        run: |
+          python3 .github/security/test_origin_auth.py --binary build/carnical-network-linux \
+            | tee build/security-reports/origin-auth.log
       - name: Exercise kernel policy and live IPv4 and IPv6 WAF traffic
         shell: bash
         run: |
