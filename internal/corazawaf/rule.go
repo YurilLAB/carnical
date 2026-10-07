@@ -434,7 +434,7 @@ func (r *Rule) transformArg(arg types.MatchData, argIdx int, cache map[transform
 	default:
 		// NOTE: See comment on transformationKey struct to understand this hacky code
 		argKey := arg.Key()
-		argKeyPtr := unsafe.StringData(argKey)
+		argKeyPtr := unsafe.StringData(argKey) // #nosec G103 -- ADR-0019: typed pointer is retained only as cache identity, never dereferenced; immutable key bytes stay alive.
 
 		// Search from longest prefix (full chain) backwards for a cache hit.
 		// Best case: full chain cached → single map lookup, done.

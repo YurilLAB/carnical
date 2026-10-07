@@ -303,7 +303,7 @@ func resolveLogPath(path string) (io.Writer, error) {
 		return os.Stderr, nil
 	}
 
-	return os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0600)
+	return os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0600) // #nosec G304 -- SecDebugLog configures this destination before request processing; new logs are private.
 }
 
 // SetDebugLogPath sets the path for the debug log

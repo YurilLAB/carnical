@@ -116,7 +116,7 @@ func InSlice(a string, list []string) bool {
 // WrapUnsafe wraps the provided buffer as a string. The buffer
 // must not be mutated after calling this function.
 func WrapUnsafe(buf []byte) string {
-	return *(*string)(unsafe.Pointer(&buf))
+	return *(*string)(unsafe.Pointer(&buf)) // #nosec G103 -- Callers transfer freshly allocated buffers and never mutate them after wrapping; the returned string retains the backing storage.
 }
 
 // HasRegex checks if s is enclosed in unescaped forward slashes (e.g. "/pattern/"),

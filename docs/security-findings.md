@@ -325,3 +325,41 @@ latency guarantee. The 250 ms assertion remains unchanged. The real proxy tests
 check ordinary and omitted-value variants, block/monitor/off behavior, exact
 forwarded bytes, logged findings and independent origin request counts. See
 [ADR-0075](adr/0075-carnical-yaml-parser-work-budget.md).
+
+## Core scanner review and HTTP validation — 7 October 2026
+
+The original seven remaining core G115 findings are resolved with explicit
+byte bounds while preserving low-byte normalization. Unicode output uses the
+signed formatting API for nonnegative runes, avoiding another narrowing path.
+The regex prefilter no longer wraps shift distances above 255; regression cases
+cover 255–512-byte literals, both case modes and every offset from 0 to 512.
+Live HTTP checks on Windows and Linux blocked eight encoded/long-literal inputs
+and admitted four ordinary controls, with independently counted origin requests.
+
+The HTTP E2E runner now closes response bodies even when reading fails, preserves
+read/close errors, and retains expected phase-3 body-abort behavior. A live
+truncated response previously produced an error containing a nil cause; its
+regression now exposes the actual unexpected EOF. Health checks validate URLs,
+keep one control header across retries and enforce a 15-second context deadline
+through body reads. A live stalled-body control confirms that deadline.
+
+Five core code sites have narrowly scoped, reviewed exceptions: OSFS Open/ReadFile
+load configured rules/data using native filesystem semantics; SecDebugLog opens
+the administrator-selected destination with private creation permissions; the
+existing zero-copy string helper transfers fresh buffers that callers never
+mutate; and transformation-cache identity retains a typed pointer without
+dereferencing it. Restricted RootFS implementations remain the sandbox boundary
+for rule loading. The unused internal ReadFirstFile helper was removed after
+confirming that no tracked module calls it. No scanner rule or required job was
+disabled.
+
+The complete native core suites pass on Windows and Linux, root lint reports
+zero issues, and four evaluation/build-tag variants pass. The fresh core Gosec
+scan reports zero findings and no package-loading errors on both targets. The
+application inventory remains 115 Linux and 87 Windows findings, which continue
+to fail the aggregate security gate. Local race execution still lacks a C
+compiler; the hosted Ubuntu job supplies that check.
+
+The ADR validator now normalizes Windows CRLF before inspecting sections. The
+previous checker rejected 60 existing records on Windows; all 75 records now
+pass on Windows and Linux, including the indexed YAML work-budget decision.
