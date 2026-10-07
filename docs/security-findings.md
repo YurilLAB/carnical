@@ -235,3 +235,49 @@ The complete root/application rescan has no package-loading errors and reports
 135 Linux and 107 Windows findings: five fewer on each target. One reviewed
 G304 exception is limited to the operator-selected CLI log path; no tenant or
 HTTP request input selects it. Remaining findings still fail the security gate.
+
+## Audit formatter and writer validation — 7 October 2026
+
+A live OCSF check reproduced a nil-pointer panic when a matched rule was logged
+with H (trailer) but without K (rule details), including the default audit-parts
+configuration when OCSF is selected. The panic terminated that HTTP connection
+and omitted its audit record. The server remained running; no content-filter
+bypass or process-wide denial of service was demonstrated. The source trace
+also shows transaction cleanup was skipped in that deferred middleware call.
+
+Native Message.Data now represents absent details as a true nil. Both consuming
+formatters skip absent detailed data; OCSF retains the H-only error message
+through the existing trailer interface. Full-K enrichment and JSON serialization
+of native messages remain unchanged. This does not claim safety for arbitrary
+third-party plugin getters returning a typed nil. Independent source investigation
+and patch review covered the native optional-state paths and direct consumers.
+
+OCSF now rejects numeric values outside its signed 32-bit representation instead
+of wrapping them. It converts Go timezone seconds to minutes and enforces the
+[OCSF 1.2 offset range](https://raw.githubusercontent.com/ocsf/ocsf-schema/v1.2.0/dictionary.json).
+Normal values, unknown zeros and representable connector values are preserved.
+These numeric defects were reproduced as logging correctness issues, without
+a demonstrated remote input route to oversized connector values.
+
+Serial and concurrent writers now return genuine output failures from log.Output.
+Closed-file controls previously returned success and now fail. Two writer-init
+tests now use a guaranteed missing parent below a temporary directory instead
+of assuming the root directory is unwritable; both passed on Windows and Linux.
+
+Regression tests reproduced the optional-data panic, numeric wrapping, timezone
+unit mismatch and hidden write errors before the fixes. The complete auditlog
+suite and audit-command suite pass on native Windows and real Linux. A running
+WAF using OCSF and H without K blocked 50 varied requests, admitted 50 valid
+controls and wrote 100 parseable records without panic; denied records retain
+trailer messages and a configured UTC+11 offset appears as 660 minutes. Request
+phase interruptions still leave the response code unknown in engine audit data;
+the Denied action and observed HTTP 403 are validated separately.
+
+Focused vet and gosec scans for both targets pass without new exceptions.
+Four additional G115 findings are resolved on each platform. CI now requires
+these audit suites on native Ubuntu and Windows, plus race checks on Ubuntu.
+Local race execution is unavailable because this environment has no C compiler;
+its result is validated by the hosted job after push. Other scanner findings
+remain enabled. The preceding hosted run passed all runtime/live, network,
+CrowdSec, dependency, secrets and workflow jobs, while both gosec targets still
+failed on the remaining inventory.

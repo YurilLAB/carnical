@@ -384,6 +384,9 @@ func (m Message) ErrorMessage() string {
 }
 
 func (m Message) Data() plugintypes.AuditLogMessageData {
+	if m.Data_ == nil {
+		return nil
+	}
 	return m.Data_
 }
 

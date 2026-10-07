@@ -6,6 +6,7 @@
 package auditlog
 
 import (
+	"fmt"
 	"io"
 	"io/fs"
 	"log"
@@ -83,20 +84,23 @@ func (cl concurrentWriter) Write(al plugintypes.AuditLog) error {
 	cl.mux.Lock()
 	defer cl.mux.Unlock()
 
-	cl.log.Printf("%s %s - - [%s]", al.Transaction().ClientIP(), al.Transaction().HostIP(), al.Transaction().Timestamp())
+	if err := cl.log.Output(2, fmt.Sprintf("%s %s - - [%s]", al.Transaction().ClientIP(), al.Transaction().HostIP(), al.Transaction().Timestamp())); err != nil {
+		return err
+	}
 	if al.Transaction().HasRequest() {
-		cl.log.Printf(
-			` "%s %s %s"`,
+		if err := cl.log.Output(2, fmt.Sprintf(` "%s %s %s"`,
 			al.Transaction().Request().Method(),
 			al.Transaction().Request().URI(),
-			al.Transaction().Request().HTTPVersion())
+			al.Transaction().Request().HTTPVersion())); err != nil {
+			return err
+		}
 	}
 	if al.Transaction().HasResponse() {
-		cl.log.Printf(` %d`, al.Transaction().Response().Status())
+		if err := cl.log.Output(2, fmt.Sprintf(` %d`, al.Transaction().Response().Status())); err != nil {
+			return err
+		}
 	}
-	cl.log.Printf("%s - %s\n", al.Transaction().ID(), filepath)
-
-	return nil
+	return cl.log.Output(2, fmt.Sprintf("%s - %s\n", al.Transaction().ID(), filepath))
 }
 
 var _ plugintypes.AuditLogWriter = (*concurrentWriter)(nil)

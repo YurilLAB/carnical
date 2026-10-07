@@ -160,8 +160,10 @@ func (nativeFormatter) Format(al plugintypes.AuditLog) ([]byte, error) {
 		case types.AuditLogPartRulesMatched:
 			// Part K: Matched rules
 			for _, alEntry := range al.Messages() {
-				res.WriteString(logEscaper.Replace(alEntry.Data().Raw()))
-				res.WriteByte('\n')
+				if data := alEntry.Data(); data != nil {
+					res.WriteString(logEscaper.Replace(data.Raw()))
+					res.WriteByte('\n')
+				}
 			}
 		case types.AuditLogPartEndMarker:
 			// Part Z: Final boundary marker with no content

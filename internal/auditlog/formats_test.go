@@ -36,6 +36,16 @@ func mutateSeparator(separator string, part byte) string {
 func TestNativeFormatter(t *testing.T) {
 	f := &nativeFormatter{}
 
+	t.Run("missing matched data retains the trailer", func(t *testing.T) {
+		al := &Log{Parts_: []types.AuditLogPart{types.AuditLogPartAuditLogTrailer, types.AuditLogPartRulesMatched}, Messages_: []plugintypes.AuditLogMessage{Message{ErrorMessage_: "retained trailer"}}}
+		data, err := f.Format(al)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), "retained trailer") {
+			t.Fatalf("trailer lost: %s", data)
+		}
+	})
 	t.Run("empty parts", func(t *testing.T) {
 		al := &Log{}
 		l, err := f.Format(al)

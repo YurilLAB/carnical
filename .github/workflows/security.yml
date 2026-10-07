@@ -183,6 +183,38 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  audit-regressions:
+    name: Audit reporting (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    env:
+      CGO_ENABLED: '0'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.26.6'
+          cache-dependency-path: '**/go.sum'
+      - name: Check audit formatters, writers and reporting failures
+        shell: bash
+        run: |
+          go test ./internal/auditlog -count=1
+          go -C carnical test ./cmd/carnical-audit ./audit/... -count=1
+      - name: Check audit races
+        if: runner.os == 'Linux'
+        env:
+          CGO_ENABLED: '1'
+        shell: bash
+        run: |
+          go test -race ./internal/auditlog -count=1
+          go -C carnical test -race ./cmd/carnical-audit ./audit/... -count=1
+
   crowdsec-regressions:
     name: CrowdSec live integration
     runs-on: ubuntu-24.04
@@ -264,7 +296,7 @@ jobs:
   required:
     name: Security review required
     if: ${{ always() }}
-    needs: [gosec, dependencies, secrets, workflows, regressions, network-regressions, crowdsec-regressions]
+    needs: [gosec, dependencies, secrets, workflows, regressions, audit-regressions, network-regressions, crowdsec-regressions]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -275,6 +307,7 @@ jobs:
           SECRETS: ${{ needs.secrets.result }}
           WORKFLOWS: ${{ needs.workflows.result }}
           REGRESSIONS: ${{ needs.regressions.result }}
+          AUDIT: ${{ needs.audit-regressions.result }}
           NETWORK: ${{ needs.network-regressions.result }}
           CROWDSEC: ${{ needs.crowdsec-regressions.result }}
         run: |
@@ -286,12 +319,13 @@ jobs:
             echo "| Secrets | $SECRETS |"
             echo "| Workflows | $WORKFLOWS |"
             echo "| Runtime and live WAF tests | $REGRESSIONS |"
+            echo "| Native audit reporting (Linux and Windows) | $AUDIT |"
             echo "| L3/L4 protection tests | $NETWORK |"
             echo "| CrowdSec live integration | $CROWDSEC |"
             echo ''
             echo 'Download the per-category artifacts from this run to inspect findings.'
           } >> "$GITHUB_STEP_SUMMARY"
-          for result in "$GOSEC" "$DEPENDENCIES" "$SECRETS" "$WORKFLOWS" "$REGRESSIONS" "$NETWORK" "$CROWDSEC"; do
+          for result in "$GOSEC" "$DEPENDENCIES" "$SECRETS" "$WORKFLOWS" "$REGRESSIONS" "$AUDIT" "$NETWORK" "$CROWDSEC"; do
             if [ "$result" != success ]; then
               echo '::error::A security check failed, was cancelled, or was skipped.'
               exit 1

@@ -33,8 +33,8 @@ func TestConcurrentWriterNoop(t *testing.T) {
 
 func TestConcurrentWriterFailsOnInit(t *testing.T) {
 	config := NewConfig()
-	config.Target = "/unexisting.log"
 	config.Dir = t.TempDir()
+	config.Target = filepath.Join(config.Dir, "missing-parent", "audit.log")
 	config.FileMode = fs.FileMode(0777)
 	config.DirMode = fs.FileMode(0777)
 	config.Formatter = &jsonFormatter{}
@@ -110,7 +110,11 @@ func TestConcurrentWriterSuccess(t *testing.T) {
 	if err := writer.Init(config); err != nil {
 		t.Error("failed to init concurrent logger", err)
 	}
-	defer writer.Close()
+	t.Cleanup(func() {
+		if err := writer.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 
 	ts := time.Now()
 	expectedLog := &Log{
@@ -149,4 +153,10 @@ func TestConcurrentWriterSuccess(t *testing.T) {
 	if !reflect.DeepEqual(expectedLog, actualLog) {
 		t.Errorf("unexpected log entry, want:\n%s, have:\n%s", expectedLogStr, logData)
 	}
+	t.Run("closed index returns the write failure", func(t *testing.T) {
+		writer.log.SetOutput(file) // file was closed before Init; per-transaction output still works.
+		if err := writer.Write(expectedLog); err == nil {
+			t.Fatal("closed audit index was reported as written")
+		}
+	})
 }

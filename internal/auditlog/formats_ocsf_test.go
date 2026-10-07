@@ -8,8 +8,11 @@ package auditlog
 import (
 	"encoding/json"
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/valllabh/ocsf-schema-golang/ocsf/v1_2_0/events/application"
 	"github.com/valllabh/ocsf-schema-golang/ocsf/v1_2_0/events/application/enums"
@@ -164,6 +167,124 @@ func TestOCSFFormatter(t *testing.T) {
 		// 	t.Errorf("failed to validate audit log schema, \ngot: %s\nexpected: %s", ocsfvalidate_1_2.Validate("web_resources_activity", data), "")
 		// }
 	}
+	t.Run("optional audit data", func(t *testing.T) {
+		for _, state := range []string{"no messages", "H without K", "missing request", "missing response", "missing producer"} {
+			t.Run(state, func(t *testing.T) {
+				al := createAuditLogs()[0]
+				switch state {
+				case "no messages":
+					al.Messages_ = nil
+				case "H without K":
+					al.Parts_ = []types.AuditLogPart{types.AuditLogPartHeader, types.AuditLogPartAuditLogTrailer, types.AuditLogPartEndMarker}
+					al.Messages_ = []plugintypes.AuditLogMessage{Message{ErrorMessage_: "retained trailer\r\n--forged-H--"}}
+				case "missing request":
+					al.Transaction_.Request_ = nil
+				case "missing response":
+					al.Transaction_.Response_ = nil
+				case "missing producer":
+					al.Transaction_.Producer_ = nil
+				}
+				data, err := (ocsfFormatter{}).Format(al)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var event application.WebResourcesActivity
+				if err := json.Unmarshal(data, &event); err != nil {
+					t.Fatal(err)
+				}
+				if state == "H without K" {
+					if len(event.Enrichments) != 0 || event.Message != "retained trailer\r\n--forged-H--" {
+						t.Fatalf("optional data changed: %s", data)
+					}
+				}
+			})
+		}
+	})
+	t.Run("numeric fields never wrap", func(t *testing.T) {
+		values := []struct {
+			name  string
+			value int64
+			fail  bool
+		}{
+			{"unknown", 0, false}, {"HTTP status", 599, false}, {"maximum port", 65535, false},
+			{"int32 maximum", math.MaxInt32, false}, {"int32 minimum", math.MinInt32, false},
+			{"positive overflow", int64(math.MaxInt32) + 1, true}, {"negative overflow", int64(math.MinInt32) - 1, true},
+		}
+		for _, tc := range values {
+			for _, field := range []string{"response code", "client port", "host port"} {
+				t.Run(tc.name+"/"+field, func(t *testing.T) {
+					if tc.fail && strconv.IntSize < 64 {
+						t.Skip("overflow is not representable by this platform int")
+					}
+					al := createAuditLogs()[0]
+					switch field {
+					case "response code":
+						al.Transaction_.Response_.Status_ = int(tc.value)
+					case "client port":
+						al.Transaction_.ClientPort_ = int(tc.value)
+					case "host port":
+						al.Transaction_.HostPort_ = int(tc.value)
+					}
+					data, err := (ocsfFormatter{}).Format(al)
+					if (err != nil) != tc.fail {
+						t.Fatalf("Format error = %v, fail = %v, output = %s", err, tc.fail, data)
+					}
+					if tc.fail {
+						if data != nil {
+							t.Fatalf("invalid fields produced output: %s", data)
+						}
+						return
+					}
+					var event application.WebResourcesActivity
+					if err := json.Unmarshal(data, &event); err != nil {
+						t.Fatal(err)
+					}
+					var got int32
+					switch field {
+					case "response code":
+						got = event.HttpResponse.Code
+					case "client port":
+						got = event.SrcEndpoint.Port
+					case "host port":
+						got = event.DstEndpoint.Port
+					}
+					if int64(got) != tc.value {
+						t.Fatalf("%s = %d, want %d", field, got, tc.value)
+					}
+				})
+			}
+		}
+	})
+	t.Run("timezone offset uses schema minutes", func(t *testing.T) {
+		previous := time.Local
+		t.Cleanup(func() { time.Local = previous })
+		for _, tc := range []struct {
+			name             string
+			seconds, minutes int
+			fail             bool
+		}{
+			{"UTC", 0, 0, false}, {"negative", -5 * 3600, -300, false}, {"half hour", 5*3600 + 30*60, 330, false}, {"quarter hour", 13*3600 + 45*60, 825, false},
+			{"minimum", -18 * 3600, -1080, false}, {"maximum", 18 * 3600, 1080, false}, {"too low", -18*3600 - 60, 0, true}, {"too high", 18*3600 + 60, 0, true},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				time.Local = time.FixedZone(tc.name, tc.seconds)
+				data, err := (ocsfFormatter{}).Format(createAuditLogs()[0])
+				if (err != nil) != tc.fail {
+					t.Fatalf("Format error = %v, fail = %v", err, tc.fail)
+				}
+				if tc.fail {
+					return
+				}
+				var event application.WebResourcesActivity
+				if err := json.Unmarshal(data, &event); err != nil {
+					t.Fatal(err)
+				}
+				if int(event.TimezoneOffset) != tc.minutes {
+					t.Fatalf("offset = %d, want %d minutes", event.TimezoneOffset, tc.minutes)
+				}
+			})
+		}
+	})
 }
 
 func TestOCSFFormatterPartJ(t *testing.T) {

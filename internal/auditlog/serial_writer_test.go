@@ -56,8 +56,8 @@ func TestSerialLoggerSuccessOnInit(t *testing.T) {
 
 func TestSerialWriterFailsOnInitForUnexistingFile(t *testing.T) {
 	config := NewConfig()
-	config.Target = "/unexisting.log"
 	config.Dir = t.TempDir()
+	config.Target = filepath.Join(config.Dir, "missing-parent", "audit.log")
 	config.FileMode = fs.FileMode(0777)
 	config.DirMode = fs.FileMode(0777)
 	config.Formatter = &jsonFormatter{}
@@ -114,4 +114,9 @@ func TestSerialWriterWrites(t *testing.T) {
 	if err := writer.Close(); err != nil {
 		t.Errorf("unexpected error: %s", err.Error())
 	}
+	t.Run("closed output returns the write failure", func(t *testing.T) {
+		if err := writer.Write(al); err == nil {
+			t.Fatal("closed audit output was reported as written")
+		}
+	})
 }

@@ -12,6 +12,7 @@ package auditlog
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -83,11 +84,15 @@ func (f ocsfFormatter) getMatchDetails(al plugintypes.AuditLog) []*objects.Enric
 	matchDetails := []*objects.Enrichment{}
 
 	for _, match := range al.Messages() {
-		matchData, _ := json.Marshal(match.Data())
+		data := match.Data()
+		if data == nil {
+			continue // H-only messages have no K enrichment.
+		}
+		matchData, _ := json.Marshal(data)
 		matchDetails = append(matchDetails, &objects.Enrichment{
 			Data:  string(matchData),
-			Name:  match.Data().Msg(),
-			Value: match.Data().Data(),
+			Name:  data.Msg(),
+			Value: data.Data(),
 		})
 	}
 
@@ -132,6 +137,27 @@ func (f ocsfFormatter) getObservables(al plugintypes.AuditLog) []*objects.Observ
 }
 
 func (f ocsfFormatter) Format(al plugintypes.AuditLog) ([]byte, error) {
+	responseCode, err := ocsfInt32(al.Transaction().Response().Status())
+	if err != nil {
+		return nil, fmt.Errorf("OCSF response code: %w", err)
+	}
+	clientPort, err := ocsfInt32(al.Transaction().ClientPort())
+	if err != nil {
+		return nil, fmt.Errorf("OCSF client port: %w", err)
+	}
+	hostPort, err := ocsfInt32(al.Transaction().HostPort())
+	if err != nil {
+		return nil, fmt.Errorf("OCSF host port: %w", err)
+	}
+	_, offset := time.Now().Zone()
+	// Go reports seconds; OCSF 1.2 requires minutes in [-1080, 1080].
+	if offset < -18*60*60 || offset > 18*60*60 {
+		return nil, fmt.Errorf("OCSF timezone offset is outside [-1080, 1080] minutes")
+	}
+	offsetMinutes, err := ocsfInt32(offset / 60)
+	if err != nil {
+		return nil, fmt.Errorf("OCSF timezone offset: %w", err)
+	}
 
 	// Determine the Action/ActionID based on whether the transaction was interrutped
 	ActionID := enums.WEB_RESOURCES_ACTIVITY_ACTION_ID_WEB_RESOURCES_ACTIVITY_ACTION_ID_ALLOWED
@@ -180,16 +206,16 @@ func (f ocsfFormatter) Format(al plugintypes.AuditLog) ([]byte, error) {
 			Length:      al.Transaction().Request().Length(),
 		},
 		HttpResponse: &objects.HttpResponse{
-			Code:        int32(al.Transaction().Response().Status()),
+			Code:        responseCode,
 			HttpHeaders: f.getResponseHeaders(al),
 		},
 		SrcEndpoint: &objects.NetworkEndpoint{
 			Ip:   al.Transaction().ClientIP(),
-			Port: int32(al.Transaction().ClientPort()),
+			Port: clientPort,
 		},
 		DstEndpoint: &objects.NetworkEndpoint{
 			Ip:   al.Transaction().HostIP(),
-			Port: int32(al.Transaction().HostPort()),
+			Port: hostPort,
 		},
 		WebResources: f.getAffectedWebResources(al),
 	}
@@ -214,10 +240,12 @@ func (f ocsfFormatter) Format(al plugintypes.AuditLog) ([]byte, error) {
 	if len(al.Messages()) > 0 {
 		message := al.Messages()[0]
 		webResourcesActivity.Message = message.Message()
+		if trailer, ok := message.(auditLogWithErrMesg); ok && webResourcesActivity.Message == "" {
+			webResourcesActivity.Message = trailer.ErrorMessage()
+		}
 	}
 
-	_, offset := time.Now().Zone()
-	webResourcesActivity.TimezoneOffset = int32(offset)
+	webResourcesActivity.TimezoneOffset = offsetMinutes
 
 	// The WebResource Activity Severity ID is not to be confused by the Transaction severity.  The Transaction severity has to do with Coraza error/debug severity,
 	// while WebResource Activity Severity is defined by OCSF to represent the severity of the security event.
@@ -245,9 +273,15 @@ func (f ocsfFormatter) Format(al plugintypes.AuditLog) ([]byte, error) {
 	// webResourcesActivity.WebResourcesResult =
 	// webResourcesActivity.Unmapped = nil
 
-	logJson, _ := json.Marshal(&webResourcesActivity)
+	return json.Marshal(&webResourcesActivity)
+}
 
-	return logJson, nil
+// ocsfInt32 preserves representable connector values and rejects overflow instead of changing the log.
+func ocsfInt32(value int) (int32, error) {
+	if value < math.MinInt32 || value > math.MaxInt32 {
+		return 0, fmt.Errorf("value %d is outside the signed 32-bit schema range", value)
+	}
+	return int32(value), nil
 }
 
 func (ocsfFormatter) MIME() string {
