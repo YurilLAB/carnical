@@ -5,6 +5,7 @@ package importers
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -290,6 +291,29 @@ func fakeFormat() Format {
 }
 
 func TestRun(t *testing.T) {
+	t.Run("in-memory input obeys the file limit before conversion", func(t *testing.T) {
+		for _, size := range []int{15, 16, 17} {
+			t.Run(fmt.Sprint(size), func(t *testing.T) {
+				calls := 0
+				f := fakeFormat()
+				convert := f.Convert
+				f.Convert = func(name string, data []byte, opts Options, rep *Report) []vpatch.Signature {
+					calls++
+					return convert(name, data, opts, rep)
+				}
+				res := ConvertBytes(f, "memory.r", []byte(strings.Repeat("x", size)), Options{Limits: Limits{MaxFileBytes: 16}})
+				if size <= 16 {
+					if calls != 1 || len(res.Signatures) != 1 || res.Report.FilesRead != 1 || res.Report.FilesSkipped != 0 {
+						t.Fatalf("input within the limit: calls=%d report=%+v", calls, res.Report)
+					}
+					return
+				}
+				if calls != 0 || len(res.Signatures) != 0 || res.Report.FilesRead != 0 || res.Report.FilesSkipped != 1 || res.Report.UnitsRead != 0 || len(res.Report.Errors) != 1 {
+					t.Fatalf("oversized input reached conversion or was not reported: calls=%d report=%+v", calls, res.Report)
+				}
+			})
+		}
+	})
 	dir := t.TempDir()
 	write := func(rel, content string) {
 		p := filepath.Join(dir, rel)

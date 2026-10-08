@@ -16,7 +16,7 @@ import (
 //   - names that do not depend on case are in one case: methods upper, hosts, header names, targets, fields, categories, tiers
 //     and software lower (a header name has "_" written "-", as the proxy reads it); an address or range is written
 //     in its shortest canonical form, with the host bits of a range cleared (10.1.2.3/8 is 10.0.0.0/8);
-//   - exclusions are sorted, custom rules are sorted by id, and rule groups set to "on" (the default) are left out of the map;
+//   - exclusions are sorted, custom rules are sorted by id, and known, unambiguous rule groups set to "on" (the default) are left out;
 //   - an absent list is an empty one, and a section for another package is rewritten in canonical JSON (or dropped if it is
 //     empty or null); notes are trimmed.
 //
@@ -41,9 +41,20 @@ func (p Policy) Normalize() Policy {
 		Software: sortedUnique(mapStrings(p.VPatch.Software, strings.ToLower)),
 	}
 	q.RuleGroups = make(map[string]GroupState, len(p.RuleGroups))
+	groupNames := make(map[string]int, len(p.RuleGroups))
+	for name := range p.RuleGroups {
+		groupNames[strings.ToLower(name)]++
+	}
 	for name, state := range p.RuleGroups {
-		if state != GroupOn {
-			q.RuleGroups[strings.ToLower(name)] = state
+		canonical := strings.ToLower(name)
+		if groupNames[canonical] > 1 {
+			// Preserve every alias for validation; map iteration must not choose a setting.
+			q.RuleGroups[name] = state
+			continue
+		}
+		_, known := groupByName[canonical]
+		if state != GroupOn || !known {
+			q.RuleGroups[canonical] = state
 		}
 	}
 	q.Exclusions = make([]Exclusion, 0, len(p.Exclusions))

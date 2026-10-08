@@ -5,6 +5,7 @@ package policy
 import (
 	"fmt"
 	"net/netip"
+	"strings"
 	"unicode"
 	"unicode/utf8"
 )
@@ -42,8 +43,14 @@ func (p Policy) Validate() error {
 			c.add(fmt.Sprintf("allowed_hosts[%d]", i), "%q is not a host name (letters, digits, hyphens and dots, as in www.example.com)", safeName(h))
 		}
 	}
+	groupNames := make(map[string]bool, len(q.RuleGroups))
 	for name, state := range q.RuleGroups {
-		if _, ok := groupByName[name]; !ok {
+		canonical := strings.ToLower(name)
+		if groupNames[canonical] {
+			c.add("rule_groups", "a rule group is given more than once")
+		}
+		groupNames[canonical] = true
+		if _, ok := groupByName[canonical]; !ok {
 			c.add("rule_groups", "%q is not a rule group", safeName(name))
 		} else if !validStates[state] {
 			c.add("rule_groups."+name, "must be on, log or off")

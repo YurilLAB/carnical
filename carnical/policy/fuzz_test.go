@@ -21,6 +21,10 @@ func FuzzDecode(f *testing.F) {
 	f.Add([]byte(`{"exclusions":[{"path":"/a/","categories":["xss","sqli"],"targets":["arg:x"]}],"allow_ips":["10.1.2.3/16"],"block_ips":["::ffff:1.2.3.4"]}`))
 	f.Add([]byte(`{"api":{"a":null,"b":[1,2,{"c":"d"}]},"body_formats":{"x":1},"api_mode":"enforce"}`))
 	f.Add([]byte(`{"mode":"block","mode":"off"}`))
+	f.Add([]byte(`{"mode":"block","Mode":"off"}`))
+	f.Add([]byte(`{"schema":1,"ſchema":1}`))
+	f.Add([]byte(`{"rule_groups":{"sqli":"off","SQLI":"log"}}`))
+	f.Add([]byte(`{"API":{"properties":{"a":null,"A":{"b":1,"B":2}}},"Threshold":null}`))
 	f.Add([]byte(`{"note":"` + strings.Repeat("a", 100) + `"}`))
 	f.Add(readFixtureBytes("testdata/console_policy_bare.json"))
 	f.Fuzz(func(t *testing.T, data []byte) {

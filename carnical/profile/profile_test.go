@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package profile
 
 import (
@@ -64,6 +66,33 @@ func detect(t *testing.T, s site) Profile {
 }
 
 func TestWordPressWithItsPluginsIsRecognisedAndScoped(t *testing.T) {
+	t.Run("versions can complete an existing plugin at the cap", func(t *testing.T) {
+		var body strings.Builder
+		for i := 0; i < maxPlugins; i++ {
+			body.WriteString(`<script src="/wp-content/plugins/plugin-` + strconv.Itoa(i) + `/asset.js"></script>`)
+		}
+		body.WriteString(`<script src="/wp-content/plugins/over-cap/asset.js?ver=2.0"></script>`)
+		body.WriteString(`<script src="/wp-content/plugins/plugin-0/other.js?ver=1.2.3"></script>`)
+		p := detect(t, site{"/": html(body.String())})
+		if len(p.Plugins) != maxPlugins {
+			t.Fatalf("plugins: %d, want %d", len(p.Plugins), maxPlugins)
+		}
+		found := false
+		for _, pl := range p.Plugins {
+			if pl.Slug == "plugin-0" {
+				found = true
+			}
+			if pl.Slug == "over-cap" {
+				t.Fatal("a new plugin exceeded the cap")
+			}
+			if pl.Slug == "plugin-0" && pl.Version != "1.2.3" {
+				t.Fatalf("existing plugin version: %q, want 1.2.3", pl.Version)
+			}
+		}
+		if !found {
+			t.Fatal("the existing plugin disappeared at the cap")
+		}
+	})
 	p := detect(t, wordpress)
 	if !p.Has("wordpress") || !p.Has("php") {
 		t.Fatalf("software: %+v", p.Software)

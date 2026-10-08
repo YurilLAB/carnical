@@ -12,6 +12,7 @@ import (
 	"io"
 	"reflect"
 	"strings"
+	"unicode"
 )
 
 // ErrInvalid is what errors.Is(err, ErrInvalid) says of an *Error.
@@ -115,7 +116,7 @@ func Decode(data []byte) (Policy, error) {
 	if len(data) > MaxPolicyBytes {
 		return Policy{}, invalid("$", "the policy is larger than %d KiB", MaxPolicyBytes>>10)
 	}
-	if err := scanJSON(data, scanLimits{maxDepth: MaxDepth, maxTokens: MaxTokens, maxString: MaxStringBytes, nullOK: policyNullOK}); err != nil {
+	if err := scanJSON(data, scanLimits{maxDepth: MaxDepth, maxTokens: MaxTokens, maxString: MaxStringBytes, keyName: policyKeyName, nullOK: policyNullOK}); err != nil {
 		return Policy{}, invalid("$", "%s", err.Error())
 	}
 	if t := bytes.TrimSpace(data); len(t) == 0 || t[0] != '{' {
@@ -135,6 +136,26 @@ func Decode(data []byte) (Policy, error) {
 		return Policy{}, err
 	}
 	return p, nil
+}
+
+// policyKeyName follows encoding/json's case-insensitive matching of typed policy fields.
+// The two opaque sections keep their case-sensitive property names, including nested objects.
+func policyKeyName(path []string, name string) string {
+	if len(path) > 0 && (path[0] == "api" || path[0] == "body_formats") {
+		return name
+	}
+	return strings.Map(func(r rune) rune {
+		least := r
+		for next := unicode.SimpleFold(r); next != r; next = unicode.SimpleFold(next) {
+			if next < least {
+				least = next
+			}
+		}
+		if least >= 'A' && least <= 'Z' {
+			return least + ('a' - 'A')
+		}
+		return least
+	}, name)
 }
 
 // policyNullOK says where null is allowed: for the threshold (it means "from the sensitivity"), and anywhere inside the two

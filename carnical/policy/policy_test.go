@@ -65,6 +65,20 @@ func TestDecodingLimitsAndStrictness(t *testing.T) {
 		{"an unknown nested field", `{"body":{"max_upload_bytes":4096,"x":1}}`, "$"},
 		{"an unknown field in a list entry", `{"exclusions":[{"path":"/a/","categories":["xss"],"x":1}]}`, "$"},
 		{"a field of another case", `{"Mode":"block"}`, ""}, // encoding/json matches field names without regard to case; the value is what is checked
+		{"a repeated field with different case", `{"mode":"block","Mode":"off"}`, "$"},
+		{"a repeated field with reversed case", `{"Mode":"off","mode":"block"}`, "$"},
+		{"a repeated nested field with different case", `{"wordpress":{"enabled":true,"Enabled":false}}`, "$"},
+		{"a repeated field in a list with different case", `{"exclusions":[{"path":"/a/","Path":"/b/","categories":["xss"]}]}`, "$"},
+		{"a repeated field with Unicode case folding", `{"schema":1,"ſchema":1}`, "$"},
+		{"a repeated field with Kelvin-sign case folding", `{"block_ips":[],"blocK_ips":[]}`, "$"},
+		{"a single field with Unicode case folding", `{"ſchema":1}`, ""},
+		{"case-sensitive names inside opaque sections", `{"api":{"a":null,"A":{"b":1,"B":2}},"body_formats":{"x":1,"X":2}}`, ""},
+		{"case-sensitive nested properties in a mixed-case API section", `{"API":{"properties":{"mode":null,"Mode":true},"nested":[{"a":1,"A":2}]}}`, ""},
+		{"typed fields remain strict after an opaque section", `{"api":{"enabled":true,"Enabled":false},"wordpress":{"enabled":true,"Enabled":false}}`, "$"},
+		{"an opaque section repeated with different case", `{"api":{},"API":{}}`, "$"},
+		{"a repeated opaque property", `{"api":{"a":1,"a":2}}`, "$"},
+		{"mixed-case nullable threshold", `{"Threshold":null}`, ""},
+		{"case aliases in rule groups", `{"rule_groups":{"sqli":"off","SQLI":"log"}}`, "$"},
 		{"a repeated field", `{"mode":"block","mode":"off"}`, "$"},
 		{"a repeated nested field", `{"body":{"max_upload_bytes":2048,"max_upload_bytes":4096}}`, "$"},
 		{"a repeated field inside a list entry", `{"exclusions":[{"path":"/a/","path":"/b/","categories":["xss"]}]}`, "$"},
@@ -232,6 +246,24 @@ func TestADocumentRoundTripsAndKeepsItsMeaning(t *testing.T) {
 }
 
 func TestNormalizeIsIdempotentAndHashIsContentOnly(t *testing.T) {
+	t.Run("ambiguous group names remain invalid and deterministic", func(t *testing.T) {
+		p := Default()
+		p.RuleGroups = map[string]GroupState{"sqli": GroupOff, "SQLI": GroupLog}
+		before, _ := json.Marshal(p)
+		q := p.Normalize()
+		if len(q.RuleGroups) != 2 {
+			t.Fatal("normalization discarded an ambiguous group name")
+		}
+		for i := 0; i < 128; i++ {
+			if !reflect.DeepEqual(q, p.Normalize()) || !reflect.DeepEqual(q, q.Normalize()) || p.Hash() != q.Hash() {
+				t.Fatal("ambiguous policy normalization or hashing is not stable")
+			}
+		}
+		after, _ := json.Marshal(p)
+		if !bytes.Equal(before, after) {
+			t.Fatal("normalization modified the original group map")
+		}
+	})
 	a, err := Decode([]byte(`{"allowed_methods":["POST","GET"],"allowed_hosts":["B.test","a.test"],"block_ips":["10.1.2.3/8","192.0.2.1"],"revision":3}`))
 	wantValid(t, err)
 	b, err := Decode([]byte(`{"revision":99,"block_ips":["192.0.2.1/32","10.0.0.0/8","10.9.9.9/8"],"allowed_hosts":["a.test","b.test","A.TEST"],"allowed_methods":["get","post"]}`))
@@ -254,6 +286,11 @@ func TestNormalizeIsIdempotentAndHashIsContentOnly(t *testing.T) {
 	}
 	if !reflect.DeepEqual(a.Normalize().Normalize(), a.Normalize()) {
 		t.Error("Normalize is not idempotent")
+	}
+	withDefaults := Default()
+	withDefaults.RuleGroups = map[string]GroupState{"SQLI": GroupOn}
+	if withDefaults.Hash() != Default().Hash() {
+		t.Error("a known default group changed the policy hash")
 	}
 	if Default().Hash() == "" || Default().Hash() != Default().Hash() {
 		t.Error("the hash of Default is not stable")

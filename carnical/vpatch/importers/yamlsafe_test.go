@@ -10,6 +10,49 @@ import (
 )
 
 func TestDecodeYAML(t *testing.T) {
+	t.Run("parser capacity wait shares the deadline", func(t *testing.T) {
+		// Simulate all parser workers remaining busy, without invoking expensive YAML.
+		for i := 0; i < yamlMaxConcurrent; i++ {
+			yamlSlots <- struct{}{}
+		}
+		held := yamlMaxConcurrent
+		release := func() {
+			for held > 0 {
+				<-yamlSlots
+				held--
+			}
+		}
+		defer release()
+		done := make(chan error, 1)
+		go func() {
+			_, err := DecodeYAML([]byte("name: healthy\n"), Limits{})
+			done <- err
+		}()
+		returned := false
+		select {
+		case err := <-done:
+			returned = true
+			if !errors.Is(err, ErrYAMLSlow) {
+				t.Errorf("capacity wait: %v, want %v", err, ErrYAMLSlow)
+			}
+			if len(yamlSlots) != yamlMaxConcurrent {
+				t.Error("a timed-out waiter changed the busy parser slots")
+			}
+		case <-time.After(yamlTimeout + time.Second):
+			t.Error("waiting for parser capacity exceeded the decode deadline")
+		}
+		release()
+		if !returned {
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("capacity waiter did not finish after release")
+			}
+		}
+		if _, err := DecodeYAML([]byte("name: healthy\n"), Limits{}); err != nil {
+			t.Fatalf("decoding did not recover when capacity returned: %v", err)
+		}
+	})
 	bomb := "a: &a [x,x,x,x,x,x,x,x,x]\nb: &b [*a,*a,*a,*a,*a,*a,*a,*a,*a]\nc: &c [*b,*b,*b,*b,*b,*b,*b,*b,*b]\nd: &d [*c,*c,*c,*c,*c,*c,*c,*c,*c]\n"
 	tests := []struct {
 		name    string

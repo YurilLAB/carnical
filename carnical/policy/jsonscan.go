@@ -20,6 +20,8 @@ type scanLimits struct {
 	maxString int
 	// keyOK, if not nil, says whether an object's name is acceptable.
 	keyOK func(string) bool
+	// keyName, if not nil, identifies aliases the receiving schema treats as the same field.
+	keyName func(path []string, name string) string
 	// nullOK, if not nil, says whether a null may stand at the path of names that leads to it (names of objects only;
 	// an array adds nothing to the path). Without it, null is refused everywhere.
 	nullOK func(path []string) bool
@@ -92,14 +94,18 @@ func scanJSON(data []byte, lim scanLimits) error {
 			}
 			if inObject && stack[len(stack)-1].key {
 				f := &stack[len(stack)-1]
-				if _, dup := f.names[tok]; dup {
+				name := tok
+				if lim.keyName != nil {
+					name = lim.keyName(framePath(stack[:len(stack)-1]), tok)
+				}
+				if _, dup := f.names[name]; dup {
 					return errors.New("a field is given twice")
 				}
 				if lim.keyOK != nil && !lim.keyOK(tok) {
 					return errors.New("a field name that is not allowed here")
 				}
-				f.names[tok] = struct{}{}
-				f.key, f.name = false, tok
+				f.names[name] = struct{}{}
+				f.key, f.name = false, name
 				continue
 			}
 			valueDone()

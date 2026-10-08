@@ -40,7 +40,8 @@ const maxYAMLNodes = 500000
 // those inputs (see yamlPreScan). The parsed tree is refused, before anything is expanded, if it has more than one document, uses
 // anchors, aliases or merge keys (the "billion laughs" shape), is nested more deeply than lim.MaxNesting*4 levels, or has more
 // than 500,000 nodes. No rule feed this reads uses anchors. Last, decoding runs under a time limit, and no more than four
-// decodes run at once, so a shape that none of the rules above foresaw costs a bounded amount of time.
+// decodes run at once. The same deadline bounds waiting for a parser slot and waiting for its result; workers that time out
+// retain their slots until they finish, so outstanding parser work remains bounded.
 func DecodeYAML(data []byte, lim Limits) (any, error) {
 	lim = lim.Normalize()
 	if len(data) > lim.MaxDocBytes {
@@ -59,7 +60,13 @@ func DecodeYAML(data []byte, lim Limits) (any, error) {
 		v   any
 		err error
 	}
-	yamlSlots <- struct{}{} // at most yamlMaxConcurrent decodes at once, including ones that timed out and are still running
+	timer := time.NewTimer(yamlTimeout)
+	defer timer.Stop()
+	select {
+	case yamlSlots <- struct{}{}: // includes timed-out parsers that are still running
+	case <-timer.C:
+		return nil, ErrYAMLSlow
+	}
 	done := make(chan result, 1)
 	go func() {
 		defer func() { <-yamlSlots }()
@@ -71,8 +78,6 @@ func DecodeYAML(data []byte, lim Limits) (any, error) {
 		v, err := decodeYAML(data, lim)
 		done <- result{v, err}
 	}()
-	timer := time.NewTimer(yamlTimeout)
-	defer timer.Stop()
 	select {
 	case r := <-done:
 		return r.v, r.err

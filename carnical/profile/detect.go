@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package profile
 
 import (
@@ -50,11 +52,14 @@ func (d *detector) fromHome(r Response) {
 		if m[1] == "themes" {
 			kind = "theme"
 		}
-		if !slug.MatchString(m[2]) || len(d.plugins) >= maxPlugins {
+		if !slug.MatchString(m[2]) {
 			continue
 		}
 		key := kind + ":" + m[2]
-		pl := d.plugins[key]
+		pl, exists := d.plugins[key]
+		if !exists && len(d.plugins) >= maxPlugins {
+			continue
+		}
 		pl.Kind, pl.Slug = kind, m[2]
 		if pl.Version == "" {
 			if v := wpVer.FindStringSubmatch(m[3]); v != nil && version.MatchString(v[1]) {
@@ -250,7 +255,7 @@ func (d *detector) apiDocs() {
 	}
 }
 
-// Suggestions are protections to switch on for a site that looks like this. They are suggestions: the customer's settings win.
+// Suggestions are proposed settings for a site that looks like this. The caller must review changes before applying them.
 type Suggestions struct {
 	// WordPress turns on the WordPress protections (no scripts from upload directories, xmlrpc off, login limits).
 	WordPress bool
@@ -264,7 +269,7 @@ type Suggestions struct {
 	Notes []string
 }
 
-// Suggest turns a profile into the protections it implies.
+// Suggest turns a profile into proposed settings; it does not apply them.
 func Suggest(p Profile) Suggestions {
 	s := Suggestions{Scope: p.Scope, APIPaths: p.API, Notes: p.Notes}
 	if p.Has("wordpress") {

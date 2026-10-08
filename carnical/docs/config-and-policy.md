@@ -171,7 +171,7 @@ At start-up an edge loads its persisted envelope with `Verify`, not `Accept`.
 
 ### The document
 
-`policy.Policy` is JSON. A field left out takes the value `policy.Default()` gives it, so a document only names what differs; `{}` is the default policy. Unknown fields, repeated fields, `null` (except for `threshold` and inside the two sections other packages own) and values of the wrong kind are errors.
+`policy.Policy` is JSON. A field left out takes the value `policy.Default()` gives it, so a document only names what differs; `{}` is the default policy. Unknown fields, repeated fields, `null` (except for `threshold` and inside the two sections other packages own) and values of the wrong kind are errors. Typed field names and rule-group names may use different casing, but aliases of the same name cannot appear together. Property names inside `api` and `body_formats` remain case-sensitive.
 
 | Field | Form | Limits / default |
 |---|---|---|

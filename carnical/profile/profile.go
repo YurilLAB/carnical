@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Package profile works out what a protected site runs, so that a customer is protected correctly without configuring anything.
 //
 // A virtual patch for a WordPress plugin is useless on a site that does not have the plugin and noisy on one that has a page
@@ -9,8 +11,8 @@
 // Everything the origin answers is hostile input: the customer may be wrong about what is on their server, the site may have been
 // taken over, and anyone who can edit a page can put anything in it. So the profile makes a small, fixed number of requests (never
 // following one off the site), reads a bounded amount of each, extracts with linear-time patterns, and only ever produces tags
-// from a validated vocabulary. A page that tries to make the proxy believe it runs software it does not can at worst switch on
-// protections that site does not need.
+// from a validated vocabulary. Profiles and suggestions are advisory: the caller decides which changes are appropriate,
+// including any compatibility setting that relaxes path checks.
 package profile
 
 import (

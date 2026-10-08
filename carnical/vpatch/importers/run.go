@@ -76,6 +76,11 @@ func Run(f Format, root string, opts Options) (Result, error) {
 func ConvertBytes(f Format, name string, data []byte, opts Options) Result {
 	opts.Limits = opts.Limits.Normalize()
 	rep := NewReport(f.Name)
+	if int64(len(data)) > opts.Limits.MaxFileBytes {
+		rep.FilesSkipped = 1
+		rep.Error(fmt.Sprintf("%s: larger than the %d byte limit", SafeName(name), opts.Limits.MaxFileBytes))
+		return Result{Report: *rep}
+	}
 	rep.FilesRead = 1
 	got := convertSafely(f, name, data, opts, rep)
 	var sigs []vpatch.Signature
