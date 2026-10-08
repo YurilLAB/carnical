@@ -1,0 +1,26 @@
+services:
+  edge:
+    build:
+      context: ../../..
+      dockerfile: carnical/deploy/container/Dockerfile
+    image: carnical:local
+    user: "65532:65532"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    stop_grace_period: 40s
+    ports: ["443:8443"]
+    volumes:
+      - ./site.json:/etc/carnical/site.json:ro
+      - ./tls:/etc/carnical/tls:ro
+      - ./origin:/etc/carnical/origin:ro
+    tmpfs:
+      - /var/lib/carnical/uploads:size=64m,mode=0700,uid=65532,gid=65532,noexec,nosuid,nodev
+    ulimits:
+      nofile: {soft: 32768, hard: 32768}
+    pids_limit: 256
+    mem_limit: 1g
+    cpus: 2
+    environment:
+      GOMEMLIMIT: 768MiB

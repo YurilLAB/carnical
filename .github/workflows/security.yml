@@ -206,6 +206,10 @@ jobs:
         run: |
           go test ./... -count=1
           go -C carnical test ./cmd/carnical-audit ./audit/... -count=1
+      - name: Validate the native Windows executable and private probes
+        if: runner.os == 'Windows'
+        shell: bash
+        run: go -C carnical test ./cmd/carnical -count=1
       - name: Check audit, parser and virtual-patch races
         if: runner.os == 'Linux'
         env:
@@ -300,10 +304,65 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+  deployment-regressions:
+    name: Portable deployment and availability
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CGO_ENABLED: '0'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.26.6'
+          cache-dependency-path: '**/go.sum'
+      - name: Build native and portable binaries
+        shell: bash
+        run: |
+          mkdir -p build/security-reports
+          go -C carnical build -trimpath -o "$PWD/build/carnical-deployment-linux" ./cmd/carnical
+          for target in linux/arm64 darwin/amd64 darwin/arm64; do
+            GOOS="${target%/*}" GOARCH="${target#*/}" go -C carnical build -trimpath \
+              -o "$PWD/build/carnical-${target//\//-}" ./cmd/carnical
+          done
+      - name: Check lifecycle listener races
+        env:
+          CGO_ENABLED: '1'
+        run: go -C carnical test -race ./cmd/carnical -run '^TestRequestFormatsAtCLI/listener_failures_close_both_endpoints' -count=1
+      - name: Validate live native replica, outage and drain behavior
+        shell: bash
+        run: |
+          python3 .github/security/test_deployment.py --binary build/carnical-deployment-linux \
+            | tee build/security-reports/deployment-native.log
+      - name: Build the actual container and validate Compose
+        run: |
+          docker compose -f carnical/deploy/container/compose.yaml config --quiet
+          docker build --platform linux/amd64 -f carnical/deploy/container/Dockerfile -t carnical-deployment:test .
+          docker build --platform linux/arm64 -f carnical/deploy/container/Dockerfile -t carnical-deployment:arm64 .
+      - name: Validate live non-root containers and replica failover
+        shell: bash
+        run: |
+          python3 .github/security/test_deployment.py --image carnical-deployment:test --arm64-image carnical-deployment:arm64 \
+            | tee build/security-reports/deployment-container.log
+      - name: Record validated container metadata
+        run: |
+          docker image inspect carnical-deployment:test carnical-deployment:arm64 \
+            > build/security-reports/deployment-images.json
+      - name: Preserve deployment validation
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: deployment-integration-regressions
+          path: build/security-reports/deployment-*
+          if-no-files-found: warn
+          retention-days: 7
+
   required:
     name: Security review required
     if: ${{ always() }}
-    needs: [gosec, dependencies, secrets, workflows, regressions, audit-regressions, network-regressions, crowdsec-regressions]
+    needs: [gosec, dependencies, secrets, workflows, regressions, audit-regressions, network-regressions, crowdsec-regressions, deployment-regressions]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -317,6 +376,7 @@ jobs:
           AUDIT: ${{ needs.audit-regressions.result }}
           NETWORK: ${{ needs.network-regressions.result }}
           CROWDSEC: ${{ needs.crowdsec-regressions.result }}
+          DEPLOYMENT: ${{ needs.deployment-regressions.result }}
         run: |
           {
             echo '| Category | Result |'
@@ -329,10 +389,11 @@ jobs:
             echo "| Native audit reporting (Linux and Windows) | $AUDIT |"
             echo "| L3/L4 protection tests | $NETWORK |"
             echo "| CrowdSec live integration | $CROWDSEC |"
+            echo "| Portable deployment and availability | $DEPLOYMENT |"
             echo ''
             echo 'Download the per-category artifacts from this run to inspect findings.'
           } >> "$GITHUB_STEP_SUMMARY"
-          for result in "$GOSEC" "$DEPENDENCIES" "$SECRETS" "$WORKFLOWS" "$REGRESSIONS" "$AUDIT" "$NETWORK" "$CROWDSEC"; do
+          for result in "$GOSEC" "$DEPENDENCIES" "$SECRETS" "$WORKFLOWS" "$REGRESSIONS" "$AUDIT" "$NETWORK" "$CROWDSEC" "$DEPLOYMENT"; do
             if [ "$result" != success ]; then
               echo '::error::A security check failed, was cancelled, or was skipped.'
               exit 1

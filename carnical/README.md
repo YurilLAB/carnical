@@ -57,6 +57,8 @@ Go imports. See the [repository overview](../README.md) and [current security fi
 ## Run it
 
 For a reusable site file, preflight checks and client DNS handover, use the [website onboarding guide](docs/website-onboarding.md).
+For private health probes, rolling shutdowns, replica-state requirements, Linux containers and platform support, see
+[availability and portable deployment](docs/availability-and-deployment.md).
 
 ```sh
 cp docs/examples/site-local.json site.json

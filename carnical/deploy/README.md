@@ -8,6 +8,10 @@ Tested on Linux 6.18 with systemd 259 (Ubuntu 26.04 under WSL2). Not yet on Ubun
 
 For the edge in front of one website, start with the [site configuration and client handover guide](../docs/website-onboarding.md). The service now validates its effective settings before startup; local checks do not replace confined live forwarding tests.
 
+For standalone binaries, containers, private health checks and multi-replica contracts, see
+[availability and portable deployment](../docs/availability-and-deployment.md). Linux kernel controls below are additional
+platform-specific layers; the health listener needs the narrow systemd bind allowance described in that guide.
+
 ## What is here
 
 | File | What it does |
@@ -70,7 +74,7 @@ and connection/TCP counters before increasing protection budgets.
 
 ## Differences between systems
 
-* **Landlock** needs Linux 5.13. ABI 4 (Linux 6.7) adds the TCP port rules and ABI 6 (Linux 6.12) the abstract-socket and signal scoping. Ubuntu 22.04 (5.15) has ABI 1 and Debian 12 (6.1) has ABI 2, so there the file rules apply and the port rules do not (the proxy says which in its start-up log, and `-confine` refuses to start on a kernel with no Landlock unless `-confine-best-effort` is given). The nftables policy and the unit's `IPAddressDeny` carry the network side there.
+* **Landlock** needs Linux 5.13. ABI 4 (Linux 6.7) adds the TCP port rules and ABI 6 (Linux 6.12) the abstract-socket and signal scoping. Ubuntu 22.04 (5.15) has ABI 1 and Debian 12 (6.1) has ABI 2, so there strict `-confine` refuses to start because its configured port restrictions require ABI 4. Explicit `-confine-best-effort` can apply file rules while skipping unsupported port rules; the startup report states the missing layer. ABI 4/5 still lack ABI 6 scoping, which is separately reported. The nftables policy and the unit's `IPAddressDeny` carry the network side there.
 * **systemd 249** (Ubuntu 22.04) has no `systemd-analyze security --offline`, and `ProtectProc`, `SocketBindDeny` and the others used here are present from 247 and 249; check `systemd-analyze security` on the host.
 * **User namespaces:** Debian uses `kernel.unprivileged_userns_clone`, Ubuntu 24.04 `kernel.apparmor_restrict_unprivileged_userns`; `user.max_user_namespaces=0` covers both and is what the host audit demands.
 * **io_uring:** `kernel.io_uring_disabled` exists from Linux 6.6; older kernels rely on the seccomp filter and the unit's system call filter, which both refuse it by name.

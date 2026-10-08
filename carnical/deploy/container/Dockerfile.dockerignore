@@ -1,0 +1,37 @@
+# Scope the build context to application and engine source. Deployment files,
+# conventional key files and other agents' worktrees are excluded.
+**
+!go.mod
+!go.sum
+!*.go
+!collection/**
+!debuglog/**
+!experimental/**
+!http/**
+!internal/**
+!types/**
+!carnical/go.mod
+!carnical/go.sum
+!carnical/cmd/carnical/**
+!carnical/inspect/**
+!carnical/apiguard/**
+!carnical/crowdsec/**
+!carnical/crs/**
+!carnical/formats/**
+!carnical/shield/**
+!carnical/proxy/**
+!carnical/sandbox/**
+**/*_test.go
+**/.git/**
+**/.claude/**
+**/.attack/**
+**/build/**
+**/*.key
+**/*.pem
+**/*.exe
+**/__pycache__/**
+**/testdata/**
+.git
+.claude
+.attack
+build

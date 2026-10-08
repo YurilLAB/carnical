@@ -81,6 +81,7 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 			{name: "file check action", data: "{\"version\":1,\"flags\":{\"check\":true}}", bad: true},
 			{name: "file network action", data: "{\"version\":1,\"flags\":{\"check-origin\":true}}", bad: true},
 			{name: "file HTTP action", data: `{"version":1,"flags":{"check-origin-http":true}}`, bad: true},
+			{name: "file probe action", data: `{"version":1,"flags":{"probe":"ready"}}`, bad: true},
 			{name: "file version action", data: "{\"version\":1,\"flags\":{\"version\":true}}", bad: true},
 			{name: "trailing document", data: "{\"version\":1,\"flags\":{}} {}", bad: true},
 			{name: "truncated document", data: "{\"version\":1,\"flags\":{\"mode\":\"block\"}", bad: true},
@@ -102,6 +103,7 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 				flags.Bool("check-origin", false, "")
 				flags.Bool("check-origin-http", false, "")
 				flags.Bool("version", false, "")
+				flags.String("probe", "", "")
 				if err := flags.Parse([]string{"-upstream", "http://override.test", "-local-rules=false"}); err != nil {
 					t.Fatal(err)
 				}
@@ -301,6 +303,63 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 	authOrigin.StartTLS()
 	defer authOrigin.Close()
 
+	t.Run("listener failures close both endpoints", func(t *testing.T) {
+		for _, tc := range []struct {
+			name       string
+			brokenTLS  bool
+			lostHealth bool
+		}{
+			{"health listener closed before serving", false, true},
+			{"visitor TLS fails before accept", true, false},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				visitor, err := net.Listen("tcp", "127.0.0.1:0")
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer visitor.Close()
+				address := visitor.Addr().String()
+				healthListener, err := net.Listen("tcp", "127.0.0.1:0")
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer healthListener.Close()
+				healthAddress := healthListener.Addr().String()
+				if tc.lostHealth {
+					if err := healthListener.Close(); err != nil {
+						t.Fatal(err)
+					}
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				defer cancel()
+				done := make(chan error, 1)
+				server := &http.Server{Handler: http.NotFoundHandler(), ReadHeaderTimeout: time.Second}
+				if tc.brokenTLS {
+					server.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+				}
+				defer server.Close()
+				go func() {
+					done <- serveRuntime(ctx, server, visitor, healthListener, &runtimeHealth{},
+						lifecycleOptions{shutdown: time.Second}, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+				}()
+				select {
+				case err := <-done:
+					if err == nil {
+						t.Fatal("lost listener was reported as a clean stop")
+					}
+				case <-ctx.Done():
+					t.Fatal("listener failure did not stop the serving goroutines")
+				}
+				for _, endpoint := range []string{address, healthAddress} {
+					if connection, err := net.DialTimeout("tcp", endpoint, 100*time.Millisecond); err == nil {
+						connection.Close()
+						t.Fatal("listener remained open after serving failed")
+					}
+				}
+			})
+		}
+	})
+
 	t.Run("origin certificate snapshot survives input mutation", func(t *testing.T) {
 		identity := identities["good"].pair
 		identity.Certificate = [][]byte{bytes.Clone(identity.Certificate[0])}
@@ -370,6 +429,8 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 	}
 	tests := []struct {
 		site                                                                        string
+		health                                                                      bool
+		healthAlias                                                                 string
 		preflight                                                                   bool
 		trustOrigin                                                                 bool
 		originAuth                                                                  string
@@ -388,6 +449,22 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 		allowEncoding, fails, policyDir                                             bool
 		status                                                                      int
 	}{
+		{name: "expanded IPv6 health address works", health: true, healthAlias: "ipv6-expanded", method: "GET", target: "/page", status: 200},
+		{name: "mapped IPv4 health address works", health: true, healthAlias: "ipv4-mapped", method: "GET", target: "/page", status: 200},
+		{name: "version cannot bypass health action", extraArgs: []string{"-probe", "ready", "-version"}, fails: true},
+		{name: "private health probes preserve forwarding", health: true, method: "GET", target: "/page", status: 200},
+		{name: "visitor readiness path still inspected", health: true, mode: "block", extraArgs: []string{"-mode", "block"}, method: "GET", target: "/readyz?q=%3Cscript%3Ealert(1)%3C/script%3E", status: 403},
+		{name: "public health binding refused", extraArgs: []string{"-health-listen", "0.0.0.0:8082"}, fails: true},
+		{name: "wildcard health binding refused", extraArgs: []string{"-health-listen", ":8082"}, fails: true},
+		{name: "health hostname refused", extraArgs: []string{"-health-listen", "localhost:8082"}, fails: true},
+		{name: "health ephemeral port refused", extraArgs: []string{"-health-listen", "127.0.0.1:0"}, fails: true},
+		{name: "negative drain delay refused", extraArgs: []string{"-drain-delay", "-1s"}, fails: true},
+		{name: "drain must fit shutdown budget", extraArgs: []string{"-drain-delay", "1s", "-shutdown-timeout", "1s"}, fails: true},
+		{name: "unbounded shutdown refused", extraArgs: []string{"-shutdown-timeout", "0"}, fails: true},
+		{name: "excess shutdown refused", extraArgs: []string{"-shutdown-timeout", "11m"}, fails: true},
+		{name: "probe kind refused", extraArgs: []string{"-probe", "drain", "-health-listen", "127.0.0.1:8082"}, fails: true},
+		{name: "probe needs private listener", extraArgs: []string{"-probe", "live"}, fails: true},
+		{name: "probe cannot run deployment check", extraArgs: []string{"-probe", "live", "-health-listen", "127.0.0.1:8082", "-check"}, fails: true},
 		{name: "origin authentication forwards good traffic", originAuth: "good", method: "GET", target: "/page", status: 200, repeat: 4},
 		{name: "origin identity does not skip inspection", originAuth: "good", method: "GET", target: "/page?q=%3Cscript%3Ealert(1)%3C/script%3E", extraArgs: []string{"-mode", "block"}, mode: "block", status: 403},
 		{name: "origin certificate preflight confirms HTTP acceptance", originAuth: "good", extraArgs: []string{"-check", "-check-origin", "-check-origin-http"}, preflight: true, probeHTTP: true},
@@ -662,6 +739,32 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 				}
 				args = append(args, "-formats-policy", path)
 			}
+			healthAddress := ""
+			if tc.health {
+				network, binding := "tcp", "127.0.0.1:0"
+				if tc.healthAlias == "ipv6-expanded" {
+					network, binding = "tcp6", "[::1]:0"
+				}
+				ln, err := net.Listen(network, binding)
+				if err != nil {
+					t.Fatal(err)
+				}
+				healthAddress = ln.Addr().String()
+				_, port, err := net.SplitHostPort(healthAddress)
+				if err != nil {
+					t.Fatal(err)
+				}
+				switch tc.healthAlias {
+				case "ipv6-expanded":
+					healthAddress = "[0:0:0:0:0:0:0:1]:" + port
+				case "ipv4-mapped":
+					healthAddress = "[::ffff:127.0.0.1]:" + port
+				}
+				if err := ln.Close(); err != nil {
+					t.Fatal(err)
+				}
+				args = append(args, "-health-listen", healthAddress)
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
 			cmd := exec.CommandContext(ctx, bin, args...)
@@ -746,6 +849,15 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 					t.Fatal("firewall did not become ready")
 				}
 				time.Sleep(25 * time.Millisecond)
+			}
+			if tc.health {
+				for _, kind := range []string{"live", "ready"} {
+					probe := exec.CommandContext(ctx, bin, "-health-listen", healthAddress, "-probe", kind)
+					probe.Env = append(os.Environ(), "HTTP_PROXY=http://127.0.0.1:1", "NO_PROXY=")
+					if out, err := probe.CombinedOutput(); err != nil {
+						t.Fatalf("private %s probe: %v %s", kind, err, out)
+					}
+				}
 			}
 			method, target := tc.method, tc.target
 			if method == "" {

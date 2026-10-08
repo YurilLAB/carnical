@@ -16,7 +16,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
@@ -48,6 +47,10 @@ func run() error {
 	originCA := flag.String("origin-ca-file", "", "PEM origin CA bundle (default: system roots; server verification always enabled)")
 	checkOrigin := flag.Bool("check-origin", false, "with -check, also verify origin DNS, TCP and HTTPS certificate within 10s (sends no HTTP request)")
 	listen := flag.String("listen", "127.0.0.1:8080", "address to listen on")
+	healthListen := flag.String("health-listen", "", "private health listener: numeric loopback address and port (default: disabled)")
+	probe := flag.String("probe", "", "probe live or ready on -health-listen, then exit without loading the WAF")
+	drainDelay := flag.Duration("drain-delay", 0, "delay after withdrawing readiness before closing the visitor listener (0 to 1m)")
+	shutdownTimeout := flag.Duration("shutdown-timeout", 30*time.Second, "total budget for drain delay and active HTTP requests (100ms to 10m)")
 	upstream := flag.String("upstream", "", "the website to protect, such as http://127.0.0.1:8081 (required)")
 	upstreamHost := flag.String("upstream-host", "", "Host header to send to the upstream (default: the visitor's)")
 	mode := flag.String("mode", "detect", "detect (log only), block, or off")
@@ -115,6 +118,9 @@ func run() error {
 	flag.Parse()
 
 	if *showVersion {
+		if *probe != "" || *check || *checkOrigin || *checkOriginHTTP {
+			return errors.New("-version cannot be combined with probes or deployment checks")
+		}
 		info, err := crs.Info()
 		if err != nil {
 			return err
@@ -136,6 +142,18 @@ func run() error {
 	if *checkOriginHTTP && (!*check || !*checkOrigin) {
 		return errors.New("-check-origin-http requires -check and -check-origin")
 	}
+	lifecycle := lifecycleOptions{healthAddress: *healthListen, drain: *drainDelay, shutdown: *shutdownTimeout}
+	if err := lifecycle.validate(); err != nil {
+		return err
+	}
+	if *probe != "" {
+		if *check || *checkOrigin || *checkOriginHTTP {
+			return errors.New("-probe cannot be combined with deployment checks")
+		}
+		return probeHealth(*probe, *healthListen)
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	if *upstream == "" {
 		return errors.New("-upstream is required")
 	}
@@ -199,7 +217,7 @@ func run() error {
 	if cs != nil {
 		defer cs.Close()
 		if !*check {
-			if err := cs.Sync(context.Background()); err != nil {
+			if err := cs.Sync(ctx); err != nil {
 				return err
 			} // authentication and complete snapshot required at startup
 			log.Info("CrowdSec connected", "entries", cs.Stats().Entries, "skipped", cs.Stats().Skipped, "fail_open", *csFailOpen)
@@ -279,6 +297,9 @@ func run() error {
 		log.Info("configuration checked", "mode", *mode, "formats_mode", *formatsMode, "origin_checked", *checkOrigin, "origin_http_checked", *checkOriginHTTP, "origin_client_identity", originTLS.Certificate != nil, "tls", *certFile != "", "sandbox_applied", false)
 		return nil
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	var ln net.Listener
 	if *fromSystemd {
 		if ln, err = systemdListener(); err != nil {
@@ -288,6 +309,14 @@ func run() error {
 		return err
 	}
 	defer ln.Close()
+	var healthListener net.Listener
+	if *healthListen != "" {
+		healthListener, err = net.Listen("tcp", *healthListen)
+		if err != nil {
+			return fmt.Errorf("health listener: %w", err)
+		}
+		defer healthListener.Close()
+	}
 	if guard != nil {
 		ln = guard.Listener(ln)
 	}
@@ -299,10 +328,8 @@ func run() error {
 		log.Info("confined", "no_new_privs", rep.NoNewPrivs, "undumpable", rep.Undumpable, "landlock_abi", rep.LandlockABI,
 			"files", rep.LandlockFS, "ports", rep.LandlockNet, "scope", rep.LandlockScope, "seccomp", rep.Seccomp, "notes", rep.Notes)
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	if cs != nil {
-		pollCtx, cancelPoll := context.WithCancel(ctx)
+		pollCtx, cancelPoll := context.WithCancel(context.Background())
 		pollDone := make(chan struct{})
 		go func() {
 			defer close(pollDone)
@@ -321,27 +348,11 @@ func run() error {
 	}
 	stopStats := startFormatStats(log, formatInspector, *formatsStats)
 	defer stopStats()
-	done := make(chan error, 1)
-	go func() {
-		log.Info("listening", "addr", *listen, "upstream", target.String(), "crs", crs.Version(), "mode", *mode, "paranoia", *paranoia,
-			"inbound_threshold", *inbound, "tls", *certFile != "", "confined", *confine, "ddos", *ddosMode, "formats_mode", *formatsMode, "request_encoding", *requestEncoding)
-		if *certFile != "" {
-			done <- server.ServeTLS(ln, "", "")
-		} else {
-			done <- server.Serve(ln)
-		}
-	}()
-	select {
-	case err := <-done:
-		if errors.Is(err, http.ErrServerClosed) {
-			return nil
-		}
-		return err
-	case <-ctx.Done():
-		shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		return server.Shutdown(shutdown)
-	}
+	health := &runtimeHealth{available: func() bool { return cs == nil || *csFailOpen || !cs.Stats().Stale }}
+	log.Info("listening", "addr", ln.Addr().String(), "upstream", target.String(), "crs", crs.Version(), "mode", *mode, "paranoia", *paranoia,
+		"inbound_threshold", *inbound, "tls", *certFile != "", "confined", *confine, "ddos", *ddosMode, "formats_mode", *formatsMode, "request_encoding", *requestEncoding,
+		"health_enabled", healthListener != nil)
+	return serveRuntime(ctx, server, ln, healthListener, health, lifecycle, log)
 }
 
 // systemdListener returns the listening socket systemd handed over as file descriptor 3 (see sd_listen_fds(3)).

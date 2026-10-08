@@ -21,6 +21,8 @@ ExecStartPre=/usr/local/bin/carnical -check -systemd-socket -confine -upload-dir
 ExecStart=/usr/local/bin/carnical -systemd-socket -confine -upload-dir /var/lib/carnical/edge/uploads $CARNICAL_ARGS
 Restart=on-failure
 RestartSec=2
+# Longer than the CLI's default 30s total shutdown budget; increase both together.
+TimeoutStopSec=40s
 # A process the filter ended (an attacker's first step) is restarted, and the audit log holds the record of what it tried.
 
 # --- Privilege: none -----------------------------------------------------------------------------------------------
