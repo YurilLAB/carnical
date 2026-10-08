@@ -23,6 +23,7 @@ import (
 // highest number offered is always accepted.
 type SeqStore interface {
 	// Advance records seq as the newest for the stream if and only if it is higher than the stored number, and returns nil.
+	// seq must be between 1 and MaxSequence inclusive; otherwise it returns ErrMalformed and changes nothing.
 	// Otherwise it returns ErrRollback and changes nothing. It must not return nil until the new number would survive a
 	// power cut. A failure to read or write returns an error for which errors.Is(err, ErrStore) is true, and a record that
 	// cannot be trusted returns ErrStoreCorrupt; in both cases nothing is accepted.
@@ -57,6 +58,9 @@ func NewMemSeqStore() *MemSeqStore { return &MemSeqStore{m: map[string]uint64{}}
 func (s *MemSeqStore) Advance(stream string, seq uint64) error {
 	if err := checkStream(stream); err != nil {
 		return storeFailure(err)
+	}
+	if seq < 1 || seq > MaxSequence {
+		return ErrMalformed
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

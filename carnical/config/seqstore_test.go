@@ -154,11 +154,24 @@ func TestStreamNamesAreChecked(t *testing.T) {
 			}
 		}
 	}
-	if err := openStore(t, filepath.Join(t.TempDir(), "seq")).Advance(tenantA, 0); err == nil {
-		t.Error("sequence 0 recorded")
-	}
-	if err := openStore(t, filepath.Join(t.TempDir(), "seq")).Advance(tenantA, MaxSequence+1); err == nil {
-		t.Error("a sequence over the maximum recorded")
+	for _, store := range []SeqStore{NewMemSeqStore(), openStore(t, filepath.Join(t.TempDir(), "seq"))} {
+		if err := store.Advance(tenantA, 7); err != nil {
+			t.Fatal(err)
+		}
+		for _, seq := range []uint64{0, MaxSequence + 1, ^uint64(0)} {
+			if err := store.Advance(tenantA, seq); !errors.Is(err, ErrMalformed) {
+				t.Errorf("%T: Advance(%d) = %v, want ErrMalformed", store, seq, err)
+			}
+			if last, err := store.Last(tenantA); err != nil || last != 7 {
+				t.Fatalf("%T: invalid sequence changed state: %d, %v", store, last, err)
+			}
+		}
+		if err := store.Advance(tenantA, MaxSequence); err != nil {
+			t.Fatalf("%T: maximum sequence rejected: %v", store, err)
+		}
+		if err := store.Advance(tenantA, MaxSequence); !errors.Is(err, ErrRollback) {
+			t.Fatalf("%T: duplicate maximum sequence = %v, want ErrRollback", store, err)
+		}
 	}
 }
 

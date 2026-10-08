@@ -512,6 +512,39 @@ func TestKeysRotateAndAreRevoked(t *testing.T) {
 		_, err := v.Verify(mk(newSigner, 6, rotate), rotate.Add(2*time.Hour))
 		wantRefusal(t, err, ErrKeyListExpired)
 	})
+	t.Run("published keys are independent of caller buffers", func(t *testing.T) {
+		keys := []TrustedKey{oldTrust}
+		keys[0].Public = append(ed25519.PublicKey(nil), oldTrust.Public...)
+		revoked := []string{newTrust.ID}
+		owned, err := NewVerifier(VerifierConfig{Audience: edgeID, Tenants: []string{tenantA}, Store: NewMemSeqStore()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := owned.SetKeys(keys, revoked, time.Time{}); err != nil {
+			t.Fatal(err)
+		}
+		raw := mk(oldSigner, 1, t0)
+		clear(keys[0].Public)
+		keys[0].ID = newTrust.ID
+		revoked[0] = oldTrust.ID
+		if _, err := owned.Verify(raw, t0); err != nil {
+			t.Fatalf("caller reused its buffers after SetKeys: %v", err)
+		}
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 100; i++ {
+				keys[0].Public[0] = byte(i)
+			}
+		}()
+		defer wg.Wait()
+		for i := 0; i < 100; i++ {
+			if _, err := owned.Verify(raw, t0); err != nil {
+				t.Fatalf("verification changed when caller reused its key buffer: %v", err)
+			}
+		}
+	})
 	t.Run("a key list the verifier would not be able to use is refused whole", func(t *testing.T) {
 		wrongID := newTrust
 		wrongID.ID = "0123456789abcdef"

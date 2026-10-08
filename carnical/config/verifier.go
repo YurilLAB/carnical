@@ -123,7 +123,8 @@ func (v *Verifier) SetTenants(tenants []string) error {
 
 // SetKeys replaces the trusted keys and the revoked key ids. expires, if not zero, is when the list stops being believed
 // (the expiry of the signed key list it came from). Keys must be well formed: their IDs match their public keys, and at
-// most MaxTrustedKeys are given. A revoked id wins over a listed key.
+// most MaxTrustedKeys are given. A revoked id wins over a listed key. The public keys are copied,
+// so the caller may reuse its buffers after SetKeys returns.
 func (v *Verifier) SetKeys(keys []TrustedKey, revoked []string, expires time.Time) error {
 	if len(keys) > MaxTrustedKeys || len(revoked) > MaxRevokedKeys {
 		return errors.New("config: the key list is longer than allowed")
@@ -136,6 +137,7 @@ func (v *Verifier) SetKeys(keys []TrustedKey, revoked []string, expires time.Tim
 		if _, dup := st.keys[k.ID]; dup {
 			return errors.New("config: a key is listed twice")
 		}
+		k.Public = append(ed25519.PublicKey(nil), k.Public...)
 		st.keys[k.ID] = k
 	}
 	for _, id := range revoked {

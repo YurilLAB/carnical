@@ -217,6 +217,7 @@ jobs:
         shell: bash
         run: |
           go test -race ./internal/auditlog ./internal/corazawaf ./internal/operators ./internal/seclang ./testing -count=1
+          go -C carnical test -race ./config -count=1
           go -C carnical test -race ./cmd/carnical-audit ./audit/... -count=1
           go -C carnical test -race ./formats -run '^Test(YAML|PolicyValidate|YAMLCollectionWorkThroughProxy)$' -count=1
           go -C carnical test -race ./vpatch -run '^Test(TheResultTableNeverChangesAnAnswer|LoadReplacesTheSetWhileRequestsAreMatched|OptionsTiersScopeSeverityExpiry)$' -count=1
