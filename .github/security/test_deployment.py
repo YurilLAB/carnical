@@ -146,7 +146,10 @@ class Edge:
                               "--security-opt=no-new-privileges:true",
                               "--tmpfs=/var/lib/carnical/uploads:size=32m,mode=0700,uid=65532,gid=65532,noexec,nosuid,nodev",
                               "--mount", f"type=bind,source={self.path},target=/etc/carnical,readonly",
-                              *([] if defaults else ["--health-cmd", f"/carnical -health-listen 127.0.0.1:{self.health_address} -probe ready"]),
+                              # CLI health overrides use a shell, absent in this image.
+                              # The default-command replica checks the baked-in exec probe;
+                              # temporary-port replicas use explicit executable probes.
+                              *([] if defaults else ["--no-healthcheck"]),
                               args.image, *([] if defaults else ["-config", "/etc/carnical/site.json"])])
             self.container = result.stdout.strip()
         else:
@@ -273,6 +276,7 @@ def run(args):
 
             if args.image:
                 inspect = json.loads(command(["docker", "inspect", first.container]).stdout)[0]
+                assert inspect["Config"]["Healthcheck"]["Test"] == ["NONE"]
                 assert inspect["Config"]["User"] == "65532:65532"
                 assert inspect["HostConfig"]["ReadonlyRootfs"] is True
                 assert "ALL" in inspect["HostConfig"]["CapDrop"]
