@@ -292,19 +292,19 @@ func (s *Schema) validate(v any, c *vctx, depth int) bool {
 	if t == tNull {
 		// A null that the type allowed has nothing more to be checked against, except an enum or const that must list it.
 		if !s.Nullable && (len(s.enumV) > 0 || s.Const != nil) {
-			if len(s.enumV) > 0 && !s.inEnum(v) {
+			if len(s.enumV) > 0 && !s.inEnum(v, c) {
 				return c.fail(vkEnum)
 			}
-			if s.Const != nil && !equalValues(s.constV, v, 0) {
+			if s.Const != nil && !equalValuesBudget(s.constV, v, 0, c) {
 				return c.fail(vkEnum)
 			}
 		}
 		return s.combinators(v, c, depth)
 	}
-	if len(s.enumV) > 0 && !s.inEnum(v) {
+	if len(s.enumV) > 0 && !s.inEnum(v, c) {
 		return c.fail(vkEnum)
 	}
-	if s.Const != nil && !equalValues(s.constV, v, 0) {
+	if s.Const != nil && !equalValuesBudget(s.constV, v, 0, c) {
 		return c.fail(vkEnum)
 	}
 	switch t {
@@ -370,9 +370,9 @@ func (s *Schema) typeOK(t jtype) bool {
 	return false
 }
 
-func (s *Schema) inEnum(v any) bool {
+func (s *Schema) inEnum(v any, c *vctx) bool {
 	for _, e := range s.enumV {
-		if equalValues(e, v, 0) {
+		if equalValuesBudget(e, v, 0, c) {
 			return true
 		}
 	}
@@ -380,25 +380,37 @@ func (s *Schema) inEnum(v any) bool {
 }
 
 func (s *Schema) validNumber(n Num, t jtype, c *vctx) bool {
-	f, ok := n.float()
-	if !ok {
+	c.steps -= len(n)/32 + 1
+	if c.steps < 0 {
+		c.over = true
+		return true
+	}
+	d, ok := n.decimal()
+	if _, finite := n.float(); !ok || !finite {
 		return c.fail(vkType)
 	}
-	if s.Minimum != nil && f < *s.Minimum {
-		return c.fail(vkBounds)
+	for _, bound := range []struct {
+		value              *float64
+		minimum, exclusive bool
+	}{
+		{s.Minimum, true, false}, {s.Maximum, false, false},
+		{s.ExclusiveMinimum, true, true}, {s.ExclusiveMaximum, false, true},
+	} {
+		if bound.value == nil {
+			continue
+		}
+		b, ok := floatDecimal(*bound.value)
+		if !ok {
+			return c.fail(vkBounds)
+		}
+		cmp := d.cmp(b)
+		if (bound.minimum && cmp < 0) || (!bound.minimum && cmp > 0) || (bound.exclusive && cmp == 0) {
+			return c.fail(vkBounds)
+		}
 	}
-	if s.Maximum != nil && f > *s.Maximum {
-		return c.fail(vkBounds)
-	}
-	if s.ExclusiveMinimum != nil && f <= *s.ExclusiveMinimum {
-		return c.fail(vkBounds)
-	}
-	if s.ExclusiveMaximum != nil && f >= *s.ExclusiveMaximum {
-		return c.fail(vkBounds)
-	}
-	if m := s.MultipleOf; m != nil && *m > 0 {
-		q := f / *m
-		if math.Abs(q-math.Round(q)) > 1e-9*math.Max(1, math.Abs(q)) {
+	if s.MultipleOf != nil {
+		m, ok := floatDecimal(*s.MultipleOf)
+		if !ok || !d.multipleOf(m) {
 			return c.fail(vkBounds)
 		}
 	}
@@ -456,7 +468,10 @@ func (s *Schema) validArray(a []any, c *vctx, depth int) bool {
 	if s.UniqueItems && len(a) > 1 {
 		seen := make(map[string]struct{}, len(a))
 		for _, e := range a {
-			key := string(appendJSON(nil, e, 0))
+			key := string(appendValueJSON(nil, e, 0, true, c))
+			if c.over {
+				return true
+			}
 			if c.steps -= len(key)/32 + 1; c.steps < 0 {
 				c.over = true
 				return true

@@ -3,6 +3,9 @@
 package apiguard
 
 import (
+	"fmt"
+	"math/big"
+	"math/rand/v2"
 	"strings"
 	"testing"
 )
@@ -117,6 +120,40 @@ func mustParse(t testing.TB, s string) any {
 }
 
 func TestNumberKinds(t *testing.T) {
+	t.Run("exact arithmetic oracle", func(t *testing.T) {
+		rng := rand.New(rand.NewPCG(17, 29))
+		for i := 0; i < 10000; i++ {
+			a := fmt.Sprintf("%de%d", int64(rng.Uint64N(2_000_000_000_000_000_000))-1_000_000_000_000_000_000, int(rng.Uint64N(49))-24)
+			b := fmt.Sprintf("%de%d", rng.Uint64N(999_999_999_999_999)+1, int(rng.Uint64N(49))-24)
+			x, ok1 := Num(a).decimal()
+			y, ok2 := Num(b).decimal()
+			ar, ok3 := new(big.Rat).SetString(a)
+			br, ok4 := new(big.Rat).SetString(b)
+			if !ok1 || !ok2 || !ok3 || !ok4 {
+				t.Fatal("invalid oracle input")
+			}
+			if got, want := x.cmp(y), ar.Cmp(br); got != want {
+				t.Fatalf("compare %s,%s: %d want %d", a, b, got, want)
+			}
+			if got, want := x.multipleOf(y), new(big.Rat).Quo(ar, br).IsInt(); got != want {
+				t.Fatalf("multiple %s,%s: %v want %v", a, b, got, want)
+			}
+			if got, want := Num(a).isInteger(), ar.IsInt(); got != want {
+				t.Fatalf("integer %s: %v want %v", a, got, want)
+			}
+			positive := new(big.Rat).Mul(br, new(big.Rat).SetInt64(int64(rng.Uint64N(2001))-1000)).FloatString(80)
+			pd, ok := Num(positive).decimal()
+			if !ok || !pd.multipleOf(y) {
+				t.Fatalf("exact multiple %s of %s rejected", positive, b)
+			}
+			v, ok := Num(a).int64()
+			want := ar.IsInt() && ar.Num().IsInt64()
+			if ok != want || (ok && v != ar.Num().Int64()) {
+				t.Fatalf("int64 %s: %d,%v", a, v, ok)
+			}
+		}
+	})
+
 	tests := []struct {
 		in  string
 		int bool
@@ -129,9 +166,18 @@ func TestNumberKinds(t *testing.T) {
 		{"3.0", true, true, 3, true},
 		{"3e2", true, true, 300, true},
 		{"3.5", false, true, 0, false},
-		{"1e400", false, false, 0, false},
+		{"1e400", true, false, 0, false},
 		{"9223372036854775807", true, true, 9223372036854775807, true},
 		{"9223372036854775808", true, true, 0, false},
+		{"1.0000000000000001", false, true, 0, false},
+		{"0.99999999999999999", false, true, 0, false},
+		{"1e-400", false, true, 0, false},
+		{"-0e99", true, true, 0, true},
+		{"9007199254740993.0", true, true, 9007199254740993, true},
+		{"9223372036854775807.0", true, true, 9223372036854775807, true},
+		{"-9223372036854775808.0", true, true, -9223372036854775808, true},
+		{"1e1000000001", false, false, 0, false},
+		{"null", false, false, 0, false},
 		{"", false, false, 0, false},
 	}
 	for _, tt := range tests {

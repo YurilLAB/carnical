@@ -5,8 +5,10 @@ package feed
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -584,7 +586,69 @@ func TestPagingFollowsMoreWithoutLosingOrRepeating(t *testing.T) {
 }
 
 func TestAnAnswerNeverPassesTheReadersCap(t *testing.T) {
+	t.Run("traffic answers over TLS respect the cap", func(t *testing.T) {
+		r := newRig(t)
+		tops := make([]TopEntry, maxTop)
+		for i := range tops {
+			tops[i] = TopEntry{Name: strings.Repeat("&", 300), N: 1}
+		}
+		for i := 0; i < MaxDays; i++ {
+			r.src.traffic = append(r.src.traffic, TrafficDay{Day: nowAt().AddDate(0, 0, -i).Format("2006-01-02"), Requests: 1, TopPages: tops, Top404: tops, TopBlocked: tops})
+		}
+		e := goodEvent(0)
+		e.Path, e.Why = strings.Repeat("&", 300), strings.Repeat("&", 300)
+		e.Detail, e.Msg, e.What = strings.Repeat("&", 400), strings.Repeat("&", 400), strings.Repeat("&", 400)
+		e.UA = strings.Repeat("&", 200)
+		for i := 0; i < maxSigs; i++ {
+			e.Sigs = append(e.Sigs, SigMatch{ID: strings.Repeat("&", 64), Action: strings.Repeat("&", 10), Target: strings.Repeat("&", 40), Name: strings.Repeat("&", 40)})
+		}
+		r.src.events = []Event{e}
+		r.h.cfg.AllowInsecure = false
+		srv := httptest.NewTLSServer(r.h)
+		defer srv.Close()
+		client := srv.Client()
+		for _, scopes := range []string{"traffic", "events,traffic"} {
+			for _, days := range []int{90, 23, 7} {
+				r.src.traffic = r.src.traffic[:days]
+				target := "/feed?scopes=" + scopes + "&days=" + strconv.Itoa(days)
+				req, err := http.NewRequest(http.MethodGet, srv.URL+target, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				req.Header = r.signed(target).Header
+				resp, err := client.Do(req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				b, err := io.ReadAll(io.LimitReader(resp.Body, maxAnswer+1))
+				resp.Body.Close()
+				want := http.StatusOK
+				if days == 90 || (days == 23 && scopes == "events,traffic") {
+					want = http.StatusInternalServerError
+				}
+				if err != nil || resp.StatusCode != want || len(b) > maxAnswer {
+					t.Fatalf("scopes=%s days=%d: status=%d bytes=%d err=%v", scopes, days, resp.StatusCode, len(b), err)
+				}
+				t.Logf("scopes=%s days=%d: status=%d bytes=%d", scopes, days, resp.StatusCode, len(b))
+				if want == http.StatusOK {
+					var m map[string]any
+					if err := json.Unmarshal(b, &m); err != nil {
+						t.Fatal(err)
+					}
+					if n := len(m["traffic"].([]any)); n != days {
+						t.Fatalf("traffic days=%d, want %d", n, days)
+					}
+					if scopes == "events,traffic" && len(m["events"].([]any)) != 1 {
+						t.Fatal("the event was lost from a bounded answer")
+					}
+				}
+				// Restore the full valid source for the next scope combination.
+				r.src.traffic = r.src.traffic[:MaxDays]
+			}
+		}
+	})
 	r := newRig(t)
+	r.src.cursorPrefix = strings.Repeat("&", 507)
 	big := strings.Repeat("x", 300)
 	sigs := make([]SigMatch, 50)
 	for i := range sigs {
@@ -604,14 +668,14 @@ func TestAnAnswerNeverPassesTheReadersCap(t *testing.T) {
 	for page := 0; page < 40; page++ {
 		target := "/feed?scopes=events"
 		if since != "" {
-			target += "&since=" + since
+			target += "&since=" + url.QueryEscape(since)
 		}
 		w := r.do(r.signed(target))
 		if w.Code != 200 {
 			t.Fatalf("page %d: %d %s", page, w.Code, w.Body.String())
 		}
-		if w.Body.Len() > 8<<20 {
-			t.Fatalf("page %d is %d bytes: the reader gives up past 8 MiB", page, w.Body.Len())
+		if w.Body.Len() > maxAnswer {
+			t.Fatalf("page %d is %d bytes: the feed budget is 6 MiB", page, w.Body.Len())
 		}
 		m := decode(t, w)
 		seen += len(m["events"].([]any))
@@ -630,6 +694,16 @@ func TestAnAnswerNeverPassesTheReadersCap(t *testing.T) {
 }
 
 func TestSourceBreakingItsContractIsAnErrorNotAWrongAnswer(t *testing.T) {
+	t.Run("more traffic days than requested", func(t *testing.T) {
+		r := newRig(t)
+		for i := 0; i < 8; i++ {
+			r.src.traffic = append(r.src.traffic, TrafficDay{Day: nowAt().AddDate(0, 0, -i).Format("2006-01-02"), Requests: 1})
+		}
+		w := r.do(r.signed("/feed?scopes=traffic&days=7"))
+		if w.Code != 500 {
+			t.Fatalf("source returned more rows than requested: status=%d", w.Code)
+		}
+	})
 	rows := []struct {
 		name  string
 		setup func(s *memSource)

@@ -517,14 +517,16 @@ func (s *Server) publish(rc *reqCtx) (*result, *apiError) {
 	case idemFull:
 		return nil, &apiError{status: http.StatusServiceUnavailable, code: "idempotency_full", msg: "too many idempotency keys are held; try again later", retry: 60}
 	}
+	// Failed calls, including panics recovered by ServeHTTP, release their
+	// claim. A successful finish marks it done, so abandon keeps the answer.
+	defer s.idem.abandon(key)
 	res, err := s.cfg.Publisher.Publish(rc.ctx, rc.tenant, in.Revision, PublishMeta{Actor: rc.user, Credential: rc.cred.ID, RequestID: rc.id, IdempotencyKey: rc.idemKey})
 	if err != nil {
-		s.idem.abandon(key)
 		return nil, s.fail(rc, "publish", err)
 	}
 	out := publishOut{Sequence: res.Sequence, Revision: in.Revision}
 	b, _ := json.Marshal(out)
-	s.idem.finish(key, http.StatusOK, b)
+	s.idem.finish(key, http.StatusOK, b, s.now())
 	rc.setAfter(in.Revision)
 	return &result{status: http.StatusOK, body: out}, nil
 }

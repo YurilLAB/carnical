@@ -273,7 +273,7 @@ func (c *yamlConv) node(n ast.Node, depth int) (v any, size, height int, err err
 		return Num(fmt.Sprint(x.Value)), 1, 0, nil
 	case *ast.FloatNode:
 		if x.Token != nil {
-			if _, err := strconv.ParseFloat(x.Token.Value, 64); err == nil && validNumberText(x.Token.Value) {
+			if validNumberText(x.Token.Value) {
 				return Num(x.Token.Value), 1, 0, nil
 			}
 		}
@@ -428,6 +428,7 @@ func keyText(v any) (string, error) {
 
 // validNumberText reports whether s is written the way JSON writes a number.
 func validNumberText(s string) bool {
-	_, _, err := parseJSON([]byte(s), jsonLimits{depth: 1, nodes: 1})
-	return err == nil
+	v, _, err := parseJSON([]byte(s), jsonLimits{depth: 1, nodes: 1})
+	n, number := v.(Num)
+	return err == nil && number && string(n) == s
 }

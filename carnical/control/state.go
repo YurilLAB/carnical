@@ -282,7 +282,7 @@ func (s *idempotency) sweep(now time.Time) {
 	}
 	s.swept = now
 	for k, e := range s.m {
-		if !e.expires.After(now) {
+		if e.done && !e.expires.After(now) {
 			s.drop(k, e)
 		}
 	}
@@ -300,6 +300,11 @@ func (s *idempotency) begin(cred, key string, reqHash [sha256.Size]byte, now tim
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sweep(now)
+	// A completed key can expire between periodic sweeps. An unfinished key
+	// must keep its claim until finish or abandon, within the table's caps.
+	if e := s.m[key]; e != nil && e.done && !e.expires.After(now) {
+		s.drop(key, e)
+	}
 	if e := s.m[key]; e != nil {
 		switch {
 		case e.reqHash != reqHash:
@@ -313,17 +318,18 @@ func (s *idempotency) begin(cred, key string, reqHash [sha256.Size]byte, now tim
 	if len(s.m) >= s.max || s.counts[cred] >= s.perCap {
 		return idemFull, 0, nil
 	}
-	s.m[key] = &idemEntry{cred: cred, reqHash: reqHash, expires: now.Add(s.ttl)}
+	s.m[key] = &idemEntry{cred: cred, reqHash: reqHash}
 	s.counts[cred]++
 	return idemNew, 0, nil
 }
 
-// finish stores the answer of a request whose key was claimed.
-func (s *idempotency) finish(key string, status int, body []byte) {
+// finish stores the answer and starts its retention period at completion.
+func (s *idempotency) finish(key string, status int, body []byte, now time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if e := s.m[key]; e != nil {
 		e.done, e.status, e.body = true, status, append([]byte(nil), body...)
+		e.expires = now.Add(s.ttl)
 	}
 }
 

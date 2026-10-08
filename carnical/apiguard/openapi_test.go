@@ -83,6 +83,24 @@ func TestImportReadsRealDescriptions(t *testing.T) {
 }
 
 func TestImportRefusesWhatIsNotADescription(t *testing.T) {
+	for _, keyword := range []string{"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf"} {
+		for _, number := range []string{"9007199254740993", "1.0000000000000001", "1e-400", "1e400", "0", "-0.01"} {
+			if (number == "0" || number == "-0.01") && keyword != "multipleOf" {
+				continue
+			}
+			t.Run(keyword+" "+number, func(t *testing.T) {
+				doc := fmt.Sprintf("{\"openapi\":\"3.1.0\",\"paths\":{\"/api/n\":{\"post\":{\"requestBody\":{\"content\":{\"application/json\":{\"schema\":{\"type\":\"number\",\"%s\":%s}}}}}}}}", keyword, number)
+				if _, _, err := ImportOpenAPI([]byte(doc)); err == nil {
+					t.Fatal("rounded or unrepresentable constraint imported")
+				}
+				yaml := fmt.Sprintf("openapi: 3.1.0\npaths:\n  /api/n:\n    post:\n      requestBody:\n        content:\n          application/json:\n            schema:\n              type: number\n              %s: %s\n", keyword, number)
+				if _, _, err := ImportOpenAPI([]byte(yaml)); err == nil {
+					t.Fatal("invalid YAML constraint imported")
+				}
+			})
+		}
+	}
+
 	tests := []struct {
 		name string
 		doc  string

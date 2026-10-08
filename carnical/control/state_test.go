@@ -309,6 +309,17 @@ func TestFailureLimiterUnit(t *testing.T) {
 func TestIdempotencyUnit(t *testing.T) {
 	t0 := time.Unix(1_000_000, 0)
 	h1, h2 := sha256.Sum256([]byte("one")), sha256.Sum256([]byte("two"))
+	t.Run("expiry is checked even between periodic sweeps", func(t *testing.T) {
+		s := newIdempotency(10, 10, 100*time.Millisecond)
+		s.begin("c", "k", h1, t0)
+		s.finish("k", 200, nil, t0)
+		if v, _, _ := s.begin("c", "k", h2, t0.Add(100*time.Millisecond)); v != idemNew {
+			t.Fatalf("expired key was retained until the next sweep: %v", v)
+		}
+		if len(s.m) != 1 || s.counts["c"] != 1 {
+			t.Fatalf("expired replacement changed accounting: entries=%d counts=%v", len(s.m), s.counts)
+		}
+	})
 	t.Run("a key is claimed once and replays its answer", func(t *testing.T) {
 		s := newIdempotency(10, 10, time.Hour)
 		if v, _, _ := s.begin("c", "k", h1, t0); v != idemNew {
@@ -317,7 +328,7 @@ func TestIdempotencyUnit(t *testing.T) {
 		if v, _, _ := s.begin("c", "k", h1, t0); v != idemBusy {
 			t.Fatalf("while in progress: %v", v)
 		}
-		s.finish("k", 200, []byte(`{"ok":true}`))
+		s.finish("k", 200, []byte(`{"ok":true}`), t0)
 		v, status, body := s.begin("c", "k", h1, t0)
 		if v != idemReplay || status != 200 || string(body) != `{"ok":true}` {
 			t.Fatalf("%v %d %s", v, status, body)
@@ -329,7 +340,7 @@ func TestIdempotencyUnit(t *testing.T) {
 		if v, _, _ := s.begin("c", "k", h2, t0); v != idemMismatch {
 			t.Fatalf("in progress: %v", v)
 		}
-		s.finish("k", 200, nil)
+		s.finish("k", 200, nil, t0)
 		if v, _, _ := s.begin("c", "k", h2, t0); v != idemMismatch {
 			t.Fatalf("done: %v", v)
 		}
@@ -341,7 +352,7 @@ func TestIdempotencyUnit(t *testing.T) {
 		if v, _, _ := s.begin("c", "k", h2, t0); v != idemNew {
 			t.Fatalf("%v", v)
 		}
-		s.finish("k", 200, nil)
+		s.finish("k", 200, nil, t0)
 		s.abandon("k") // a finished key cannot be abandoned
 		if v, _, _ := s.begin("c", "k", h2, t0); v != idemReplay {
 			t.Fatalf("%v", v)
@@ -350,7 +361,7 @@ func TestIdempotencyUnit(t *testing.T) {
 	t.Run("keys expire", func(t *testing.T) {
 		s := newIdempotency(10, 10, time.Hour)
 		s.begin("c", "k", h1, t0)
-		s.finish("k", 200, nil)
+		s.finish("k", 200, nil, t0)
 		if v, _, _ := s.begin("c", "k", h1, t0.Add(59*time.Minute)); v != idemReplay {
 			t.Fatalf("%v", v)
 		}
@@ -374,12 +385,22 @@ func TestIdempotencyUnit(t *testing.T) {
 				t.Fatalf("%s was forgotten: %v", k, v)
 			}
 		}
+		// Long-running claims still count against both bounds after the answer
+		// retention period has passed. A failed operation releases its place.
+		later := t0.Add(2 * time.Hour)
+		if v, _, _ := s.begin("a", "k3", h1, later); v != idemFull {
+			t.Fatalf("old unfinished claims escaped their caps: %v", v)
+		}
+		s.abandon("k1")
+		if v, _, _ := s.begin("a", "k3", h1, later); v != idemNew {
+			t.Fatalf("abandon did not free capacity: %v", v)
+		}
 	})
 	t.Run("the answer is copied", func(t *testing.T) {
 		s := newIdempotency(10, 10, time.Hour)
 		s.begin("c", "k", h1, t0)
 		b := []byte("abc")
-		s.finish("k", 200, b)
+		s.finish("k", 200, b, t0)
 		b[0] = 'X'
 		if _, _, got := s.begin("c", "k", h1, t0); string(got) != "abc" {
 			t.Fatalf("%s", got)

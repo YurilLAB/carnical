@@ -29,37 +29,165 @@ func (n Num) float() (f float64, ok bool) {
 	return f, true
 }
 
-// isInteger reports whether the number has no fractional part (3 and 3.0 and 3e2 are integers, 3.5 is not).
-func (n Num) isInteger() bool {
+// decimal keeps an exact coefficient and power. Exponents are never expanded,
+// so time and memory stay proportional to the text, even for huge exponents.
+type decimal struct {
+	digits   string
+	exp      int64
+	negative bool
+}
+
+func (n Num) decimal() (decimal, bool) {
 	s := string(n)
-	if s == "" {
-		return false
+	if !validNumberText(s) {
+		return decimal{}, false
 	}
-	plain := true
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if (c < '0' || c > '9') && !(i == 0 && (c == '-' || c == '+')) {
-			plain = false
-			break
+	d := decimal{}
+	if s[0] == '-' {
+		d.negative = true
+		s = s[1:]
+	}
+	if i := strings.IndexAny(s, "eE"); i >= 0 {
+		e, err := strconv.ParseInt(s[i+1:], 10, 64)
+		if err != nil || e < -1_000_000_000 || e > 1_000_000_000 {
+			return decimal{}, false
+		}
+		d.exp = e
+		s = s[:i]
+	}
+	if i := strings.IndexByte(s, '.'); i >= 0 {
+		d.exp -= int64(len(s) - i - 1)
+		s = s[:i] + s[i+1:]
+	}
+	s = strings.TrimLeft(s, "0")
+	if s == "" {
+		return decimal{digits: "0"}, true
+	}
+	d.digits = strings.TrimRight(s, "0")
+	d.exp += int64(len(s) - len(d.digits))
+	return d, true
+}
+
+func (d decimal) cmp(e decimal) int {
+	if d == e {
+		return 0
+	}
+	if d.digits == "0" {
+		if e.negative {
+			return 1
+		}
+		return -1
+	}
+	if e.digits == "0" {
+		if d.negative {
+			return -1
+		}
+		return 1
+	}
+	if d.negative != e.negative {
+		if d.negative {
+			return -1
+		}
+		return 1
+	}
+	result := 0
+	a, b := int64(len(d.digits))+d.exp, int64(len(e.digits))+e.exp
+	if a < b {
+		result = -1
+	} else if a > b {
+		result = 1
+	} else {
+		for i := 0; i < max(len(d.digits), len(e.digits)); i++ {
+			x, y := byte('0'), byte('0')
+			if i < len(d.digits) {
+				x = d.digits[i]
+			}
+			if i < len(e.digits) {
+				y = e.digits[i]
+			}
+			if x < y {
+				result = -1
+				break
+			}
+			if x > y {
+				result = 1
+				break
+			}
 		}
 	}
-	if plain {
-		return len(s) > 1 || (s[0] >= '0' && s[0] <= '9')
+	if d.negative {
+		return -result
 	}
+	return result
+}
+
+// multipleOf cancels powers of ten in the divisor, then computes a streaming
+// remainder. A float64's shortest decimal coefficient fits in uint64.
+func (d decimal) multipleOf(m decimal) bool {
+	if m.negative || m.digits == "0" {
+		return false
+	}
+	if d.digits == "0" {
+		return true
+	}
+	delta := d.exp - m.exp
+	if delta < 0 {
+		return false
+	}
+	divisor, err := strconv.ParseUint(m.digits, 10, 64)
+	if err != nil || divisor > 100_000_000_000_000_000 {
+		return false
+	}
+	for left := delta; left > 0 && divisor%2 == 0; left-- {
+		divisor /= 2
+	}
+	for left := delta; left > 0 && divisor%5 == 0; left-- {
+		divisor /= 5
+	}
+	var remainder uint64
+	for i := range d.digits {
+		remainder = (remainder*10 + uint64(d.digits[i]-'0')) % divisor
+	}
+	return remainder == 0
+}
+
+func floatDecimal(f float64) (decimal, bool) {
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return decimal{}, false
+	}
+	return Num(strconv.FormatFloat(f, 'g', -1, 64)).decimal()
+}
+
+// exactFloat refuses constraints that the public float64 fields cannot retain
+// as the same decimal number. Import must never silently weaken a bound.
+func (n Num) exactFloat() (float64, bool) {
 	f, ok := n.float()
-	return ok && f == math.Trunc(f)
+	if !ok {
+		return 0, false
+	}
+	d, ok1 := n.decimal()
+	e, ok2 := floatDecimal(f)
+	return f, ok1 && ok2 && d == e
+}
+
+// isInteger reports whether the exact number has no fractional part.
+func (n Num) isInteger() bool {
+	d, ok := n.decimal()
+	return ok && (d.digits == "0" || d.exp >= 0)
 }
 
 // int64 returns the value as an int64 if it is an integer that fits.
 func (n Num) int64() (int64, bool) {
-	if v, err := strconv.ParseInt(string(n), 10, 64); err == nil {
-		return v, true
-	}
-	f, ok := n.float()
-	if !ok || f != math.Trunc(f) || f < -9.2233720368547758e18 || f >= 9.2233720368547758e18 {
+	d, ok := n.decimal()
+	if !ok || d.exp < 0 || int64(len(d.digits))+d.exp > 19 {
 		return 0, false
 	}
-	return int64(f), true
+	s := d.digits + strings.Repeat("0", int(d.exp))
+	if d.negative {
+		s = "-" + s
+	}
+	v, err := strconv.ParseInt(s, 10, 64)
+	return v, err == nil
 }
 
 // Limits for a parse. A zero field means "use the package default".
@@ -458,6 +586,17 @@ func typeOf(v any) jtype {
 // appendJSON writes a decoded value back as JSON. It is used for the values a schema stores (enum and const), which must survive
 // being saved and loaded. Map keys are sorted so the output is stable.
 func appendJSON(b []byte, v any, depth int) []byte {
+	return appendValueJSON(b, v, depth, false, nil)
+}
+
+func appendValueJSON(b []byte, v any, depth int, canonical bool, c *vctx) []byte {
+	if c != nil {
+		c.steps--
+		if c.steps < 0 {
+			c.over = true
+			return nil
+		}
+	}
 	if depth > 64 {
 		return append(b, "null"...)
 	}
@@ -472,6 +611,27 @@ func appendJSON(b []byte, v any, depth int) []byte {
 		if !validNumberText(string(x)) {
 			return append(b, "0"...)
 		}
+		if canonical {
+			if c != nil {
+				c.steps -= len(x) / 32
+				if c.steps < 0 {
+					c.over = true
+					return nil
+				}
+			}
+			if d, ok := x.decimal(); ok {
+				if d.negative {
+					b = append(b, '-')
+				}
+				b = append(b, d.digits...)
+				b = append(b, 'e')
+				return strconv.AppendInt(b, d.exp, 10)
+			}
+			if c != nil {
+				c.over = true
+				return nil
+			}
+		}
 		return append(b, x...)
 	case string:
 		return appendQuoted(b, x)
@@ -481,7 +641,7 @@ func appendJSON(b []byte, v any, depth int) []byte {
 			if i > 0 {
 				b = append(b, ',')
 			}
-			b = appendJSON(b, e, depth+1)
+			b = appendValueJSON(b, e, depth+1, canonical, c)
 		}
 		return append(b, ']')
 	case map[string]any:
@@ -497,7 +657,7 @@ func appendJSON(b []byte, v any, depth int) []byte {
 			}
 			b = appendQuoted(b, k)
 			b = append(b, ':')
-			b = appendJSON(b, x[k], depth+1)
+			b = appendValueJSON(b, x[k], depth+1, canonical, c)
 		}
 		return append(b, '}')
 	}
@@ -541,6 +701,17 @@ func appendQuoted(b []byte, s string) []byte {
 // equalValues compares two decoded values the way JSON Schema does for enum and const: numbers by value, everything else
 // structurally.
 func equalValues(a, b any, depth int) bool {
+	return equalValuesBudget(a, b, depth, nil)
+}
+
+func equalValuesBudget(a, b any, depth int, c *vctx) bool {
+	if c != nil {
+		c.steps--
+		if c.steps < 0 {
+			c.over = true
+			return false
+		}
+	}
 	if depth > 64 {
 		return false
 	}
@@ -555,14 +726,28 @@ func equalValues(a, b any, depth int) bool {
 		if !ok {
 			return false
 		}
+		if c != nil {
+			c.steps -= (len(x) + len(y)) / 32
+			if c.steps < 0 {
+				c.over = true
+				return false
+			}
+		}
 		if x == y {
 			return true
 		}
-		fx, ok1 := x.float()
-		fy, ok2 := y.float()
-		return ok1 && ok2 && fx == fy
+		dx, ok1 := x.decimal()
+		dy, ok2 := y.decimal()
+		return ok1 && ok2 && dx == dy
 	case string:
 		y, ok := b.(string)
+		if c != nil {
+			c.steps -= (len(x) + len(y)) / 32
+			if c.steps < 0 {
+				c.over = true
+				return false
+			}
+		}
 		return ok && x == y
 	case []any:
 		y, ok := b.([]any)
@@ -570,7 +755,7 @@ func equalValues(a, b any, depth int) bool {
 			return false
 		}
 		for i := range x {
-			if !equalValues(x[i], y[i], depth+1) {
+			if !equalValuesBudget(x[i], y[i], depth+1, c) {
 				return false
 			}
 		}
@@ -582,7 +767,7 @@ func equalValues(a, b any, depth int) bool {
 		}
 		for k, xv := range x {
 			yv, ok := y[k]
-			if !ok || !equalValues(xv, yv, depth+1) {
+			if !ok || !equalValuesBudget(xv, yv, depth+1, c) {
 				return false
 			}
 		}

@@ -3,6 +3,7 @@
 package apiguard
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -56,6 +57,20 @@ func TestSchemaValidation(t *testing.T) {
 		{"enum member", `{"enum":["a","b"]}`, `"a"`, true, vkNone},
 		{"not an enum member", `{"enum":["a","b"]}`, `"c"`, true, vkEnum},
 		{"enum compares numbers by value", `{"enum":[1,2]}`, `2.0`, true, vkNone},
+		{"large integer enum member", `{"type":"integer","enum":[9007199254740992]}`, `9007199254740992`, true, vkNone},
+		{"distinct large integer is not an enum member", `{"type":"integer","enum":[9007199254740992]}`, `9007199254740993`, true, vkEnum},
+		{"const distinguishes large integers", "{\"const\":9007199254740992}", "9007199254740993", true, vkEnum},
+		{"exclusive decimal minimum", "{\"type\":\"number\",\"exclusiveMinimum\":1}", "1.0000000000000001", true, vkNone},
+		{"exclusive decimal maximum", "{\"type\":\"number\",\"exclusiveMaximum\":1}", "0.99999999999999999", true, vkNone},
+		{"tiny nonzero number is not zero", `{"enum":[0]}`, `1e-400`, true, vkEnum},
+		{"rounded fraction is not an integer", `{"type":"integer"}`, `1.0000000000000001`, true, vkType},
+		{"fraction just above the maximum", `{"type":"number","maximum":1}`, `1.0000000000000001`, true, vkBounds},
+		{"fraction just below the minimum", `{"type":"number","minimum":1}`, `0.99999999999999999`, true, vkBounds},
+		{"large amount is not a multiple of a cent", `{"type":"number","multipleOf":0.01}`, `10000000.001`, true, vkBounds},
+		{"exact decimal multiple of a cent", `{"type":"number","multipleOf":0.01}`, `0.29`, true, vkNone},
+		{"numeric spellings must be unique", `{"type":"array","uniqueItems":true}`, `[1,1.0]`, true, vkUnique},
+		{"nested numeric spellings must be unique", `{"type":"array","uniqueItems":true}`, `[{"a":1},{"a":1e0}]`, true, vkUnique},
+		{"distinct large integers are unique", `{"type":"array","uniqueItems":true}`, `[9007199254740992,9007199254740993]`, true, vkNone},
 		{"pattern match", `{"type":"string","pattern":"^[a-z]+$"}`, `"abc"`, true, vkNone},
 		{"pattern mismatch", `{"type":"string","pattern":"^[a-z]+$"}`, `"abc1"`, true, vkPattern},
 		{"a pattern is not anchored unless it says so", `{"type":"string","pattern":"b"}`, `"abc"`, true, vkNone},
@@ -116,6 +131,27 @@ func TestSchemaViolationNamesComeOnlyFromTheSchema(t *testing.T) {
 }
 
 func TestSchemaValidationIsBoundedInWork(t *testing.T) {
+	t.Run("numeric work does not expand exponents", func(t *testing.T) {
+		s := schemaFrom(t, "{\"type\":\"number\",\"multipleOf\":0.03}")
+		for _, raw := range []string{"1e1000000000", "1e-1000000000", "1e999999999999999999999999999999", "0." + strings.Repeat("0", 100000) + "1"} {
+			_, ok, over := s.validateBody(Num(raw), true)
+			if ok && !over {
+				t.Fatalf("unsupported or nonmultiple number accepted")
+			}
+		}
+		unique := schemaFrom(t, "{\"type\":\"array\",\"uniqueItems\":true}")
+		if _, _, over := unique.validateBody([]any{Num("0e1000000001"), Num("0")}, true); !over {
+			t.Fatal("unsupported numeric uniqueness was not stopped")
+		}
+		enums := &Schema{enumV: make([]any, 1000)}
+		for i := range enums.enumV {
+			enums.enumV[i] = Num(fmt.Sprint(i + 1))
+		}
+		if _, _, over := enums.validateBody(Num("0."+strings.Repeat("0", 50000)+"1"), true); !over {
+			t.Fatal("numeric enum comparisons bypassed work limit")
+		}
+	})
+
 	sc := schemaFrom(t, `{"anyOf":[{"type":"object","properties":{"a":{"type":"integer"}}},{"type":"array","items":{"type":"string"}}]}`)
 	big := "[" + strings.Repeat(`"x",`, 50000) + `"x"]`
 	start := nowNano()

@@ -67,6 +67,8 @@ type memSource struct {
 	noNext bool
 	// ignoreMax returns every event whatever limit was asked for
 	ignoreMax bool
+	// cursorPrefix exercises opaque cursors that expand during JSON encoding.
+	cursorPrefix string
 }
 
 var tlsState = tls.ConnectionState{Version: tls.VersionTLS13, HandshakeComplete: true}
@@ -97,8 +99,9 @@ func (m *memSource) Events(ctx context.Context, site, since string, max int) (Ev
 		return EventPage{}, err
 	}
 	start := 0
-	if strings.HasPrefix(since, "p") {
-		if n, err := strconv.Atoi(since[1:]); err == nil && n >= 0 && n <= len(m.events) {
+	position := strings.TrimPrefix(since, m.cursorPrefix)
+	if strings.HasPrefix(position, "p") {
+		if n, err := strconv.Atoi(position[1:]); err == nil && n >= 0 && n <= len(m.events) {
 			start = n
 		}
 	}
@@ -113,9 +116,9 @@ func (m *memSource) Events(ctx context.Context, site, since string, max int) (Ev
 	if end > len(m.events) {
 		end = len(m.events)
 	}
-	page := EventPage{Cursor: "p" + strconv.Itoa(end), More: end < len(m.events)}
+	page := EventPage{Cursor: m.cursorPrefix + "p" + strconv.Itoa(end), More: end < len(m.events)}
 	for i := start; i < end; i++ {
-		e := Entry{Event: m.events[i], Next: "p" + strconv.Itoa(i+1)}
+		e := Entry{Event: m.events[i], Next: m.cursorPrefix + "p" + strconv.Itoa(i+1)}
 		if m.noNext {
 			e.Next = ""
 		}

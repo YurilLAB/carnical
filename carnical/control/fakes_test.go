@@ -178,16 +178,20 @@ func (v *fakeValidator) Validate(ctx context.Context, tenant string, current, pr
 }
 
 type fakePublisher struct {
-	mu    sync.Mutex
-	seq   uint64
-	calls []PublishMeta
-	revs  []uint64
-	err   error
-	gate  chan struct{} // when set, Publish waits for it
-	in    chan struct{} // told when a Publish has started
+	mu          sync.Mutex
+	seq         uint64
+	calls       []PublishMeta
+	revs        []uint64
+	err         error
+	panicBefore bool          // fail before any publish side effect
+	gate        chan struct{} // when set, Publish waits for it
+	in          chan struct{} // told when a Publish has started
 }
 
 func (p *fakePublisher) Publish(ctx context.Context, tenant string, revision uint64, meta PublishMeta) (PublishResult, error) {
+	if p.panicBefore {
+		panic("signer unreachable at 10.1.2.3")
+	}
 	if p.in != nil {
 		p.in <- struct{}{}
 	}

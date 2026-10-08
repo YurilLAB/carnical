@@ -456,6 +456,9 @@ func (h *Handler) build(ctx context.Context, key Key, scopes []string, days int,
 		if err != nil {
 			return nil, err
 		}
+		if len(rows) > days {
+			return nil, errSource
+		}
 		out := make([]wireTraffic, 0, len(rows))
 		for _, d := range rows {
 			w, ok := toWireTraffic(d)
@@ -515,7 +518,7 @@ func (h *Handler) build(ctx context.Context, key Key, scopes []string, days int,
 		if validCursor(since) {
 			f.Cursor = since
 		}
-		return json.Marshal(f)
+		return marshalAnswer(f)
 	}
 
 	f.Events = []json.RawMessage{}
@@ -523,7 +526,12 @@ func (h *Handler) build(ctx context.Context, key Key, scopes []string, days int,
 	if err != nil {
 		return nil, err
 	}
-	used := len(base) + len(page.Cursor) + 16
+	// Any accepted cursor can grow to six bytes per ASCII character when JSON
+	// escapes it. Reserve room for either the page cursor or an entry cursor.
+	used := len(base) + 6*512
+	if used > maxAnswer {
+		return nil, errSource
+	}
 	chosen := make([]json.RawMessage, 0, len(raws))
 	consumed := 0
 	for i := range raws {
@@ -531,7 +539,10 @@ func (h *Handler) build(ctx context.Context, key Key, scopes []string, days int,
 			consumed = i + 1
 			continue
 		}
-		if used+len(raws[i])+1 > maxAnswer && len(chosen) > 0 {
+		if used+len(raws[i])+1 > maxAnswer {
+			if consumed == 0 {
+				return nil, errSource
+			}
 			break
 		}
 		used += len(raws[i]) + 1
@@ -552,7 +563,20 @@ func (h *Handler) build(ctx context.Context, key Key, scopes []string, days int,
 		chosen[i], chosen[j] = chosen[j], chosen[i]
 	}
 	f.Events = chosen
-	return json.Marshal(f)
+	return marshalAnswer(f)
+}
+
+// marshalAnswer also bounds answers without events and checks the final JSON
+// size after escaping, before any part of the response is written.
+func marshalAnswer(f frame) ([]byte, error) {
+	b, err := json.Marshal(f)
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > maxAnswer {
+		return nil, errSource
+	}
+	return b, nil
 }
 
 // validCursor is the reader's rule for a cursor: 1 to 512 printable ASCII characters, no spaces.

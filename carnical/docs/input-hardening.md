@@ -47,6 +47,7 @@ go run ./cmd/carnical -upstream http://127.0.0.1:8081 -origin-allow 127.0.0.1/32
 `-api-spec-mode block` is the default and requires `-formats-mode block`. It independently checks JSON validity and
 duplicate keys, even if the corresponding format rule is disabled. It enforces supported scalar/array parameters,
 required values, exact query names, JSON body schemas, unknown/read-only properties and declared content types.
+Numeric checks use exact decimal values, including enums, integer formats, bounds, `multipleOf` and array uniqueness. A numeric bound or multiple that cannot be preserved by the SDK's float64 representation is an import error, so the CLI refuses startup with that contract. See [numeric support limits](apiguard.md#5-level-1-in-detail).
 Bracket aliases of scalar/ordinary array parameters are unknown names, not an exemption. Explicit OpenAPI
 `style: form, explode: true` arrays can repeat plain names while scalar repetition is refused.
 

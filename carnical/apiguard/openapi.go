@@ -162,12 +162,25 @@ func asInt(v any) (int, bool) {
 	return int(i), true
 }
 
-func asFloat(v any) (float64, bool) {
+func (im *importer) schemaNumber(v any, keyword string) (float64, bool) {
 	n, ok := v.(Num)
 	if !ok {
+		if v != nil {
+			if _, boolean := v.(bool); !boolean || (keyword != "exclusiveMinimum" && keyword != "exclusiveMaximum") {
+				im.err = fmt.Errorf("schema %s must be numeric", keyword)
+			}
+		}
 		return 0, false
 	}
-	return n.float()
+	f, ok := n.exactFloat()
+	if !ok {
+		im.err = fmt.Errorf("schema %s cannot be retained exactly as a finite decimal", keyword)
+	}
+	if keyword == "multipleOf" && ok && f <= 0 {
+		im.err = errors.New("schema multipleOf must be positive")
+		return 0, false
+	}
+	return f, ok
 }
 
 // resolve follows a local reference such as #/components/schemas/Pet. It never looks outside the document.
@@ -362,27 +375,27 @@ func (im *importer) schemaBody(m map[string]any, depth int) *Schema {
 	if c, ok := m["const"]; ok && im.ver == "3.1" {
 		s.Const = &JSONValue{c}
 	}
-	if f, ok := asFloat(m["minimum"]); ok {
+	if f, ok := im.schemaNumber(m["minimum"], "minimum"); ok {
 		if ex, _ := asBool(m["exclusiveMinimum"]); ex {
 			s.ExclusiveMinimum = &f
 		} else {
 			s.Minimum = &f
 		}
 	}
-	if f, ok := asFloat(m["maximum"]); ok {
+	if f, ok := im.schemaNumber(m["maximum"], "maximum"); ok {
 		if ex, _ := asBool(m["exclusiveMaximum"]); ex {
 			s.ExclusiveMaximum = &f
 		} else {
 			s.Maximum = &f
 		}
 	}
-	if f, ok := asFloat(m["exclusiveMinimum"]); ok {
+	if f, ok := im.schemaNumber(m["exclusiveMinimum"], "exclusiveMinimum"); ok {
 		s.ExclusiveMinimum = &f
 	}
-	if f, ok := asFloat(m["exclusiveMaximum"]); ok {
+	if f, ok := im.schemaNumber(m["exclusiveMaximum"], "exclusiveMaximum"); ok {
 		s.ExclusiveMaximum = &f
 	}
-	if f, ok := asFloat(m["multipleOf"]); ok && f > 0 {
+	if f, ok := im.schemaNumber(m["multipleOf"], "multipleOf"); ok && f > 0 {
 		s.MultipleOf = &f
 	}
 	if n, ok := asInt(m["minLength"]); ok {

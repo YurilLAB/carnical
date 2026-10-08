@@ -156,8 +156,42 @@ func (m *Model) UnmarshalJSON(data []byte) error {
 	if err := dec.Decode(&p); err != nil {
 		return fmt.Errorf("the saved model is not readable: %w", err)
 	}
-	if dec.More() {
-		return errors.New("the saved model has data after the model")
+	// Parse once with the bounded, exact-number reader as well. This catches
+	// trailing data and ambiguous keys, and keeps schema bounds from rounding
+	// silently during the float64 decode above.
+	raw, duplicates, err := parseJSON(data, jsonLimits{depth: 2*maxSchemaDepth + 16, nodes: 8 * maxSchemaNodes})
+	if err != nil || duplicates {
+		return errors.New("the saved model is not unambiguous bounded JSON")
+	}
+	root, err := foldModelFields(raw)
+	if err != nil {
+		return err
+	}
+	defs, _ := root["defs"].(map[string]any)
+	for _, schema := range defs {
+		if err := checkRawSchemaNumbers(schema); err != nil {
+			return err
+		}
+	}
+	routes, _ := root["routes"].([]any)
+	for _, entry := range routes {
+		route, err := foldModelFields(entry)
+		if err != nil {
+			return err
+		}
+		if err := checkRawSchemaNumbers(route["body"]); err != nil {
+			return err
+		}
+		params, _ := route["params"].([]any)
+		for _, entry := range params {
+			param, err := foldModelFields(entry)
+			if err != nil {
+				return err
+			}
+			if err := checkRawSchemaNumbers(param["schema"]); err != nil {
+				return err
+			}
+		}
 	}
 	if p.Format != ModelFormat {
 		return fmt.Errorf("the saved model has format %d; this build reads format %d", p.Format, ModelFormat)
@@ -241,6 +275,70 @@ func (m *Model) validateLoaded() error {
 	return nil
 }
 
+// encoding/json accepts case-insensitive struct field names. Inspect the same
+// fields and reject case aliases that could otherwise carry competing bounds.
+func foldModelFields(v any) (map[string]any, error) {
+	source, ok := v.(map[string]any)
+	if !ok {
+		return nil, nil
+	}
+	out := make(map[string]any, len(source))
+	for key, value := range source {
+		// Serialized struct field names are ASCII. Application keys under
+		// properties and enum values are not visited here.
+		for _, r := range key {
+			if r > 127 {
+				return nil, errors.New("the saved model has a non-ASCII field name")
+			}
+		}
+		name := strings.ToLower(key)
+		if _, exists := out[name]; exists {
+			return nil, errors.New("the saved model has ambiguous field aliases")
+		}
+		out[name] = value
+	}
+	return out, nil
+}
+
+// checkRawSchemaNumbers visits only schema positions. Objects in enum/const
+// are application values, even when they contain a property named "minimum".
+func checkRawSchemaNumbers(v any) error {
+	s, err := foldModelFields(v)
+	if err != nil || s == nil {
+		return err
+	}
+	for _, keyword := range []string{"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf"} {
+		n, ok := s[strings.ToLower(keyword)].(Num)
+		if !ok {
+			continue
+		}
+		f, ok := n.exactFloat()
+		if !ok || (keyword == "multipleOf" && f <= 0) {
+			return fmt.Errorf("saved schema %s cannot be retained exactly as a valid finite decimal", keyword)
+		}
+	}
+	properties, _ := s["properties"].(map[string]any)
+	for _, child := range properties {
+		if err := checkRawSchemaNumbers(child); err != nil {
+			return err
+		}
+	}
+	for _, keyword := range []string{"items", "not", "additionalSchema"} {
+		if err := checkRawSchemaNumbers(s[strings.ToLower(keyword)]); err != nil {
+			return err
+		}
+	}
+	for _, keyword := range []string{"oneOf", "anyOf", "allOf"} {
+		children, _ := s[keyword].([]any)
+		for _, child := range children {
+			if err := checkRawSchemaNumbers(child); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // checkSchema bounds a loaded schema: its depth, its size and the shape of what it holds.
 func checkSchema(s *Schema, depth int, nodes *int) error {
 	if s == nil {
@@ -254,6 +352,16 @@ func checkSchema(s *Schema, depth int, nodes *int) error {
 	}
 	if len(s.Ref) > 512 || len(s.Properties) > 1000 || len(s.Enum) > 1000 || len(s.OneOf) > 64 || len(s.AnyOf) > 64 || len(s.AllOf) > 64 || len(s.Pattern) > maxPatternBytes {
 		return errors.New("the saved model has a schema with too many entries")
+	}
+	for _, bound := range []*float64{s.Minimum, s.Maximum, s.ExclusiveMinimum, s.ExclusiveMaximum, s.MultipleOf} {
+		if bound != nil {
+			if _, ok := floatDecimal(*bound); !ok {
+				return errors.New("schema has a nonfinite numeric constraint")
+			}
+		}
+	}
+	if s.MultipleOf != nil && *s.MultipleOf <= 0 {
+		return errors.New("schema multipleOf must be positive")
 	}
 	for _, p := range s.Properties {
 		if err := checkSchema(p, depth+1, nodes); err != nil {

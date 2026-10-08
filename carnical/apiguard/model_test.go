@@ -5,6 +5,7 @@ package apiguard
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 )
@@ -84,6 +85,21 @@ func TestALearnedModelSurvivesBeingSavedAndLoaded(t *testing.T) {
 }
 
 func TestASavedModelIsReadStrictly(t *testing.T) {
+	for _, keyword := range []string{"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf"} {
+		for _, number := range []string{"9007199254740993", "1.0000000000000001", "1e-400", "1e400"} {
+			t.Run(keyword+" "+number, func(t *testing.T) {
+				raw := fmt.Sprintf("{\"format\":1,\"routes\":[{\"method\":\"POST\",\"path\":\"/a\",\"state\":\"declared\",\"body\":{\"type\":[\"number\"],\"%s\":%s}}]}", keyword, number)
+				m := Model{Title: "unchanged"}
+				if err := m.UnmarshalJSON([]byte(raw)); err == nil {
+					t.Fatal("rounded or unrepresentable constraint loaded")
+				}
+				if m.Title != "unchanged" {
+					t.Fatal("refused model changed receiver")
+				}
+			})
+		}
+	}
+
 	good := func() map[string]any {
 		return map[string]any{"format": 1, "routes": []any{map[string]any{"method": "GET", "path": "/a", "state": "declared"}}}
 	}
@@ -99,6 +115,11 @@ func TestASavedModelIsReadStrictly(t *testing.T) {
 		in   string
 		ok   bool
 	}{
+		{"upper case bound cannot round", "{\"FORMAT\":1,\"ROUTES\":[{\"METHOD\":\"POST\",\"PATH\":\"/a\",\"STATE\":\"declared\",\"BODY\":{\"TYPE\":[\"number\"],\"MINIMUM\":1.0000000000000001}}]}", false},
+		{"case alias bounds", "{\"format\":1,\"routes\":[{\"method\":\"POST\",\"path\":\"/a\",\"state\":\"declared\",\"body\":{\"minimum\":0,\"MINIMUM\":1}}]}", false},
+		{"exact decimal bound", "{\"format\":1,\"routes\":[{\"method\":\"POST\",\"path\":\"/a\",\"state\":\"declared\",\"body\":{\"minimum\":0.01}}]}", true},
+		{"enum objects are values", "{\"format\":1,\"routes\":[{\"method\":\"POST\",\"path\":\"/a\",\"state\":\"declared\",\"body\":{\"enum\":[{\"minimum\":9007199254740993,\"MINIMUM\":1}]}}]}", true},
+		{"trailing closing delimiter", "{\"format\":1,\"routes\":[]}]", false},
 		{"a minimal model", mutate(func(m map[string]any) {}), true},
 		{"another format version", mutate(func(m map[string]any) { m["format"] = 2 }), false},
 		{"no format version", mutate(func(m map[string]any) { delete(m, "format") }), false},
@@ -168,6 +189,14 @@ func TestASavedModelIsReadStrictly(t *testing.T) {
 		t.Fatal("a model over the size limit was read")
 	}
 	g, _ := testGuard(t, nil)
+	t.Run("SDK constraints are finite and multiples positive", func(t *testing.T) {
+		for _, f := range []float64{math.Inf(1), math.Inf(-1), math.NaN(), 0, -0.01} {
+			model := Model{Format: ModelFormat, Routes: []Route{{Method: "POST", Path: "/api/n", State: StateDeclared, Body: &Schema{MultipleOf: &f}}}}
+			if err := g.SetModel(model); err == nil {
+				t.Fatal("invalid SDK multiple installed")
+			}
+		}
+	})
 	if err := g.LoadLearned([]byte(`{"format":1,"surprise":true}`)); err == nil {
 		t.Fatal("LoadLearned read a model with an unknown field")
 	}

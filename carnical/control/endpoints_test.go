@@ -689,20 +689,23 @@ func TestPublish(t *testing.T) {
 		}
 	})
 	t.Run("a publisher that fails releases the key", func(t *testing.T) {
-		h := newHarness(t)
-		h.seed(tenantA, `{"mode":"block"}`)
-		h.pub.err = errors.New("signer unreachable at 10.1.2.3")
-		w := pub(h, `{"revision":1}`, "retry-key-1")
-		if w.Code != 500 || strings.Contains(w.Body.String(), "10.1.2.3") {
-			t.Fatalf("%d %s", w.Code, w.Body.String())
-		}
-		h.pub.err = nil
-		if w := pub(h, `{"revision":1}`, "retry-key-1"); w.Code != 200 {
-			t.Fatalf("retry after a failure: %d %s", w.Code, w.Body.String())
-		}
-		h.pub.err = ErrUnavailable
-		if w := pub(h, `{"revision":1}`, "retry-key-2"); w.Code != 503 || w.Header().Get("Retry-After") == "" {
-			t.Fatalf("an unavailable publisher: %d", w.Code)
+		for _, panicBefore := range []bool{false, true} {
+			h := newHarness(t)
+			h.seed(tenantA, `{"mode":"block"}`)
+			h.pub.err = errors.New("signer unreachable at 10.1.2.3")
+			h.pub.panicBefore = panicBefore
+			w := pub(h, `{"revision":1}`, "retry-key-1")
+			if w.Code != 500 || strings.Contains(w.Body.String(), "10.1.2.3") {
+				t.Fatalf("panic=%v: %d %s", panicBefore, w.Code, w.Body.String())
+			}
+			h.pub.err, h.pub.panicBefore = nil, false
+			if w := pub(h, `{"revision":1}`, "retry-key-1"); w.Code != 200 {
+				t.Fatalf("retry after a failure (panic=%v): %d %s", panicBefore, w.Code, w.Body.String())
+			}
+			h.pub.err = ErrUnavailable
+			if w := pub(h, `{"revision":1}`, "retry-key-2"); w.Code != 503 || w.Header().Get("Retry-After") == "" {
+				t.Fatalf("an unavailable publisher: %d", w.Code)
+			}
 		}
 	})
 	t.Run("a request still in progress is not run twice", func(t *testing.T) {

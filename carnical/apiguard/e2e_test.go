@@ -4,6 +4,7 @@ package apiguard
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -351,6 +352,48 @@ func TestAnAuthenticationEndpointIsLimitedByDefault(t *testing.T) {
 }
 
 func TestDiscoveryPromotionAndEnforcementThroughTheProxy(t *testing.T) {
+	t.Run("numeric contract at origin", func(t *testing.T) {
+		o := &origin{}
+		var ids []int64
+		o.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var body struct{ ID int64 }
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				http.Error(w, "bad body", 400)
+				return
+			}
+			o.mu.Lock()
+			ids = append(ids, body.ID)
+			o.mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(201)
+			io.WriteString(w, "{}")
+		}))
+		t.Cleanup(o.Close)
+		g, _ := testGuard(t, func(c *Config) { c.Modes.Spec = ModeEnforce })
+		doc := "{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"numbers\",\"version\":\"1\"},\"paths\":{\"/api/numbers\":{\"post\":{\"requestBody\":{\"required\":true,\"content\":{\"application/json\":{\"schema\":{\"type\":\"object\",\"required\":[\"id\"],\"properties\":{\"id\":{\"type\":\"integer\",\"enum\":[9007199254740992]}}}}}},\"responses\":{\"201\":{\"description\":\"ok\"}}}}}}"
+		if _, err := g.ImportOpenAPI([]byte(doc)); err != nil {
+			t.Fatal(err)
+		}
+		e := startEdge(t, o, g)
+		for i, tt := range []struct {
+			body   string
+			status int
+		}{
+			{"{\"id\":9007199254740992}", 201},
+			{"{\"id\":9007199254740993}", 400},
+			{"{\"id\":9007199254740994}", 400},
+		} {
+			if got := e.do("POST", "/api/numbers", visitor(800+i), tt.body); got != tt.status {
+				t.Errorf("body %s: status %d, want %d", tt.body, got, tt.status)
+			}
+		}
+		o.mu.Lock()
+		defer o.mu.Unlock()
+		if len(ids) != 1 || ids[0] != 9007199254740992 {
+			t.Fatalf("origin received IDs %v, want only allowed ID", ids)
+		}
+	})
+
 	o := newOrigin(t)
 	o.doc = shopAPI
 	g, _ := testGuard(t, func(c *Config) { c.Modes.Spec = ModeEnforce })

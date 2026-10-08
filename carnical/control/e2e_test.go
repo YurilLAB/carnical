@@ -106,6 +106,71 @@ func (e *e2e) client(name string, tweak ...func(*ClientConfig)) *Client {
 }
 
 func TestEndToEndOverRealTLS(t *testing.T) {
+	t.Run("publish retry lifetime", func(t *testing.T) {
+		clock := &fakeClock{t: time.Now()}
+		e := newE2E(t, func(c *Config) {
+			c.Now = clock.now
+			c.Limits.IdempotencyTTL = 100 * time.Millisecond
+		})
+		e.seed(tenantA, `{"mode":"block"}`)
+		c := e.client("ui-a", func(c *ClientConfig) { c.Now = clock.now })
+		gate := make(chan struct{})
+		e.pub.gate, e.pub.in = gate, make(chan struct{}, 2)
+		type reply struct {
+			seq uint64
+			err error
+		}
+		publish := func(ch chan reply) {
+			seq, err := c.Publish(context.Background(), tenantA, 1, "slow-retry-1", Actor{User: "user-1"})
+			ch <- reply{seq, err}
+		}
+		first, retry := make(chan reply, 1), make(chan reply, 1)
+		go publish(first)
+		select {
+		case <-e.pub.in:
+		case <-time.After(5 * time.Second):
+			close(gate)
+			t.Fatal("publish did not start")
+		}
+		clock.advance(2 * time.Second)
+		go publish(retry)
+		var retryReply reply
+		var duplicate bool
+		select {
+		case retryReply = <-retry:
+			var ae *APIError
+			if !errors.As(retryReply.err, &ae) || ae.Status != 409 || ae.Code != "in_progress" {
+				t.Errorf("retry while unfinished: %+v", retryReply)
+			}
+		case <-e.pub.in:
+			duplicate = true
+			t.Error("retry invoked the publisher again while the first publish was unfinished")
+		case <-time.After(5 * time.Second):
+			t.Error("retry did not answer")
+		}
+		close(gate)
+		firstReply := <-first
+		if duplicate {
+			retryReply = <-retry
+		}
+		if firstReply.err != nil || firstReply.seq != 1001 {
+			t.Errorf("first publish: %+v", firstReply)
+		}
+		if n := e.pub.count(); n != 1 {
+			t.Errorf("publisher ran %d times, want one", n)
+		}
+		// Successful completion starts a full retention period, even when the
+		// operation took longer than that period to finish.
+		seq, err := c.Publish(context.Background(), tenantA, 1, "slow-retry-1", Actor{User: "user-1"})
+		if err != nil || seq != firstReply.seq || e.pub.count() != 1 {
+			t.Errorf("completed publish was not replayed: sequence=%d err=%v calls=%d", seq, err, e.pub.count())
+		}
+		clock.advance(100 * time.Millisecond)
+		seq, err = c.Publish(context.Background(), tenantA, 1, "slow-retry-1", Actor{User: "user-1"})
+		if err != nil || seq != 1002 || e.pub.count() != 2 {
+			t.Errorf("completed key did not expire: sequence=%d err=%v calls=%d", seq, err, e.pub.count())
+		}
+	})
 	e := newE2E(t)
 	c := e.client("ui-a")
 	ctx := context.Background()
