@@ -19,7 +19,7 @@ go 1.26.9
 require (
 	github.com/corazawaf/coraza-coreruleset v0.0.0-20240226094324-415b1017abdc
 	github.com/corazawaf/libinjection-go v0.3.3
-	github.com/foxcpp/go-mockdns v1.2.0
+	github.com/foxcpp/go-mockdns v1.3.0
 	github.com/jcchavezs/mergefs v0.1.1
 	github.com/kaptinlin/jsonschema v0.4.6
 	github.com/magefile/mage v1.17.0
