@@ -1,16 +1,20 @@
-# Deploying Carnical on one machine
+# Linux host deployment
 
-Everything here is for the case where the edge, the portal, the control plane and the signer share one machine. The kernel keeps
-them apart: one user each, a sandbox on each unit, a network policy by user, and a process that confines itself. The reasons and
-the evidence are in `../docs/hardening.md`; this page is the order to do things in.
+This recipe places edge, portal, control and signer services on one Linux host with separate users,
+systemd sandboxes, network policy and process confinement. Follow the installation order below and
+test on the target host. The [hardening guide](../docs/hardening.md) explains the layers.
 
-Tested on Linux 6.18 with systemd 259 (Ubuntu 26.04 under WSL2). Not yet on Ubuntu 22.04, Ubuntu 24.04 or Debian 12; see "Differences between systems" below.
+Tested on Linux 6.18 with systemd 259 (Ubuntu 26.04 under WSL2). Not yet on Ubuntu 22.04, Ubuntu
+24.04 or Debian 12; see "Differences between systems" below.
 
-For the edge in front of one website, start with the [site configuration and client handover guide](../docs/website-onboarding.md). The service now validates its effective settings before startup; local checks do not replace confined live forwarding tests.
+For the edge in front of one website, start with the [site configuration and client handover
+guide](../docs/website-onboarding.md). The service now validates its effective settings before
+startup; local checks do not replace confined live forwarding tests.
 
 For standalone binaries, containers, private health checks and multi-replica contracts, see
-[availability and portable deployment](../docs/availability-and-deployment.md). Linux kernel controls below are additional
-platform-specific layers; the health listener needs the narrow systemd bind allowance described in that guide.
+[availability and portable deployment](../docs/availability-and-deployment.md). Linux kernel
+controls below are additional platform-specific layers; the health listener needs the narrow systemd
+bind allowance described in that guide.
 
 ## What is here
 
@@ -30,6 +34,9 @@ platform-specific layers; the health listener needs the narrow systemd bind allo
 
 ## Order
 
+Run the build commands from `carnical/`. Installation paths below are relative to `carnical/deploy/`
+unless absolute.
+
 1. Build with the right Go and without cgo, so that the self-confinement reaches every thread.
 
    ```sh
@@ -41,7 +48,7 @@ platform-specific layers; the health listener needs the narrow systemd bind allo
 
 2. Install the programs as root, owned by root and not writable by anyone else: `install -o root -g root -m 0755 carnical carnical-audit carnical-confine /usr/local/bin/`.
 3. `install -m 0644 sysusers.d/carnical.conf /etc/sysusers.d/ && systemd-sysusers`, then the same for `tmpfiles.d` and `systemd-tmpfiles --create`.
-4. Put `zones.json` in `/etc/carnical/` (see `docs/segmentation.md`; with everything on one machine each part is a zone, each listener names its `user`, and a socket that systemd opened is owned by root, so list `root,carnical-edge`). Install the reviewed site file as `/etc/carnical/site.json` (root-owned, edge-group-readable, mode 0640) and put `CARNICAL_ARGS="-config /etc/carnical/site.json"` in `/etc/carnical/edge.env`. Direct flag lists remain supported. See the [site examples](../docs/website-onboarding.md) for certificates, origin addresses and checks.
+4. Put `zones.json` in `/etc/carnical/` (see [segmentation](../docs/segmentation.md); with everything on one machine each part is a zone, each listener names its `user`, and a socket that systemd opened is owned by root, so list `root,carnical-edge`). Install the reviewed site file as `/etc/carnical/site.json` (root-owned, edge-group-readable, mode 0640) and put `CARNICAL_ARGS="-config /etc/carnical/site.json"` in `/etc/carnical/edge.env`. Direct flag lists remain supported. See the [site examples](../docs/website-onboarding.md) for certificates, origin addresses and checks.
 5. `install -m 0644 sysctl/90-carnical.conf /etc/sysctl.d/ && sysctl --system`. `install -m 0644 modprobe/carnical.conf /etc/modprobe.d/`.
 6. Edit the management addresses and resolver at the top of `nftables/carnical.nft`. [Render a deployment profile](../docs/network-protection.md#choosing-a-budget) with budgets matching the measured edge capacity and verified CDN/load-balancer peers, review the output, check it, then load it: `nft -c -f /etc/carnical/network.nft && nft -f /etc/carnical/network.nft`. Rendered profiles require nftables 1.0.9 or later and kernel support for `destroy`; `nft -c` verifies support. Load the complete file in one transaction. It resets this table's counters/meters so changed limits and revoked peer ranges take effect. Load it from a unit that runs before the services, and keep the file where no service user can write it.
 7. `./honeytokens.sh`, then `install -m 0640 auditd/carnical.rules /etc/audit/rules.d/ && augenrules --load`. The last line of the rules locks them until the next boot.
@@ -61,10 +68,11 @@ ausearch -m SECCOMP -i                                    # the record the kerne
 
 If `-unconfined` does not pass, the probe is broken and the confined run proves nothing.
 
-For flood latency, check the origin as well as the edge: persistent responses, accept-queue capacity and upstream concurrency
-must fit the measured workload. The [controlled latency investigation](../docs/network-protection.md#investigating-the-one-second-tail)
-reproduced the earlier one-second delay in an undersized test origin even without a flood. Compare matched-concurrency runs
-and connection/TCP counters before increasing protection budgets.
+For flood latency, check the origin as well as the edge: persistent responses, accept-queue capacity
+and upstream concurrency must fit the measured workload. The [controlled latency
+investigation](../docs/network-protection.md#investigating-the-one-second-tail) reproduced the
+earlier one-second delay in an undersized test origin even without a flood. Compare
+matched-concurrency runs and connection/TCP counters before increasing protection budgets.
 
 ## What to do when something fails
 

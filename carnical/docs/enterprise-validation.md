@@ -1,6 +1,12 @@
-# Enterprise protection validation
+# Protection validation record
 
-This record distinguishes tests of the changed Carnical code from limitations of the local development environment. Validation runs on Windows with Go 1.26.6 against local TCP listeners and an actual HTTP origin, without sending test attacks to public hosts.
+This records the protection work tested on 5–6 October 2026, including local Windows/Go 1.26.6
+conditions and failures encountered then. Counts and versions belong to those runs.
+Later fixes and [security CI](https://github.com/YurilLAB/carnical/actions/runs/37900620871)
+at revision `fc8f17a6` supersede the old baseline/CI failures; all 12 jobs passed on that revision.
+
+Use the [documentation index](README.md#review-the-evidence) to find the current operational
+guides and later validation records. Attacks here target isolated local origins.
 
 ## GraphQL operation and protocol enforcement (2026-10-05)
 

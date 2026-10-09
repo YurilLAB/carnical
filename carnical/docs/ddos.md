@@ -1,169 +1,140 @@
-# Flood protection (`shield`)
+# Flood protection and IDS
 
-Coraza and the Core Rule Set judge one request at a time, so they cannot see a flood. The shield (`carnical/shield`) sees the
-traffic as a whole. It is on by default in `cmd/carnical` (`-ddos on`). `-ddos monitor` detects and logs attacks without
-applying attack-specific mitigation; baseline per-address, per-network and connection capacity limits still apply.
-`-ddos off` removes the shield. For payload-detection benchmarks, use `off` so single-source load generation does not
-exhaust connection or request budgets; test flood mitigation separately with realistic client populations.
+The Shield watches traffic across requests and limits connection/request pressure before expensive
+processing. It is enabled by default in the standalone proxy.
+
+| Mode | Behavior |
+| --- | --- |
+| `-ddos on` | Detect floods and apply mitigation, alongside baseline connection/request limits. |
+| `-ddos monitor` | Detect and log floods; baseline limits still enforce, but attack-specific mitigation does not. |
+| `-ddos off` | Remove Shield. Use this for isolated payload benchmarks, then test flood behavior separately. |
+
+Source: [Shield](../shield/shield.go), [listener](../shield/listener.go),
+[detector](../shield/detect.go), [CLI wiring](../cmd/carnical/shield.go).
 
 ## Where it acts
 
-| Point | What it does | Rule IDs |
-|---|---|---|
-| Connection accepted (`Shield.Listener`) | Per-address connection rate (20/s, bursts of 60; a quarter of that for strangers during an attack). At most 1,024 connections per /24 (IPv4) or /48 (IPv6). At most 20,000 connections, with a fifth kept back for known clients. When connections run short, idle keep-alive connections of unknown clients are closed first. Banned addresses are reset at once. A refused connection is reset (RST), so it leaves no TIME_WAIT. | connection refusals are counted, not logged one by one |
-| Socket (Linux) | `TCP_DEFER_ACCEPT` (10 s): delays handing silent connections to the proxy until data arrives or the kernel timeout expires; server read deadlines are still required. `TCP_USER_TIMEOUT` (30 s): a client that stops acknowledging data (slow read, zero window) is dropped by the kernel. | |
-| Request, before any other check (`Shield.Admit`) | At least 50 requests a second per address (bursts of 200) and 500 per /24 or /48, at all times; these rise automatically to follow the site's own busiest addresses and networks (see "Limits that follow your traffic"). During an attack: requests that look like the attack share 5 a second in total; clients the shield does not know share the site's usual rate; known clients and browsers that passed the check go on as normal. Addresses refused 30 times during an attack are banned for 10 minutes. | 5004001 address rate, 5004002 network rate, 5004003 attack cluster, 5004004 unknown-client budget, 5004005 check shown, 5004006/5004007 check failed/passed, 5004008 banned |
-| Response (`Shield.Done`) | Status and time from the application: how clients become known, and how the detector sees the application struggling. | |
+| Stage | Protection |
+| --- | --- |
+| TCP admission | Per-address connection rate, live subnet counts, a global cap and reserved capacity for known clients. |
+| Socket tuning on Linux | `TCP_DEFER_ACCEPT` (10s) delays handing silent connections to the proxy; `TCP_USER_TIMEOUT` (30s) limits stalled acknowledgements. Server deadlines still apply. |
+| Request admission | Per-address and subnet budgets; during an attack, shared budgets for matching traffic and unknown clients. |
+| Response observation | Status and timing inform the detector and client reputation. |
 
-A refusal is 429 (rate) or 503 with `Retry-After`, `Cache-Control: no-store` and `Connection: close`. The shield never writes
-a log line per refused request (in a flood that is a second flood, into the log); it writes a few lines per attack.
+Connections are reserved atomically across listeners sharing a Shield. Live subnet counts are
+separate from request-history tables, so address-history eviction cannot reset occupied capacity.
+The last socket closes its subnet entry. Trusted proxy peers may use the reserved share and bypass
+source/subnet limits, but still share the global cap.
 
-Connection capacity is reserved atomically across every listener that shares a `Shield`. Live counts per /24 or /48 are
-kept separately from the bounded request-history tables, so churn through many addresses cannot reset them. Closing the
-last socket removes the network's live entry; these entries are bounded by admitted sockets. Trusted CDN/load-balancer
-peers bypass source and subnet limits and may use the reserved share, but still share the global connection cap. Refusals
-remain available as `Snapshot.ConnsRefused`, without one log entry per socket. Non-finite rates and scaling settings are
-rejected at configuration time. `Snapshot.WriteErrors` counts failed shield response body writes, and
-`Snapshot.SocketOptionErrors` counts failures to apply optional TCP settings (including reset linger). A failure does not
-turn a refusal into admission. Socket tuning is best effort; server read/write deadlines remain required.
+Refused connections are reset. HTTP refusals return 429 or 503 with `Retry-After`, `Cache-Control:
+no-store` and `Connection: close`. Logs are bounded rather than written for each Shield refusal. A
+failed reset/socket option does not turn a refusal into admission.
+
+| Monitoring field | Meaning |
+| --- | --- |
+| `Snapshot.ConnsRefused` | Refused connections. |
+| `Snapshot.WriteErrors` | Failed Shield response writes. |
+| `Snapshot.SocketOptionErrors` | Failed optional socket settings, including reset linger. |
 
 ## IDS signals
 
-The shield also reports observation-only signals independently of flood mitigation:
+These alerts report patterns for investigation. They do not change attack state or add bans.
 
-- IP/network connection admission pressure: at least half of incoming TCP connections are refused by the admission guards.
-- Early TCP closes: at least three quarters of closed nontrusted connections never reached HTTP activity (Go's StateActive).
-- Rejected HTTP probes: at least half of shield-admitted requests receive a 4xx from a later WAF or policy check. Origin 4xx responses and gateway 5xx failures are excluded.
+| Signal | Threshold |
+| --- | --- |
+| Connection admission pressure | At least 50% of incoming TCP connections are refused. |
+| Early TCP closes | At least 75% of closed nontrusted connections never reached HTTP `StateActive`. |
+| HTTP security rejections | At least 50% of Shield-admitted requests receive a later WAF/policy 4xx. Origin 4xx and gateway 5xx responses are excluded. |
 
-Each signal also needs at least Detector.MinAttackRate observations per second (default 20), averaged over ten seconds. Snapshot.IDSReasons and its connection/rejection rates expose current evidence; EarlyCloses and SecurityRejections count totals. The CLI logs ids_signal events at most once every 30 seconds per shield, including in monitor mode. Events contain aggregate reasons, without request bodies or paths. They indicate activity to investigate; they never change attack state or add bans. Normal short-lived connections and application errors remain allowed by these signals.
+Each signal also needs `Detector.MinAttackRate` observations per second (default 20), averaged over
+ten seconds. `Snapshot.IDSReasons` and the rate fields expose current evidence; `EarlyCloses` and
+`SecurityRejections` hold totals. The CLI emits `ids_signal` at most once every 30 seconds per
+Shield, including in monitor mode, with aggregate reasons and no request paths/bodies.
 
-The connection signals observe accepted TCP sockets and admission refusals. Raw IP packets, incomplete SYN handshakes, UDP and link saturation remain the domain of the [Linux packet guards](network-protection.md) and provider-side protection. HTTP checks before shield admission and pre-parser failures are outside the rejection counter.
+TCP signals cover accepted sockets and admission refusals. Raw packets, incomplete SYN handshakes,
+UDP and link saturation need [kernel packet guards](network-protection.md) or provider protection.
+HTTP checks before Shield admission and pre-parser failures are outside the rejection counter.
 
 ## Detecting an attack from many addresses and countries
 
-A botnet of home routers, cameras and phones sends from tens of thousands of addresses, each slower than any per-address
-limit. Per-address limits do not see it. The detector looks, every second, at the last ten seconds against a baseline (a
-moving average with a 10-minute time constant, learnt only while traffic is ordinary):
+Every second, the detector compares a ten-second window with the site's ordinary traffic. It
+combines volume with fingerprint/target concentration, new addresses, engagement and origin health.
+Volume alone is logged as elevated traffic; it does not declare an attack.
 
-| Signal | Attack looks like | People look like |
-|---|---|---|
-| Volume | above the site's own normal: the largest of 4x its moving average, its average plus 8 standard deviations of its own recent rates, and a floor of 20 requests a second (the floor only matters to small sites) | same, during a newsletter or a shared post |
-| Fingerprint concentration (client program, header set, TLS settings) | one fingerprint is suddenly most of the traffic, from many addresses | the usual mix of browsers |
-| Target concentration (path with numbers, IDs and query values removed) | one target, often with random query strings to get past caches | spread over pages and assets |
-| New addresses | most requests from addresses never seen before | some |
-| Engagement | a new address asks for one thing and nothing else | a page, then its CSS, scripts and images |
-| Application health | errors or slow answers | — |
+The volume threshold is the largest of four times the baseline, baseline plus eight standard
+deviations, and 20 requests/second. The baseline has a ten-minute time constant, updates only during
+ordinary traffic and grows by at most two times per step. Deviation is measured from nonoverlapping
+ten-second windows.
 
-The average is a moving average with a 10-minute time constant, updated only while traffic is ordinary and never by more than
-double in one step, so an attack cannot teach the detector that it is normal, and a site's daily rise and fall is followed. The
-standard deviation is the site's own, measured between ten-second rates that do not overlap, so a steady rise is not mistaken for
-noise: on a steady site the threshold is 4.0x the average, on a bursty one (measured: bursts of 5 seconds at 10x every 37
-seconds) it is 6.8x. Nothing is declared in the first 60 seconds after start (`MinHistory`), and until the 5-minute learning period is over
-only a rise of 10x counts.
+An attack needs elevated volume plus supporting evidence held for three seconds:
 
-Volume alone is "elevated" (logged, nothing done). Volume with a concentrated fingerprint from at least 20 addresses, or a
-concentrated target from new addresses that do not behave like browsers, or an application in trouble with traffic from new
-places, held for 3 seconds, is an attack. An attack lasts at least a minute and ends after 30 quiet seconds.
+- A concentrated fingerprint from at least 20 addresses.
+- A concentrated target from new addresses without normal browser engagement.
+- An unhealthy application with traffic from new places.
+
+An attack lasts at least one minute and ends after 30 quiet seconds. It can also end after five
+minutes without the evidence that triggered it. The first 60 seconds are a history period; during
+the remaining five-minute learning period, only a tenfold rise qualifies. Set `-ddos-baseline-rate`
+when restarting into a flood; learned baseline state is not persisted.
 
 ## Limits that follow your traffic
 
-A fixed limit is right for a small site and wrong for a busy one: a company or a mobile carrier puts thousands of people behind
-one address, and a limit of 50 requests a second per address, sensible for one person, refuses them. So each limit is a floor,
-raised while traffic is ordinary to 4 times the moving average of the busiest address's (or network's) request rate, at most 20
-times the configured limit:
+Limits grow during ordinary traffic to follow busy sites and shared addresses. Address/network
+request floors can rise to four times the busiest address/network's average, bounded by the ceiling.
+Nonfinite rates/scaling settings are rejected during configuration.
 
-| Limit | Floor | Follows | Ceiling |
-|---|---|---|---|
-| Requests per address, and new connections per address | 50 a second (bursts of 200), 20 connections a second | the busiest address's average rate | 20x |
-| Requests per /24 or /48, and connections per /24 or /48 | 500 a second, 1,024 connections | the busiest network's average rate | 20x |
-| Connections at once | 20,000 | twice the average number open | 250,000, and 80% of the process's file-descriptor limit (raise `LimitNOFILE` in the unit before expecting more than 52,000) |
-| Look-alike requests during an attack | 5 a second in total | 2% of the site's usual rate | |
+| Limit | Default floor | Growth ceiling |
+| --- | --- | --- |
+| Requests per address | 50/s, burst 200 | 20 times the configured floor. |
+| New connections per address | 20/s, burst 60 | 20 times the configured floor. During an attack, unknown clients get one quarter of the normal rate. |
+| Requests per IPv4 /24 or IPv6 /48 | 500/s | 20 times the configured floor. |
+| Connections per /24 or /48 | 1,024 | 20 times the configured floor. |
+| Total connections | 20,000; one fifth reserved | Follows twice average occupancy, up to 250,000 and 80% of the process's soft descriptor limit. |
+| Matching traffic during an attack | 5 requests/s in total | Follows 2% of the site's usual rate. |
 
-Measured (`TestASiteWithMuchTrafficIsNotLimitedAsIfItWereSmall`): a site serving 1,200 requests a second, half of its returning
-visitors behind four shared addresses of about 120 requests a second each. The per-address limit rose 11.3x and the per-network
-limit 3.8x, and 99.9% of returning visitors were served. With the limits fixed (control) 71% were. An attack of 8,000 requests a
-second from 25,000 addresses on that site was detected after 8 s, 0.30% of it reached the application, and 100% of returning and
-new visitors were served. A sudden tripling of real traffic was not flagged.
-
-The adjustment is bounded, so it cannot be turned into an opening: one address that sends a lot for a long time raises its own
-limit by at most 20x, a rise is learnt at most twice per step, and nothing is learnt during an attack.
-
-The 80% file-descriptor ceiling applies to the initial connection floor as well as later growth. A small process with a soft
-limit of 1,024 therefore admits at most 819 shield connections before the reserved share, even with the default 20,000 floor.
-This ceiling leaves some descriptor headroom; it is not a memory or CPU budget. Set `-ddos-max-conns` lower when necessary,
-and measure origin sockets, TLS handshakes, rule evaluation and memory use before raising it on a large edge. Kernel packet
-budgets are configured separately; see [deployment profiles and live scaling tests](network-protection.md#choosing-a-budget).
+The descriptor ceiling applies at startup too: a soft limit of 1,024 permits at most 819 Shield
+connections before the reserved share. It leaves descriptor headroom but is not a CPU/memory budget.
+Tune `-ddos-max-conns`, origin sockets, TLS and evaluation concurrency from measurements. Kernel
+packet budgets are [configured separately](network-protection.md#choosing-a-budget).
 
 ## Who still gets through during an attack
 
-- **Known clients:** 5 successful requests spread over at least a minute, while traffic was ordinary. A standing earned in the
-  minute before the attack began does not count, so bots cannot earn it in the seconds before detection.
-- **Browsers that pass a check:** an unknown browser that falls outside the budget gets a small page that finds a SHA-256
-  answer in JavaScript (17 leading zero bits, about a second on a phone) and earns a cookie bound to its address and browser for
-  30 minutes. Nothing is stored on the server. The page's JavaScript is tested against Go's SHA-256.
-- **Everyone else** shares a budget equal to the site's usual rate. API clients are never shown the page; they get 503 with
-  `Retry-After`.
+- **Known clients** earned five successful requests over at least a minute of ordinary traffic.
+  Standing earned in the minute before an attack does not count. This is reputation, not authentication.
+- **Browser challenges** let an unknown browser outside the budget solve a JavaScript SHA-256
+  puzzle (17 leading zero bits) for a cookie tied to its address/browser for 30 minutes.
+- **Other clients** share a budget equal to the site's usual rate. API clients receive 503 and
+  `Retry-After` rather than a challenge page.
+
+An address refused 30 times during an attack is banned for ten minutes. Rule IDs are 5004001
+(address rate), 5004002 (network rate), 5004003 (attack cluster), 5004004 (unknown-client budget),
+5004005 (challenge shown), 5004006/5004007 (failed/passed) and 5004008 (ban).
 
 ## Measured
 
-Simulation (`shield/sim_test.go`, simulated clock, the real `Admit`/`Done`, an application that can serve 200 requests a
-second, 32 requests a second of ordinary traffic from 400 returning and many new visitors with six browsers):
-
-| Scenario | Detected after | Attack admitted after detection | Returning visitors served | New visitors served |
-|---|---|---|---|---|
-| 20,000 addresses in 30 countries, 5,000 req/s, cache-busting `/` | 4 s | 0.10% | 100% | 100% |
-| Same, `-ddos monitor` (control) | 4 s | — (not mitigated) | 3.1% | 3.1% |
-| 30,000 addresses copying a real Chrome browser exactly, 3,000 req/s to `/search` | 4 s | 0.17% | 100% | 100% |
-| Low and slow: 10,000 addresses, one request each every 20 s | 5 s | 1.0% | 100% | 100% |
-| Busy site (1,200 req/s, half its returning visitors behind 4 shared addresses): 8,000 req/s from 25,000 addresses | 8 s | 0.30% | 100% | 100% |
-| Busy site, real traffic suddenly 3x (negative control) | never flagged | — | 100% | 100% |
-| Flash crowd of real people, 10x the visits (negative control) | never (stays "elevated") | — | — | 100% |
-| A crowd to one article whose assets are on another host | treated as an attack | — | 100% | 100% (through the check) |
-
-The attack record estimated the first botnet at 20,421 addresses (true 20,000) in 106 country/network labels.
-
-Live (`proxy/shield_linux_test.go`, Linux): the real proxy and listener, 1,000 bot addresses (127.1.x.y; Linux routes all of
-127/8 to loopback) sending about 500 requests a second, 20 regular visitors. Detected 3.0 s after the flood began; after
-detection 180 of 180 visitor requests were served and 17 of 21,751 flood requests reached the application (0.08%). With
-`-ddos monitor` (control) all 22,767 flood requests reached it.
-
-Two flaws were found later, by testing a busy site and a site whose traffic is one app calling one endpoint, and are fixed. The
-detector had a fixed floor of 50 requests a second and a baseline that started at zero, so a bursty busy site was declared under
-attack in its first seconds, the baseline froze, and the attack could not end because the traffic never fell (reproduced:
-1,197 of 1,200 seconds "in attack", baseline stuck at 7 requests a second). Now there is a learning period, an evidence-based way
-out (an attack that shows none of the evidence that declared it for 5 minutes ends even if traffic has not fallen), and the
-limits above. The test removes all four safeguards at once and fails; with them it passes.
-
-The first live run found a hole the simulation did not: with a one-second reputation age, bots earned "known" standing in the
-2.5 seconds before detection, and 85% of the flood got through. Standing is now learnt only while traffic is ordinary, and
-during an attack only standing earned at least `KnownMinAge` before the attack began counts.
+See [flood validation](flood-validation.md) for simulation and live results, including controls and
+previous defects. Those results measure their recorded workload, not production capacity.
 
 ## What it cannot do
 
-- **Floods bigger than the network link** fill the link before they reach this machine. Only the hosting provider's network
-  (its DDoS protection) or an upstream scrubbing service can stop those. Ask the provider what volumetric protection the
-  server's network has.
-- **Packet floods below TCP** are handled separately by the [Linux deployment policy](network-protection.md): bounded SYN
-  budgets before connection tracking, malformed TCP filtering and UDP/443 refusal. SYN cookies are also configured in
-  `deploy/sysctl/90-carnical.conf`. These layers require deployment; the Go listener alone does not install kernel rules.
-- **A patient botnet** that uses the site normally for minutes before attacking can earn known standing. Per-address limits
-  still apply to it, and 30 refusals during an attack remove the standing.
-- **A restart during an attack** relearns the baseline from the attack, and for the first 60 seconds nothing is declared an
-  attack (only the per-address limits apply); for the next four minutes only a 10x rise counts. Give `-ddos-baseline-rate` (the
-  site's usual requests a second) to start from a known value. Saving the baseline across restarts is not done.
-- **Assets on another host:** a crowd to one page is then indistinguishable from a single-target flood and is treated as an
-  attack; people get through by the check (measured above), at the cost of a one-second page.
-- State is per process: several edges each keep their own.
+- A saturated uplink needs provider-side mitigation; traffic fills it before reaching the host.
+- The Go listener does not install packet rules. [Linux SYN/UDP guards](network-protection.md)
+  and deployment SYN cookies must be installed separately.
+- A patient botnet can earn reputation by behaving normally before attacking; address limits
+  still apply, and repeated attack-time refusals remove its standing.
+- A single-page crowd with assets on another host may resemble a targeted flood and trigger challenges.
+- State belongs to each process. Plan [replica behavior](availability-and-deployment.md#state-and-replica-contracts).
 
 ## Flags
 
-| Flag | Default | |
-|---|---|---|
-| `-ddos` | `on` | `on`, `monitor` or `off` |
-| `-ddos-rate`, `-ddos-burst` | 50, 200 | the least requests per address allows; raised automatically on a busy site, up to 20x |
-| `-ddos-max-conns` | 20000 | the least connections at once allows (a fifth reserved for known clients); raised with the site's average, up to 250,000 |
-| `-ddos-challenge` | true | the browser check during an attack |
-| `-ddos-baseline-rate` | 0 (learn) | the usual requests a second |
-| `-ddos-ranges` | none | an ip2asn-style table (from iptoasn.com, public domain) so attack logs name countries and networks |
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `-ddos` | `on` | `on`, `monitor` or `off`. |
+| `-ddos-rate`, `-ddos-burst` | 50, 200 | Per-address request floors, with bounded automatic growth. |
+| `-ddos-max-conns` | 20000 | Global connection floor, with bounded automatic growth and reserved capacity. |
+| `-ddos-challenge` | true | Enable browser challenges during an attack. |
+| `-ddos-baseline-rate` | 0 | Learn the baseline; a positive value seeds the site's usual requests/second. |
+| `-ddos-ranges` | None | ip2asn-style country/network labels for attack logs. |
 
-Load tests from one address (such as `tools/loadtest`) need `-ddos off` or a higher `-ddos-rate`.
+Single-address load tests need `-ddos off` or a suitable request floor to avoid measuring their own
+quota exhaustion. Flood tests need realistic client populations.

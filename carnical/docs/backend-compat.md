@@ -1,12 +1,17 @@
-# Carnical and the existing backend
+# External backend compatibility reference
 
-What the existing owner side (`D:\Dev\5Weeks1k`: the Python console and fleet reader, the PHP firewall and site console, the signed releases) expects from an engine, and what has to change on either side so that Carnical works with it. It follows from a read-only survey of that code. **Checked** marks a claim I re-read in the source myself; the rest is the survey's reading and has not been run.
+This records the PHP/Python backend contracts surveyed on 5 October 2026. That backend is separate
+from Carnical and is not included in this repository. Its current behavior and the status of its
+reported defects have not been revalidated here. **Checked** marks source verification in that
+survey; other entries were not executed.
 
-The principle is the one in `backend-integration.md`: do not change what Coraza and the Core Rule Set already give us; make Carnical speak the contracts the backend already has, and change the backend only where it would otherwise mis-read or leak.
+Use [backend integration](backend-integration.md) for current Carnical package boundaries and the
+[control/feed reference](control-api.md#11-the-feed) for the implemented feed.
 
 ## 1. The cheapest thing that works: a feed
 
-A signed `/feed` that returns empty `events`, `traffic`, `ips` and `marks` lists and a `health` block already passes the existing reader. Everything else is filling those lists in.
+A signed `/feed` that returns empty `events`, `traffic`, `ips` and `marks` lists and a `health`
+block already passes the existing reader. Everything else is filling those lists in.
 
 | Item | Contract |
 |---|---|
@@ -20,15 +25,23 @@ A signed `/feed` that returns empty `events`, `traffic`, `ips` and `marks` lists
 | health | `updates{...}`, `errors[]` and `notes[]`, all required. **Every entry in `errors[]` is a red standing alert on the owner's Desk**, which is how a failing segmentation check reaches the owner (`segmentation.md`). |
 | privacy | `addresses: "cut"` turns IPv4 into `a.b.c.0` and IPv6 into a /48, for events, bans, offenders and marks. |
 
-**A mismatch that exists today (checked).** The PHP feed leaves out `cursor` and `more` when a key lacks the `events` scope, but the Python reader requires both unconditionally (`feed.py`: `_cursor` and `_flag`), so such a key reads as "not a feed". Carnical always sends both; the reader or the PHP should be fixed too.
+**A mismatch that exists today (checked).** The PHP feed leaves out `cursor` and `more` when a key
+lacks the `events` scope, but the Python reader requires both unconditionally (`feed.py`: `_cursor`
+and `_flag`), so such a key reads as "not a feed". Carnical always sends both; the reader or the PHP
+should be fixed too.
 
-**One site, one feed, one key.** The register holds one feed URL and one key id per site, they must be unique across sites, and the first `site.id` seen is pinned (a different one later is reported as "changed"). A hosted Carnical therefore serves **one feed path and one key per protected site**, which is also what the tenant rules need (`segmentation.md` T6).
+**One site, one feed, one key.** The register holds one feed URL and one key id per site, they must
+be unique across sites, and the first `site.id` seen is pinned (a different one later is reported as
+"changed"). A hosted Carnical therefore serves **one feed path and one key per protected site**,
+which is also what the tenant rules need (`segmentation.md` T6).
 
-**Unknown fields are dropped silently** by the reader. A Carnical-only field needs a matching change in `feed.py` before it reaches anything.
+**Unknown fields are dropped silently** by the reader. A Carnical-only field needs a matching change
+in `feed.py` before it reaches anything.
 
 ## 2. Events, in the vocabulary the reports use
 
-The monthly report and the Desk read event kinds and letters, not free text, so Carnical emits the same ones.
+The monthly report and the Desk read event kinds and letters, not free text, so Carnical emits the
+same ones.
 
 - **Kinds and severities** (`Log.php`): `block` and `would_block` are high at twice the threshold, otherwise medium. `match`, `budget`, `listed`, `reputation` are low. `error`, `log_full`, `ip_ban`, `campaign`, `leak`, `health`, `flood`, `spraying` are high. `scan`, `enumeration`, `would_ban`, `sig_error` are medium. `ip_unban`, `policy`, `update_ok` are info. `update_failed` is critical for a tamper-class code.
 - **Per-request outcome letters** feed the report: `b B L w` count as stopped or would-stop. Monitor mode must emit `would_block`, not `block`.
@@ -37,7 +50,9 @@ The monthly report and the Desk read event kinds and letters, not free text, so 
 
 ## 3. Policy: what maps cleanly and what does not
 
-The customer-facing settings model (`firewall/engine/src/Settings.php`, `CONSOLE.md` section 13, export format `{"site_firewall_policy":1,...}`) is kept as the language customers use. The compiler turns it into CRS settings.
+The customer-facing settings model (`firewall/engine/src/Settings.php`, `CONSOLE.md` section 13,
+export format `{"site_firewall_policy":1,...}`) is kept as the language customers use. The compiler
+turns it into CRS settings.
 
 | Setting | Carnical |
 |---|---|
@@ -45,7 +60,7 @@ The customer-facing settings model (`firewall/engine/src/Settings.php`, `CONSOLE
 | `threshold` | the CRS inbound anomaly threshold. Exact: CRS scores of 5/4/3/2 match our severities. |
 | `sensitivity` (relaxed, normal, strict) | presets over blocking paranoia level and threshold, with a higher detection level used to log what stricter would have found. Approximate; the `stops_at` figure in the console must be computed the same way (`Engine::sensitiveThreshold`). |
 | `rule_groups` (17 categories) | filter by CRS tag or rule-id range. Several groups (upload, cve, wordpress, probe) have no CRS tag and need explicit id lists. |
-| per-signature `overrides` (score 0 to 10, or log) | **cannot be exact.** CRS has only 5/4/3/2. Either quantise and handle 0, 1 and "log" outside the engine, or drop per-rule scores for CRS rules. This is decision 3 in `backend-integration.md`. |
+| per-signature `overrides` (score 0 to 10, or log) | **cannot be exact.** CRS has only 5/4/3/2. Either quantise and handle 0, 1 and "log" outside the engine, or drop per-rule scores for CRS rules. See the [historical proposal](backend-integration-proposal-2026-10-05.md#decisions-needed). |
 | `exclusions` (path, categories, targets) | `ctl:ruleRemoveTargetByTag` and friends, keyed on the URI. |
 | custom `rules` | structured form compiled to SecLang by us, in a reserved id range (`segmentation.md` T7). Raw SecLang is never accepted. The existing console validates with PHP's PCRE; Carnical must validate with RE2. |
 | `block_oversize` | `SecRequestBodyLimitAction Reject` or `ProcessPartial`; emit the oversize event with no `sigs`. |
@@ -53,13 +68,21 @@ The customer-facing settings model (`firewall/engine/src/Settings.php`, `CONSOLE
 
 ## 4. Signed updates
 
-The existing envelope (`{"role","keyid","payload","sig"}`, Ed25519 over `"sfw-v1\n" + role + "\n" + payload`, roles `keys`, `engine`, `manifest`) is verifiable from Go's standard library. For Carnical, ship **a pinned CRS** (already embedded and verified) and take from the owner a **signed overlay**: per-tenant defaults, reputation lists, retired ids and attribution, on a separate sequence stream. The configuration channel to the edge is a different signed object (`segmentation.md` T5) with a different key; it must not be confusable with a release.
+The existing envelope (`{"role","keyid","payload","sig"}`, Ed25519 over `"sfw-v1\n" + role + "\n" +
+payload`, roles `keys`, `engine`, `manifest`) is verifiable from Go's standard library. For
+Carnical, ship **a pinned CRS** (already embedded and verified) and take from the owner a **signed
+overlay**: per-tenant defaults, reputation lists, retired ids and attribution, on a separate
+sequence stream. The configuration channel to the edge is a different signed object
+(`segmentation.md` T5) with a different key; it must not be confusable with a release.
 
-The existing bundle path carries CRS only as translated signatures (`CRS-<rid>`) and skips the libinjection-based rules such as 942100, so it is not a substitute for running CRS itself.
+The existing bundle path carries CRS only as translated signatures (`CRS-<rid>`) and skips the
+libinjection-based rules such as 942100, so it is not a substitute for running CRS itself.
 
 ## 5. The advice table
 
-Advice for a block is chosen from the highest-scoring signature's category, which comes from the library or from the second dash-part of the id (`FW-SQLI-0001` is sqli). `CRS-942100` therefore resolves to "other". Two ways to fix it:
+Advice for a block is chosen from the highest-scoring signature's category, which comes from the
+library or from the second dash-part of the id (`FW-SQLI-0001` is sqli). `CRS-942100` therefore
+resolves to "other". Two ways to fix it:
 
 - emit `CRS-SQLI-942100`-style ids (no owner change; the library match for `CRS-<rid>` is lost), or
 - **recommended:** keep `CRS-<rid>` and add a rule-id range table to `advice.yaml`: 941 xss, 942 sqli, 930 lfi, 931 rfi, 932 rce, 933 php, 934 ssrf/other, 944 java, 913 scanner, 920 to 922 protocol; then regenerate `Advice.php` with `python -m brief.waf.advice`.
@@ -77,7 +100,8 @@ Advice for a block is chosen from the highest-scoring signature's category, whic
 
 ## 7. Defects in the existing backend that matter for hosting
 
-None of these is fixed. Each is small, and each should be fixed before the thing it touches faces customers.
+These are historical findings in the external backend. Their current fix status is unknown; verify
+them before exposing the affected integration to customers.
 
 | Defect | Where | Fix |
 |---|---|---|
@@ -91,4 +115,5 @@ None of these is fixed. Each is small, and each should be fixed before the thing
 | The console is unauthenticated, holds the key passphrases, and `sending.smtp_host` is editable from it. **Checked.** | `web/app.py`, `web/yamledit.py:50` | before any hosted key exists: a local credential for the console, `sending.*` added to the integrity register, and the mailbox password never in a process the console starts |
 | Fleet-repeat publishes one customer's visitor addresses to all, on a consent flag the site sets itself. | `reputation.py:711-789` | central consent and weighting (`segmentation.md` T8) |
 
-Not in the survey and so unexamined: the owner's host, DNS and GitHub credentials, which live outside the repository.
+Not in the survey and so unexamined: the owner's host, DNS and GitHub credentials, which live
+outside the repository.

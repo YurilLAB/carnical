@@ -4,70 +4,38 @@
 </h1>
 
 [![Regression Tests](https://github.com/YurilLAB/carnical/actions/workflows/regression.yml/badge.svg?branch=edge-crs)](https://github.com/YurilLAB/carnical/actions/workflows/regression.yml)
-[![OWASP Core Rule Set v4](https://img.shields.io/badge/OWASP%20CRS-v4-brightgreen)](carnical/README.md)
 [![Security Review](https://github.com/YurilLAB/carnical/actions/workflows/security.yml/badge.svg?branch=edge-crs)](https://github.com/YurilLAB/carnical/actions/workflows/security.yml)
-[![Project Status: Active](https://www.repostatus.org/badges/latest/active.svg)](https://www.repostatus.org/#active)
-[![Coraza API Docs](https://godoc.org/github.com/corazawaf/coraza?status.svg)](https://godoc.org/github.com/corazawaf/coraza/v3)
+[![OWASP Core Rule Set v4](https://img.shields.io/badge/OWASP%20CRS-v4-brightgreen)](carnical/README.md)
 
-Carnical is an independent Go-based Web Application Firewall (WAF), built on [OWASP Coraza](https://github.com/corazawaf/coraza) and the OWASP Core Rule Set v4. It runs as a reverse proxy between clients and protected applications, combining Coraza's ModSecurity SecLang rules with API and body validation, flood mitigation, configurable policies and monitoring.
+Carnical is a web application firewall written in Go, built on [OWASP Coraza](https://github.com/corazawaf/coraza)
+and the OWASP Core Rule Set (CRS). It sits between visitors and a website's origin server,
+checks HTTP traffic, and forwards accepted requests to the application.
 
-See the [Carnical guide](carnical/README.md) for setup and configuration, including optional [CrowdSec IP bans](carnical/docs/crowdsec.md) and [network/HTTP IDS signals](carnical/docs/ddos.md#ids-signals). The Coraza library examples and upstream resources below remain available for engine integrations.
+It adds a standalone reverse proxy, API validation, flood protection, CrowdSec bans,
+monitoring, and deployment tools around the Coraza engine. Carnical is an independent project.
 
-* Upstream Coraza website: <https://coraza.io>
-* Carnical source and issues: [YurilLAB/carnical](https://github.com/YurilLAB/carnical)
-* OWASP Slack Community (#coraza): <https://owasp.org/slack/invite>
-* Rule testing: [Coraza Playground](https://playground.coraza.io)
+## What it protects
 
-<br/>
+| Protection | What Carnical adds | Guide |
+| --- | --- | --- |
+| Web requests | CRS rules, supplemental injection rules, strict body/query parsing and upload checks | [Request validation](carnical/docs/formats.md) |
+| APIs | Supported OpenAPI contracts, GraphQL checks and optional per-client quotas | [API contracts](carnical/docs/input-hardening.md) |
+| Floods and network abuse | Connection and request budgets, distributed-flood detection and bounded IDS alerts | [Flood protection and IDS](carnical/docs/ddos.md) |
+| IP bans | Optional CrowdSec Local API decisions, checked on every HTTP request | [CrowdSec](carnical/docs/crowdsec.md) |
+| Linux hosts | Optional nftables packet guards and Landlock/seccomp process restrictions | [Network protection](carnical/docs/network-protection.md), [host hardening](carnical/docs/hardening.md) |
+| Deployment | Site files, origin mutual TLS, startup checks, private health probes and graceful shutdown | [Website setup](carnical/docs/website-onboarding.md), [availability](carnical/docs/availability-and-deployment.md) |
 
-Key Features (Coraza engine):
+Signed configuration, customer policies, the authenticated control API and virtual patches
+are also available as [integration libraries](carnical/docs/README.md#build-an-integration).
+The standalone proxy does not start those services automatically.
 
-* ⇲ **Drop-in** - Coraza is an alternative engine that has partial compatibility with ~~Trustwave~~[OWASP ModSecurity Engine](https://github.com/owasp-modsecurity/modsecurity/) and supports industry-standard SecLang rule sets.
+## Run locally
 
-* 🔥 **Security** -  Coraza runs the [OWASP CRS](https://coreruleset.org) **v4** (Formerly known as Core Rule Set) to protect your web applications from a wide range of attacks, including the OWASP Top Ten, with a minimum of false alerts. CRS protects from many common attack categories including: SQL Injection (SQLi), Cross Site Scripting (XSS), PHP & Java Code Injection, HTTPoxy, Shellshock, Scripting/Scanner/Bot Detection & Metadata & Error Leakages. Note that older versions of the CRS are not compatible.
+Use Go 1.26.9 or later with the security fixes for your release branch; Go 1.27 requires
+1.27.2 or later. The workspace and CI use Go 1.26.9.
+The proxy runs on Linux, Windows and macOS. Kernel filtering and process confinement require Linux.
 
-* 🔌 **Extensible** - Coraza is a library at its core, with many integrations to deploy on-premise Web Application Firewall instances. Audit Loggers, persistence engines, operators, actions, create your own functionalities to extend Coraza as much as you want.
-
-* 🚀 **Performance** - From huge websites to small blogs, Coraza can handle the load with minimal performance impact. See the upstream Coraza [Benchmarks](https://coraza.io/docs/reference/benchmarks).
-
-* ﹡ **Simplicity** - Anyone is able to understand and modify the Coraza source code. It is easy to extend Coraza with new functionality.
-
-* 💬 **Community** - Coraza is a community project, contributions are accepted and all ideas will be considered. Find contributor guidance in the [CONTRIBUTION](https://github.com/corazawaf/coraza/blob/main/CONTRIBUTING.md) document.
-
-Carnical adds:
-
-* **Website onboarding** - [Reusable site files and startup checks](carnical/docs/website-onboarding.md), origin DNS/TCP/TLS and HTTP checks, WAF-to-origin mutual TLS, and an operator/client guide for DNS cutover, certificates and rollback.
-
-* **API contracts and request validation** - [Explicit OpenAPI contracts](carnical/docs/input-hardening.md) validate supported parameters and JSON schemas. [Strict format inspection](carnical/docs/formats.md) covers JSON, XML/SOAP, GraphQL, forms, multipart, NDJSON, optional YAML and bounded gzip/deflate decoding, with checks for ambiguous parsing and resource exhaustion. API quotas are opt-in; discovery and learning are available through the [API guard library](carnical/docs/apiguard.md).
-* **Availability and deployment** - [Private readiness/liveness probes, configurable draining and a non-root container](carnical/docs/availability-and-deployment.md), with replica-state contracts and platform validation limits.
-* **Proxy hardening** - Verified client identities, origin address restrictions, request-target and framing checks, upload safeguards, bounded rule evaluation and supplemental injection rules reduce differences between what the WAF inspects and what the application receives.
-* **Flood protection** - [Connection admission before TLS/HTTP processing](carnical/docs/ddos.md), per-address and subnet budgets, reserved capacity for known clients, and limits that respect the host's file-descriptor budget. The optional [Linux nftables layer](carnical/docs/network-protection.md) adds SYN filtering before connection tracking, bounded packet counters and small/standard/large deployment budgets.
-* **CrowdSec IP bans** - Optional [CrowdSec Local API integration](carnical/docs/crowdsec.md) enforces IPv4/IPv6 address and CIDR bans on every HTTP request, with background updates, local expiry, overlapping-decision handling and configurable outage behavior.
-* **Policies and virtual patches** - [Signed configuration and customer policies](carnical/docs/config-and-policy.md), an [authenticated control API](carnical/docs/control-api.md), and [virtual-patch matching and rule importers](carnical/docs/vpatch.md). External rule packs are supplied separately.
-* **Linux process confinement** - [Landlock, seccomp and no-new-privileges](carnical/docs/hardening.md) restrict the running proxy. Seccomp refuses Multipath TCP sockets so they cannot bypass Landlock's TCP port restrictions; ordinary TCP remains supported.
-* **Monitoring and security validation** - Structured rule events, bounded format and CrowdSec counters, network-policy counters, varied live attack/load tests, and [automated source, dependency, secret and workflow checks](docs/security-tooling.md). [Current findings and validation limits](docs/security-findings.md) record remaining gaps and scanner findings.
-
-<br/>
-
-## Integrations
-
-The Coraza Project maintains implementations and plugins for the following servers:
-
-* [Caddy Reverse Proxy and Webserver Plugin](https://github.com/corazawaf/coraza-caddy) - stable, needs a maintainer
-* [Proxy WASM extension](https://github.com/corazawaf/coraza-proxy-wasm) for proxies with proxy-wasm support (e.g. Envoy) - stable, still under development
-* [Traefik WASM extension](https://github.com/jcchavezs/coraza-http-wasm-traefik) for Traefik Proxy - experimental, needs a maintainer
-* [HAProxy SPOE Plugin](https://github.com/corazawaf/coraza-spoa) - experimental
-* [Coraza C Library (For nginx, etc)](https://github.com/corazawaf/libcoraza) - experimental
-* [RuiQi WAF](https://github.com/HUAHUAI23/RuiQi) - Web management panel and enhanced traffic control for Coraza SPOA - experimental
-
-## Prerequisites
-
-* Go 1.26 or later; the workspace and CI use Go 1.26.6 (see [go.work](go.work) and [Carnical go.mod](carnical/go.mod)). TinyGo applies to supported Coraza engine integrations.
-* Linux, Windows or macOS for the Go proxy. Kernel packet filtering and process confinement require Linux and their deployment setup.
-
-## Run Carnical
-
-Clone the repository and start Carnical with a local test application listening on port 8081:
+With a test application already listening on `127.0.0.1:8081`:
 
 ```sh
 git clone https://github.com/YurilLAB/carnical.git
@@ -75,182 +43,85 @@ cd carnical/carnical
 go run ./cmd/carnical -upstream http://127.0.0.1:8081 -origin-allow 127.0.0.1/32
 ```
 
-The listener defaults to `127.0.0.1:8080`, CRS to `detect`, request-format checks to `monitor`, and flood protection to `on`.
-After reviewing findings and tuning exclusions, enable content blocking with `-mode block -formats-mode block`.
-Proxy safety checks, flood protection and configured CrowdSec bans have independent enforcement.
-The loopback origin allowance above is for this local example; allow only the origin ranges the deployment needs.
-See the [Carnical guide](carnical/README.md) for TLS, API contracts, CrowdSec and Linux deployment.
+Visit `http://127.0.0.1:8080`. By default, CRS uses `detect`, format checks use `monitor`,
+and flood protection is `on`. Review legitimate traffic and tune exclusions before enabling
+content blocking with `-mode block -formats-mode block`.
+
+Proxy safety checks, flood limits and configured CrowdSec bans enforce independently of
+content-detection mode. The loopback allowance above is for this local example.
+See the [operator guide](carnical/README.md) for site files and configuration.
 
 ## Protect a website
 
-1. Give the operator the website names (for example, `example.com` and `www.example.com`) and its current hosting/origin address. Complete the operator's domain-ownership check.
-2. After the operator confirms certificates, origin authentication and live checks are ready, point those names' **A and AAAA records** at the supplied Carnical addresses or supported DNS target. Keep a copy of the previous records for an agreed rollback.
-3. Check pages, login, forms, uploads and APIs through the protected domain. Report any blocked legitimate requests to the operator.
+1. Give the operator the website names and current origin address, and complete the domain-ownership check.
+2. Once the operator has tested certificates, origin authentication and forwarding, point every advertised A and AAAA record at the supplied Carnical addresses or supported DNS target. Save the previous records for rollback.
+3. Check pages, login, forms, uploads and APIs through the protected domain. Report blocked legitimate requests to the operator.
 
-Clients do not need to install the WAF or change application code. The operator
-keeps a separate origin address and configures the origin to accept only the
-approved WAF identity and ingress paths. DNS changes alone cannot prevent direct
-access to a public origin. The [onboarding guide](carnical/docs/website-onboarding.md)
-includes the site file, certificate setup, cutover checks and rollback steps.
+Clients do not need to install the WAF or change application code. The operator keeps a separate
+origin address and restricts it to approved WAF identities and ingress paths. DNS changes alone
+cannot prevent direct access to a public origin.
+The [website setup guide](carnical/docs/website-onboarding.md) covers both sides of the handover.
 
-## Coraza Core Usage
+## Limits and validation
 
-Coraza can be used as a library for your Go program to implement a security middleware or integrate it with existing application & webservers. The engine retains its upstream `github.com/corazawaf/coraza/v3` import path; the workspace builds Carnical against the local engine.
+Tests cover varied attacks, legitimate traffic, Linux/Windows behavior and live deployments.
+The [security review](docs/security-findings.md) and [validation records](carnical/docs/README.md#review-the-evidence)
+describe the tested configurations and remaining limits.
 
-```go
-package main
+The proxy cannot replace application authorization, patch application bugs, or recover a saturated
+network link. Upload checks are not a general malware scanner. WebSocket inspection and schema-aware
+gRPC/Protobuf inspection are not provided. Quotas, flood state and caches are local to each process;
+replicas need an explicit [state and capacity plan](carnical/docs/availability-and-deployment.md#state-and-replica-contracts).
 
-import (
-	"fmt"
+## Coraza core usage
 
-	"github.com/corazawaf/coraza/v3"
-)
-
-func main() {
-	// Initialize the WAF and parse the SecLang rules.
-	waf, err := coraza.NewWAF(coraza.NewWAFConfig().
-		WithDirectives(`SecRule REMOTE_ADDR "@rx .*" "id:1,phase:1,deny,status:403"`))
-	// Check for rule parsing errors.
-	if err != nil {
-		fmt.Println(err)
-	}
-
-	// Create a transaction and set its connection details.
-	tx := waf.NewTransaction()
-	defer func() {
-		tx.ProcessLogging()
-		tx.Close()
-	}()
-	tx.ProcessConnection("127.0.0.1", 8080, "127.0.0.1", 12345)
-
-	// Process the request headers phase, which may return an interruption.
-	if it := tx.ProcessRequestHeaders(); it != nil {
-		fmt.Printf("Transaction was interrupted with status %d\n", it.Status)
-	}
-}
-
-```
-
-[Examples/http-server](./examples/http-server/) provides an example to practice with Coraza.
+The engine keeps the `github.com/corazawaf/coraza/v3` import path. The workspace builds Carnical
+against the local engine. See [engine integration](docs/engine-integration.md) for a Go example,
+HTTP integration tests and development commands.
 
 ### Build tags
 
-Go build tags can tweak certain functionality at compile-time. These are for advanced use cases only and do not
-have compatibility guarantees across minor versions - use with care.
+These engine options are intended for advanced integrations. Compatibility across minor versions is not guaranteed.
 
-* `coraza.disabled_operators.*` - excludes the specified operator from compilation. Particularly useful if overriding
-the operator with `plugins.RegisterOperator` to reduce binary size / startup overhead.
-* `coraza.rule.multiphase_evaluation` - enables evaluation of rule variables in the phases that they are ready, not
-only the phase the rule is defined for.
-* `coraza.no_memoize` - disables the default memoization of regex and aho-corasick builders.
-Memoization is enabled by default and uses a global cache to reuse compiled patterns across WAF
-instances, reducing memory consumption and startup overhead. In long-lived processes that perform
-live reloads, use `WAF.Close()` (via `experimental.WAFCloser`) to release cached entries when a
-WAF is destroyed, or use this tag to opt out of memoization entirely.
-* `no_fs_access` - indicates that the target environment has no access to FS in order to not leverage OS' filesystem related functionality e.g. file body buffers.
-* `coraza.rule.case_sensitive_args_keys` - enables case-sensitive matching for ARGS keys, aligning Coraza behavior with RFC 3986 specification. It will be enabled by default in the next major version.
-* `coraza.rule.no_regex_multiline` - disables enabling by default regexes multiline modifiers in `@rx` operator. It aligns with CRS expected behavior, reduces false positives and might improve performances. No multiline regexes by default will be enabled in the next major version. For more context check [this PR](https://github.com/corazawaf/coraza/pull/876).
-* `coraza.rule.mandatory_rule_id_check` - enables strict rule id check where `id` action is required for all SecRule/SecAction.
-* `coraza.rule.rx_prefilter` - sets the default value of the `SecRxPreFilter` directive to `On`. Optimizes `@rx` operator, by skipping the full regex when an input can not match. This build tag is meant only for testing purposes, rely on `SecRxPreFilter` directive for runtime configuration and broader documentation on this feature.
+| Tag | Effect |
+| --- | --- |
+| `coraza.disabled_operators.*` | Exclude a named operator, for example when registering a replacement. |
+| `coraza.rule.multiphase_evaluation` | Evaluate variables in the phases when they become available. |
+| `coraza.no_memoize` | Disable the shared regex/Aho-Corasick compilation cache. |
+| `no_fs_access` | Disable filesystem-dependent features, including file body buffers. |
+| `coraza.rule.case_sensitive_args_keys` | Match ARGS keys with case sensitivity. |
+| `coraza.rule.no_regex_multiline` | Disable implicit multiline matching for `@rx`. |
+| `coraza.rule.mandatory_rule_id_check` | Require an `id` action on every SecRule/SecAction. |
+| `coraza.rule.rx_prefilter` | Default `SecRxPreFilter` to `On` for testing; use the directive for runtime configuration. |
+
+Memoization is enabled by default. Integrations that reload rules should release old WAF instances
+through `experimental.WAFCloser`, or disable memoization with the build tag.
 
 ### FIPS mode
 
-Coraza supports running under Go's [FIPS 140-3 mode](https://go.dev/doc/security/fips140) enabled.
-Detection of FIPS mode is performed at runtime, so no build tag is required and default builds are unchanged.
-
-`t:md5` and `t:sha1` are unavailable whenever FIPS mode is on, that is under all of
-`GODEBUG=fips140=on`, `=debug` and `=only`. Coraza applies the restriction uniformly so that
-behaviour does not vary across FIPS modes.
-Both transformations stay **registered**, so rule sets referencing them, including the CRS, still
-load unchanged. The restriction applies at evaluation time: the transformation errors, the engine
-logs a warning and keeps the untransformed value. The chain is **not** aborted and
-the rule is **not** skipped. For example, `t:sha1,t:hexEncode` becomes effectively `t:hexEncode` over
-the raw input and the rule may match *differently* rather than simply not matching.
-Review any rule depending on these before deploying in FIPS mode.
-
-## E2E Testing
-
-[`http/e2e/`](./http/e2e) provides an utility to run e2e tests.
-It can be used standalone against your own waf deployment:
-
-```shell
-go run github.com/corazawaf/coraza/v3/http/e2e/cmd/httpe2e@main --proxy-hostport localhost:8080 --httpbin-hostport localhost:8081
-```
-
-or as a library by importing:
-
-```go
-"github.com/corazawaf/coraza/v3/http/e2e"
-```
-
-As a reference for library usage, see [`testing/e2e/e2e_test.go`](./testing/e2e/e2e_test.go).
-Expected directives that have to be loaded and available flags can be found in [`http/e2e/cmd/httpe2e/main.go`](./http/e2e/cmd/httpe2e/main.go).
-
-## Tools
-
-* [Go FTW](https://github.com/coreruleset/go-ftw): Rule testing engine
-* [Coraza Playground](https://playground.coraza.io/): Sandbox rule testing web interface
-* [OWASP Core Ruleset](https://github.com/coreruleset/coreruleset/): Awesome rule set, compatible with Coraza
+Go's FIPS mode is detected at runtime. `t:md5` and `t:sha1` remain registered, but evaluation
+returns an error and retains the original input when FIPS mode is enabled. The rule still runs,
+so its result may change. Review affected rules before deployment; see the
+[full FIPS behavior](docs/engine-integration.md#fips-mode).
 
 ## Development
 
-Coraza only requires Go for development. You can run `mage.go` to issue development commands.
-
-See the list of commands
-
-```
-$ go run mage.go -l
-Targets:
-  check        runs lint and tests.
-  coverage     runs tests with coverage and race detector enabled.
-  doc          runs godoc, access at http://localhost:6060.
-  format       formats code in this repository.
-  fuzz         runs fuzz tests.
-  lint         verifies code quality.
-  precommit    installs a git hook to run check when committing.
-  test         runs all tests.
-```
-
-For example, to format your code before submission, run
-
-```shell
-go run mage.go format
-```
-
-## Contribute
-
-Contributions are welcome! Please refer to [CONTRIBUTING.md](./CONTRIBUTING.md) for guidance.
+Read [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md) before changing the engine.
+Run `go run mage.go -l` for development commands and `go run mage.go check` for engine tests and lint.
+The [security tooling guide](docs/security-tooling.md) explains automated checks and their reports.
 
 ## Security
 
-See [Automated security review](docs/security-tooling.md) for this project's
-scanner selection, reports, and local commands.
+Report vulnerabilities privately. See [SECURITY.md](SECURITY.md) for reporting instructions and
+[current findings](docs/security-findings.md) for reviewed issues and validation limits.
 
-For Carnical findings and validation limits, see the [security review](docs/security-findings.md). Report Carnical-specific vulnerabilities privately to this repository's maintainers.
+## Contributors and attribution
 
-For vulnerabilities in the upstream Coraza engine, follow its [security reporting process](https://github.com/corazawaf/coraza/security/advisories/new) and [disclosure policy](SECURITY.md).
-
-## Thanks
-
-* OWASP Coreruleset team for the CRS and their help
-* Ivan Ristić for creating ModSecurity
-
-### Upstream Coraza on X/Twitter
-
-* [@corazaio](https://twitter.com/corazaio)
-
-## Donations
-
-To support upstream Coraza, see its [Donations site](https://owasp.org/donate/?reponame=www-project-coraza-web-application-firewall&title=OWASP+Coraza+Web+Application+Firewall).
-
-## Thanks to all the people who have contributed
-
-First and foremost, huge thanks to [Juan Pablo Tosso](https://twitter.com/jptosso) for starting Coraza, and building an amazing community around it!
-
-Thanks to the many contributors who have helped build and maintain the Coraza engine!
+Carnical builds on Coraza and the CRS. Thanks to Juan Pablo Tosso and the Coraza contributors,
+the OWASP Core Rule Set team, and Ivan Ristić for ModSecurity.
 
 <a href="https://github.com/corazawaf/coraza/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=corazawaf/coraza" />
+  <img src="https://contrib.rocks/image?repo=corazawaf/coraza" alt="Coraza contributors" />
 </a>
 
-Made with [contrib.rocks](https://contrib.rocks).
+Contributor image supplied by [contrib.rocks](https://contrib.rocks).

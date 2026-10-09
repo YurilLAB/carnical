@@ -1,18 +1,25 @@
-# The control API and the feed
+# Control API and signed feed
 
-How the customer web UI changes a tenant's Carnical settings without being able to hurt anyone else if it is attacked, and how
-the existing owner console keeps reading the signed feed it already knows. The code is in `carnical/control` (the API, its
-Go client, the audit log) and `carnical/control/feed` (the feed server). Every claim below has a test; the last section says
-what was run and what was not.
+The `control` package provides authenticated management endpoints, a Go client and an audit log.
+`control/feed` provides a separate signed monitoring feed. Both need an integration service; the
+standalone WAF does not start them.
 
-The interfaces the owner must connect (policy store, validator, publisher, status, events, hostnames) are in
-[What the owner has to connect](#what-the-owner-has-to-connect).
+Control requests require a verified client certificate and an Ed25519 request signature. The server
+then checks tenant/scope authorization, replay state and write conditions. Weakening changes require
+a signed recent step-up assertion from the UI. That assertion is not independent proof of a password
+check if the UI host itself is compromised.
+
+Start with [authentication layers](#2-the-layers), [credentials](#3-credentials), [request
+signing](#4-signing-a-request), [endpoints](#6-endpoints) and [required
+interfaces](#what-the-owner-has-to-connect). Source: [control package](../control/), [integration
+interfaces](../control/ports.go), [feed handler](../control/feed/handler.go).
 
 ## 1. What this protects against
 
-The UI (a separate application, "the UI") authenticates the human: password, TOTP, sessions. None of that is this API's concern.
-After that the UI calls the control API for the customer. The API assumes the UI host can be taken over, the network between
-them is hostile, and any request can be copied, changed or sent again.
+The UI (a separate application, "the UI") authenticates the human: password, TOTP, sessions. None of
+that is this API's concern. After that the UI calls the control API for the customer. The API
+assumes the UI host can be taken over, the network between them is hostile, and any request can be
+copied, changed or sent again.
 
 | Attacker | What they hold | What stops them |
 |---|---|---|
@@ -25,7 +32,7 @@ them is hostile, and any request can be copied, changed or sent again.
 | Someone guessing credentials or hammering the API | Network access and a client certificate | Failures are slowed per source address; every refusal looks the same and takes the same time; the table that remembers failures has a size limit |
 | Someone with write access to the log file | The file | A changed, deleted, inserted or moved line breaks the hash chain at that point. (Not: someone who can rewrite the whole file, see section 9) |
 
-**What this does not protect against**, said plainly:
+**Trust boundaries:**
 
 * **A UI that lies about the step-up.** The step-up is the UI asserting "the customer typed their password at this time". The
   API checks that the assertion is recent and signed by the credential. It cannot check that the password was typed. A UI host
@@ -40,9 +47,8 @@ them is hostile, and any request can be copied, changed or sent again.
 
 ## 2. The layers
 
-A request is accepted only if every layer agrees. The order matters and is part of the design: nothing costly happens before a
-request is known to be well formed, nothing reads the body of a source that is waiting out its failures, and nothing reaches a
-store before the caller is authenticated and allowed this scope and this tenant.
+Checks run in this order. Framing and source backoff precede body reading; authentication and
+tenant/scope authorization precede store access.
 
 1. **Transport** (`control.TLSConfig`). TLS 1.3 only; a client certificate is required and verified against the CA bundle;
    the server certificate and the CA bundle are reloaded from disk when their files change (modification time and size,
@@ -74,13 +80,17 @@ In this order, each refusing with a fixed 4xx and a fixed message that never rep
 
 ### Authentication: one path, whatever the outcome
 
-`Server.authenticate` makes every check in the same order whatever the earlier ones found: header form, credential lookup,
-client certificate, signature, time, revoked, expired, source address, repeated nonce. The signature is verified once in every
-case (an unknown credential, a malformed header and a bad signature all spend one Ed25519 verification, against a dummy key
-where there is no real one), and only the audit log is told which check failed. The caller gets `401 unauthenticated` with the
-same body and headers each time. Measured in `TestFailurePathsTakeTheSameTime`: 13 kinds of failure, 2,000 attempts each,
-sent in turn so machine noise falls on all alike, medians between 91.4 and 95.5 microseconds (a spread of 4 microseconds), while
-a request refused before authentication takes 4.0 microseconds, so the comparison can see a difference.
+`Server.authenticate` makes every check in the same order whatever the earlier ones found: header
+form, credential lookup, client certificate, signature, time, revoked, expired, source address,
+repeated nonce. The signature is verified once in every case (an unknown credential, a malformed
+header and a bad signature all spend one Ed25519 verification, against a dummy key where there is no
+real one), and only the audit log is told which check failed.
+
+The caller gets `401 unauthenticated` with the same body and headers each time. Measured in
+`TestFailurePathsTakeTheSameTime`: 13 kinds of failure, 2,000 attempts each, sent in turn so machine
+noise falls on all alike, medians between 91.4 and 95.5 microseconds (a spread of 4 microseconds),
+while a request refused before authentication takes 4.0 microseconds, so the comparison can see a
+difference.
 
 Failures are rate limited, and the two limits are deliberately different:
 
@@ -91,7 +101,8 @@ Failures are rate limited, and the two limits are deliberately different:
   authenticates is never refused because of this counter.** If it were, anyone holding a stolen client certificate could lock
   the real UI out of its own credential by failing on its behalf.
 
-A refusal because the replay cache is full (`503 replay_cache_full`) is not the caller's failure and counts against nobody.
+A refusal because the replay cache is full (`503 replay_cache_full`) is not the caller's failure and
+counts against nobody.
 
 ## 3. Credentials
 
@@ -115,9 +126,10 @@ A credentials file is plain data; nothing in it is secret (the key is the public
 }
 ```
 
-`"tenants": "all"` is for the owner's own tooling and works only on a server started with `AllowAllTenants`. The file is
-parsed strictly (no unknown field, no repeated key, no duplicate id) and refused whole if any credential is wrong, so a typo
-cannot remove a restriction. `control.OpenCredentialFile` re-reads it when it changes (at most once a second), keeps the last
+`"tenants": "all"` is for the owner's own tooling and works only on a server started with
+`AllowAllTenants`. The file is parsed strictly (no unknown field, no repeated key, no duplicate id)
+and refused whole if any credential is wrong, so a typo cannot remove a restriction.
+`control.OpenCredentialFile` re-reads it when it changes (at most once a second), keeps the last
 good set if a new one does not parse, and writes a revocation back atomically with mode 0600.
 
 The client certificate's fingerprint is `sha256(cert.RawSubjectPublicKeyInfo)`:
@@ -149,8 +161,9 @@ Every request except `/healthz` carries:
 | `Idempotency-Key` | for publish: 8 to 64 of `A-Z a-z 0-9 - _` |
 | `Content-Type` | `application/json; charset=utf-8` when there is a body |
 
-The Authorization header has exactly one spelling: those four fields, in that order, separated by a comma and one space, the
-time without a leading zero, nothing else. `sig` is the 64-byte Ed25519 signature, base64url without padding.
+The Authorization header has exactly one spelling: those four fields, in that order, separated by a
+comma and one space, the time without a leading zero, nothing else. `sig` is the 64-byte Ed25519
+signature, base64url without padding.
 
 ### The signed text
 
@@ -172,17 +185,20 @@ Thirteen lines, joined with a single line feed (no line feed at the end), UTF-8:
 13  <Idempotency-Key, or ->                     the header exactly as sent; - when absent
 ```
 
-Why these. Lines 2 to 5 pin what the request does and says; 6 and 7 make it one request in time; 8 and 9 say whose it is and
-for which tenant, so a request cannot be turned on another tenant (not even one the credential may also use, which fails the
-signature, not the tenant check); 10 and 11 make the acting user and the step-up part of what was signed, so a proxy cannot
-add or strengthen them; 12 and 13 stop a relay changing a write into one that overwrites a newer revision, or one publish into
-another; line 3 stops a request captured at one server being sent to another that trusts the same key. The step-up is
-therefore not a header anyone can add: it is part of the signed request.
+Why these. Lines 2 to 5 pin what the request does and says; 6 and 7 make it one request in time; 8
+and 9 say whose it is and for which tenant, so a request cannot be turned on another tenant (not
+even one the credential may also use, which fails the signature, not the tenant check); 10 and 11
+make the acting user and the step-up part of what was signed, so a proxy cannot add or strengthen
+them; 12 and 13 stop a relay changing a write into one that overwrites a newer revision, or one
+publish into another; line 3 stops a request captured at one server being sent to another that
+trusts the same key.
 
-A value on lines 3 to 13 that has a line break, a control character, anything outside printable ASCII (`0x21` to `0x7e`), is
-empty where it is required, or is a single `-` where `-` means absent, makes the text impossible to build (`CanonicalString`
-returns an error), so no two different requests can have the same text. This is what the fuzz target `FuzzCanonicalString`
-checks.
+The step-up is therefore not a header anyone can add: it is part of the signed request.
+
+A value on lines 3 to 13 that has a line break, a control character, anything outside printable
+ASCII (`0x21` to `0x7e`), is empty where it is required, or is a single `-` where `-` means absent,
+makes the text impossible to build (`CanonicalString` returns an error), so no two different
+requests can have the same text. This is what the fuzz target `FuzzCanonicalString` checks.
 
 ### How to sign (Python, with `cryptography`)
 
@@ -198,14 +214,14 @@ def sign(key: Ed25519PrivateKey, cred, method, host, target, body, user, tenant=
     return f"Carnical-Sig cred={cred}, ts={ts}, nonce={nonce}, sig={sig}"
 ```
 
-The tenant is the 32 hex digits after `/v1/tenants/` in the target, or `-`. Send exactly the target you signed: no
-re-encoding, no reordering of the query, no trailing slash.
+The tenant is the 32 hex digits after `/v1/tenants/` in the target, or `-`. Send exactly the target
+you signed: no re-encoding, no reordering of the query, no trailing slash.
 
 ### Test vector
 
-Checked by two independent implementations: this package's Go code and Python's `cryptography` library
-(`control/testdata/vector_check.py`) give the same signature. The key is the Ed25519 key whose 32-byte seed is the bytes 0 to
-31, so anyone can regenerate it.
+Checked by two independent implementations: this package's Go code and Python's `cryptography`
+library (`control/testdata/vector_check.py`) give the same signature. The key is the Ed25519 key
+whose 32-byte seed is the bytes 0 to 31, so anyone can regenerate it.
 
 ```
 seed (hex)        000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
@@ -241,42 +257,54 @@ signature (b64u)  d4yBh7eHfJFVgQ2ix7VJEoJ7_DQUxfcvHTYa3C3TIIeVVz2oyMZcwMsov3fCGE
 Authorization     Carnical-Sig cred=ui-prod, ts=1791201600, nonce=000102030405060708090a0b0c0d0e0f, sig=d4yBh7eHfJFVgQ2ix7VJEoJ7_DQUxfcvHTYa3C3TIIeVVz2oyMZcwMsov3fCGE-7H6qIO-h9HGacI9bZtj1KBw
 ```
 
-The tests `TestCanonicalVector` and `TestDocumentationHasTheVector` fail if the code and this page stop agreeing.
+The tests `TestCanonicalVector` and `TestDocumentationHasTheVector` fail if the code and this page
+stop agreeing.
 
 ### Time and replay
 
-A request is accepted if its `ts` is within 60 seconds of the server's clock (60 inclusive, 61 refused). Its nonce is then
-remembered, per credential, until the request could no longer be accepted for its age (`ts + 61` seconds), and a second
-request with that nonce is refused whatever else it says. The cache holds at most 200,000 nonces, 50,000 for any one
-credential. When it is full it refuses new requests with `503 replay_cache_full` and a `Retry-After`, because forgetting a
-nonce to make room would allow a replay. A nonce is remembered only after the signature has been verified, so nobody without a
-key can fill it. Keep the UI host's clock right (NTP); a drift past a minute is refused as `401`.
+A request is accepted if its `ts` is within 60 seconds of the server's clock (60 inclusive, 61
+refused). Its nonce is then remembered, per credential, until the request could no longer be
+accepted for its age (`ts + 61` seconds), and a second request with that nonce is refused whatever
+else it says.
+
+The cache holds at most 200,000 nonces, 50,000 for any one credential. When it is full it refuses
+new requests with `503 replay_cache_full` and a `Retry-After`, because forgetting a nonce to make
+room would allow a replay. A nonce is remembered only after the signature has been verified, so
+nobody without a key can fill it.
+
+Keep the UI host's clock right (NTP); a drift past a minute is refused as `401`.
 
 ## 5. Weakening changes and step-up
 
-A policy write, or a rollback, for which `PolicyValidator.Validate` returns a non-empty `Weakening` list is refused with
-`403 step_up_required` unless the request carries `Carnical-Stepup-At` (so it is signed) within the last 5 minutes, at most 60
-seconds in the future. The refusal names every weakening change in the words the validator gave, so the UI can ask the
-customer:
+A policy write, or a rollback, for which `PolicyValidator.Validate` returns a non-empty `Weakening`
+list is refused with `403 step_up_required` unless the request carries `Carnical-Stepup-At` (so it
+is signed) within the last 5 minutes, at most 60 seconds in the future. The refusal names every
+weakening change in the words the validator gave, so the UI can ask the customer:
 
 ```json
 {"error": {"code": "step_up_required", "message": "this change reduces protection; ask the customer to confirm with their password, then send the time they did in Carnical-Stepup-At",
  "request_id": "req_...", "weakening": [{"code": "mode_lowered", "summary": "Attacks will be noted but let through instead of blocked."}]}}
 ```
 
-The UI then asks for the password, and repeats the same write with the time of that check. A step-up is not used up by a
-write: two writes inside five minutes can share one. A first policy is compared with the defaults the validator knows, so a
-first policy that starts weaker than the default needs one too. A document the validator finds invalid is `422` whether or
-not there is a step-up. Publishing needs none, because only the current revision can be published and a revision enters
-history only through a write that passed this check.
+The UI then asks for the password, and repeats the same write with the time of that check. A step-up
+is not used up by a write: two writes inside five minutes can share one. A first policy is compared
+with the defaults the validator knows, so a first policy that starts weaker than the default needs
+one too.
+
+A document the validator finds invalid is `422` whether or not there is a step-up. Publishing needs
+none, because only the current revision can be published and a revision enters history only through
+a write that passed this check.
 
 ## 6. Endpoints
 
 Paths are under `/v1`. `{tenant}` is exactly 32 lower-case hex digits. Bodies are JSON in UTF-8 with
-`Content-Type: application/json; charset=utf-8`, at most 256 KiB, one object, no repeated key, nested at most 64 deep for a
-policy document and 16 for the API's own objects, no byte-order mark, valid UTF-8. The API's own request objects refuse fields
-they do not name, and a field must be spelled exactly (Go's JSON reader would accept `REVISION`; this one does not).
-Policy documents are opaque apart from that.
+`Content-Type: application/json; charset=utf-8`, at most 256 KiB, one object, no repeated key,
+nested at most 64 deep for a policy document and 16 for the API's own objects, no byte-order mark,
+valid UTF-8.
+
+The API's own request objects refuse fields they do not name, and a field must be spelled exactly
+(Go's JSON reader would accept `REVISION`; this one does not). Policy documents are opaque apart
+from that.
 
 | Method and path | Scope | Needs | What it does |
 |---|---|---|---|
@@ -296,14 +324,18 @@ Policy documents are opaque apart from that.
 | `GET /v1/credentials` | admin | all-tenants credential | every credential: id, label, tenants, scopes, sources, certificate fingerprints, expiry, revoked, and a short fingerprint of the signing key. Never a key |
 | `POST /v1/credentials/{id}:revoke` | admin | all-tenants credential | revokes at once; the next request with it is refused. Revoking one that is revoked is not an error |
 
-Pagination: `limit` is a whole number from 1 to 500 (default 100), no leading zero; `cursor` is 1 to 512 characters of
-`A-Z a-z 0-9 - _`, taken from `next_cursor` of the previous page, which is present exactly when `has_more` is true. The
-history cursor encodes a revision; the others are whatever the `EventSource` returned. A source that returns more than was
-asked for, or says there is more with no valid cursor, is an internal error, not a short or wrong page.
+Pagination: `limit` is a whole number from 1 to 500 (default 100), no leading zero; `cursor` is 1 to
+512 characters of `A-Z a-z 0-9 - _`, taken from `next_cursor` of the previous page, which is present
+exactly when `has_more` is true.
 
-Errors are always `{"error": {"code", "message", "request_id"}}` (plus `problems` for `invalid_policy` and `weakening` for
-`step_up_required`); the message is fixed text and never contains anything from the request. The same request id is in the
-`X-Request-Id` header and in every audit line for the request.
+The history cursor encodes a revision; the others are whatever the `EventSource` returned. A source
+that returns more than was asked for, or says there is more with no valid cursor, is an internal
+error, not a short or wrong page.
+
+Errors are always `{"error": {"code", "message", "request_id"}}` (plus `problems` for
+`invalid_policy` and `weakening` for `step_up_required`); the message is fixed text and never
+contains anything from the request. The same request id is in the `X-Request-Id` header and in every
+audit line for the request.
 
 | Status | Code | When |
 |---|---|---|
@@ -343,14 +375,18 @@ All in `control.Limits` (zero means the default).
 
 ## 8. The Go client
 
-`control.NewClient` makes calls with: TLS 1.3 only and mutual TLS (the certificate can come from files and is read again when
-they change, so a renewed certificate needs no restart); optional pinning of the server certificate's key (any of several
-SPKI fingerprints, **in addition to** the normal chain and name checks, never instead); no proxy from the environment; no
-redirect ever followed (a signed request is for one address; a 3xx is `ErrRedirect`); a size limit on the answer
-(`ErrResponseTooLarge`, whether the length was declared or not); a timeout that covers connecting, sending and reading the
-whole answer; a refusal to send a target the server would not accept or one that Go would send differently from how it was
-signed. `Client.Do` signs and sends; `GetPolicy`, `PutPolicy` and `Publish` are conveniences. An error answer is an
-`*control.APIError` with the code, the request id, and the `problems` or `weakening` lists.
+`control.NewClient` makes calls with: TLS 1.3 only and mutual TLS (the certificate can come from
+files and is read again when they change, so a renewed certificate needs no restart); optional
+pinning of the server certificate's key (any of several SPKI fingerprints, **in addition to** the
+normal chain and name checks, never instead); no proxy from the environment; no redirect ever
+followed (a signed request is for one address; a 3xx is `ErrRedirect`); a size limit on the answer
+(`ErrResponseTooLarge`, whether the length was declared or not); a timeout that covers connecting,
+sending and reading the whole answer; a refusal to send a target the server would not accept or one
+that Go would send differently from how it was signed.
+
+`Client.Do` signs and sends; `GetPolicy`, `PutPolicy` and `Publish` are conveniences. An error
+answer is an `*control.APIError` with the code, the request id, and the `problems` or `weakening`
+lists.
 
 ## 9. The audit log
 
@@ -401,9 +437,9 @@ signed. `Client.Do` signs and sends; `GetPolicy`, `PutPolicy` and `Publish` are 
 
 ## 11. The feed
 
-The owner console already reads a signed pull feed (version 1) from each protected site; the hosted Carnical serves the same
-one, one path and one key per site, so the console, the fleet reader and the monthly reports work unchanged
-(`docs/backend-compat.md` section 1).
+The owner console already reads a signed pull feed (version 1) from each protected site; the hosted
+Carnical serves the same one, one path and one key per site, so the console, the fleet reader and
+the monthly reports work unchanged (`docs/backend-compat.md` section 1).
 
 ```
 GET <path>/feed?since=<cursor>&days=<n>
@@ -411,10 +447,11 @@ Authorization: SFW1 key=<16 hex>, ts=<unix>, nonce=<32 hex>, sig=<64 hex>
 sig = lower-case hex HMAC-SHA256(32-byte secret, "SFW1\nGET\n" + the request target exactly as sent + "\n" + ts + "\n" + nonce)
 ```
 
-`feed.New(feed.Config{...})` makes a `Handler` for **one site**: the site id is set when it is made and is the `id` in every
-answer, and nothing in a request chooses a site. Mount it at `Handler.Path()` (default `/feed`; it must end in `/feed`).
-Keys come from a `feed.KeyStore`; a key belongs to one site, and one for another site is "unknown key". Data comes from a
-`feed.EventSource` (below).
+`feed.New(feed.Config{...})` makes a `Handler` for **one site**: the site id is set when it is made
+and is the `id` in every answer, and nothing in a request chooses a site. Mount it at
+`Handler.Path()` (default `/feed`; it must end in `/feed`). Keys come from a `feed.KeyStore`; a key
+belongs to one site, and one for another site is "unknown key". Data comes from a `feed.EventSource`
+(below).
 
 * **Verification** is the PHP console's: 405 for a method other than GET; 401 for a missing or malformed header, an unknown or
   revoked key, a time more than 300 seconds off, a wrong signature (constant time), or a nonce seen in the last 600 seconds;
@@ -447,8 +484,8 @@ Keys come from a `feed.KeyStore`; a key belongs to one site, and one for another
 
 ## What the owner has to connect
 
-Everything is an interface in `control/ports.go` (the feed's is in `feed/handler.go`). A nil store makes the routes that need
-it answer `501 not_implemented`; the server still authenticates first.
+Everything is an interface in `control/ports.go` (the feed's is in `feed/handler.go`). A nil store
+makes the routes that need it answer `501 not_implemented`; the server still authenticates first.
 
 | Interface | What it must do |
 |---|---|
@@ -477,8 +514,8 @@ ln, _ := net.Listen("tcp", "10.0.0.5:8443")
 log.Fatal(hs.ServeTLS(ln, "", ""))
 ```
 
-Serve the owner's own tooling (the credentials routes, all-tenants credentials) on a **separate listener** with
-`AllowAllTenants: true`, bound to the owner's tunnel, not on the one the UI uses.
+Serve the owner's own tooling (the credentials routes, all-tenants credentials) on a **separate
+listener** with `AllowAllTenants: true`, bound to the owner's tunnel, not on the one the UI uses.
 
 ## What was verified, and what was not
 
@@ -494,9 +531,13 @@ Run on Linux (WSL, Go 1.26.6), with `-race`:
   fail. The result is in the report that came with this change.
 * The signature test vector, against a second implementation. The feed against the real Python reader.
 
-Publication checks on 2026-10-06 also run the control tests on Windows. Audit repair uses a checked writable handle because Windows append-only handles cannot truncate; repair failure closes the audit log. Normal append writes preserve append-only semantics. These checks cover local stores and TLS test listeners, not a deployed control service. File modes do not represent Windows ACL enforcement.
+Publication checks on 2026-10-06 also run the control tests on Windows. Audit repair uses a checked
+writable handle because Windows append-only handles cannot truncate; repair failure closes the audit
+log. Normal append writes preserve append-only semantics. These checks cover local stores and TLS
+test listeners, not a deployed control service. File modes do not represent Windows ACL enforcement.
 
-**Not verified.** The real stores (nothing here has run against them). A browser or the real UI. Load beyond the tests' concurrency. Constant-time
-behaviour below the level of a measurement: `hmac.Equal`, `subtle.ConstantTimeCompare` and Go's Ed25519 are used for secrets,
-and the timing test measures what a caller can see, not cache effects. The deployment under the sandbox and firewall rules in
-`hardening.md`.
+**Not verified.** The real stores (nothing here has run against them). A browser or the real UI.
+Load beyond the tests' concurrency. Constant-time behaviour below the level of a measurement:
+`hmac.Equal`, `subtle.ConstantTimeCompare` and Go's Ed25519 are used for secrets, and the timing
+test measures what a caller can see, not cache effects. The deployment under the sandbox and
+firewall rules in `hardening.md`.

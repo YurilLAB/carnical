@@ -1,61 +1,35 @@
-# Carnical: segmentation
+# Segmentation and tenant isolation
 
-Two walls matter once Carnical hosts other people's websites:
+The segmentation model separates public edge/portal services from policy, tenant data and signing
+keys. It also defines boundaries between customers. `carnical-audit` checks a supplied zone map and
+tenant adapter; it does not create a hosted service or enforce every boundary itself.
 
-1. **Between what faces the internet and what is sensitive.** The edge and the customer portal take input from strangers all day. The signing keys, the registry, every customer's data and the owner's own machine must stay out of their reach even if an edge or the portal is fully compromised.
-2. **Between one customer and the next.** A customer, or whoever has taken over a customer's site, must be able to see and affect nothing of any other customer's.
-
-This document says where the walls are, how they are built, and how they are checked several times a day. The checker is `carnical-audit` (`carnical/audit`, `carnical/cmd/carnical-audit`).
-
-The first section is what the existing backend looks like today, because the design is a response to it. It comes from a read-only survey of `D:\Dev\5Weeks1k` (three passes: secrets and trust zones, tenant separation, and the contracts an engine must honour). Where a claim below is marked **checked**, I re-read the code it points at myself; the rest is the survey's reading and has not been run.
-
----
-
-## 1. What exists today, and where it falls short for hosting
-
-Today there is no hosted service: each protected site runs its own PHP firewall and console on its own host, and Harbourline pulls a signed feed from the owner's PC. Separation between customers is "each has their own host". A hosted Carnical removes that, so the following assumptions stop holding.
-
-### The owner side is one trust zone
-
-- Everything on the owner PC runs as one Windows user, with one Credential Manager and one default-permission `data\` folder: the console, both scheduled tasks, every parser (mail, docx, feeds, customer feed JSON, prospect pages in a browser with JavaScript on), and the encrypted key files. No code sets a file mode or ACL.
-- **The console has no authentication** (**checked**): a per-run random token is rendered into every page, there are no sessions, and any local process can read it and post. It holds the key passphrases and every verb. `sending.smtp_host` is editable from it (**checked**), so a forged post could point the next send at a host of the attacker's choosing, with the mailbox app password. `integrity.PUBLISHER_FIELDS` does not cover `sending.*` (**checked**), so the tripwire would not notice.
-- No real keys exist yet (`data\waf\keys` is absent), so key custody can still be decided properly. The root key defaults to the PC, is typed into the networked console for every root action, and would sit in 14 daily backup zips.
-
-None of this is a Carnical bug. It is the reason the owner PC must stay **pull-only** and hold nothing a hosted component needs.
-
-### Customers are not a first-class thing
-
-- There is no tenant id. Firms are a folder name, sites are a slug typed by the owner, and the only link between them is a `client` string checked once when a site is added.
-- `remove_site` keeps the site's reports and a later site can be given the same slug, so it inherits them (**checked** against the docstring and `write_due`).
-- `Brand.slug` is read from `brand.yaml` with no check and becomes a folder name that is passed to `shutil.rmtree` (**checked**, `pack.py:59-63`). Harmless while only the owner edits that file, a file-deletion bug the day a customer can.
-- Several fleet readers have no site parameter (`open_marks`, `bans`, `offenders`, `shared_addresses`). A customer-facing view built on them leaks by omission.
-- One mailbox quota, one global lock around all feed reads (one slow site stalls the rest), one backup zip of every customer's data, and the fleet-repeat list that publishes one customer's visitor addresses to all customers on a consent flag the site sets for itself.
-
-These are the things Carnical's own design has to do differently. The first decision it makes is to **not inherit the slug model**.
-
-### What already works in our favour
-
-The feed (version 1) is pull-only, HMAC-signed, scoped, rate-limited and bound to one site id. The release scheme has an offline root key and an online release key that cannot sign engine code. Per-site rows are keyed by the register slug, and the event hash includes it, so one site's feed cannot write another's rows. Feed parsing is strict (size, depth, types, lengths, parameterised writes, escaped output). The firm mail path re-checks each message against that firm's own list. These are kept.
-
----
+Start with [zones](#2-zones), [tenant rules](#3-customers-from-each-other), [audit
+checks](#4-the-checks-and-when-they-run) and [validation
+scope](#5-what-has-and-has-not-been-verified). Source: [audit package](../audit/), [audit
+CLI](../cmd/carnical-audit/). The [historical background](segmentation-background-2026-10-05.md)
+explains the external-backend survey.
 
 ## 2. Zones
 
 | Zone | What runs there | What it holds | Faces |
 |---|---|---|---|
-| **visitors** | anyone | nothing of ours | the internet |
+| **visitors** | anyone | no Carnical secrets | the internet |
 | **edge** | Carnical proxies, one WAF instance per tenant | per-hostname TLS keys for the tenants it serves, the signed configuration it was given, an event spool | the internet (443) |
 | **portal** | the customer web UI and its API | session secrets; no database credentials of its own | the internet (443) |
 | **control** | site registry, per-tenant stores, the configuration compiler, the feed server, event ingestion | tenant data (encrypted per tenant), the data-key master | edge, portal and owner only |
 | **signer** | one small program that signs compiled configuration | the configuration-signing key | control only |
-| **owner** | the existing Python console and daily tasks | the root key (offline copy), the mailbox, the business | nothing inbound; it pulls |
-| **origins** | customers' own servers | nothing of ours | outbound from edge only |
+| **owner** | operator tooling | the root key (offline copy), the mailbox, the business | nothing inbound; it pulls |
+| **origins** | customers' own servers | no Carnical secrets | outbound from edge only |
 
-The root key (which authorises the signing keys) lives offline and in no zone above. The configuration-signing key is a *different* key from the release key and from the root key, so losing it cannot sign engine code or a release.
+The root key (which authorizes signing keys) lives offline and in no zone above. The
+configuration-signing key is a *different* key from the release key and from the root key, so losing
+it cannot sign engine code or a release.
 
 ### Which connections are allowed
 
-Everything not in this table is closed. This is the map that `carnical-audit` is given (`zones.json`); a change to the network that is not in it is a finding.
+Everything not in this table is closed. This is the map that `carnical-audit` is given
+(`zones.json`); a change to the network that is not in it is a finding.
 
 | From | To | What | Why |
 |---|---|---|---|
@@ -67,7 +41,9 @@ Everything not in this table is closed. This is the map that `carnical-audit` is
 | control | signer | "sign this compiled configuration" | |
 | owner | control | the per-site feed, and staff operations over a tunnel | the owner pulls |
 
-Not in the table, and so refused: edge to portal, edge to signer, edge to owner, portal to edge, portal to signer, portal to owner, control to origins, owner to anything it does not pull. An edge that is taken over finds a config fetch and an event pipe, and nothing else on the network.
+Not in the table, and so refused: edge to portal, edge to signer, edge to owner, portal to edge,
+portal to signer, portal to owner, control to origins, owner to anything it does not pull. An edge
+that is taken over finds a config fetch and an event pipe, and nothing else on the network.
 
 ### How each wall is built
 
@@ -98,7 +74,10 @@ Not in the table, and so refused: edge to portal, edge to signer, edge to owner,
 
 ## 4. The checks, and when they run
 
-`carnical-audit` runs a catalogue of checks from each place where they mean something. Four runs a day, each a random time (up to 45 minutes) after the hour, so a run cannot be dodged by timing. Not more often: the checks send real requests through the real data plane, and several times a day is enough to notice a mistake within hours rather than weeks.
+`carnical-audit` runs a catalogue of checks from each place where they mean something. Four runs a
+day, each a random time (up to 45 minutes) after the hour, so a run cannot be dodged by timing. Not
+more often: the checks send real requests through the real data plane, and several times a day is
+enough to notice a mistake within hours rather than weeks.
 
 The checker is built to be believed:
 
@@ -121,7 +100,9 @@ The checker is built to be believed:
 | *planned* `noisy-neighbour` | outside | One canary hammering its own host does not move another canary's latency or error rate beyond a bound. | Needs the hosted edge. |
 | *planned* `tenant-erasure` | control | A removed canary leaves no file, key, report, feed key or certificate behind. | Needs the registry. |
 
-"Outside" matters: the tenant checks have to run from a machine with no internal access, holding only what a customer holds, because that is the position they test. The edge and control checks run on those machines, as their own unprivileged user.
+"Outside" matters: the tenant checks have to run from a machine with no internal access, holding
+only what a customer holds, because that is the position they test. The edge and control checks run
+on those machines, as their own unprivileged user.
 
 ### When something fails
 
@@ -132,7 +113,9 @@ The checker is built to be believed:
 
 ### Scheduling
 
-`carnical-audit -print-schedule systemd` and `-print-schedule schtasks` print a ready timer and a ready task; nothing is installed by the program, and nothing has been installed anywhere. Four runs a day, six hours apart, each with a random delay.
+`carnical-audit -print-schedule systemd` and `-print-schedule schtasks` print a ready timer and a
+ready task; nothing is installed by the program, and nothing has been installed anywhere. Four runs
+a day, six hours apart, each with a random delay.
 
 ---
 
@@ -158,4 +141,5 @@ The checker is built to be believed:
 4. **How hostname ownership is proved** (T9). Recommended: a DNS TXT record under a name we choose, checked at registration and then daily.
 5. **What an edge does when its own check finds an open wall.** Recommended: stop serving and say why, rather than keep serving and alert. The cost is an outage for the customers on that edge.
 
-The existing owner PC is not changed by any of this, and none of the existing-backend defects in section 1 has been fixed. They are listed with the fix each needs in `backend-compat.md`.
+The existing owner PC is not changed by any of this, and the external-backend findings are not
+revalidated by these checks. They are listed with the fix each needs in `backend-compat.md`.

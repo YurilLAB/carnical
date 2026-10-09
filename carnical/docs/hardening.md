@@ -1,14 +1,13 @@
-# If an attacker gets onto the machine
+# Linux host confinement
 
-The edge, the portal, the control plane and the signer share one machine. `segmentation.md` assumed separate hosts; this
-assumes what was decided: they do not, so the walls between them are the operating system's. The question here is the one
-after "can they get in?": **an attacker already has code running as one service user (through a bug that got past the rule set,
-a vulnerable dependency, or a memory-safety flaw). What stops them going further, and what would show it?**
+These controls limit what a compromised service account can do on a shared Linux host. The recipe
+separates edge, portal, control and signer users, restricts process/filesystem/network access, and
+audits drift. It assumes code may already be running as the edge user.
 
-The attacker is assumed to want to: become root; read another service's secrets (the signer's key, other customers' data); stay
-(persistence); move sideways; reach the cloud metadata service; send data out; or use the machine (miner, spam relay, a base for
-attacks). Each layer below is aimed at some of these. No layer is trusted alone: they are built so that a bug in one is not a way
-through the next.
+Start with the [deployment order](../deploy/README.md), then compare the installed host with the
+layers below. [Validation scope](#what-was-verified-and-how) records the tested kernel and remaining
+target-host checks. Source: [sandbox](../sandbox/), [host auditor](../audit/host/), [deployment
+files](../deploy/).
 
 ## The layers
 
@@ -22,22 +21,23 @@ through the next.
 | 6 | **Things are recorded** | An exec by a service, a use of the calls an attacker needs, a change to what runs at boot, a new setuid file, and any read of a honeytoken. | `deploy/auditd/`, `deploy/honeytokens.sh` |
 | 7 | **The checks look for what was undone or added** | Four times a day: the settings above are still in force; no listener, process or setuid file has appeared; nothing that should not change has changed; the running edge really is confined, on every thread. | `audit/host`, `carnical-audit -host` |
 
-Layers 1 and 2 overlap on purpose (the proxy forbids `execve` in-process, and the unit forbids the same system calls from outside).
-The in-process layer survives a mistake in the unit file, and the unit survives a bug in the in-process code.
+Layers 1 and 2 overlap on purpose (the proxy forbids `execve` in-process, and the unit forbids the
+same system calls from outside). The in-process layer survives a mistake in the unit file, and the
+unit survives a bug in the in-process code.
 
 ## What it does to the usual steps
 
-The techniques are the ones real intrusions through a web service account use. "Stopped" means stopped for an attacker who is
-**only** the edge user.
+The techniques are the ones real intrusions through a web service account use. "Stopped" means
+stopped for an attacker who is **only** the edge user.
 
 | Technique | Stopped by | Detected by | Result |
 |---|---|---|---|
 | Run a shell or any program | seccomp (`execve`, `execveat` end the process), Landlock (no execute right), unit system call filter, `NoExecPaths` not needed | `carnical_svc_exec`, a SECCOMP record, `host-processes` | Stopped |
 | Setuid or capability abuse, `sudo` | `no_new_privs`, `CapabilityBoundingSet=` empty, no sudoers entry | `carnical_setuid`, `host-suid` | Stopped |
-| Kernel privilege escalation (netfilter, AF_ALG, overlayfs, io_uring, userfaultfd) | seccomp refuses namespaces, `AF_ALG`, `AF_PACKET`, io_uring, BPF, userfaultfd by name; `user.max_user_namespaces=0`; modules blacklisted; patching | `carnical_abuse`, a SECCOMP record | The known classes from 2023 to 2026: stopped. A flaw in a system call the proxy needs: not |
+| Kernel privilege escalation (netfilter, AF_ALG, overlayfs, io_uring, userfaultfd) | seccomp refuses namespaces, `AF_ALG`, `AF_PACKET`, io_uring, BPF, userfaultfd by name; `user.max_user_namespaces=0`; modules blacklisted; patching | `carnical_abuse`, a SECCOMP record | Blocks the listed operations; flaws in allowed syscalls/kernel paths remain possible |
 | Read another service's files (the signer key, other customers) | Landlock, `InaccessiblePaths`, mode 0700 per user | the honeytokens; `carnical_honey` | Stopped |
 | Read another process's environment or memory | `ProtectProc=invisible`, `ptrace_scope=2`, non-dumpable, Landlock | `carnical_abuse` | Stopped (**Measured**: a non-dumpable process hides its own program path from an unprivileged process of the same user) |
-| Reach other services over loopback | nftables (no loopback for the edge), Landlock port rules, no shared sockets | `carnical-edge-private` log lines | Stopped. Services should talk over UNIX sockets with `SO_PEERCRED` checks, not TCP loopback |
+| Reach other services over loopback | nftables (no loopback for the edge), Landlock port rules, no shared sockets | `carnical-edge-private` log lines | Blocked by the supplied policy; required local services need a reviewed UNIX socket or narrow policy exception |
 | Reach the cloud metadata service | nftables, `IPAddressDeny=link-local`, the proxy's origin guard | `carnical-imds` log lines | Stopped |
 | Reverse shell, tunnel out, download tools | no exec; egress limited to public 80 and 443 | `carnical-edge-egress` log lines | A shell: stopped. Traffic over 443 to a public address from inside the process: **not**, until the egress list is the registered origins (below) |
 | Write to boot, cron, systemd or library-loading files | read-only machine, Landlock, `RestrictSUIDSGID` | `carnical_persist`, `host-integrity` | Stopped |
@@ -71,7 +71,7 @@ The techniques are the ones real intrusions through a web service account use. "
 * `systemd-analyze security --offline` gives the edge unit **1.4 (OK)**, the audit unit 2.2 and the root host-audit unit 2.4.
 * The host checks were tested against fixtures (every pass and every failure), with the single sources of truth tied together (the Go
   baseline against `90-carnical.conf`, the unit file against the check, the nft and audit tokens against their files), and against this
-  machine: a process whose program file I deleted while it ran was found, a listener nobody declared was found, and a baseline made from
+  machine: a running process with a deleted executable was detected, a listener nobody declared was found, and a baseline made from
   the machine's own settings passed while one asking for something else failed. Nine deliberate breaks of the checks were each caught.
 * Run on this unhardened machine, `carnical-audit -host` reports its real sysctl values, the missing units and files, and the undeclared DNS
   listeners, and says plainly where it needs root.
@@ -88,16 +88,14 @@ The techniques are the ones real intrusions through a web service account use. "
 
 ## What an attacker in the edge still has
 
-Be exact about this; it is what the next work is for.
-
 * **The edge's own memory.** Every TLS private key the edge serves is in it. An attacker who reads the process's memory (a bug in
   the proxy, not another process) has those keys. Mitigations: per-customer certificates that are short-lived; the configuration-signing
   key is never in the edge (it is in the signer, a different user the edge cannot see).
 * **Connections to the public internet on 80 and 443.** The proxy can still be used to attack other sites, and to exfiltrate over 443.
   Tightening it: when the registry exists, load the registered origins' addresses into an nftables set and let the edge connect only to
   those. That is the single largest remaining step.
-* **The control plane's interface.** The edge fetches configuration and pushes events over a UNIX socket; a flaw in what listens on the other end is reachable.
-  Keep that interface tiny and parse it strictly.
+* **The control plane's interface.** If the edge fetches configuration or pushes events over a UNIX socket,
+  it can reach the service listening on that socket. Keep the interface small and parse its input strictly.
 * **`clone3` with a namespace flag.** seccomp cannot inspect `clone3`'s arguments (they are in memory). Namespaces are refused instead by `RestrictNamespaces=yes`
   and `user.max_user_namespaces=0`.
 * **A kernel flaw in a system call the proxy needs.** Patching and rebooting stay the first control. The hardening shrinks the surface; it does not remove it.

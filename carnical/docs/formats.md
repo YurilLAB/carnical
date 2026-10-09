@@ -1,16 +1,32 @@
-# Strict request-body formats
+# Request formats and parsing policy
 
-Package `formats` (`carnical/formats`) reads the body formats a site's clients send, checks each one with a parser written for the purpose, refuses what no legitimate client sends, and hands the rest on. It is an `inspect.Inspector` and runs in the proxy after the proxy's own checks and before the rule set.
+The format inspector checks body/query syntax, ambiguity and resource limits before CRS. It helps
+reduce differences between WAF and application parsing. A well-formed request can still contain an
+attack; format checks do not replace CRS or application validation.
+
+Source: [policy](../formats/policy.go), [inspector](../formats/inspector.go), [rule
+registry](../formats/rules.go).
 
 ## Why
 
-A firewall and the application behind it parse the same body with different parsers. Where the parsers differ (which of two equal JSON keys wins, whether a DOCTYPE is read, how a multipart body with no final boundary ends, whether a UTF-16 body is decoded, whether `;` separates form fields) an attacker writes the body that one reads as harmless and the other as an attack. The WAFFLED research (arxiv.org/abs/2503.10846) found 1,207 bypasses of five WAFs in exactly these differences, and `docs/attacks.md` lists the strict normaliser as the largest class not yet done.
-
-This package does not try to predict what the application will do. It reads each format with a parser that accepts only what the RFC grammar allows, refuses what is ambiguous, and has a limit on everything an attacker can make large. If the firewall will not read a body two ways, there is no second way for the application to read it. It is not a replacement for the rule set: a body that passes here is well formed, not harmless.
+Parsers can disagree about duplicate keys, XML declarations, encodings, form separators and
+multipart boundaries. The inspector rejects specific ambiguous forms and bounds parser work.
+Backend-specific behavior and unsupported formats still need separate review.
 
 ## Using it
 
-The `carnical` executable installs this inspector with `-formats-mode monitor` by default. Set `-formats-mode block` after tuning; set `off` to disable it. Its mode is independent of `-mode`, which controls CRS. `-formats-policy path.json` reads a regular file of at most 1 MiB before listening or confinement, with unknown fields, trailing data and invalid limits refused. The CLI mode overrides `monitor` in that file; individual rule overrides still apply. `-allow-request-encoding` lets one gzip/deflate layer reach this inspector. Encoding opt-in and a policy path require formats to be enabled. The proxy's `-max-body`/`-max-form-body` limits and the format policy's body/decompression limits each apply; raising one does not raise the others.
+| Option | Behavior |
+| --- | --- |
+| `-formats-mode monitor` | Default: report findings while forwarding; other proxy protections still enforce. |
+| `-formats-mode block` | Enforce configured blocking findings after tuning legitimate traffic. |
+| `-formats-mode off` | Disable the inspector; incompatible with a policy file or encoding opt-in. |
+| `-formats-policy path.json` | Read a regular file, at most 1 MiB, before listening or confinement. |
+| `-allow-request-encoding` | Allow one bounded gzip/deflate layer. Both CRS and origin receive decoded bytes. |
+
+The CLI mode overrides the policy's `monitor` field. Per-rule overrides still apply. Proxy
+`-max-body`/`-max-form-body` limits and format body/decompression limits all apply independently.
+
+For library integration:
 
 ```go
 pol := formats.Policy{Monitor: true} // start a site here: record, refuse nothing
@@ -19,9 +35,17 @@ cfg.Inspectors = append(cfg.Inspectors, formats.New(pol))
 cfg.AllowRequestEncoding = true // lets one gzip or deflate layer reach the inspector, which decompresses it
 ```
 
-`formats.New(Policy) *Inspector` keeps nothing between requests, so one value serves any number of them at once. A policy that fails `Validate` is not a way to run with a weaker one: `New` still returns an inspector, and it refuses every request that has a body (5002990) and says why in `Err()`. `ParsePolicy` reads one JSON object of at most `formats.MaxPolicyBytes` (1 MiB), refuses unknown fields and trailing data, and validates. Field names must use their exact JSON spelling, including case. Duplicate members at any level, even escaped spellings of the same name, `null` values and invalid UTF-8 bytes are refused. Omit an optional setting, use an empty object/list, or use zero for a numeric limit to take its default; `null` is not a reset operation. This also applies to `-formats-policy`, before a listener opens. `Rules()` lists every rule with its default, for a console.
+Request state is isolated; one inspector can serve concurrent requests. Counters are shared and
+bounded. Validate policy before installation. An invalid policy is exposed by `Err()` and body
+requests produce `policy-invalid` (5002990).
 
-Start every site with `"monitor": true`, read what is found for a few days, set the rules the site's own clients trip to `monitor` or `off`, then turn monitor mode off.
+`ParsePolicy` accepts one JSON object of at most `formats.MaxPolicyBytes` (1 MiB). It rejects
+unknown/trailing fields, invalid limits, nonexact names/case, duplicate members (including escaped
+aliases), null values and invalid UTF-8. Omit optional settings or use an empty object/list; zero
+numeric limits select defaults. Null does not reset a setting.
+
+Start in monitoring, review legitimate traffic, tune individual rules, then enable blocking.
+`Rules()` exposes the registry for management integrations.
 
 ## What is refused
 
@@ -41,7 +65,9 @@ Start every site with `"monitor": true`, read what is found for a few days, set 
 
 ## Policy
 
-All fields are optional; a field left out (or zero) takes its default. No limit can be switched off: a limit is a positive number below a fixed ceiling, because the point of every limit is that the cost of a request is bounded by its size.
+All fields are optional; a field left out (or zero) takes its default. No limit can be switched off:
+a limit is a positive number below a fixed ceiling, because the point of every limit is that the
+cost of a request is bounded by its size.
 
 | Field | Meaning |
 |---|---|
@@ -55,15 +81,31 @@ All fields are optional; a field left out (or zero) takes its default. No limit 
 | `graphql_paths` | Exact paths that are GraphQL endpoints, in addition to any path with a segment called `graphql` or `graphiql`. |
 | `json`, `xml`, `graphql`, `ndjson`, `encoding`, `yaml`, `form`, `query`, `multipart` | The limits of each parser. `query` uses the same fields/defaults as `form` (1000 parameters, 256 name bytes, 65536 value bytes, bracket depth 8), applied independently to the URL. Each field is named, with its default, in the Go type (`policy.go`). |
 
-Query names and values are percent-decoded once for validation and must be UTF-8. Valid encoded separators remain values; raw semicolons are refused because parsers disagree about them. Duplicate query names are compared after escape decoding and case folding; the default is monitoring, with `query-duplicate-param: block` available for APIs that require singular parameters. All four GraphQL protocol parameters still reject repetition independently. The query is never rewritten. A query beyond its scan budget is refused in block mode; monitoring or disabling that budget allows it without complete query analysis. Body inspection continues even when query analysis stops at a monitored budget.
+Query names and values are percent-decoded once for validation and must be UTF-8. Valid encoded
+separators remain values; raw semicolons are refused because parsers disagree about them. Duplicate
+query names are compared after escape decoding and case folding; the default is monitoring, with
+`query-duplicate-param: block` available for APIs that require singular parameters.
+
+All four GraphQL protocol parameters still reject repetition independently. The query is never
+rewritten. A query beyond its scan budget is refused in block mode; monitoring or disabling that
+budget allows it without complete query analysis. Body inspection continues even when query analysis
+stops at a monitored budget.
 
 ### How GraphQL is found
 
-A request to a GraphQL path must be a GraphQL request: its query must parse. A request anywhere else is treated as GraphQL only if its `query` parses as a GraphQL document, so a search form with a `query` field, or an Elasticsearch body whose `query` is an object, is left alone. The query is looked for in a JSON object, an array of them (a batch), an `application/graphql` body, a form, and the URL query string on every method. When URL parameters identify GraphQL, body envelope checks also apply to that request. Positions in GraphQL messages are bytes of the decoded query text, not of the request.
+A request to a GraphQL path must be a GraphQL request: its query must parse. A request anywhere else
+is treated as GraphQL only if its `query` parses as a GraphQL document, so a search form with a
+`query` field, or an Elasticsearch body whose `query` is an object, is left alone.
 
-## Decisions that are not obvious
+The query is looked for in a JSON object, an array of them (a batch), an `application/graphql` body,
+a form, and the URL query string on every method. When URL parameters identify GraphQL, body
+envelope checks also apply to that request.
 
-* **Duplicate keys are compared after decoding escapes and with case folded** (a Unicode simple fold, so the Kelvin sign and the long s match `k` and `s`, as they do in Go's own decoder). Frameworks keep the first, the last, or merge, and some match keys without regard to case. The stricter comparison refuses every body any of them would read differently.
+Positions in GraphQL messages are bytes of the decoded query text, not of the request.
+
+## Compatibility choices
+
+* **Duplicate keys are compared after decoding escapes and with case folded** (a Unicode simple fold, so the Kelvin sign and the long s match `k` and `s`, as they do in Go's own decoder). Frameworks keep the first, the last, or merge, and some match keys without regard to case. This comparison catches those duplicate-key ambiguities; it does not establish equivalence with every backend parser.
 * **Form and multipart duplicate names are recorded, not refused**, by default (`form-duplicate-param`, `multipart-duplicate-name`): a group of checkboxes is a legitimate duplicate. Names ending in `[]` are never reported. A site that has no such field sets the rule to `block`.
 * **A lone `filename*` is recorded, not refused.** RFC 7578 forbids it in form data and browsers never send it, but some HTTP libraries do. A `filename*` that disagrees with `filename` (the Coraza decoy) is refused.
 * **A byte order mark is refused for every text format**, XML included. A .NET client that writes one sets `body-bom` to `monitor`.
@@ -71,32 +113,101 @@ A request to a GraphQL path must be a GraphQL request: its query must parse. A r
 * **Gzip's `x-gzip` alias, a second member, and `deflate` without a zlib header are refused** (`allow_raw_deflate` accepts the last). These are differences between servers, and the proxy only passes `gzip` and `deflate` through anyway.
 * **The ratio limit does not apply under 4 KiB of output.** A few hundred bytes of repetitive JSON can compress past 100:1 and is not an attack. Above that, the limit applied is the smaller of the output cap and 100 times the compressed size.
 * **Decompression reads at most the limit plus one byte.** The time and memory a compressed body can cost depend on the limit, not on what the stream claims to hold. The proxy also checks final decompressed bytes against `MaxFormBody` (128 KiB for non-uploads), independently of the format inspector's mode and output limit. Uploaded content and filenames are checked after decompression.
-* **XML text split by a comment or CDATA section is refused.** Coraza hands the rules the text pieces of an element separately, so `sel<!-- -->ect` is not seen whole by them and is by the application (README, "Known limits"). One run of text, or one CDATA section alone, is accepted; `a<!-- -->b`, `a<![CDATA[b]]>` and two CDATA sections are not. This also refuses `hello <!-- note --> world`, which no request has a reason to send.
+* **XML text split by a comment or CDATA section is refused.** Coraza hands the rules the text pieces of an element separately, so `sel<!-- -->ect` is not seen whole by them and is by the application (README, "Known limits"). One run of text, or one CDATA section alone, is accepted; `a<!-- -->b`, `a<![CDATA[b]]>` and two CDATA sections are not. This can also refuse legitimate mixed content such as `hello <!-- note --> world`; review the rule for sites that accept it.
 * **A refused or monitored finding never quotes the request.** A message is built from a rule's fixed sentence, one of a fixed list of phrases (`details.go`, an enumeration, so no string from the request can be passed) and numbers. A test puts a marker in every place content can reach and checks that no message repeats it.
 
 ## Verdicts
 
-Operation selection follows the [GraphQL execution rules](https://spec.graphql.org/September2025/#sec-Executing-Operations): multiple operations require a matching `operationName`, operation names must be unique, and an anonymous operation must be alone. JSON member order does not affect selection. A selected mutation in a GET query string is refused with 403, as permitted by the [GraphQL-over-HTTP draft](https://http-spec.graphql.org/draft/#sec-GET); a selected query beside a mutation remains valid. All four protocol parameters (`query`, `variables`, `operationName`, `extensions`) are checked for repetition in query strings and GraphQL forms. Nonempty GET/form `variables` and `extensions` must be JSON objects or null. Empty optional parameters mean absent. Persisted queries without a document remain supported; the proxy cannot establish their operation type without the application's persisted-query registry, so the application must enforce method safety for them.
+Operation selection follows the [GraphQL execution
+rules](https://spec.graphql.org/September2025/#sec-Executing-Operations): multiple operations
+require a matching `operationName`, operation names must be unique, and an anonymous operation must
+be alone. JSON member order does not affect selection. A selected mutation in a GET query string is
+refused with 403, as permitted by the [GraphQL-over-HTTP
+draft](https://http-spec.graphql.org/draft/#sec-GET); a selected query beside a mutation remains
+valid.
 
-Selected mutations over `HEAD`, `OPTIONS` or `TRACE` also return 403, using `graphql-safe-method-mutation`. These are [safe HTTP methods](https://httpwg.org/specs/rfc9110.html#safe.methods), and frameworks such as [Express may dispatch HEAD to GET handlers](https://expressjs.com/en/4x/api/router/#router-method). The check applies to URL and body envelopes, including an explicitly permitted HEAD body. The existing GET rule stays independently configurable. Ordinary OPTIONS preflights without GraphQL protocol parameters pass.
+All four protocol parameters (`query`, `variables`, `operationName`, `extensions`) are checked for
+repetition in query strings and GraphQL forms. Nonempty GET/form `variables` and `extensions` must
+be JSON objects or null. Empty optional parameters mean absent. Persisted queries without a document
+remain supported; the proxy cannot establish their operation type without the application's
+persisted-query registry, so the application must enforce method safety for them.
 
-A second, independent rule, `graphql-http-method`, permits GraphQL operations/protocol parameters only over GET or POST. It blocks other methods with 403 even if a mutation rule is disabled, and covers extension-only persisted-query requests on configured GraphQL paths. This is Carnical's hardening policy: the [GraphQL-over-HTTP draft](https://http-spec.graphql.org/draft/#sec-Request) permits servers to implement other methods. A legacy endpoint can disable this rule explicitly; the safe-method mutation rule still applies. The default policy now refuses HEAD queries as well as mutations.
+Selected mutations over `HEAD`, `OPTIONS` or `TRACE` also return 403, using
+`graphql-safe-method-mutation`. These are [safe HTTP
+methods](https://httpwg.org/specs/rfc9110.html#safe.methods), and frameworks such as [Express may
+dispatch HEAD to GET handlers](https://expressjs.com/en/4x/api/router/#router-method). The check
+applies to URL and body envelopes, including an explicitly permitted HEAD body. The existing GET
+rule stays independently configurable. Ordinary OPTIONS preflights without GraphQL protocol
+parameters pass.
 
-`graphql-mixed-transport` refuses GraphQL protocol parameters split between URL and body with 400. It covers JSON, form, raw GraphQL and batch envelopes, including a URL document paired with body-only selection or variables on a discovered endpoint. Ordinary URL metadata such as `locale` remains allowed. `graphql-method-override` refuses top-level `_method` metadata in a GraphQL URL, form or JSON envelope, including decoded escapes, case aliases and bracket forms; it does not reserve `_method` inside `variables`. Framework middleware can [change the effective method from headers, query or body fields](https://expressjs.com/en/resources/middleware/method-override/), so these findings complement operation selection rather than matching one mutation string. Custom override names/getters still require origin-specific policy.
+A second, independent rule, `graphql-http-method`, permits GraphQL operations/protocol parameters
+only over GET or POST. It blocks other methods with 403 even if a mutation rule is disabled, and
+covers extension-only persisted-query requests on configured GraphQL paths. This is Carnical's
+hardening policy: the [GraphQL-over-HTTP draft](https://http-spec.graphql.org/draft/#sec-Request)
+permits servers to implement other methods. A legacy endpoint can disable this rule explicitly; the
+safe-method mutation rule still applies. The default policy now refuses HEAD queries as well as
+mutations.
 
-Protocol-name case aliases such as `Query`, `QUERY` or `operationname` are recognized for inspection and refused by `graphql-request-shape` when the request is GraphQL. This includes decoded names and batch discovery. The original bytes are never normalized or rewritten for forwarding. Mutation and transport checks still run, so an alias cannot hide an operation from those independent guards; monitor mode reports the alias finding as well.
+`graphql-mixed-transport` refuses GraphQL protocol parameters split between URL and body with 400.
+It covers JSON, form, raw GraphQL and batch envelopes, including a URL document paired with
+body-only selection or variables on a discovered endpoint. Ordinary URL metadata such as `locale`
+remains allowed.
 
-JSON batch discovery observes GraphQL query candidates in every root-array object, including objects beyond the retained element budget. An empty/unrelated prefix cannot suppress discovery. The existing batch cap still applies before operation analysis; monitor/off modes keep the bounded retention limit and cannot fully analyze elements beyond it. Ordinary JSON batches without GraphQL query candidates remain ordinary JSON.
+`graphql-method-override` refuses top-level `_method` metadata in a GraphQL URL, form or JSON
+envelope, including decoded escapes, case aliases and bracket forms; it does not reserve `_method`
+inside `variables`. Framework middleware can [change the effective method from headers, query or
+body fields](https://expressjs.com/en/resources/middleware/method-override/), so these findings
+complement operation selection rather than matching one mutation string.
 
-The proxy also rejects mixed/lowercase HTTP method tokens (5000043) and `X-HTTP-Method-Override`, `X-Method-Override`, `X-HTTP-Method` headers, including underscore aliases (5000044), with 400 regardless of CRS or format mode. Sites relying on header method tunneling must change that integration. These proxy findings use the individual match log; format-rule counters include the three new GraphQL rule identities. Enforce them with `-formats-mode block`; monitor mode deliberately forwards and records findings.
+Custom override names/getters still require origin-specific policy.
 
-These protections complement the depth, alias, field and batch limits used by commercial products such as [F5 WAF for NGINX](https://docs.nginx.com/waf/policies/graphql-protection/) and [Fastly Next-Gen WAF](https://www.fastly.com/blog/introducing-graphql-inspection-for-the-fastly-next-gen-waf). They do not validate GraphQL fields against a schema or replace application authorization.
+Protocol-name case aliases such as `Query`, `QUERY` or `operationname` are recognized for inspection
+and refused by `graphql-request-shape` when the request is GraphQL. This includes decoded names and
+batch discovery. The original bytes are never normalized or rewritten for forwarding. Mutation and
+transport checks still run, so an alias cannot hide an operation from those independent guards;
+monitor mode reports the alias finding as well.
 
-Each HTTP request also has aggregate GraphQL budgets: `graphql.max_request_fields` defaults to 1000, `max_request_aliases` to 40, and `max_request_directives` to 100. Totals include only the selected operation of every document inspected in that request, after fragment expansion; unused operations still undergo their individual limits. A batch cannot multiply a permitted individual budget without being subject to these totals. Counters reset for every request and use saturating arithmetic. These are conservative syntax counts, not schema-weighted resolver cost or a bound on response size; pagination arguments and authorization still require application controls. Raise the request budgets for a known legitimate workload, or use monitor mode while tuning.
+JSON batch discovery observes GraphQL query candidates in every root-array object, including objects
+beyond the retained element budget. An empty/unrelated prefix cannot suppress discovery. The
+existing batch cap still applies before operation analysis; monitor/off modes keep the bounded
+retention limit and cannot fully analyze elements beyond it. Ordinary JSON batches without GraphQL
+query candidates remain ordinary JSON.
 
-Identifiers 5002000 to 5002999. The table is the one the code holds; a test (`TestDocumentationMatchesRules`) fails if this table and `Rules()` differ in any column. A message looks like `json-duplicate-key: an object key given twice (compared after decoding escapes, ignoring case) at byte 17`, or `graphql-fields: a GraphQL query that selects more fields than the limit (limit 500)`, or, for NDJSON, `... in line 3 at byte 9`.
+The proxy also rejects mixed/lowercase HTTP method tokens (5000043) and `X-HTTP-Method-Override`,
+`X-Method-Override`, `X-HTTP-Method` headers, including underscore aliases (5000044), with 400
+regardless of CRS or format mode. Sites relying on header method tunneling must change that
+integration. These proxy findings use the individual match log; format-rule counters include the
+three new GraphQL rule identities. Enforce them with `-formats-mode block`; monitor mode
+deliberately forwards and records findings.
+
+These protections complement the depth, alias, field and batch limits used by commercial products
+such as [F5 WAF for NGINX](https://docs.nginx.com/waf/policies/graphql-protection/) and [Fastly
+Next-Gen
+WAF](https://www.fastly.com/blog/introducing-graphql-inspection-for-the-fastly-next-gen-waf). They
+do not validate GraphQL fields against a schema or replace application authorization.
+
+Each HTTP request also has aggregate GraphQL budgets: `graphql.max_request_fields` defaults to 1000,
+`max_request_aliases` to 40, and `max_request_directives` to 100. Totals include only the selected
+operation of every document inspected in that request, after fragment expansion; unused operations
+still undergo their individual limits.
+
+A batch cannot multiply a permitted individual budget without being subject to these totals.
+Counters reset for every request and use saturating arithmetic. These are conservative syntax
+counts, not schema-weighted resolver cost or a bound on response size; pagination arguments and
+authorization still require application controls.
+
+Raise the request budgets for a known legitimate workload, or use monitor mode while tuning.
+
+Identifiers 5002000 to 5002999. The table is the one the code holds; a test
+(`TestDocumentationMatchesRules`) fails if this table and `Rules()` differ in any column. A message
+looks like `json-duplicate-key: an object key given twice (compared after decoding escapes, ignoring
+case) at byte 17`, or `graphql-fields: a GraphQL query that selects more fields than the limit
+(limit 500)`, or, for NDJSON, `... in line 3 at byte 9`.
 
 Default is what happens when the policy does not say. Status is what the visitor gets for a refusal.
+
+<details>
+<summary>Full rule reference: IDs, defaults, statuses and severities</summary>
 
 | ID | Rule | Default | Status | Severity | Finds |
 |---|---|---|---|---|---|
@@ -210,19 +321,41 @@ Default is what happens when the policy does not say. Status is what the visitor
 | 5002990 | `policy-invalid` | block | 503 | critical | the formats policy is invalid, so bodies are refused |
 | 5002991 | `internal-error` | block | 503 | critical | the body could not be checked |
 
-`type-duplicate-header` is a second line of defence: the proxy already refuses a request with two Content-Type headers (5000005) before any inspector runs. `internal-error` is what a panic in a parser becomes (none was found; see the fuzzing below).
+</details>
+
+`type-duplicate-header` is a second line of defence: the proxy already refuses a request with two
+Content-Type headers (5000005) before any inspector runs. `internal-error` is what a panic in a
+parser becomes (see the recorded fuzzing results in [validation](formats-validation.md#verified)).
 
 ## Monitoring and logs
 
-Each emitted finding increments an atomic per-rule blocked or monitored counter. `Inspector.Stats()` returns a fresh snapshot containing only stable rule IDs/names and counts. Storage is sized by the rule registry, never by client identities or input strings. A rule is counted at most once per request; a batch may trigger the same rule repeatedly, but the inspector emits it once. Off rules are silent. Parsing still stops at the first blocking finding and the 32-verdict reporting cap, so counts describe reported findings rather than all possible problems or unique requests. Snapshot fields are independently atomic, not one transaction across all rules.
+Each emitted finding increments an atomic per-rule blocked or monitored counter. `Inspector.Stats()`
+returns a fresh snapshot containing only stable rule IDs/names and counts. Storage is sized by the
+rule registry, never by client identities or input strings. A rule is counted at most once per
+request; a batch may trigger the same rule repeatedly, but the inspector emits it once.
 
-The executable logs changed `format protection totals` snapshots every minute by default. `-formats-stats-interval` accepts `0` (disabled) or 100ms through 24h; a graceful stop flushes a final changed snapshot. A forced process kill cannot flush. Counters reset when a new inspector is constructed and do not aggregate across a fleet. Format mode off does not run this reporter.
+Off rules are silent. Parsing still stops at the first blocking finding and the 32-verdict reporting
+cap, so counts describe reported findings rather than all possible problems or unique requests.
+Snapshot fields are independently atomic, not one transaction across all rules.
 
-For per-attempt events, `msg` is `rule matched`, `rule_msg` contains fixed rule text, and `disruptive` distinguishes enforced from monitored findings. Log tests verify every repeated bypass attempt is recorded with the correct outcome. Aggregate labels contain no URI, body, credentials or client address. CRS expanded messages and inspector panic text are available only through the explicit detailed-log setting; they are not safe summaries.
+The executable logs changed `format protection totals` snapshots every minute by default.
+`-formats-stats-interval` accepts `0` (disabled) or 100ms through 24h; a graceful stop flushes a
+final changed snapshot. A forced process kill cannot flush. Counters reset when a new inspector is
+constructed and do not aggregate across a fleet. Format mode off does not run this reporter.
+
+For per-attempt events, `msg` is `rule matched`, `rule_msg` contains fixed rule text, and
+`disruptive` distinguishes enforced from monitored findings. Log tests verify every repeated bypass
+attempt is recorded with the correct outcome. Aggregate labels contain no URI, body, credentials or
+client address. CRS expanded messages and inspector panic text are available only through the
+explicit detailed-log setting; they are not safe summaries.
 
 ## How it is built
 
-One file per format, each with its own parser, its limits and its fuzz target. The inspector (`inspector.go`) parses the Content-Type, decides by media type, decompresses if asked, and calls the format's check. A check reports a finding to the `finder`, which applies the policy (block, monitor or off) and says whether to stop; no parser decides what a finding costs. Each rule is reported once per request.
+One file per format, each with its own parser, its limits and its fuzz target. The inspector
+(`inspector.go`) parses the Content-Type, decides by media type, decompresses if asked, and calls
+the format's check. A check reports a finding to the `finder`, which applies the policy (block,
+monitor or off) and says whether to stop; no parser decides what a finding costs. Each rule is
+reported once per request.
 
 | File | What it is |
 |---|---|
@@ -234,59 +367,25 @@ One file per format, each with its own parser, its limits and its fuzz target. T
 
 ## What it costs
 
-**Measured** on an AMD Ryzen 5 5600X, Linux (WSL2), Go 1.26.6, one core, by `go test ./formats -run '^$' -bench .` on a body of about 100 KiB of ordinary content for each format (GraphQL 30 KiB; historical YAML baseline 30 KiB, current YAML benchmark 12 KiB to stay within the pair budget):
+Body/decompression/work limits bound inspection. YAML needs an additional collection-work guard
+because its underlying parser can copy quadratically. `yaml.max_collection_work` defaults to 1024
+and cannot exceed that ceiling; it counts structural lexer work before parsing. Wide previously
+accepted documents may now trigger `yaml-limit`. YAML remains opt-in.
 
-| Format | ns per byte | MB/s | Allocations per body |
-|---|---|---|---|
-| JSON | 2.5 to 3.2 | 310 to 410 | 12 |
-| XML | 3.1 to 3.3 | 300 to 320 | 11 |
-| NDJSON | 3.2 to 4.4 | 225 to 315 | 9 |
-| multipart (20 fields and a 80 KiB file) | 0.12 to 0.15 | over 6,000 | 121 |
-| urlencoded form | 8.4 to 12.8 | 78 to 120 | 3,476 (a map entry per parameter name, for duplicates) |
-| gzip then JSON (per decompressed byte) | 5.1 to 6.0 | 165 to 200 | 50 |
-| GraphQL (with fragments) | 13.8 to 15.0 | 67 to 72 | 6,167 |
-| YAML | 139 to 165 | 6 to 7 | 73,600 |
-
-The multipart figure is low because the content of a part is skipped with a substring search; what is read byte by byte is the headers.
-
-The claim is that cost is linear in the size of the body and bounded, and it is tested rather than argued. `TestAdversarialBodiesCostInProportionToTheirSize` builds, for each format, the bodies that make a parser do the most work for their size (one key repeated, a thousand keys, an escaped key, sixty attributes on every element, the boundary inside every line, a million fields, aliases, fragments), with monitor mode and every count limit raised so that nothing stops the scan early, at 64 KiB and again at 256 KiB. Every one costs under 62 ns per byte, and four times the bytes takes about four times as long. A body of 1 MiB of the worst of them took 1.5 to 37 ms, with no parser using more memory than a small multiple of the keys or names that are open at that moment.
-
-**YAML is the exception.** The goccy parser can perform quadratic copying while building block mappings or inserting omitted values into collections. A separate `yaml.max_collection_work` budget stops inspection before parsing more than 1024 structural work units (default and hard ceiling; a site can lower it). Each lexer token for a colon, explicit key marker, opening flow map, comma or block sequence entry counts once. This deliberately counts valued entries and flow sequences conservatively. Previously accepted wide documents can now trigger `yaml-limit`. Byte, node and depth caps remain in force. Monitor mode forwards and records the limit; with that rule off, the body passes silently after inspection stops, so later YAML findings are not assessed. The 250 ms cost assertion is unchanged and includes ordinary mappings, explicit keys and omitted-value collections at the work cap. YAML remains off unless a policy lists its media type.
-
-Decompression reads at most the output limit plus one byte: a gzip stream that expands to 256 MiB (260 KiB on the wire) is stopped after 1 MiB with under 8 MiB allocated and in under a second (`TestDecompressionIsBoundedByTheLimitNotByTheInput`).
+Monitoring or disabling a work-limit rule permits forwarding after inspection stops; later findings
+may therefore be absent. Decompression reads no more than its output limit plus one byte. See
+[benchmarks and parser tests](formats-validation.md#what-it-costs) for measurements and conditions.
 
 ## Verified
 
-All of it was run on Linux (WSL2, Ubuntu) and on Windows with Go 1.26.6; the race detector was run on Linux.
-
-* **Table tests.** 641 rows in 9 tables (JSON 86, XML 107, form 54, multipart 73, GraphQL 106, NDJSON 31, compression 43, YAML 51, content type and mismatch 90), each accepted or refused with a named rule, including the known differentials (duplicate keys that differ in case, by escape and by the Kelvin sign; a UTF-16 JSON body; a BOM; JSON labelled `text/plain`; a DOCTYPE with an entity; a gzip bomb at a ratio of 1,000; a GraphQL batch of 50; an alias flood; a fragment cycle three deep through an inline fragment; a YAML anchor bomb and `!!python/object`; multipart with base64; a form with 5,000 parameters). `TestEveryRuleHasARefusalRow` fails if a rule has no row.
-* **Every proper prefix of a valid body is refused** for JSON, XML, GraphQL, multipart, gzip and deflate (`prefix_test.go`, about 4,300 bodies): a parser that gave up at the end of its input without a report would accept a document cut in half.
-* **Bodies the standard library writes are accepted** (`mime/multipart`, `net/url`, `encoding/json`, `encoding/xml`, `compress/gzip`), so the strictness is aimed at hand-made bodies and not at ordinary writers.
-* **Negative controls.** `TestEveryRefusalDependsOnItsRule` runs every refusal row again with the rule it expects switched off and requires the same check to fail (487 rows): a row that still passes was being refused by something else and tests nothing about its rule. `TestMonitorModeRecordsTheSameFindingsAndRefusesNothing` runs every refusal row in monitor mode. `mutation/mutate.sh` breaks the source itself, one place at a time, and requires the tests to fail: see "Source mutation" below.
-* **Fuzzing.** Ten Go fuzz targets (JSON, XML, GraphQL, NDJSON, compression, YAML, form, multipart, Content-Type and the whole dispatcher), each run for 30 seconds (3.1 million inputs in all, no failure), asserting that nothing panicked (an inspector that recovers a panic reports `internal-error`, which fails the target), that every verdict is in range with a plain message, and that a blocking verdict has an error status.
-* **No quotation.** `TestVerdictsNeverQuoteTheRequest` puts a marker in a key, a value, an element name, an entity, a form name, a field, a multipart name, a filename, a transfer encoding, a Content-Type parameter and a YAML tag, and checks that no message repeats it. `TestEveryDetailHasText` and the type of `detail` make it impossible for a message to hold a string from the request.
-* **Concurrency.** Every row of every table is run from 16 goroutines on one inspector, three times, under the race detector, and must give the answer it gives alone.
-* **Through the proxy.** `e2e_test.go` starts the real proxy (`proxy.New`, with the rule set switched off so that it is not what is being tested) with a real application behind it. A gzip JSON body, sent with a length and in chunks, reaches the application decompressed with a correct `Content-Length`, no `Content-Encoding` and no `Transfer-Encoding`; 20 refused bodies (duplicate keys, a UTF-16 body, JSON as `text/plain`, a DOCTYPE with an entity, a gzip bomb, a batch of 50, introspection, base64 multipart, 5,000 parameters, an opaque type, YAML, a body with no type, a GET with a body) never reach the application and are recorded with the right identifier; 8 accepted bodies reach it byte for byte; monitor mode lets a body through and records it as not disruptive; with `AllowRequestEncoding` off the proxy still refuses gzip itself.
+Tests check rule-table consistency, refusal/monitor/off controls, valid standard-library output,
+truncated input, concurrent use, logging privacy, decompression and live origin forwarding. The
+[validation record](formats-validation.md#verified) keeps the recorded counts and environment.
 
 ## Source mutation
 
-`formats/mutation/mutate.sh` makes a copy of the package, breaks one place in it, runs the tests, and requires them to fail. It does this to every place in the parsers and the dispatcher that reports a refusal or decides one, with three operators: the call that reports a finding does nothing (`A`), the parser's own error reporter does nothing but the parse still stops (`B`), and the condition of an `if` that guards a report is replaced by `false`, which is what deleting the check would do (`C`). Run it on Linux (`formats/mutation/mutate.sh 6`; it takes about 45 minutes on a busy machine, and `ONLY=file` reruns a list of survivors).
-
-**Measured**, 425 mutants:
-
-| | Mutants |
-|---|---|
-| Killed by the tests | 393 |
-| Did not compile (an `if` with an initialiser, which the operator cannot wrap) | 15 |
-| Survived | 17 |
-
-The first run killed 356 and left 54. Each survivor was read: 37 were real gaps in the tests (a truncated body accepted silently because a bounds guard that panics was recovered as `internal-error`, which still counted as a refusal; a colon, equals sign or quote replaced by another punctuation mark; empty variable definitions; a fragment with no `on`; a `%TAG` directive that no tag uses; node and depth limits that only the second pass of YAML reaches). They are now rows, a prefix test, and a check that no row ever reaches `internal-error`, and the mutants are killed. The 17 that remain are all equivalent, or cannot be reached:
-
-* the same finding is made a few lines later by another check (the end-of-input check in a GraphQL list and selection set; the parse-time selection cap, which the field count repeats; a bare line feed after a boundary, which the walk reports again; a multipart header block that ends in the body, which the missing-newline check reports; `filename*` that is not a valid extended value, which the mismatch check reports under the same rule; an unterminated XML declaration, attribute value, CDATA section or empty name, each reported by the next check under the same rule; a YAML token cap, which the node limit repeats and which differs only in what it costs; a YAML parse error, which becomes a recovered panic and the same rule);
-* a guard that is never reached (the end-of-input check at the top of the JSON value reader, which every caller makes first; the tag case in the YAML walker, because tags are refused as tokens);
-* the recovery from a panic inside the YAML library, which needs the library to panic.
-
-
+[Mutation results](formats-validation.md#source-mutation) describe deliberate source changes that
+the tests detected, alongside equivalent/unreachable survivors.
 
 ## What is not done, and what to watch
 

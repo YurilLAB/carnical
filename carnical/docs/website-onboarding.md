@@ -1,14 +1,17 @@
 # Put Carnical in front of a website
 
-Carnical is a reverse proxy for one origin per process. Start with a reviewed site
-file, test through the edge before changing DNS, and then hand the client the
-edge addresses. The client does not need to install Coraza or change application
-code. Separate sites with different origins need separate instances; the CLI
-does not provide a hosted multi-tenant control plane.
+Prepare the site, authenticate its origin, test through the edge, then change DNS. Clients do not
+install the WAF or change application code. Each process forwards to one origin; sites with
+different origins need separate instances.
+
+Operator: [site file](#operator-prepare-one-site-file), [origin
+authentication](#operator-authenticate-the-waf-to-the-origin), [live
+checks](#operator-check-install-and-test). Client: [DNS handover](#client-dns-cutover-and-handover).
+Source: [site configuration](../cmd/carnical/siteconfig.go), [origin TLS](../proxy/origin_tls.go).
 
 ## Operator: prepare one site file
 
-Build the binary from `carnical/`:
+From `carnical/`, build and try the local example:
 
 ```sh
 CGO_ENABLED=0 go build -trimpath -o carnical ./cmd/carnical
@@ -18,162 +21,120 @@ cp docs/examples/site-local.json site.json
 ./carnical -config site.json
 ```
 
-The local example protects an application on `127.0.0.1:8081`, listens on
-`127.0.0.1:8080`, and starts with CRS detection and format monitoring. Proxy
-safety checks and flood mitigation still enforce. Visit the edge's port, exercise
-normal application flows and read the structured logs. After tuning, enable both
-content blocking layers:
+It protects `127.0.0.1:8081` on `127.0.0.1:8080`, with CRS detection and format monitoring. Proxy
+safety checks and flood limits still enforce. Exercise normal application flows and review the logs
+before enabling both content-blocking layers:
 
 ```sh
 ./carnical -config site.json -mode block -formats-mode block
 ```
 
-For a public site, copy [site-edge.json](examples/site-edge.json) and replace
-the example hostnames and certificate paths. Keep the origin address separate
-from the visitor hostname: pointing the upstream at `example.com` after its DNS
-moves to the edge can create a proxy loop. Use `https://origin.example.com`
-with a certificate valid for that name, or a private origin address explicitly
-approved by the operator. `upstream-host` controls the HTTP Host header; it does
-not change the upstream TLS certificate name. TLS verification stays enabled.
+For a public site, copy [site-edge.json](examples/site-edge.json) and replace its names and file
+paths. Keep the origin DNS/address separate from the visitor hostname to avoid a proxy loop after
+cutover. An HTTPS origin needs a certificate valid for its upstream name. `upstream-host` sets HTTP
+Host; it does not change the TLS certificate name.
 
-The file has an exact `version: 1` and a `flags` object using the names from
-`-h` without dashes. Strings and durations are JSON strings, booleans are JSON
-booleans, and numeric flags are JSON numbers. Integers must fit the flag's type.
-Unknown fields, duplicate names (including escaped aliases), nulls, wrong types,
-trailing documents and files over 64 KiB are refused. Only regular files are
-accepted; the configuration path itself must not be a symlink.
+| Site-file rule | Requirement |
+| --- | --- |
+| Structure | Exact `version: 1` and a `flags` object; names match `-h` without leading dashes. |
+| Values | Strings/durations are strings, booleans are booleans, numbers must fit their flag type. |
+| Parsing | Unknown/duplicate names, escaped aliases, nulls, wrong types and trailing documents are refused. |
+| File | Regular file, at most 64 KiB; the supplied path must not be a symlink. |
+| Precedence | Explicit CLI flags override file values, including `-flag=false`; omissions keep defaults. |
+| CLI-only actions | `config`, `check`, `check-origin`, `check-origin-http` and `version` cannot appear in `flags`. |
 
-Explicit command-line flags override file values, including `-flag=false`.
-Omitted settings retain the CLI defaults. `config`, `check`, `check-origin`,
-`check-origin-http` and `version` are command-line actions and cannot appear inside `flags`.
-Existing direct flag invocations remain supported.
-
-Site files are **operator-owned configuration**. They can grant access to private
-origins, trust proxy identities and relax inspection. Do not accept a client's
-raw JSON as a deployment policy. Review requested changes and use the authenticated
-[policy/control libraries](config-and-policy.md) when building a customer portal.
-Keep the file and its parent directory unwritable by the service user or clients.
-Use absolute paths for production files; relative paths are resolved from the
-process working directory, not the JSON directory.
+Site files are operator-owned policy: they can relax inspection or grant private-origin/proxy trust.
+Review client requests instead of accepting raw client JSON as deployment configuration. Keep files
+and parent directories unwritable by clients/service users. Use absolute production paths; relative
+paths resolve from the process working directory. Customer portals need the [authenticated
+policy/control integration](control-api.md).
 
 ## Operator: authenticate the WAF to the origin
 
-Use HTTPS with mutual TLS for a remote origin. The edge verifies the origin's
-server certificate; the origin requires and authorizes the edge's client
-certificate. This authenticates the proxy connection. Website users still use
-the application's login and authorization.
+Use mutual TLS for a remote HTTPS origin. The edge verifies the origin server certificate; the
+origin verifies and authorizes the edge client identity. Application users still need their normal
+login and authorization.
 
-Provision these files through the deployment's certificate authority:
-
-- An origin server certificate valid for `origin.example.com`.
-- A dedicated **per-site client CA**, with its signing key kept offline.
-- A currently valid edge certificate with `clientAuth` extended key usage and
-  its matching private key. Give each edge its own certificate.
-
-Install the client pair on the edge and add these site-file flags:
+1. Issue an origin certificate for its upstream hostname.
+2. Use a dedicated per-site client CA with its signing key offline.
+3. Give each edge a valid `clientAuth` certificate and matching private key.
+4. Install the client pair and configure:
 
 ```json
 "origin-client-cert": "/etc/carnical/origin/edge.crt",
 "origin-client-key": "/etc/carnical/origin/edge.key"
 ```
 
-If the origin uses a private server CA, also set `origin-ca-file` to that CA's
-PEM trust bundle. This replaces the system trust store for this origin; it does
-not disable certificate or hostname verification. Without the flag, system
-roots are used. All three settings require an HTTPS upstream. Client cert/key
-must be provided together; invalid, expired, future-dated, mismatched and
-non-client-authentication identities fail startup. Certificate/CA files are
-bounded to 1 MiB and the key to 64 KiB. Files must be regular files, with no
-symlink at the supplied path.
+Set `origin-ca-file` for a private server issuer. It replaces the origin's system root store without
+disabling hostname/certificate checks. All three options require HTTPS; cert/key must be supplied
+together. Invalid, expired, future-dated, mismatched or unsuitable identities fail startup.
 
-On Unix, use key permissions `0600`, or `0640` with a dedicated read-only edge
-group. World access and group write access are refused. On Windows, restrict the
-key's ACL to the service account and administrators; the CLI's Unix mode check
-does not validate Windows ACLs. Keep the files and parent directories under
-operator control.
+Certificates/CA bundles are capped at 1 MiB and keys at 64 KiB. Files must be regular with no
+symlink at the supplied path. Unix keys may use 0600, or 0640 with a dedicated read-only group;
+world access and group write are refused. On Windows, enforce service/admin access with ACLs; the
+Unix mode check does not validate them. Keep parent directories under operator control.
 
-For an NGINX origin, adapt [origin-mtls.conf](../deploy/nginx/origin-mtls.conf)
-in its `http` context. Replace the names, paths and
-`REPLACE_WITH_APPROVED_CERTIFICATE_SERIAL` with the serial from:
+For NGINX, adapt [origin-mtls.conf](../deploy/nginx/origin-mtls.conf) in the `http` context. Replace
+names, paths and the approved certificate serial using:
 
 ```sh
 openssl x509 -in edge.crt -noout -serial
 ```
 
-Use the value after `serial=`. The template requires a verified certificate
-from the site's CA **and** an approved serial, the expected TLS SNI and an
-approved HTTP Host. Add an allowlist entry for each authorized edge certificate.
-For this NGINX template, set `upstream-host` to `origin.example.com` so HTTP
-Host matches TLS SNI. NGINX can refuse mismatched names when client verification
-is enabled. The template sets the application's HTTP Host to `example.com`
-after authenticating ingress; adapt that fixed value to the application.
-The placeholder denies access until replaced. Authorization uses TLS variables,
-so visitor headers cannot supply an identity. The application behind NGINX must
-listen only on loopback or a private network restricted to this ingress.
+Use the value after `serial=` and authorize each edge separately. The template requires a verified
+site-CA certificate, approved serial, expected SNI and approved HTTP Host. Set `upstream-host` to
+`origin.example.com` for that template. It then sets the application's Host to `example.com`; adapt
+that fixed value to the application. The placeholder denies access. TLS variables establish
+identity, so visitor headers cannot supply it.
 
-Run `nginx -t` and reload the reviewed configuration. Close every alternate
-public HTTP/HTTPS port, virtual host and direct application route; also restrict
-origin network access to approved ingress peers. Confirm directly that no
-certificate, another site's certificate, and an unapproved certificate from
-the same CA cannot reach the application. Then check the edge:
+Run `nginx -t` and reload. Restrict origin access to approved ingress peers and close alternate
+public ports, virtual hosts and direct application routes. Keep the application behind NGINX on
+loopback or a restricted private network.
+
+Test both outcomes:
+
+- No certificate, another site's certificate and an unapproved same-CA certificate must not reach the application.
+- The configured edge identity must pass this explicit acceptance check:
 
 ```sh
 ./carnical -config /etc/carnical/site.json -check -check-origin -check-origin-http
 ```
 
-This explicit probe sends `HEAD /` with the configured HTTP Host and edge TLS
-identity. It accepts 2xx/3xx responses, follows no redirects, uses no visitor
-cookies or credentials, and bounds response headers to 32 KiB within the
-ten-second origin-check budget. A 401/403 fails the check. Select an origin where
-`HEAD /` is allowed. A successful probe shows that this identity was accepted;
-the direct negative checks above establish that other identities are refused.
+The HTTP probe sends `HEAD /` with configured Host and TLS identity. It accepts 2xx/3xx without
+following redirects, sends no visitor credentials, and limits response headers to 32 KiB within the
+ten-second check budget. A 401/403 fails. Choose an origin that permits `HEAD /`.
 
-Certificates are loaded on startup. Monitor expiry, issue replacements, update
-the origin's approved serials, validate the new files and restart the edge.
-Remove retired identities at the origin and drain/restart its existing workers
-and connections when revocation must take effect. The template disables TLS
-session resumption and early data and bounds connection reuse, but replacing
-a certificate does not revoke an already established connection instantly.
+Certificates load at startup. Monitor expiry, approve replacement serials, validate files and
+restart the edge. Remove retired identities and drain/restart origin workers/connections when
+revocation must take effect. The template disables TLS resumption/early data and bounds reuse;
+certificate replacement does not instantly revoke an established connection.
 
-The CLI does not expose a customer provisioning or management-login endpoint.
-Integrators building one must use the [control API's authentication and tenant
-authorization](control-api.md), including verified client certificates, signed
-requests and replay protection, and validate domain ownership before accepting
-an origin. Do not replace those checks with public request headers.
+The CLI has no provisioning/login endpoint. A hosted management service needs [control
+authentication](control-api.md), replay/tenant checks and verified domain ownership.
 
 ## Operator: check, install and test
 
-`-check` loads the selected settings, compiles the rules, validates inspectors
-and reads local certificates and other configured files. It exits with a nonzero
-status on an error. It neither binds a port, consumes a systemd listening
-descriptor nor applies process confinement. It checks confinement port syntax and
-CrowdSec configuration, but does not authenticate with CrowdSec or prove kernel
-sandbox support. Normal startup still performs those checks.
+| Check | What it establishes |
+| --- | --- |
+| `-check` | Load effective settings, compile rules/inspectors and validate configured local files. No bind, socket consumption or confinement is performed. |
+| `-check -check-origin` | Check resolved addresses against origin policy, connect using the dial-time guard, and verify HTTPS trust within ten seconds. No HTTP request or redirects. |
+| `-check -check-origin -check-origin-http` | Also test `HEAD /` acceptance with configured origin identity. |
 
-`-check -check-origin` additionally checks all resolved origin addresses against
-the origin policy, connects with the serving dial-time address check, and verifies
-the TLS handshake for HTTPS. The DNS/connect/handshake budget is ten seconds.
-It sends no HTTP request or application credentials and follows no redirect.
-When configured, it presents the edge client certificate during TLS. TLS 1.3
-client-authentication refusal may appear only on a later read; use the explicit
-HTTP probe above to check application acceptance.
-This proves connection reachability and certificate trust, **not** application
-routing, website health, available capacity or protection against every attack.
-The probe runs before confinement; actual confined forwarding must also be tested.
+`-check` validates confinement port syntax and CrowdSec settings, but does not authenticate to
+CrowdSec or prove kernel support. Normal startup performs those checks. TLS 1.3 client-auth refusal
+may appear only on a later read, so use the HTTP probe to check acceptance. These checks run before
+confinement; test real confined forwarding separately.
 
-For the hardened Linux service, follow the [host installation order](../deploy/README.md).
-Install the reviewed file as `/etc/carnical/site.json`, readable by the edge group,
-and use this `/etc/carnical/edge.env` value:
+For Linux installation, follow the [deployment order](../deploy/README.md). Install the reviewed
+site file at `/etc/carnical/site.json`, root-owned and readable by the edge group, and set:
 
 ```text
 CARNICAL_ARGS="-config /etc/carnical/site.json"
 ```
 
-The shipped service checks the same settings in `ExecStartPre` before serving.
-It preserves the existing unprivileged socket activation, upload directory and
-confinement. The socket template uses one IPv6 listener with
-`BindIPv6Only=both`, allowing IPv4 and IPv6 while passing the single descriptor
-the CLI requires. On an IPv4-only host, use a socket drop-in:
+The service validates the same settings in `ExecStartPre` and retains unprivileged socket
+activation, private uploads and confinement. The socket's IPv6 listener uses `BindIPv6Only=both`. On
+a host without IPv6, use this drop-in and rerun the zone/listener checks:
 
 ```ini
 [Socket]
@@ -181,62 +142,47 @@ ListenStream=
 ListenStream=0.0.0.0:443
 ```
 
-Match origin ports and addresses in **all** enforcement layers: the site
-`origin-allow`, `confine-connect` and the host network policy. Public HTTPS
-origins fit the default port policy; private origins require deliberate changes
-to the host policy too. Configure `trusted-proxies` only for the actual CDN or
-load-balancer peers. With direct visitors, leave it empty. The CLI reads TLS
-certificates at startup: arrange renewal with the existing certificate provider,
-check the new pair and restart the service to load it.
+Match origin addresses/ports across `origin-allow`, `confine-connect` and the host policy. Private
+origins need explicit host-policy changes too. Leave `trusted-proxies` empty for direct visitors;
+otherwise name only real CDN/load-balancer peers. Renew visitor certificates through the certificate
+provider, validate the new pair and restart to load it.
 
-Before DNS cutover, test the real hostname and certificate against each edge IP:
+Before cutover, test the real hostname/certificate against every edge IP:
 
 ```sh
 curl --resolve example.com:443:EDGE_IPV4 https://example.com/
 curl --resolve www.example.com:443:EDGE_IPV4 https://www.example.com/
 ```
 
-Replace `EDGE_IPV4` with the assigned address. Keep certificate verification
-enabled. Test the IPv6 route separately if it will be advertised. Exercise login,
-cookies, redirects, uploads, checkout and supported APIs through the edge, then
-a controlled blocked request in staging with both content layers enabled. Verify
-that refused traffic did not reach the origin. Review format and rule logs for
-legitimate requests before enforcing the production site. A successful `-check`
-does not replace these live tests.
+Replace `EDGE_IPV4` and keep certificate verification enabled. Test IPv6 separately before
+advertising it. Exercise login, cookies, redirects, uploads, checkout and APIs, then a controlled
+staging refusal with both content layers enabled. Confirm refused requests never reached the origin.
+Review legitimate-traffic logs before enforcing production policy.
 
 ## Client: DNS cutover and handover
 
-The operator should provide this short handover:
+The operator should provide:
 
-| Item | Client/operator agreement |
+| Item | Agreement |
 | --- | --- |
-| Protected names | Exact apex, www and other hostnames included in the site's host allowlist and certificate. |
-| DNS records | Assigned edge IPv4 addresses for A records and tested IPv6 addresses for AAAA records, or the operator's supported DNS target. |
-| Origin | Stable origin address and expected HTTP Host, retained separately from public website DNS. |
-| TLS | Who renews the edge and origin certificates and how renewal is monitored. |
-| Cutover | Time window, observed DNS TTL, live application checks and who monitors errors. |
-| Rollback | Recorded previous ingress/DNS settings and an approved origin access policy for that path. |
-| Support | Operator contact and where to report blocked legitimate requests. |
+| Names | Exact apex, www and other names covered by the host allowlist/certificate. |
+| DNS | Edge IPv4 A records and tested IPv6 AAAA records, or the supported DNS target. |
+| Origin | Separate stable origin address and expected HTTP Host. |
+| TLS | Renewal owner and expiry monitoring for edge/origin certificates. |
+| Cutover | Time window, DNS TTL, application checks and error monitoring owner. |
+| Rollback | Previous ingress/DNS settings and an approved access policy for that route. |
+| Support | Contact for blocked legitimate requests. |
 
-Lower the affected records' TTL in advance and wait out their previous TTL.
-Change **every** advertised A and AAAA route for the protected names; a leftover
-direct-origin record provides a route around the WAF. Check authoritative DNS
-and representative clients after the change. Monitor application errors, blocked
-legitimate requests and the running service while caches drain.
+Lower TTL in advance and wait out the previous TTL. Update every advertised A/AAAA route; a leftover
+direct-origin record provides a route around the WAF. Check authoritative DNS and representative
+clients, then monitor errors and legitimate refusals while caches drain.
 
-Restrict the origin to approved ingress peers, or bind a local origin to loopback.
-DNS alone does not stop someone connecting directly to a public origin IP.
-Include the previous approved ingress in the planned rollback policy where
-appropriate. For rollback, restore the recorded ingress/DNS configuration and
-verify it serves the site; do not disable WAF checks or origin restrictions as a
-routine shortcut.
+Restrict the origin to approved ingress or loopback. DNS alone does not prevent direct-origin
+access. For rollback, restore the recorded ingress/DNS path and verify it serves the site with its
+approved access policy.
 
-After acceptance, save the reviewed site file and effective command-line
-overrides, record a baseline traffic rate for flood tuning, and document
-certificate renewal and the rollback procedure. Configuration changes take
-effect on restart; live configuration reload is not provided by this CLI.
+After acceptance, save the site file/CLI overrides, normal traffic baseline, renewal procedure and
+rollback plan. Configuration changes require restart; the CLI does not provide live reload.
 
-References: the Go [flag package](https://pkg.go.dev/flag) defines the registered
-flag types and boolean override syntax; systemd's
-[socket reference source](https://github.com/systemd/systemd/blob/main/man/systemd.socket.xml)
-defines `BindIPv6Only=both` and descriptor activation.
+References: [Go flag syntax](https://pkg.go.dev/flag), [systemd socket
+activation](https://github.com/systemd/systemd/blob/main/man/systemd.socket.xml).
