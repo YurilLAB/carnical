@@ -7,10 +7,9 @@ import (
 	"time"
 )
 
-// An adversarial body is one built to make a parser do the most work for its size. The claim is that none of them costs more per
-// byte than an ordinary body does by more than a small factor, and that doubling the size does not more than double the time: the
-// cost of a request is bounded by its size. The policy is in monitor mode and every count limit is raised, so that nothing stops the
-// scan early: this is the work a body can make the parser do, not the work it does before it is refused.
+// These bodies exercise costly parser shapes at two sizes. The test checks a
+// per-byte ceiling and a scaling limit when the input is four times larger.
+// Monitor mode and raised count limits keep the scan from stopping at a refusal.
 
 func raised(p *Policy) {
 	p.MaxBodyBytes = 8 << 20
@@ -72,15 +71,21 @@ var shapes = []shape{
 	{"graphql many fields", "application/graphql", "/graphql", func(n int) string { return "{ " + repeatTo("f ", n) + "}" }},
 	{"graphql many aliases", "application/graphql", "/graphql", func(n int) string { return "{ " + repeatTo(`a: login(u: "x") `, n) + "}" }},
 	{"graphql many fragments", "application/graphql", "/graphql", func(n int) string {
-		var sb strings.Builder
-		sb.WriteString("{ a }\n")
-		for i := 0; sb.Len() < n && i < 900; i++ {
-			fmt.Fprintf(&sb, "fragment F%d on T { a ...F%d }\n", i, i+1)
+		const fragments = 900
+		document := func(fields string) string {
+			var sb strings.Builder
+			sb.WriteString("{ ...F0 }\n")
+			for i := 0; i < fragments; i++ {
+				fmt.Fprintf(&sb, "fragment F%d on T { %s...F%d }\n", i, fields, i+1)
+			}
+			fmt.Fprintf(&sb, "fragment F%d on T { a }\n", fragments)
+			return sb.String()
 		}
-		fmt.Fprintf(&sb, "fragment F900 on T { a }\n")
-		return sb.String()
-	}},
-}
+		// Keep the long fragment chain and grow its selections within the definition cap.
+		base := document("")
+		fields := strings.Repeat("a ", max(0, (n-len(base))/(2*fragments)))
+		return document(fields)
+	}}}
 
 // yamlShapes are the adversarial YAML bodies. The library that reads YAML is not linear in the size of the document (many mapping
 // keys cost more than their share), so YAML is held to its size cap instead, and the cap is what the test measures.
@@ -119,28 +124,17 @@ var yamlShapes = []shape{
 	{"yaml long scalar", "application/yaml", "/x", func(n int) string { return "a: " + repeatTo("word ", n) + "\n" }},
 }
 
-// timeOf is the time of one call, the best of three measurements each long enough (30 ms) for the clock to resolve.
+// timeOf uses Go's benchmark calibration: each trial starts with a collected heap
+// and the measured calls include steady allocation and collection costs. A short
+// best-of-three sample can compare different collector or scheduler windows.
 func timeOf(in *Inspector, r row) time.Duration {
 	req := r.request()
-	best := time.Duration(1 << 62)
-	for round := 0; round < 3; round++ {
-		n := 1
-		for {
-			start := time.Now()
-			for i := 0; i < n; i++ {
-				in.Inspect(req)
-			}
-			d := time.Since(start)
-			if d >= 30*time.Millisecond || n >= 1<<16 {
-				if per := d / time.Duration(n); per < best {
-					best = per
-				}
-				break
-			}
-			n *= 2
+	result := testing.Benchmark(func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			in.Inspect(req)
 		}
-	}
-	return best
+	})
+	return time.Duration(result.NsPerOp())
 }
 
 // TestYAMLAtItsDefaultCapIsBounded measures the worst YAML bodies the default size cap lets through.
@@ -164,6 +158,29 @@ func TestYAMLAtItsDefaultCapIsBounded(t *testing.T) {
 	}
 }
 
+// BenchmarkAdversarialBodies keeps size and allocation measurements available for
+// diagnosing a cost-test failure without changing the parser or its policy.
+func BenchmarkAdversarialBodies(b *testing.B) {
+	for _, s := range shapes {
+		for _, size := range []int{64 << 10, 256 << 10} {
+			b.Run(fmt.Sprintf("%s/%dKiB", s.name, size>>10), func(b *testing.B) {
+				r := row{path: s.path, ct: s.ct, body: s.make(size), tweak: raised}
+				in := New(r.policy(nil, true))
+				if in.Err() != nil {
+					b.Fatal(in.Err())
+				}
+				req := r.request()
+				b.SetBytes(int64(len(r.body)))
+				b.ReportAllocs()
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					in.Inspect(req)
+				}
+			})
+		}
+	}
+}
+
 func TestAdversarialBodiesCostInProportionToTheirSize(t *testing.T) {
 	const perByteCeiling = 400.0 // ns per byte: ten times what the slowest ordinary format costs, so a noisy machine does not fail it
 	for _, s := range shapes {
@@ -171,6 +188,9 @@ func TestAdversarialBodiesCostInProportionToTheirSize(t *testing.T) {
 			small := row{path: s.path, ct: s.ct, body: s.make(64 << 10), tweak: raised}
 			large := small
 			large.body = s.make(256 << 10)
+			if ratio := float64(len(large.body)) / float64(len(small.body)); ratio < 3.9 || ratio > 4.1 {
+				t.Fatalf("the scaling fixture grew by %.2fx instead of about 4x", ratio)
+			}
 			in := New(small.policy(nil, true))
 			if in.Err() != nil {
 				t.Fatal(in.Err())

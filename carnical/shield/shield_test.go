@@ -28,13 +28,74 @@ func TestHLLEstimatesWithinAFewPercent(t *testing.T) {
 		t.Run(strconv.Itoa(n), func(t *testing.T) {
 			h := newHLL(10)
 			for i := 0; i < n; i++ {
-				h.add(hashAddr(netip.AddrFrom4([4]byte{byte(i >> 24), byte(i >> 16), byte(i >> 8), byte(i)})))
+				// Accuracy needs reproducible, well-distributed hashes. The process-random
+				// production seed gives different statistical errors on every run.
+				var input [8]byte
+				binary.BigEndian.PutUint64(input[:], uint64(i))
+				digest := sha256.Sum256(input[:])
+				h.add(binary.BigEndian.Uint64(digest[:8]))
 			}
-			if e := h.estimate(); math.Abs(e-float64(n))/float64(n) > 0.08 {
+			if e := h.estimate(); math.IsNaN(e) || math.IsInf(e, 0) || math.Abs(e-float64(n))/float64(n) > 0.08 {
 				t.Fatalf("estimate %.0f for %d", e, n)
 			}
 		})
 	}
+	for _, tc := range []struct {
+		name string
+		x    uint64
+		idx  int
+		rank uint8
+	}{
+		{"first remainder bit", uint64(17)<<54 | 1<<53, 17, 1},
+		{"second remainder bit", uint64(17)<<54 | 1<<52, 17, 2},
+		{"last remainder bit", 1, 0, 54},
+		{"zero remainder", uint64(17) << 54, 17, 55},
+		{"last register", math.MaxUint64, 1023, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHLL(10)
+			h.add(tc.x)
+			h.add(tc.x)
+			if h.reg[tc.idx] != tc.rank {
+				t.Fatalf("register %d: got %d, want %d", tc.idx, h.reg[tc.idx], tc.rank)
+			}
+			for i, rank := range h.reg {
+				if i != tc.idx && rank != 0 {
+					t.Fatalf("unrelated register %d changed to %d", i, rank)
+				}
+			}
+		})
+	}
+	t.Run("merge and reset", func(t *testing.T) {
+		left, right := newHLL(10), newHLL(10)
+		left.add(1 << 53)                // register 0, rank 1
+		left.add(uint64(1)<<54 | 1<<52)  // register 1, rank 2
+		right.add(0)                     // register 0, maximum rank
+		right.add(uint64(2)<<54 | 1<<51) // register 2, rank 3
+		left.merge(&right)
+		if left.reg[0] != 55 || left.reg[1] != 2 || left.reg[2] != 3 || right.reg[1] != 0 {
+			t.Fatal("merge lost a rank or modified its source")
+		}
+		left.reset()
+		for i, rank := range left.reg {
+			if rank != 0 {
+				t.Fatalf("reset retained register %d", i)
+			}
+		}
+		if e := left.estimate(); e != 0 {
+			t.Fatalf("empty counter estimated %.3f", e)
+		}
+	})
+	t.Run("duplicate address hashing", func(t *testing.T) {
+		h := newHLL(10)
+		addr := netip.MustParseAddr("192.0.2.1")
+		for i := 0; i < 100; i++ {
+			h.add(hashAddr(addr))
+		}
+		if e := h.estimate(); math.IsNaN(e) || math.IsInf(e, 0) || math.Abs(e-1) > 0.08 {
+			t.Fatalf("duplicate source counted as %.3f", e)
+		}
+	})
 }
 
 func TestTopKKeepsTheHeavyHittersAmongNoise(t *testing.T) {

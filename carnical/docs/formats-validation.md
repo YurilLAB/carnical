@@ -57,3 +57,16 @@ The first run killed 356 and left 54. Each survivor was read: 37 were real gaps 
 * the same finding is made a few lines later by another check (the end-of-input check in a GraphQL list and selection set; the parse-time selection cap, which the field count repeats; a bare line feed after a boundary, which the walk reports again; a multipart header block that ends in the body, which the missing-newline check reports; `filename*` that is not a valid extended value, which the mismatch check reports under the same rule; an unterminated XML declaration, attribute value, CDATA section or empty name, each reported by the next check under the same rule; a YAML token cap, which the node limit repeats and which differs only in what it costs; a YAML parse error, which becomes a recovered panic and the same rule);
 * a guard that is never reached (the end-of-input check at the top of the JSON value reader, which every caller makes first; the tag case in the YAML walker, because tags are refused as tokens);
 * the recovery from a panic inside the YAML library, which needs the library to panic.
+
+
+## 2026-10-10: Cost-test sampling
+
+The cost tests now use Go's benchmark calibration instead of the lowest of three short samples. Each scaling fixture must grow by about four times its actual byte length. The fragment fixture keeps its 900-fragment chain and increases selections per fragment within the definition cap. Each trial starts with a collected heap and measures enough calls to include allocation and collection costs. The limits remain 400 ns per byte and at most 9 times the duration for a body with four times the bytes; YAML keeps its separate 250 ms limit.
+
+With Go 1.26.9, the GraphQL alias case passed 18 native Linux measurements across one, two and eight CPUs. As negative controls, an injected quadratic workload failed the scaling check at 13.6 times the duration, while a costly linear workload failed the byte ceiling at 1,085 ns per byte. These controls validate the test; they are not production parser findings.
+
+To inspect timings and allocations for the adversarial bodies, run from the repository root:
+
+```sh
+go -C carnical test ./formats -run '^$' -bench '^BenchmarkAdversarialBodies/' -benchmem -count=6
+```

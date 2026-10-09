@@ -52,3 +52,10 @@ limits above. The test removes all four safeguards at once and fails; with them 
 The first live run found a hole the simulation did not: with a one-second reputation age, bots earned "known" standing in the
 2.5 seconds before detection, and 85% of the flood got through. Standing is now learnt only while traffic is ordinary, and
 during an attack only standing earned at least `KnownMinAge` before the attack began counts.
+
+
+## 2026-10-10: Reproducible cardinality checks
+
+`TestHLLEstimatesWithinAFewPercent` now uses deterministic SHA-256 hash fixtures for 50, 5,000 and 200,000 distinct inputs, retaining the 8% error limit. Production address hashing still uses its random process seed. HyperLogLog has [statistical estimation error](https://algo.inria.fr/flajolet/Publications/FlFuGaMe07.pdf), so a fresh random seed cannot guarantee the same error on every test run. A 100-seed diagnostic produced three estimates outside 8%.
+
+The same test also checks register-index and rank boundaries, duplicate address hashing, merge preservation, reset and finite estimates. Manual negative controls disabled register updates, removed the rank sentinel, or returned NaN; each was rejected. The live flood and detector tests continue to exercise production address hashing.
