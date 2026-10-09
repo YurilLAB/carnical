@@ -67,7 +67,7 @@ go run ./cmd/carnical -config site.json -check -check-origin
 go run ./cmd/carnical -config site.json
 ```
 
-Use Go 1.26 or later (the workspace selects Go 1.26.6). From the repository root, with a local application on port 8081:
+Use patched Go 1.26.9 (or Go 1.27.2+ on the 1.27 branch); the workspace selects Go 1.26.9. From the repository root, with a local application on port 8081:
 
 ```sh
 cd carnical
@@ -160,7 +160,7 @@ throwaway keyring, not yours), extracts only expected regular files, and writes 
 
 ## Changes to upstream files
 
-- `go.work`: one line adding `./carnical`, and a `toolchain` line so the workspace builds with a Go release that has the standard-library fixes (go1.26.4 had seven that affect a proxy: HTTP/2 cleartext check, quadratic URL path resolution, XML recursion; `govulncheck ./...` reports none on go1.26.6).
+- `go.work`: includes `./carnical` and pins Go 1.26.9, including the October 2026 HTTP/2 security fixes. Builds also use `golang.org/x/net` v0.60.0.
 - `internal/corazawaf/rulegroup.go`, `rule.go`, `transaction.go`: rule evaluation stops when the transaction's context is done, and a blocking engine refuses the transaction (503). Nothing in the engine looked at the context before, so a request that was expensive to inspect could not be cut short. The proxy gives each evaluation phase a budget through it (`proxy/deadline.go`). A test in `rulegroup_test.go` covers the three cases.
 - `internal/transformations/normalise_path.go`: `path.Clean` instead of `filepath.Clean`, so the transformation gives the same result on every OS.
 - Further engine hardening validates audit-log part names and file modes, restricts new debug-log permissions and reports cleanup failures. See the [security findings review](../docs/security-findings.md) for confirmed fixes and remaining work.

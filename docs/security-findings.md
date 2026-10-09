@@ -586,3 +586,9 @@ explicit. The payload runs use the same ddos-off setting as hosted CI; separate
 live kernel tests validate confinement. At publication, the last hosted run still
 has two Gosec jobs and their aggregate gate failing; the committed batch requires
 a new hosted run, including its race and integration checks.
+
+## HTTP/2 dependency follow-up — 9 October 2026
+
+The hosted OSV audit identified GO-2026-6603, GO-2026-6610, GO-2026-6611, GO-2026-6612 and GO-2026-6617 against golang.org/x/net v0.58.0. The vendor records mark v0.60.0 as fixed; the corresponding standard-library fixes are included in Go 1.26.9 and Go 1.27.2. See the [Go advisory](https://pkg.go.dev/vuln/GO-2026-6603) and [HPACK race advisory](https://pkg.go.dev/vuln/GO-2026-6617).
+
+The affected dependency manifests now require x/net v0.60.0. The engine, Carnical, HTTP example and CRS harness require Go 1.26.9; the workspace, security CI and digest-pinned container builder use that version. This records a vendor-advisory dependency match, rather than a claim that every Carnical deployment exposes each vulnerable HTTP/2 path. Existing OpenPGP import guards and narrowly documented policy remain unchanged.

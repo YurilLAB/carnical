@@ -36,7 +36,7 @@ platform-specific layers; the health listener needs the narrow systemd bind allo
    CGO_ENABLED=0 go build -trimpath -o carnical ./cmd/carnical
    CGO_ENABLED=0 go build -trimpath -o carnical-audit ./cmd/carnical-audit
    CGO_ENABLED=0 go build -trimpath -o carnical-confine ./cmd/carnical-confine
-   govulncheck ./...        # must say "No vulnerabilities found"; the module requires go1.26.6 or later
+   govulncheck ./...        # must say "No vulnerabilities found"; the module requires go1.26.9 or later
    ```
 
 2. Install the programs as root, owned by root and not writable by anyone else: `install -o root -g root -m 0755 carnical carnical-audit carnical-confine /usr/local/bin/`.

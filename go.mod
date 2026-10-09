@@ -1,6 +1,6 @@
 module github.com/corazawaf/coraza/v3
 
-go 1.26.0
+go 1.26.9
 
 // Testing dependencies:
 // - go-mockdns
@@ -27,7 +27,7 @@ require (
 	github.com/petar-dambovaliev/aho-corasick v0.0.0-20250424160509-463d218d4745
 	github.com/tidwall/gjson v1.18.0
 	github.com/valllabh/ocsf-schema-golang v1.0.3
-	golang.org/x/net v0.58.0
+	golang.org/x/net v0.60.0
 	golang.org/x/sync v0.23.0
 	rsc.io/binaryregexp v0.2.0
 )

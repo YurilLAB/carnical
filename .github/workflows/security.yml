@@ -30,7 +30,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
-          go-version: '1.26.6'
+          go-version: '1.26.9'
           cache-dependency-path: '**/go.sum'
       - name: Install verified scanner
         run: python3 .github/security/install.py gosec
@@ -68,7 +68,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
-          go-version: '1.26.6'
+          go-version: '1.26.9'
           cache-dependency-path: '**/go.sum'
       - name: Install verified scanner
         run: python3 .github/security/install.py osv-scanner
@@ -149,7 +149,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
-          go-version: '1.26.6'
+          go-version: '1.26.9'
           cache-dependency-path: '**/go.sum'
       - name: Test Coraza and every pure Go application module
         shell: bash
@@ -199,7 +199,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
-          go-version: '1.26.6'
+          go-version: '1.26.9'
           cache-dependency-path: '**/go.sum'
       - name: Check audit formatters, writers and reporting failures
         shell: bash
@@ -232,7 +232,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
-          go-version: '1.26.6'
+          go-version: '1.26.9'
           cache-dependency-path: '**/go.sum'
       - name: Check stream races and proxy wiring
         working-directory: carnical
@@ -266,7 +266,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
-          go-version: '1.26.6'
+          go-version: '1.26.9'
           cache-dependency-path: '**/go.sum'
       - name: Install network test tools
         run: |
@@ -317,7 +317,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
-          go-version: '1.26.6'
+          go-version: '1.26.9'
           cache-dependency-path: '**/go.sum'
       - name: Build native and portable binaries
         shell: bash
