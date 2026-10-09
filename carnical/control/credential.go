@@ -494,15 +494,36 @@ type fileSig struct {
 }
 
 // OpenCredentialFile loads the file. It fails if the file cannot be read or any credential in it is wrong.
+// Relative paths retain the working directory at open for later refreshes and revocations.
 func OpenCredentialFile(path string, now func() time.Time) (*CredentialFile, error) {
 	if now == nil {
 		now = time.Now
+	}
+	path, err := credentialFilePath(path)
+	if err != nil {
+		return nil, err
 	}
 	f := &CredentialFile{path: path, now: now}
 	if err := f.load(); err != nil {
 		return nil, err
 	}
 	return f, nil
+}
+
+// credentialFilePath fixes the working directory at open without changing Unix
+// symlink/parent traversal: cleaning link/../file can select a different file.
+func credentialFilePath(path string) (string, error) {
+	if filepath.IsAbs(path) {
+		return path, nil
+	}
+	if isWindows() {
+		return filepath.Abs(path)
+	}
+	base, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	return base + "/" + path, nil
 }
 
 func (f *CredentialFile) load() error {

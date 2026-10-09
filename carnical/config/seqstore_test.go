@@ -48,9 +48,86 @@ func TestFileStoreSurvivesARestart(t *testing.T) {
 			t.Errorf("Advance(%d) after a restart: %v, want %v", tc.seq, err, tc.want)
 		}
 	}
+	for _, relative := range []string{".", "state", filepath.FromSlash("./state/../state")} {
+		t.Run("working directory changes/"+relative, func(t *testing.T) {
+			base, elsewhere := t.TempDir(), t.TempDir()
+			for _, dir := range []string{base, elsewhere} {
+				if err := os.Chmod(dir, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Chdir(base)
+			s := openStore(t, relative)
+			r := newRig(t, s)
+			if _, err := r.ver.Accept(r.sign(t, tenantA, edgeID, 10), t0); err != nil {
+				t.Fatal(err)
+			}
+			keyStream := KeySetStream("0123456789abcdef")
+			if err := s.Advance(keyStream, 10); err != nil {
+				t.Fatal(err)
+			}
+			other := openStore(t, filepath.Join(elsewhere, relative))
+			for _, stream := range []string{tenantA, keyStream} {
+				if err := other.Advance(stream, 1); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Chdir(elsewhere)
+			for _, stream := range []string{tenantA, keyStream} {
+				if last, err := s.Last(stream); err != nil || last != 10 {
+					t.Errorf("working-directory change lost the rollback floor: %d, %v", last, err)
+				}
+			}
+			if _, err := r.ver.Accept(r.sign(t, tenantA, edgeID, 2), t0); !errors.Is(err, ErrRollback) {
+				t.Errorf("old signed envelope after directory change: %v, want rollback", err)
+			}
+			if err := s.Advance(keyStream, 2); !errors.Is(err, ErrRollback) {
+				t.Errorf("old key-list sequence after directory change: %v, want rollback", err)
+			}
+			if _, err := r.ver.Accept(r.sign(t, tenantA, edgeID, 11), t0); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Advance(keyStream, 11); err != nil {
+				t.Fatal(err)
+			}
+			original := openStore(t, filepath.Join(base, relative))
+			for _, stream := range []string{tenantA, keyStream} {
+				if last, err := original.Last(stream); err != nil || last != 11 {
+					t.Errorf("original store after restart: %d, %v, want 11", last, err)
+				}
+				if last, err := other.Last(stream); err != nil || last != 1 {
+					t.Errorf("unrelated store changed: %d, %v, want 1", last, err)
+				}
+			}
+		})
+	}
 }
 
 func TestFileStoreFilesAreOnePerStreamAndPrivate(t *testing.T) {
+	for _, path := range []string{"", "bad\x00state"} {
+		if store, err := OpenFileSeqStore(path); err == nil || store != nil {
+			t.Errorf("invalid directory accepted: %v", err)
+		}
+	}
+	if os.PathSeparator == '/' {
+		t.Run("missing working directory", func(t *testing.T) {
+			absolute := t.TempDir()
+			if err := os.Chmod(absolute, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			cwd := t.TempDir()
+			t.Chdir(cwd)
+			if err := os.Remove(cwd); err != nil {
+				t.Fatal(err)
+			}
+			if store, err := OpenFileSeqStore("state"); !errors.Is(err, ErrStore) || store != nil {
+				t.Fatalf("opened a relative store without a working directory: %v", err)
+			}
+			if _, err := OpenFileSeqStore(absolute); err != nil {
+				t.Fatalf("absolute store required a working directory: %v", err)
+			}
+		})
+	}
 	dir := filepath.Join(t.TempDir(), "state", "seq")
 	s := openStore(t, dir)
 	for _, st := range []string{tenantA, tenantB, KeySetStream("0123456789abcdef")} {

@@ -188,7 +188,9 @@ Stale temporary files are removed when the store is opened. Opening an existing 
 directory symlinks and, on Unix, any group/other directory permissions; rejection does not clean up
 files or change permissions. Windows deployments must restrict the directory with ACLs.
 
-The directory owner and its parent path must remain protected.
+Relative directory paths are resolved when the store opens. Changing the process working directory
+does not move the store or reset its replay protection. The directory owner and its parent path must
+remain protected.
 
 Honest limits: one process writes the directory (two writers could each read the same number and
 both write a higher one); Windows cannot flush a directory, so the power-cut argument is for Linux;

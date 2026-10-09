@@ -431,6 +431,9 @@ func TestCredentialFile(t *testing.T) {
 		}
 	})
 	t.Run("a file that is not there or not valid is not opened", func(t *testing.T) {
+		if store, err := OpenCredentialFile("bad\x00credentials.json", nil); err == nil || store != nil {
+			t.Fatalf("invalid path accepted: %v", err)
+		}
 		if _, err := OpenCredentialFile(filepath.Join(dir, "missing.json"), nil); err == nil {
 			t.Fatal("opened a missing file")
 		}
@@ -444,6 +447,127 @@ func TestCredentialFile(t *testing.T) {
 			t.Fatal("opened a file that is not JSON")
 		}
 	})
+	for _, relative := range []string{"credentials.json", "./credentials.json", filepath.FromSlash("state/credentials.json")} {
+		t.Run("working directory changes/"+relative, func(t *testing.T) {
+			base, elsewhere := t.TempDir(), t.TempDir()
+			originalPath := filepath.Join(base, relative)
+			otherPath := filepath.Join(elsewhere, relative)
+			originalData, err := MarshalCredentials([]Credential{a})
+			if err != nil {
+				t.Fatal(err)
+			}
+			otherData, err := MarshalCredentials([]Credential{a, b})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, path := range []string{originalPath, otherPath} {
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(originalPath, originalData, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(otherPath, otherData, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			clock := &fakeClock{t: epoch}
+			t.Chdir(base)
+			store, err := OpenCredentialFile(relative, clock.now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Chdir(elsewhere)
+			clock.advance(2 * time.Second)
+			if _, ok := store.Lookup(b.ID); ok {
+				t.Error("credentials from another directory were loaded")
+			}
+			if was, err := store.Revoke(a.ID); err != nil || !was {
+				t.Fatalf("revocation after directory change: %v, %v", was, err)
+			}
+			reopened, err := OpenCredentialFile(originalPath, clock.now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, ok := reopened.Lookup(a.ID); !ok || !got.Revoked {
+				t.Error("revocation was not persisted in the original file")
+			}
+			got, err := os.ReadFile(otherPath)
+			if err != nil || string(got) != string(otherData) {
+				t.Errorf("unrelated credential file changed: %v", err)
+			}
+			if store.LastError() != nil {
+				t.Fatalf("unexpected refresh error: %v", store.LastError())
+			}
+		})
+	}
+
+	if runtime.GOOS != "windows" {
+		t.Run("symlink parent traversal keeps its meaning", func(t *testing.T) {
+			base := t.TempDir()
+			target := filepath.Join(base, "target")
+			child := filepath.Join(target, "child")
+			if err := os.MkdirAll(child, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(child, filepath.Join(base, "link")); err != nil {
+				t.Fatal(err)
+			}
+			originalData, err := MarshalCredentials([]Credential{a})
+			if err != nil {
+				t.Fatal(err)
+			}
+			otherData, err := MarshalCredentials([]Credential{b})
+			if err != nil {
+				t.Fatal(err)
+			}
+			originalPath := filepath.Join(target, "credentials.json")
+			if err := os.WriteFile(originalPath, originalData, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(base, "credentials.json"), otherData, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			for _, path := range []string{"link/../credentials.json", base + "/link/../credentials.json"} {
+				t.Chdir(base)
+				clock := &fakeClock{t: epoch}
+				store, err := OpenCredentialFile(path, clock.now)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Chdir(t.TempDir())
+				clock.advance(2 * time.Second)
+				if _, ok := store.Lookup(a.ID); !ok {
+					t.Errorf("symlink parent path changed its meaning: %q", path)
+				}
+				if _, ok := store.Lookup(b.ID); ok {
+					t.Errorf("lexically cleaned path was used: %q", path)
+				}
+			}
+		})
+		t.Run("missing working directory", func(t *testing.T) {
+			absolute := filepath.Join(t.TempDir(), "credentials.json")
+			data, err := MarshalCredentials([]Credential{a})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(absolute, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cwd := t.TempDir()
+			t.Chdir(cwd)
+			if err := os.Remove(cwd); err != nil {
+				t.Fatal(err)
+			}
+			if store, err := OpenCredentialFile("credentials.json", nil); err == nil || store != nil {
+				t.Fatalf("opened a relative path without a working directory: %v", err)
+			}
+			if _, err := OpenCredentialFile(absolute, nil); err != nil {
+				t.Fatalf("absolute path required a working directory: %v", err)
+			}
+		})
+	}
+
 }
 
 func netipAddrZero() netip.Addr { return netip.Addr{} }

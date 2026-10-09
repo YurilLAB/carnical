@@ -114,14 +114,18 @@ type fileOps interface {
 // OpenFileSeqStore opens (creating it if need be) the directory the files are kept in, and removes the temporary files
 // an earlier interrupted write left behind. Existing directories must be real directories and grant no group/other
 // permissions on Unix. Windows deployments must restrict access with ACLs. The operator must also protect the parent path.
+// Relative directories are resolved at open; later working-directory changes do not redirect the store.
 func OpenFileSeqStore(dir string) (*FileSeqStore, error) { return openFileSeqStore(dir, osOps{}) }
 
 func openFileSeqStore(dir string, ops fileOps) (*FileSeqStore, error) {
 	if dir == "" {
 		return nil, errors.New("config: no directory given for the sequence record")
 	}
-	// Use one normalized spelling for validation and every subsequent filesystem operation.
-	dir = filepath.Clean(dir)
+	// Resolve once so a later working-directory change cannot select another rollback floor.
+	dir, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, storeFailure(err)
+	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, storeFailure(err)
 	}

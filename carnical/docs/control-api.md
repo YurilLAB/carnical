@@ -129,7 +129,9 @@ A credentials file is plain data; nothing in it is secret (the key is the public
 `"tenants": "all"` is for the owner's own tooling and works only on a server started with
 `AllowAllTenants`. The file is parsed strictly (no unknown field, no repeated key, no duplicate id)
 and refused whole if any credential is wrong, so a typo cannot remove a restriction.
-`control.OpenCredentialFile` re-reads it when it changes (at most once a second), keeps the last
+`control.OpenCredentialFile` resolves a relative path against the working directory at open, so
+later directory changes do not redirect refreshes or revocations. It re-reads the file when it
+changes (at most once a second), keeps the last
 good set if a new one does not parse, and writes a revocation back atomically with mode 0600.
 
 The client certificate's fingerprint is `sha256(cert.RawSubjectPublicKeyInfo)`:
