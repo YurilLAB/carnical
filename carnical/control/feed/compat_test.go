@@ -92,6 +92,7 @@ var kinds = []struct{ kind, sev string }{
 func richRig(t *testing.T, n int, mutate ...func(*Config, *Key)) *rig {
 	t.Helper()
 	r := newRig(t, mutate...)
+	r.h.cfg.Source = readerSource{r.src}
 	for i := 0; i < n; i++ {
 		k := kinds[i%len(kinds)]
 		score, thr, status, errs, cnt := 12+i, 5, 403, 2, 7
@@ -131,6 +132,22 @@ func richRig(t *testing.T, n int, mutate ...func(*Config, *Key)) *rig {
 		Updates: Updates{LastCheck: ptrTime(nowAt()), LastOK: ptrTime(nowAt()), NextCheck: ptrTime(nowAt().Add(6 * time.Hour)), Failures: 0},
 		Errors:  []string{"a segmentation check failed: zone-reach"}, Notes: []string{"all edges acknowledged revision 3"}}
 	return r
+}
+
+// Compatibility fixtures serve the real reader, which requests one traffic day
+// on incremental pulls. Keep the deliberately unconstrained memSource unchanged
+// for the handler's oversized-source rejection tests.
+type readerSource struct{ *memSource }
+
+func (s readerSource) Traffic(ctx context.Context, site string, days int) ([]TrafficDay, error) {
+	rows, err := s.memSource.Traffic(ctx, site, days)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) > days {
+		rows = rows[:days]
+	}
+	return rows, nil
 }
 
 func i2p(v int) *int { return &v }

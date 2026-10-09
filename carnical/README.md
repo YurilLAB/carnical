@@ -8,6 +8,12 @@ them to one origin per process. This guide covers the standalone proxy; the
 
 ## Run it
 
+Once the binary is installed on Windows or Linux, `carnical setup` collects and validates the
+site settings. It asks before saving, encrypts private origin details and credential paths,
+and prints the commands to check and start the WAF. See [setup](docs/setup.md) for the key
+file, service accounts and backups. The wizard uses existing certificates; it does not change DNS.
+
+
 From this directory, with an application on `127.0.0.1:8081`:
 
 ```sh

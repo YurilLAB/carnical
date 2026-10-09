@@ -9,6 +9,7 @@ recorded build and configuration.
 | Task | Guide |
 | --- | --- |
 | Try the proxy locally | [Operator guide](../README.md#run-it) |
+| Set up an installed WAF | [Setup wizard and encrypted settings](setup.md) |
 | Configure a site, authenticate its origin and change DNS | [Website setup](website-onboarding.md) |
 | Run replicas, health probes, shutdown or containers | [Availability and deployment](availability-and-deployment.md) |
 | Install the Linux service and host controls | [Deployment files](../deploy/README.md) |

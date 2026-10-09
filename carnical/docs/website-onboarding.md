@@ -11,6 +11,12 @@ Source: [site configuration](../cmd/carnical/siteconfig.go), [origin TLS](../pro
 
 ## Operator: prepare one site file
 
+With an installed binary, run `carnical setup` on Windows or Linux and answer its prompts.
+It validates the settings before asking to save, encrypts private origin details and credential
+paths, and prints the check/start commands. Follow the [setup guide](setup.md) when running
+under another account or transferring the configuration. Existing JSON site files still work.
+
+
 From `carnical/`, build and try the local example:
 
 ```sh
@@ -36,12 +42,12 @@ Host; it does not change the TLS certificate name.
 
 | Site-file rule | Requirement |
 | --- | --- |
-| Structure | Exact `version: 1` and a `flags` object; names match `-h` without leading dashes. |
+| Structure | Exact `version: 1` and a `flags` object, with an optional encrypted `private` section; names match `-h` without leading dashes. |
 | Values | Strings/durations are strings, booleans are booleans, numbers must fit their flag type. |
 | Parsing | Unknown/duplicate names, escaped aliases, nulls, wrong types and trailing documents are refused. |
 | File | Regular file, at most 64 KiB; the supplied path must not be a symlink. |
 | Precedence | Explicit CLI flags override file values, including `-flag=false`; omissions keep defaults. |
-| CLI-only actions | `config`, `check`, `check-origin`, `check-origin-http` and `version` cannot appear in `flags`. |
+| CLI-only actions | `config`, `config-key-file`, `check`, `check-origin`, `check-origin-http`, `probe` and `version` cannot appear in `flags`. |
 
 Site files are operator-owned policy: they can relax inspection or grant private-origin/proxy trust.
 Review client requests instead of accepting raw client JSON as deployment configuration. Keep files

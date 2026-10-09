@@ -28,6 +28,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -83,6 +84,11 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 			{name: "file HTTP action", data: `{"version":1,"flags":{"check-origin-http":true}}`, bad: true},
 			{name: "file probe action", data: `{"version":1,"flags":{"probe":"ready"}}`, bad: true},
 			{name: "file version action", data: "{\"version\":1,\"flags\":{\"version\":true}}", bad: true},
+			{name: "key bootstrap in site file", data: `{"version":1,"flags":{"config-key-file":"other.key"}}`, bad: true},
+			{name: "null private section", data: `{"version":1,"flags":{},"private":null}`, bad: true},
+			{name: "duplicate encrypted field", data: `{"version":1,"flags":{},"private":{"key-id":"abc","key-id":"abc","sealed":"abc"}}`, bad: true},
+			{name: "unknown encrypted field", data: `{"version":1,"flags":{},"private":{"key-id":"abc","sealed":"abc","extra":1}}`, bad: true},
+			{name: "missing encrypted payload", data: `{"version":1,"flags":{},"private":{"key-id":"abc"}}`, bad: true},
 			{name: "trailing document", data: "{\"version\":1,\"flags\":{}} {}", bad: true},
 			{name: "truncated document", data: "{\"version\":1,\"flags\":{\"mode\":\"block\"}", bad: true},
 			{name: "invalid UTF8", data: "{\"version\":1,\"flags\":{\"mode\":\"" + string([]byte{0xff}) + "\"}}", bad: true},
@@ -142,6 +148,269 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 				t.Fatal("directory accepted as config")
 			}
 		})
+	})
+
+	t.Run("setup wizard and encrypted runtime", func(t *testing.T) {
+		var reached atomic.Int64
+		origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			reached.Add(1)
+			if r.Host != "example.test" {
+				t.Errorf("unexpected origin Host %q", r.Host)
+			}
+			w.WriteHeader(200)
+		}))
+		defer origin.Close()
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		listen := listener.Addr().String()
+		if err := listener.Close(); err != nil {
+			t.Fatal(err)
+		}
+		for _, tc := range []struct {
+			name, prefix                           string
+			save, bad, exists, defaultKey, sameKey bool
+		}{
+			{name: "declined save"},
+			{name: "encrypted saved site", save: true},
+			{name: "default account key store", save: true, defaultKey: true},
+			{name: "EOF before consent", prefix: "example.test\n", bad: true},
+			{name: "control character", prefix: "example.test\x1b\n", bad: true},
+			{name: "oversized input", prefix: strings.Repeat("x", 4097) + "\n", bad: true},
+			{name: "credentials refused", prefix: "example.test\nhttp://admin:password@127.0.0.1\n", bad: true},
+			{name: "public plaintext listener refused", prefix: "example.test\n" + origin.URL + "\ny\n\n\nlocal\n0.0.0.0:8080\n", bad: true},
+			{name: "existing config preserved", save: true, exists: true, bad: true},
+			{name: "key and config need separate files", save: true, sameKey: true, bad: true},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				dir := t.TempDir()
+				configPath, keyPath := filepath.Join(dir, "site.json"), filepath.Join(dir, "key.bin")
+				keyAnswer := keyPath
+				if tc.sameKey {
+					keyAnswer = configPath
+				}
+				if tc.defaultKey {
+					t.Setenv("APPDATA", filepath.Join(dir, "appdata"))
+					t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
+					keyAnswer = ""
+				}
+				if tc.exists {
+					if err := os.WriteFile(configPath, []byte("original"), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				answer := "n"
+				if tc.save {
+					answer = "YES"
+				}
+				input := tc.prefix
+				if input == "" {
+					input = strings.Join([]string{"example.test", origin.URL, "y", "", "", "local", listen, "block", "n", "n", answer, configPath, keyAnswer, ""}, "\n")
+				}
+				var output bytes.Buffer
+				var err error
+				if tc.save && !tc.bad {
+					setupCmd := exec.Command(bin, "setup")
+					setupCmd.Stdin = strings.NewReader(input)
+					setupCmd.Stdout, setupCmd.Stderr = &output, &output
+					err = setupCmd.Run()
+				} else {
+					err = runSetup(strings.NewReader(input), &output, runArgs)
+				}
+				if (err != nil) != tc.bad {
+					t.Fatalf("wizard error=%v, want bad=%v; %s", err, tc.bad, &output)
+				}
+				if !tc.save || tc.bad {
+					if _, err := os.Stat(keyPath); !os.IsNotExist(err) {
+						t.Fatal("key written without successful save")
+					}
+					data, err := os.ReadFile(configPath)
+					if tc.exists {
+						if err != nil || string(data) != "original" {
+							t.Fatal("existing config changed")
+						}
+					} else if !os.IsNotExist(err) {
+						t.Fatal("config written without consent")
+					}
+					return
+				}
+				data, err := os.ReadFile(configPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if bytes.Contains(data, []byte(origin.URL)) || bytes.Contains(data, []byte("127.0.0.1/32")) || bytes.Contains(data, []byte(keyPath)) {
+					t.Fatal("private origin details or key path stored in clear")
+				}
+				var document siteDocument
+				if err := json.Unmarshal(data, &document); err != nil {
+					t.Fatal(err)
+				}
+				if document.Private == nil || document.Flags["mode"] != "block" {
+					t.Fatal("missing ciphertext or reviewable policy")
+				}
+				if tc.defaultKey {
+					keyPath, err = siteKeyPath(document.Private.KeyID)
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				key, err := readSiteFile(keyPath, 32, true)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer clear(key)
+				baseArgs := []string{"-config", configPath}
+				if !tc.defaultKey {
+					baseArgs = append(baseArgs, "-config-key-file", keyPath)
+				}
+				if err := runArgs(append(append([]string{}, baseArgs...), "-check")); err != nil {
+					t.Fatal(err)
+				}
+				flags := flag.NewFlagSet("encrypted override", flag.ContinueOnError)
+				for _, name := range []string{"hosts", "listen", "mode", "formats-mode", "upstream", "upstream-host", "origin-allow", "config-key-file"} {
+					flags.String(name, "", "")
+				}
+				flags.Bool("wordpress", false, "")
+				if err := flags.Parse([]string{"-upstream=http://override.test", "-config-key-file=" + keyPath}); err != nil {
+					t.Fatal(err)
+				}
+				if err := loadSiteConfig(configPath, flags); err != nil {
+					t.Fatal(err)
+				}
+				if flags.Lookup("upstream").Value.String() != "http://override.test" {
+					t.Fatal("encrypted file replaced explicit CLI origin")
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				cmd := exec.CommandContext(ctx, bin, baseArgs...)
+				var log bytes.Buffer
+				cmd.Stderr = &log
+				if err := cmd.Start(); err != nil {
+					t.Fatal(err)
+				}
+				defer func() {
+					if err := cmd.Process.Kill(); err != nil && ctx.Err() == nil {
+						t.Error(err)
+					}
+					_ = cmd.Wait() // deliberate test teardown of the live child
+					if strings.Contains(log.String(), origin.URL) {
+						t.Error("private origin URL disclosed in default startup log")
+					}
+				}()
+				client := &http.Client{Timeout: time.Second}
+				send := func(method, path, body string) (int, error) {
+					request, err := http.NewRequest(method, "http://"+listen+path, strings.NewReader(body))
+					if err != nil {
+						return 0, err
+					}
+					request.Host = "example.test"
+					if body != "" {
+						request.Header.Set("Content-Type", "application/json")
+					}
+					response, err := client.Do(request)
+					if err != nil {
+						return 0, err
+					}
+					_, readErr := io.Copy(io.Discard, response.Body)
+					closeErr := response.Body.Close()
+					if readErr != nil {
+						return 0, readErr
+					}
+					return response.StatusCode, closeErr
+				}
+				ready := false
+				for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); {
+					if status, err := send("GET", "/", ""); err == nil && status == 200 {
+						ready = true
+						break
+					}
+					time.Sleep(30 * time.Millisecond)
+				}
+				if !ready {
+					t.Fatal("encrypted WAF did not become ready")
+				}
+				before := reached.Load()
+				for _, attack := range []struct {
+					method, path, body string
+					status             int
+				}{
+					{"POST", "/api", `{"id":1,"id":2}`, 400},
+					{"GET", "/?q=%3Cscript%3Ealert%281%29%3C%2Fscript%3E", "", 403},
+				} {
+					status, err := send(attack.method, attack.path, attack.body)
+					if err != nil || status != attack.status {
+						t.Fatalf("live refusal: status=%d err=%v", status, err)
+					}
+				}
+				if reached.Load() != before {
+					t.Fatal("refused request reached origin")
+				}
+				for _, mutation := range []struct {
+					name   string
+					mutate func(*siteDocument)
+				}{
+					{"ciphertext tamper", func(d *siteDocument) {
+						sealed, _ := base64.StdEncoding.DecodeString(d.Private.Sealed)
+						sealed[len(sealed)-1] ^= 1
+						d.Private.Sealed = base64.StdEncoding.EncodeToString(sealed)
+					}},
+					{"key ID binding", func(d *siteDocument) { d.Private.KeyID = strings.Repeat("0", 32) }},
+					{"path traversal key ID", func(d *siteDocument) { d.Private.KeyID = "../../key" }},
+					{"duplicate across sections", func(d *siteDocument) { d.Flags["upstream"] = origin.URL }},
+					{"encrypted action", func(d *siteDocument) {
+						d.Private, err = sealSiteSettings(map[string]any{"check": true}, d.Private.KeyID, key)
+						if err != nil {
+							t.Fatal(err)
+						}
+					}},
+				} {
+					t.Run(mutation.name, func(t *testing.T) {
+						var changed siteDocument
+						if err := json.Unmarshal(data, &changed); err != nil {
+							t.Fatal(err)
+						}
+						mutation.mutate(&changed)
+						encoded, err := json.Marshal(changed)
+						if err != nil {
+							t.Fatal(err)
+						}
+						badPath := filepath.Join(t.TempDir(), "bad.json")
+						if err := os.WriteFile(badPath, encoded, 0600); err != nil {
+							t.Fatal(err)
+						}
+						if err := runArgs([]string{"-config", badPath, "-config-key-file", keyPath, "-check"}); err == nil {
+							t.Fatal("invalid encrypted config accepted")
+						}
+					})
+				}
+				t.Run("wrong key", func(t *testing.T) {
+					wrongPath := filepath.Join(t.TempDir(), "wrong.key")
+					wrong := make([]byte, 32)
+					if _, err := cryptorand.Read(wrong); err != nil {
+						t.Fatal(err)
+					}
+					if err := writeNewSiteFile(wrongPath, wrong); err != nil {
+						t.Fatal(err)
+					}
+					if err := runArgs([]string{"-config", configPath, "-config-key-file", wrongPath, "-check"}); err == nil {
+						t.Fatal("wrong key accepted")
+					}
+				})
+				t.Run("key permissions", func(t *testing.T) {
+					if runtime.GOOS == "windows" {
+						if out, err := exec.Command("icacls", keyPath, "/grant", "*S-1-1-0:(R)").CombinedOutput(); err != nil {
+							t.Fatalf("ACL fixture: %v %s", err, out)
+						}
+					} else if err := os.Chmod(keyPath, 0644); err != nil {
+						t.Fatal(err)
+					}
+					if err := runArgs(append(append([]string{}, baseArgs...), "-check")); err == nil {
+						t.Fatal("shared-readable key accepted")
+					}
+				})
+			})
+		}
 	})
 
 	type received struct {
@@ -205,6 +474,55 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 	ca := issue(&x509.Certificate{SerialNumber: big.NewInt(1), NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}, nil)
 	foreignCA := issue(&x509.Certificate{SerialNumber: big.NewInt(2), NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}, nil)
 	serverIdentity := issue(&x509.Certificate{SerialNumber: big.NewInt(3), NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, DNSNames: []string{"localhost"}, IPAddresses: []net.IP{net.ParseIP("127.0.0.1")}}, &ca)
+	t.Run("setup visitor certificate", func(t *testing.T) {
+		dir := t.TempDir()
+		certPath, keyPath := filepath.Join(dir, "visitor.crt"), filepath.Join(dir, "visitor.key")
+		if err := os.WriteFile(certPath, serverIdentity.certPEM, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(keyPath, serverIdentity.keyPEM, 0600); err != nil {
+			t.Fatal(err)
+		}
+		for _, tc := range []struct {
+			name  string
+			hosts []string
+			bad   bool
+		}{
+			{"covered DNS and IP", []string{"localhost", "127.0.0.1"}, false},
+			{"one uncovered name", []string{"localhost", "other.test"}, true},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				if err := checkSetupCertificate(certPath, keyPath, tc.hosts); (err != nil) != tc.bad {
+					t.Fatalf("certificate validation=%v", err)
+				}
+			})
+		}
+		for _, flow := range []struct {
+			name  string
+			extra []string
+		}{
+			{"HTTPS visitor setup", []string{"https", "127.0.0.1:8443", certPath, keyPath}},
+			{"TLS gateway setup", []string{"proxy", "127.0.0.1:8080", "127.0.0.1/32"}},
+		} {
+			t.Run(flow.name, func(t *testing.T) {
+				answers := append([]string{"localhost", app.URL, "yes", "", ""}, flow.extra...)
+				answers = append(answers, "detect", "no", "no", "no", "")
+				var transcript bytes.Buffer
+				if err := runSetup(strings.NewReader(strings.Join(answers, "\n")), &transcript, runArgs); err != nil {
+					t.Fatalf("setup=%v %s", err, &transcript)
+				}
+			})
+		}
+
+		brokenPath := filepath.Join(dir, "broken.key")
+		if err := os.WriteFile(brokenPath, []byte("not a private key"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := checkSetupCertificate(certPath, brokenPath, []string{"localhost"}); err == nil {
+			t.Fatal("invalid visitor private key accepted")
+		}
+	})
+
 	identities := map[string]originCredential{}
 	for _, tc := range []struct {
 		name          string

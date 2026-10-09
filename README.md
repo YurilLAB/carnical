@@ -23,7 +23,7 @@ monitoring, and deployment tools around the Coraza engine. Carnical is an indepe
 | Floods and network abuse | Connection and request budgets, distributed-flood detection and bounded IDS alerts | [Flood protection and IDS](carnical/docs/ddos.md) |
 | IP bans | Optional CrowdSec Local API decisions, checked on every HTTP request | [CrowdSec](carnical/docs/crowdsec.md) |
 | Linux hosts | Optional nftables packet guards and Landlock/seccomp process restrictions | [Network protection](carnical/docs/network-protection.md), [host hardening](carnical/docs/hardening.md) |
-| Deployment | Site files, origin mutual TLS, startup checks, private health probes and graceful shutdown | [Website setup](carnical/docs/website-onboarding.md), [availability](carnical/docs/availability-and-deployment.md) |
+| Deployment | Setup wizard, encrypted site fields, origin mutual TLS, startup checks, private health probes and graceful shutdown | [Website setup](carnical/docs/website-onboarding.md), [availability](carnical/docs/availability-and-deployment.md) |
 
 Signed configuration, customer policies, the authenticated control API and virtual patches
 are also available as [integration libraries](carnical/docs/README.md#build-an-integration).
@@ -52,6 +52,18 @@ content-detection mode. The loopback allowance above is for this local example.
 See the [operator guide](carnical/README.md) for site files and configuration.
 
 ## Protect a website
+
+With the `carnical` binary installed on Windows or Linux, run:
+
+```sh
+carnical setup
+```
+
+The wizard asks for website names, origin IP/address, listening address, TLS files and
+protection mode. It checks the settings and asks before saving. Private origin details and
+credential file paths are encrypted; a separate protected key lets the WAF load them at startup.
+It prints the check and start commands. See [setup and key management](carnical/docs/setup.md).
+
 
 1. Give the operator the website names and current origin address, and complete the domain-ownership check.
 2. Once the operator has tested certificates, origin authentication and forwarding, point every advertised A and AAAA record at the supplied Carnical addresses or supported DNS target. Save the previous records for rollback.
