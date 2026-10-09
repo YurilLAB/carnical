@@ -4,6 +4,7 @@ package nuclei
 
 import (
 	"encoding/json"
+	"mime"
 	"regexp"
 	"sort"
 	"strings"
@@ -328,12 +329,12 @@ func routePattern(route string) string {
 
 // body looks at the request body by its content type.
 func (b *builder) body(out *built, add func(vpatch.Condition), r request) {
-	ct := r.contentType()
+	ct := strings.ToLower(r.contentType())
 	text := r.body.text("VARX")
 	oob := r.body.hasOOB()
 	switch {
 	case strings.Contains(ct, "multipart/form-data"):
-		b.multipart(out, add, r, ct)
+		b.multipart(out, add, r, r.contentType())
 	case strings.Contains(ct, "json") || (ct == "" && strings.HasPrefix(strings.TrimSpace(text), "{")):
 		if !b.jsonBody(out, add, r.body) {
 			b.rawBody(out, add, text, oob)
@@ -417,12 +418,9 @@ func flatten(prefix string, v any, depth int, out *[]struct{ path, val string })
 }
 
 var (
-	boundaryRe = regexp.MustCompile(`(?i)boundary=([^;\s]+)`)
-	dispNameRe = regexp.MustCompile(`(?i)\bname="([^"]*)"`)
-	dispFileRe = regexp.MustCompile(`(?i)\bfilename="([^"]*)"`)
-	phpExtRe   = regexp.MustCompile(`(?i)\.(?:php[0-9]?|phtml|phar|pht)$`)
-	jspExtRe   = regexp.MustCompile(`(?i)\.(?:jsp|jspx|jsw|jsv)$`)
-	aspExtRe   = regexp.MustCompile(`(?i)\.(?:asp|aspx|asa|cer|ashx)$`)
+	phpExtRe = regexp.MustCompile(`(?i)\.(?:php[0-9]?|phtml|phar|pht)$`)
+	jspExtRe = regexp.MustCompile(`(?i)\.(?:jsp|jspx|jsw|jsv)$`)
+	aspExtRe = regexp.MustCompile(`(?i)\.(?:asp|aspx|asa|cer|ashx)$`)
 )
 
 const (
@@ -435,9 +433,13 @@ const (
 // field is handled like an argument.
 func (b *builder) multipart(out *built, add func(vpatch.Condition), r request, ct string) {
 	text := strings.ReplaceAll(r.body.text("VARX"), "\r\n", "\n")
+	mediaType, params, err := mime.ParseMediaType(ct)
+	if err != nil || mediaType != "multipart/form-data" {
+		return
+	}
 	delim := ""
-	if m := boundaryRe.FindStringSubmatch(ct); m != nil {
-		delim = "--" + m[1]
+	if boundary := params["boundary"]; boundary != "" {
+		delim = "--" + boundary
 	}
 	if delim == "" {
 		for _, l := range strings.Split(text, "\n") {
@@ -463,15 +465,16 @@ func (b *builder) multipart(out *built, add func(vpatch.Condition), r request, c
 		var name, file string
 		hasFile := false
 		for _, l := range strings.Split(head, "\n") {
-			if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(l)), "content-disposition") {
+			headerName, value, ok := strings.Cut(l, ":")
+			if !ok || !strings.EqualFold(strings.TrimSpace(headerName), "Content-Disposition") {
 				continue
 			}
-			if m := dispNameRe.FindStringSubmatch(l); m != nil {
-				name = m[1]
+			disposition, params, err := mime.ParseMediaType(value)
+			if err != nil || disposition != "form-data" {
+				continue
 			}
-			if m := dispFileRe.FindStringSubmatch(l); m != nil {
-				file, hasFile = m[1], true
-			}
+			name = params["name"]
+			file, hasFile = params["filename"]
 		}
 		content = strings.Trim(content, "\n -")
 		if hasFile {

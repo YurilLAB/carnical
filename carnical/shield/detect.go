@@ -145,15 +145,16 @@ const (
 )
 
 type window struct {
-	sec                                 int64
-	reqs, newSrcs, engaged              uint32
-	done, errs, latN                    uint32
-	refused, challenged, solved, banned uint32
-	connsIn, connsRefused               uint32
-	maxSrc, maxNet                      uint32  // the most requests one address, and one network, sent in this second
-	lat                                 float64 // milliseconds, summed over latN
-	srcs, nets                          hll
-	fps, paths                          topK
+	sec                                      int64
+	reqs, newSrcs, engaged                   uint32
+	done, errs, latN                         uint32
+	refused, challenged, solved, banned      uint32
+	connsIn, connsRefused                    uint32
+	connClosed, earlyCloses, securityRejects uint32
+	maxSrc, maxNet                           uint32  // the most requests one address, and one network, sent in this second
+	lat                                      float64 // milliseconds, summed over latN
+	srcs, nets                               hll
+	fps, paths                               topK
 }
 
 func (w *window) reset(sec int64) {
@@ -175,13 +176,14 @@ type share struct {
 
 // aggregate is the last ten seconds.
 type aggregate struct {
-	rate, srcs, nets, newShare, newSrcs float64
-	engagement                          float64 // -1 when too few new sources to tell
-	errRatio, lat                       float64 // -1 when nothing completed
-	connRate, connRefused               float64
-	refused, challenged                 float64
-	peakSrc, peakNet                    float64 // the busiest address's and network's requests a second, averaged over the ten seconds
-	fps, paths                          []share
+	rate, srcs, nets, newShare, newSrcs  float64
+	engagement                           float64 // -1 when too few new sources to tell
+	errRatio, lat                        float64 // -1 when nothing completed
+	connRate, connRefused                float64
+	closed, earlyCloses, securityRejects float64
+	refused, challenged                  float64
+	peakSrc, peakNet                     float64 // the busiest address's and network's requests a second, averaged over the ten seconds
+	fps, paths                           []share
 }
 
 type baseline struct {
@@ -245,6 +247,9 @@ type detector struct {
 	// set by the Shield
 	labeler      Labeler
 	onEvent      func(Event)
+	idsReasons   []string
+	idsLast      int64
+	idsReported  bool
 	unknownRate  func(base float64) float64
 	clusterRate  float64
 	clusterShare float64
@@ -377,7 +382,7 @@ func (d *detector) advance(ns int64) {
 // aggregate sums the last aggSeconds closed windows (the current, open one is not included).
 func (d *detector) aggregate() aggregate {
 	var a aggregate
-	var reqs, newSrcs, engaged, done, errs, latN, conns, connsRef, refused, challenged, maxSrc, maxNet float64
+	var reqs, newSrcs, engaged, done, errs, latN, conns, connsRef, refused, challenged, maxSrc, maxNet, closed, earlyCloses, securityRejects float64
 	var lat float64
 	d.scratchS.reset()
 	d.scratchN.reset()
@@ -411,6 +416,9 @@ func (d *detector) aggregate() aggregate {
 		lat += w.lat
 		conns += float64(w.connsIn)
 		connsRef += float64(w.connsRefused)
+		closed += float64(w.connClosed)
+		earlyCloses += float64(w.earlyCloses)
+		securityRejects += float64(w.securityRejects)
 		refused += float64(w.refused)
 		maxSrc += float64(w.maxSrc)
 		maxNet += float64(w.maxNet)
@@ -424,6 +432,7 @@ func (d *detector) aggregate() aggregate {
 	a.peakSrc, a.peakNet = maxSrc/aggSeconds, maxNet/aggSeconds
 	a.connRate = conns / aggSeconds
 	a.connRefused = connsRef / aggSeconds
+	a.closed, a.earlyCloses, a.securityRejects = closed/aggSeconds, earlyCloses/aggSeconds, securityRejects/aggSeconds
 	a.refused = refused / aggSeconds
 	a.challenged = challenged / aggSeconds
 	a.newSrcs = newSrcs
@@ -469,6 +478,7 @@ func (d *detector) aggregate() aggregate {
 func (d *detector) evaluate(ns int64) {
 	a := d.aggregate()
 	d.last = a
+	d.detectIDS(ns, a)
 	b := &d.base
 	if d.state == Attack {
 		b = &d.frozen
@@ -573,6 +583,29 @@ func (d *detector) evaluate(ns int64) {
 	}
 	d.reasons = reasons
 	d.learning.Store(d.state == Normal && d.run == 0)
+}
+
+// detectIDS reports strong admission and rejection signals without changing mitigation.
+// A response error alone cannot classify an attack; these bounded alerts let operators
+// investigate rejected probes, connection churn or capacity/configuration problems.
+func (d *detector) detectIDS(ns int64, a aggregate) {
+	var reasons []string
+	floor := d.cfg.MinAttackRate
+	if a.connRefused >= floor && a.connRefused >= 0.5*a.connRate {
+		reasons = append(reasons, "IP/network connection admission pressure: "+itoa(a.connRefused)+" refusals a second")
+	}
+	if a.earlyCloses >= floor && a.earlyCloses >= 0.75*a.closed {
+		reasons = append(reasons, "connections close before HTTP activity: "+itoa(a.earlyCloses)+" a second")
+	}
+	if a.securityRejects >= floor && a.securityRejects >= 0.5*a.rate {
+		reasons = append(reasons, "requests rejected before the origin: "+itoa(a.securityRejects)+" a second")
+	}
+	d.idsReasons = reasons
+	if len(reasons) == 0 || d.idsReported && ns-d.idsLast < int64(30*time.Second) {
+		return
+	}
+	d.idsLast, d.idsReported = ns, true
+	d.emit(Event{Kind: "ids_signal", At: time.Unix(0, ns), State: d.state, Rate: a.rate, BaselineRate: d.base.rate, Reasons: append([]string(nil), reasons...)})
 }
 
 // learn moves the baseline towards the last ten seconds. The rate may at most double per step's worth of weight, so a

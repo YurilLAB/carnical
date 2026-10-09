@@ -16,7 +16,7 @@ import (
 // Events are few (a handful per attack) and never carry request content; the shield never logs one line per refused
 // request, because during a flood that would be a second flood, into the log.
 type Event struct {
-	// Kind is "elevated", "attack_start", "attack_update" or "attack_end".
+	// Kind is "elevated", "attack_start", "attack_update", "attack_end" or "ids_signal".
 	Kind         string
 	At           time.Time
 	State        State

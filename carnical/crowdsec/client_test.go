@@ -90,6 +90,15 @@ func TestStreamTransactions(t *testing.T) {
 		{"delete one ID", stream(nil, []decision{{ID: 1}}), 0, 0, false, Allow, Ban},
 		{"overlapping ban survives delete", stream([]decision{ban(3, "range", "192.0.2.0/24", "1m")}, []decision{{ID: 1}}), 0, 0, false, Ban, Ban},
 		{"empty delta retains bans", `{"new":null,"deleted":null}`, 0, 0, false, Ban, Ban},
+		{"duplicate ban type", "{\"new\":[{\"id\":1,\"scope\":\"Ip\",\"value\":\"192.0.2.9\",\"duration\":\"1m\",\"type\":\"ban\",\"type\":\"captcha\"}],\"deleted\":[]}", 0, 0, true, Ban, Ban},
+		{"case alias ban type", "{\"new\":[{\"id\":1,\"scope\":\"Ip\",\"value\":\"192.0.2.9\",\"duration\":\"1m\",\"type\":\"ban\",\"Type\":\"captcha\"}],\"deleted\":[]}", 0, 0, true, Ban, Ban},
+		{"escaped duplicate ban type", "{\"new\":[{\"id\":1,\"scope\":\"Ip\",\"value\":\"192.0.2.9\",\"duration\":\"1m\",\"type\":\"ban\",\"t\\u0079pe\":\"captcha\"}],\"deleted\":[]}", 0, 0, true, Ban, Ban},
+		{"duplicate expiry duration", "{\"new\":[{\"id\":1,\"scope\":\"Ip\",\"value\":\"192.0.2.9\",\"type\":\"ban\",\"duration\":\"1m\",\"duration\":\"0s\"}],\"deleted\":[]}", 0, 0, true, Ban, Ban},
+		{"Unicode alias simulation", "{\"new\":[{\"id\":1,\"scope\":\"Ip\",\"value\":\"192.0.2.9\",\"duration\":\"1m\",\"type\":\"ban\",\"simulated\":false,\"ſimulated\":true}],\"deleted\":[]}", 0, 0, true, Ban, Ban},
+		{"duplicate deletion ID", "{\"new\":[],\"deleted\":[{\"id\":999,\"ID\":1}]}", 0, 0, true, Ban, Ban},
+		{"single case aliases", "{\"new\":[{\"ID\":1,\"Scope\":\"Ip\",\"Value\":\"192.0.2.9\",\"Duration\":\"1m\",\"Type\":\"ban\"}],\"deleted\":[]}", 0, 0, false, Ban, Ban},
+		{"single Unicode alias", "{\"new\":[{\"id\":1,\"ſcope\":\"Ip\",\"value\":\"192.0.2.9\",\"duration\":\"1m\",\"type\":\"ban\"}],\"deleted\":[]}", 0, 0, false, Ban, Ban},
+		{"forward compatible metadata", "{\"new\":[{\"id\":1,\"scope\":\"Ip\",\"value\":\"192.0.2.9\",\"duration\":\"1m\",\"type\":\"ban\",\"future_metadata\":{\"id\":7,\"type\":\"captcha\"}}],\"deleted\":[]}", 0, 0, false, Ban, Ban},
 		{"HTTP failure preserves bans", `SECRET_UPSTREAM_BODY`, 503, 0, true, Ban, Ban},
 		{"authentication failure preserves bans", `SECRET_UPSTREAM_BODY`, 401, 0, true, Ban, Ban},
 		{"missing required fields", `{"new":[{"id":3,"type":null,"scope":"Ip","value":"192.0.2.9","duration":"1m"}],"deleted":[]}`, 0, 0, true, Ban, Ban},
@@ -124,7 +133,7 @@ func TestStreamTransactions(t *testing.T) {
 			f.update(tt.body, tt.status)
 			err := c.Sync(context.Background())
 			if (err != nil) != tt.wantErr {
-				t.Fatalf("Sync: %v", err)
+				t.Fatalf("Sync: %v; actions=%v,%v", err, c.Check(a), c.Check(b))
 			}
 			if err != nil && (strings.Contains(err.Error(), key) || strings.Contains(err.Error(), "SECRET_UPSTREAM_BODY")) {
 				t.Fatal("error leaked secret")

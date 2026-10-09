@@ -148,5 +148,6 @@ Superseding does not delete the old record. Set its status and let the history s
 | [0077](0077-carnical-site-configuration.md) | — | — | unreleased (post-v3.8.1) | F | Reusable Carnical site configuration and deployment preflight |
 | [0078](0078-carnical-origin-authentication.md) | — | — | unreleased (post-v3.8.1) | F | Authenticated Carnical origin connections |
 | [0079](0079-carnical-availability-and-portable-runtime.md) | — | — | unreleased (post-v3.8.1) | F | Carnical readiness, bounded draining and portable runtime |
+| [0080](0080-carnical-bounded-ids-signals.md) | — | — | unreleased (post-v3.8.1) | F | Bounded IP/network, TCP lifecycle and HTTP rejection IDS signals |
 
 Categories: **F**eature · **P**arity · **⚡** Perf · **R**efactor

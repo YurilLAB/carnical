@@ -10,6 +10,7 @@ import (
 	"io"
 	"math"
 	"math/rand/v2"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -435,6 +436,107 @@ func TestPerAddressAndPerNetworkLimitsApplyOutsideAnAttack(t *testing.T) {
 	if got := allowed("203.0.113.1", 50); got != 10 {
 		t.Fatalf("one address got %d of 50 at once, want the burst of 10", got)
 	}
+	t.Run("IDS lifecycle and response provenance", func(t *testing.T) {
+		for _, tc := range []struct {
+			name            string
+			active, trusted bool
+			want            uint64
+		}{
+			{"early close", false, false, 1}, {"HTTP activity", true, false, 0}, {"trusted peer", false, true, 0},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				sh := newTestShield(t, &now, func(c *Config) { c.MonitorOnly = true })
+				socket, peer := net.Pipe()
+				defer peer.Close()
+				sc := &conn{Conn: socket, s: sh, key: netip.MustParseAddr("192.0.2.1"), subnet: netip.MustParsePrefix("192.0.2.0/24"), trusted: tc.trusted}
+				if admitted, _ := sh.reserveConn(sc, 1); !admitted {
+					t.Fatal("control connection refused")
+				}
+				if tc.active {
+					sh.ConnState(tls.Server(sc, &tls.Config{MinVersion: tls.VersionTLS12}), http.StateActive)
+				}
+				if err := sc.Close(); err != nil {
+					t.Fatal(err)
+				}
+				if err := sc.Close(); err != nil {
+					t.Fatal(err)
+				}
+				snap := sh.Snapshot()
+				if snap.EarlyCloses != tc.want || snap.Connections != 0 {
+					t.Fatalf("close accounting: %+v", snap)
+				}
+			})
+		}
+		for _, tc := range []struct {
+			name   string
+			status int
+			origin bool
+			want   uint64
+		}{
+			{"WAF forbidden", 403, false, 1}, {"invalid request", 400, false, 1}, {"origin not found", 404, true, 0},
+			{"origin forbidden", 403, true, 0}, {"gateway failure", 503, false, 0}, {"successful request", 200, true, 0},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				sh := newTestShield(t, &now, func(c *Config) { c.MonitorOnly = true })
+				d := sh.Admit(req("GET", "/"), netip.MustParseAddr("192.0.2.1"))
+				if d.Action != Allow {
+					t.Fatal("control request refused")
+				}
+				sh.Done(d, tc.status, tc.origin)
+				sh.Done(Decision{Action: Refuse}, 403, false)
+				if got := sh.Snapshot().SecurityRejections; got != tc.want {
+					t.Fatalf("security rejections=%d want=%d", got, tc.want)
+				}
+			})
+		}
+	})
+	t.Run("IDS thresholds and alert pacing", func(t *testing.T) {
+		for _, tc := range []struct {
+			name    string
+			a       aggregate
+			signals int
+		}{
+			{"network admission pressure", aggregate{connRate: 40, connRefused: 25}, 1},
+			{"early TCP closes", aggregate{closed: 40, earlyCloses: 35}, 1},
+			{"WAF rejection burst", aggregate{rate: 40, securityRejects: 25}, 1},
+			{"all three signals", aggregate{connRate: 40, connRefused: 25, closed: 40, earlyCloses: 35, rate: 40, securityRejects: 25}, 3},
+			{"low volume", aggregate{connRate: 10, connRefused: 9, closed: 10, earlyCloses: 9, rate: 10, securityRejects: 9}, 0},
+			{"busy site low ratios", aggregate{connRate: 1000, connRefused: 25, closed: 1000, earlyCloses: 35, rate: 1000, securityRejects: 25}, 0},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				det := newDetector(DetectorConfig{})
+				var events []Event
+				det.onEvent = func(e Event) { events = append(events, e) }
+				ns := now.UnixNano()
+				det.detectIDS(ns, tc.a)
+				if len(det.idsReasons) != tc.signals {
+					t.Fatalf("signals=%v", det.idsReasons)
+				}
+				if tc.signals == 0 {
+					if len(events) != 0 {
+						t.Fatal("unexpected signal")
+					}
+					return
+				}
+				events[0].Reasons[0] = "modified"
+				if det.idsReasons[0] == "modified" {
+					t.Fatal("event owns detector reasons")
+				}
+				det.detectIDS(ns+int64(time.Second), tc.a)
+				if len(events) != 1 || events[0].Kind != "ids_signal" || det.state != Normal || det.info.Load() != nil {
+					t.Fatal("alert pacing or mitigation changed")
+				}
+				det.detectIDS(ns+int64(30*time.Second), tc.a)
+				if len(events) != 2 {
+					t.Fatal("persistent signal was not reported")
+				}
+				det.detectIDS(ns+int64(31*time.Second), aggregate{})
+				if len(det.idsReasons) != 0 {
+					t.Fatal("cleared signal remained")
+				}
+			})
+		}
+	})
 	total := 0
 	for i := 2; i < 12; i++ {
 		total += allowed("203.0.113."+strconv.Itoa(i), 10)

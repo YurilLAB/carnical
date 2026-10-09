@@ -66,8 +66,7 @@ func configureShield(log *slog.Logger, f shieldFlags, trusted []netip.Prefix) (*
 	return shield.New(cfg)
 }
 
-// logShieldEvent writes an attack's start, progress and end. These are the only lines the flood protection logs: one per
-// refused request would be a second flood, into the log.
+// logShieldEvent writes attack transitions and bounded IDS signals. Per-request logs would amplify a flood.
 func logShieldEvent(log *slog.Logger, ev shield.Event) {
 	attrs := []any{"state", ev.State.String(), "rate", math.Round(ev.Rate), "baseline_rate", math.Round(ev.BaselineRate), "reasons", ev.Reasons}
 	if strings.HasPrefix(ev.Kind, "attack") {
@@ -91,7 +90,7 @@ func logShieldEvent(log *slog.Logger, ev shield.Event) {
 		}
 	}
 	msg := map[string]string{"elevated": "traffic is unusually high", "attack_start": "denial-of-service attack detected; mitigation on",
-		"attack_update": "denial-of-service attack continues", "attack_end": "denial-of-service attack over"}[ev.Kind]
+		"attack_update": "denial-of-service attack continues", "attack_end": "denial-of-service attack over", "ids_signal": "network or HTTP intrusion signal detected"}[ev.Kind]
 	if ev.Kind == "elevated" {
 		log.Info(msg, attrs...)
 		return

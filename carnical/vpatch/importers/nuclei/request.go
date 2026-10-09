@@ -198,22 +198,12 @@ func (x *extractor) parseRaw(s string) (request, string) {
 	return request{method: method, path: path, query: query, headers: hdrs, body: body, rawBody: true}, ""
 }
 
-// contentType returns the request's Content-Type value, lower case, or "".
+// contentType preserves parameter values and uses the same variable placeholder as the body.
 func (r request) contentType() string {
 	for _, h := range r.headers {
 		if h.name == "content-type" {
-			s, _ := h.val.literalOr()
-			return strings.ToLower(s)
+			return h.val.text("VARX")
 		}
 	}
 	return ""
-}
-
-// literalOr returns the text with a placeholder-free rendering: the literal parts joined, variables dropped.
-func (t tpl) literalOr() (string, bool) {
-	s, ok := t.literal()
-	if ok {
-		return s, true
-	}
-	return t.text(""), false
 }

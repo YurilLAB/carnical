@@ -27,6 +27,18 @@ rejected at configuration time. `Snapshot.WriteErrors` counts failed shield resp
 `Snapshot.SocketOptionErrors` counts failures to apply optional TCP settings (including reset linger). A failure does not
 turn a refusal into admission. Socket tuning is best effort; server read/write deadlines remain required.
 
+## IDS signals
+
+The shield also reports observation-only signals independently of flood mitigation:
+
+- IP/network connection admission pressure: at least half of incoming TCP connections are refused by the admission guards.
+- Early TCP closes: at least three quarters of closed nontrusted connections never reached HTTP activity (Go's StateActive).
+- Rejected HTTP probes: at least half of shield-admitted requests receive a 4xx from a later WAF or policy check. Origin 4xx responses and gateway 5xx failures are excluded.
+
+Each signal also needs at least Detector.MinAttackRate observations per second (default 20), averaged over ten seconds. Snapshot.IDSReasons and its connection/rejection rates expose current evidence; EarlyCloses and SecurityRejections count totals. The CLI logs ids_signal events at most once every 30 seconds per shield, including in monitor mode. Events contain aggregate reasons, without request bodies or paths. They indicate activity to investigate; they never change attack state or add bans. Normal short-lived connections and application errors remain allowed by these signals.
+
+The connection signals observe accepted TCP sockets and admission refusals. Raw IP packets, incomplete SYN handshakes, UDP and link saturation remain the domain of the [Linux packet guards](network-protection.md) and provider-side protection. HTTP checks before shield admission and pre-parser failures are outside the rejection counter.
+
 ## Detecting an attack from many addresses and countries
 
 A botnet of home routers, cameras and phones sends from tens of thousands of addresses, each slower than any per-address

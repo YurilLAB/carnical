@@ -403,8 +403,8 @@ func readStream(r io.Reader, limit int) ([]decision, []decision, error) {
 			if total > limit {
 				return nil, nil, errors.New("crowdsec: stream decision capacity exceeded")
 			}
-			var d decision
-			if err := dec.Decode(&d); err != nil {
+			d, err := readDecision(dec)
+			if err != nil {
 				return nil, nil, bad
 			}
 			if key == "new" {
@@ -425,6 +425,64 @@ func readStream(r io.Reader, limit int) ([]decision, []decision, error) {
 		return nil, nil, bad
 	}
 	return added, deleted, nil
+}
+
+// readDecision rejects duplicate fields that could otherwise overwrite a ban or its ID.
+// EqualFold preserves encoding/json's case-insensitive field matching, including Unicode aliases.
+// Unknown LAPI metadata remains compatible and cannot overwrite these enforcement fields.
+func readDecision(dec *json.Decoder) (decision, error) {
+	var d decision
+	bad := errors.New("crowdsec: invalid decision stream")
+	if token, err := dec.Token(); err != nil || token != json.Delim('{') {
+		return d, bad
+	}
+	fields := [...]string{"id", "duration", "until", "scope", "type", "value", "simulated"}
+	var seen uint8
+	for dec.More() {
+		token, err := dec.Token()
+		name, ok := token.(string)
+		if err != nil || !ok {
+			return decision{}, bad
+		}
+		field := len(fields)
+		for i, canonical := range fields {
+			if strings.EqualFold(name, canonical) {
+				mask := uint8(1) << i
+				if seen&mask != 0 {
+					return decision{}, bad
+				}
+				seen |= mask
+				field = i
+				break
+			}
+		}
+		switch field {
+		case 0:
+			err = dec.Decode(&d.ID)
+		case 1:
+			err = dec.Decode(&d.Duration)
+		case 2:
+			err = dec.Decode(&d.Until)
+		case 3:
+			err = dec.Decode(&d.Scope)
+		case 4:
+			err = dec.Decode(&d.Type)
+		case 5:
+			err = dec.Decode(&d.Value)
+		case 6:
+			err = dec.Decode(&d.Simulated)
+		default:
+			var discard json.RawMessage
+			err = dec.Decode(&discard)
+		}
+		if err != nil {
+			return decision{}, bad
+		}
+	}
+	if token, err := dec.Token(); err != nil || token != json.Delim('}') {
+		return decision{}, bad
+	}
+	return d, nil
 }
 
 // Check evaluates the verified client IP, including IPv4-mapped IPv6. It makes

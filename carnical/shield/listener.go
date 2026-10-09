@@ -42,12 +42,13 @@ func (l *listener) Accept() (net.Conn, error) {
 // conn is an admitted connection: it gives its place back when it closes.
 type conn struct {
 	net.Conn
-	s       *Shield
-	key     netip.Addr
-	subnet  netip.Prefix
-	trusted bool
-	known   bool
-	closed  atomic.Bool
+	s          *Shield
+	key        netip.Addr
+	subnet     netip.Prefix
+	trusted    bool
+	known      bool
+	closed     atomic.Bool
+	httpActive atomic.Bool
 	// idle list membership, guarded by s.idleMu
 	prev, next *conn
 	idleSince  int64
@@ -57,6 +58,18 @@ type conn struct {
 func (c *conn) Close() error {
 	if c.closed.CompareAndSwap(false, true) {
 		c.s.release(c)
+		if !c.trusted {
+			early := !c.httpActive.Load()
+			if early {
+				c.s.counters.earlyCloses.Add(1)
+			}
+			c.s.det.count(c.s.now().UnixNano(), func(w *window) {
+				w.connClosed++
+				if early {
+					w.earlyCloses++
+				}
+			})
+		}
 	}
 	return c.Conn.Close()
 }
@@ -171,7 +184,13 @@ func (s *Shield) release(c *conn) {
 // connections run short the idle ones of clients the shield does not know are closed before anyone is refused.
 func (s *Shield) ConnState(c net.Conn, st http.ConnState) {
 	sc := unwrapConn(c)
-	if sc == nil || sc.trusted {
+	if sc == nil {
+		return
+	}
+	if st == http.StateActive {
+		sc.httpActive.Store(true)
+	}
+	if sc.trusted {
 		return
 	}
 	s.idleMu.Lock()

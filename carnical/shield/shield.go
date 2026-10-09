@@ -304,6 +304,7 @@ type Shield struct {
 type counters struct {
 	allowed, refused, challenged, solved, banned, connsRefused, evicted, banErrors atomic.Uint64
 	writeErrors, socketOptionErrors                                                atomic.Uint64
+	earlyCloses, securityRejections                                                atomic.Uint64
 }
 
 type banReq struct {
@@ -645,6 +646,9 @@ func (s *Shield) Done(d Decision, status int, fromOrigin bool) {
 	now := s.now().UnixNano()
 	if fromOrigin {
 		s.det.done(now, status, time.Duration(now-d.start))
+	} else if status >= 400 && status < 500 {
+		s.counters.securityRejections.Add(1)
+		s.det.count(now, func(w *window) { w.securityRejects++ })
 	}
 	if status >= 400 || !s.det.learning.Load() {
 		return // nothing is learnt from errors, nor while traffic is out of the ordinary
@@ -678,12 +682,18 @@ type Snapshot struct {
 	Rate, BaselineRate                      float64
 	Sources, NewShare, Engagement, ErrRatio float64
 	Reasons                                 []string
-	Connections, MaxConnections             int64
-	RequestScale, NetworkScale              float64 // how far the per-address and per-network limits are raised above their configured values
-	Remembered                              int
-	Allowed, Refused, Challenged, Solved    uint64
-	Banned, ConnsRefused, Evicted           uint64
-	BanErrors                               uint64
+	// IDSReasons describes observation-only signals, independent of attack mitigation.
+	IDSReasons                                                                   []string
+	ConnectionRate, ConnectionRefusalRate, EarlyCloseRate, SecurityRejectionRate float64
+	// EarlyCloses counts nontrusted connections closed before HTTP StateActive.
+	// SecurityRejections counts 4xx responses from checks after shield admission, excluding origin responses.
+	EarlyCloses, SecurityRejections      uint64
+	Connections, MaxConnections          int64
+	RequestScale, NetworkScale           float64 // how far the per-address and per-network limits are raised above their configured values
+	Remembered                           int
+	Allowed, Refused, Challenged, Solved uint64
+	Banned, ConnsRefused, Evicted        uint64
+	BanErrors                            uint64
 	// WriteErrors counts failed response body writes; SocketOptionErrors counts failed optional TCP tuning.
 	WriteErrors, SocketOptionErrors uint64
 	Current                         *Incident
@@ -696,7 +706,8 @@ func (s *Shield) Snapshot() Snapshot {
 	d.mu.Lock()
 	snap := Snapshot{State: d.state, Rate: d.last.rate, BaselineRate: d.base.rate, Sources: d.last.srcs, NewShare: d.last.newShare,
 		Engagement: d.last.engagement, ErrRatio: d.last.errRatio, Reasons: append([]string(nil), d.reasons...),
-		Recent: append([]Incident(nil), d.history...)}
+		Recent: append([]Incident(nil), d.history...), IDSReasons: append([]string(nil), d.idsReasons...),
+		ConnectionRate: d.last.connRate, ConnectionRefusalRate: d.last.connRefused, EarlyCloseRate: d.last.earlyCloses, SecurityRejectionRate: d.last.securityRejects}
 	if d.incident != nil {
 		inc := d.incidentEvent("attack_update", s.now().UnixNano()).Incident
 		snap.Current = &inc
@@ -709,6 +720,7 @@ func (s *Shield) Snapshot() Snapshot {
 	snap.Allowed, snap.Refused, snap.Challenged = c.allowed.Load(), c.refused.Load(), c.challenged.Load()
 	snap.Solved, snap.Banned, snap.ConnsRefused, snap.Evicted, snap.BanErrors = c.solved.Load(), c.banned.Load(), c.connsRefused.Load(), c.evicted.Load(), c.banErrors.Load()
 	snap.WriteErrors, snap.SocketOptionErrors = c.writeErrors.Load(), c.socketOptionErrors.Load()
+	snap.EarlyCloses, snap.SecurityRejections = c.earlyCloses.Load(), c.securityRejections.Load()
 	return snap
 }
 
