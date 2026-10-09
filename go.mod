@@ -25,7 +25,7 @@ require (
 	github.com/magefile/mage v1.17.0
 	github.com/mccutchen/go-httpbin/v2 v2.25.0
 	github.com/petar-dambovaliev/aho-corasick v0.0.0-20250424160509-463d218d4745
-	github.com/tidwall/gjson v1.18.0
+	github.com/tidwall/gjson v1.20.0
 	github.com/valllabh/ocsf-schema-golang v1.0.3
 	golang.org/x/net v0.60.0
 	golang.org/x/sync v0.23.0
