@@ -13,6 +13,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -36,6 +37,15 @@ import (
 	"github.com/YurilLAB/coraza/carnical/inspect"
 	"github.com/YurilLAB/coraza/carnical/proxy"
 )
+
+type setupOutputFault struct{ io.Writer }
+
+func (w setupOutputFault) Write(p []byte) (int, error) {
+	if bytes.Contains(p, []byte("No account configuration directory is available.")) {
+		return 0, io.ErrClosedPipe
+	}
+	return w.Writer.Write(p)
+}
 
 // This is executable startup and TCP forwarding behavior, which cannot be expressed as an engine profile.
 func TestRequestFormatsAtCLI(t *testing.T) {
@@ -169,12 +179,15 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, tc := range []struct {
-			name, prefix                           string
-			save, bad, exists, defaultKey, sameKey bool
+			name, prefix                                                               string
+			save, bad, exists, defaultKey, sameKey, noProfile, missingKey, outputError bool
 		}{
 			{name: "declined save"},
 			{name: "encrypted saved site", save: true},
 			{name: "default account key store", save: true, defaultKey: true},
+			{name: "explicit key without account directory", save: true, noProfile: true},
+			{name: "missing account directory needs a key path", save: true, bad: true, noProfile: true, missingKey: true},
+			{name: "key fallback output failure saves nothing", save: true, bad: true, noProfile: true, outputError: true},
 			{name: "EOF before consent", prefix: "example.test\n", bad: true},
 			{name: "control character", prefix: "example.test\x1b\n", bad: true},
 			{name: "oversized input", prefix: strings.Repeat("x", 4097) + "\n", bad: true},
@@ -193,6 +206,14 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 				if tc.defaultKey {
 					t.Setenv("APPDATA", filepath.Join(dir, "appdata"))
 					t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
+					keyAnswer = ""
+				}
+				if tc.noProfile {
+					t.Setenv("APPDATA", "")
+					t.Setenv("XDG_CONFIG_HOME", "")
+					t.Setenv("HOME", "")
+				}
+				if tc.missingKey {
 					keyAnswer = ""
 				}
 				if tc.exists {
@@ -216,7 +237,14 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 					setupCmd.Stdout, setupCmd.Stderr = &output, &output
 					err = setupCmd.Run()
 				} else {
-					err = runSetup(strings.NewReader(input), &output, runArgs)
+					var sink io.Writer = &output
+					if tc.outputError {
+						sink = setupOutputFault{Writer: &output}
+					}
+					err = runSetup(strings.NewReader(input), sink, runArgs)
+				}
+				if tc.outputError && !errors.Is(err, io.ErrClosedPipe) {
+					t.Fatalf("fallback output failure was not returned: %v", err)
 				}
 				if (err != nil) != tc.bad {
 					t.Fatalf("wizard error=%v, want bad=%v; %s", err, tc.bad, &output)

@@ -347,7 +347,10 @@ func runSetup(input io.Reader, output io.Writer, validate func([]string) error) 
 	}
 	defaultKeyPath, err := siteKeyPath(id)
 	if err != nil {
-		return err
+		defaultKeyPath = ""
+		if _, err := fmt.Fprintln(output, "No account configuration directory is available. Choose a separate key file."); err != nil {
+			return err
+		}
 	}
 	keyPath, err := p.ask("Separate encryption key file (service account must be able to read it)", defaultKeyPath, requiredSetupValue)
 	if err != nil {

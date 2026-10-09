@@ -67,6 +67,9 @@ The default key location is:
 | Linux | `$XDG_CONFIG_HOME/carnical/keys`, or `$HOME/.config/carnical/keys` |
 | Windows | `%APPDATA%\carnical\keys` |
 
+If the account has no configuration directory, enter an explicit key-file path. A blank answer
+is refused. The printed check and start commands include `-config-key-file` for that path.
+
 The key file contains exactly 32 binary bytes. Linux keys require owner-only permissions;
 setup writes 0600. Windows setup uses a protected ACL with access only for the setup account
 and SYSTEM. Inherited or additional grants are refused when loading the key.
