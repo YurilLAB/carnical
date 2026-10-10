@@ -29,10 +29,10 @@ that pool. A prematurely ended or malformed body returns 400/413 rather than an 
 
 | Setting | Default/behavior |
 | --- | --- |
-| `-eval-budget` | 2s per evaluation phase; exceeding it refuses with 503. Slow body reads do not consume this budget. |
-| `-max-evaluations` | Bounds simultaneous evaluations. |
+| `-eval-budget` | 2s per evaluation phase; exceeding it refuses with 503. Slow body reads do not consume this budget. Negative values are refused. |
+| `-max-evaluations` | Bounds simultaneous evaluations, including response body rules run when an inspected response reaches its body limit. |
 | `-max-form-body` | 128 KiB for non-upload bodies; the proxy enforces this independently of the engine. |
-| Request compression | Refused unless bounded format decoding is explicitly enabled. Final decoded bytes and uploads are checked again. |
+| Request compression | Refused unless bounded format decoding is explicitly enabled, and refused if no inspector decoded it. Final decoded bytes and uploads are checked again. |
 | Uploads | Refuse script extensions anywhere in filenames and PHP/ASP/JSP markers. This is not a malware scanner. |
 | Dangerous rule features | `@inspectFile`, `exec`, `setenv`, `@rbl` and `@geoLookup` are replaced by compile-time refusals in `crs/refuse.go`. |
 
@@ -41,7 +41,10 @@ KiB for one plain-text workload, with 300 KiB taking 1.8s on one core. A 5ms eva
 reduced that measured request to 48ms. These are workload-specific measurements, not latency
 guarantees.
 
-`-wordpress` adds upload/cache script restrictions, disables XML-RPC and limits login attempts.
+`-wordpress` adds upload/cache script restrictions, disables XML-RPC and limits login attempts. Its paths
+are matched as PHP routes them, ignoring empty segments, a trailing slash, path info and path parameters.
+Login attempts, `-api-per-minute` and `-max-conns-per-ip` count an IPv6 /64 as one address, as the flood
+protection does.
 Responses get `nosniff`, lose software banners and prevent caching when they set cookies or serve
 HTML from a stylesheet address. Connection limits and a 100-stream HTTP/2 cap bound transport work.
 

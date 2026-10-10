@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"strconv"
 	"sync"
 	"testing"
 
@@ -79,4 +80,13 @@ func TestOnlyASingleGzipOrDeflateEncodingIsLetThroughWhenAllowed(t *testing.T) {
 			}
 		})
 	}
+	t.Run("gzip body, allowed, but no inspector to decompress it", func(t *testing.T) {
+		s := start(t, func(c *Config) { ruleSetOff(c); c.AllowRequestEncoding = true })
+		body := "\x1f\x8b\x08\x00\x00\x00\x00\x00"
+		status, _ := s.raw(t, "POST /submit HTTP/1.1\r\n"+preamble+"Content-Type: application/json\r\nContent-Encoding: gzip\r\nContent-Length: "+
+			strconv.Itoa(len(body))+"\r\nConnection: close\r\n\r\n"+body)
+		if status != 415 || len(s.up.requests()) != 0 {
+			t.Fatalf("status %d, reached the application %d times; want 415 and none", status, len(s.up.requests()))
+		}
+	})
 }

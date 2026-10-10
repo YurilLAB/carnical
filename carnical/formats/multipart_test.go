@@ -69,7 +69,6 @@ var multipartRows = register("multipart", []row{
 		also: []int{idMPFileStar}},
 	{name: "percent-encoded filename that agrees with filename*", ct: mpType, body: mp(part("x", `Content-Disposition: form-data; name="a"; filename="a%20b.txt"; filename*=UTF-8''a%20b.txt`)),
 		also: []int{idMPFileStar}},
-	{name: "lone filename* is recorded", ct: mpType, body: mp(part("x", `Content-Disposition: form-data; name="a"; filename*=UTF-8''a.txt`)), also: []int{idMPFileStar}},
 	{name: "repeated name is recorded", ct: mpType, body: mp(field("a", "1"), field("a", "2")), also: []int{idMPDupName}},
 	{name: "repeated name refused when the rule is set to block", ct: mpType, body: mp(field("a", "1"), field("A", "2")), want: idMPDupName,
 		tweak: func(p *Policy) { p.Rules = map[string]Action{"multipart-duplicate-name": Block} }},
@@ -133,6 +132,11 @@ var multipartRows = register("multipart", []row{
 	{name: "filename* decoy after a harmless filename", ct: mpType, body: mp(part("x", `Content-Disposition: form-data; name="a"; filename*=UTF-8''evil.php; filename="ok.txt"`)), want: idMPFileMis},
 	{name: "filename* that is not a valid extended value", ct: mpType, body: mp(part("x", `Content-Disposition: form-data; name="a"; filename="a.txt"; filename*=a.txt`)), want: idMPFileMis},
 	{name: "filename* in an unsupported charset", ct: mpType, body: mp(part("x", `Content-Disposition: form-data; name="a"; filename="a.txt"; filename*=UTF-7''a.txt`)), want: idMPFileMis},
+	// A file to a parser that reads filename*, so its content is not an argument, and a field to one that does not.
+	{name: "lone filename*", ct: mpType, body: mp(part("x", `Content-Disposition: form-data; name="a"; filename*=UTF-8''a.txt`)), want: idMPFileMis},
+	// Go's mime lets name* replace name; many backends ignore it, so the two see different field names.
+	{name: "an extended name", ct: mpType, body: mp(part("x", `Content-Disposition: form-data; name="safe"; name*=UTF-8''admin`)), want: idMPDisp},
+	{name: "a continued filename", ct: mpType, body: mp(part("x", `Content-Disposition: form-data; name="a"; filename="ok.txt"; filename*0="shell"; filename*1=".php"`)), want: idMPDisp},
 	{name: "nested multipart", ct: mpType, body: mp(part("x", `Content-Disposition: form-data; name="a"`, "Content-Type: multipart/mixed; boundary=inner")), want: idMPNested},
 	{name: "base64 transfer encoding", ct: mpType, body: mp(part("PHNjcmlwdD4=", `Content-Disposition: form-data; name="a"`, "Content-Transfer-Encoding: base64")), want: idMPTransfer},
 	{name: "quoted-printable transfer encoding", ct: mpType, body: mp(part("=3Cscript=3E", `Content-Disposition: form-data; name="a"`, "Content-Transfer-Encoding: quoted-printable")), want: idMPTransfer},

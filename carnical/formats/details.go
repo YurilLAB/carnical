@@ -126,6 +126,8 @@ const (
 	dNotFormData
 	dNoName
 	dBadExtValue
+	dExtParam
+	dStarOnly
 
 	// Compression.
 	dBadChecksum
@@ -256,6 +258,8 @@ var detailText = [dCount]string{
 	dNotFormData:           "the disposition is not form-data",
 	dNoName:                "a part has no name",
 	dBadExtValue:           "filename* is not a valid extended value",
+	dExtParam:              "an extended or continued parameter other than filename*",
+	dStarOnly:              "a filename* with no filename, a file to some parsers and a field to others",
 
 	dBadChecksum:          "the checksum does not match",
 	dTruncated:            "the stream ends early",

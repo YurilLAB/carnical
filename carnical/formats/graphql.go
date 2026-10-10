@@ -322,6 +322,10 @@ func (p *gqlParser) limit(r *rule, d detail, n int) bool {
 
 func (p *gqlParser) advance() bool {
 	if d := p.l.next(); d != dNone {
+		if d == dNameTooLong {
+			// A cap of this parser, not a fault in the document: a server with a longer one runs it.
+			return p.limit(rGQLLimit, d, gqlNameCap)
+		}
 		return p.syntax(d)
 	}
 	return true

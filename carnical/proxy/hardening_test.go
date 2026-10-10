@@ -467,7 +467,12 @@ func TestWordPressPolicy(t *testing.T) {
 		{"a script in a backup directory", "/wp-content/backup-db/x.php", on, 403},
 		{"a plugin's own script", "/wp-content/plugins/contact-form/handler.php", on, 200},
 		{"admin-ajax", "/wp-admin/admin-ajax.php", on, 200},
+		{"an empty segment before uploads", "/wp-content//uploads/shell.php", on, 403},
 		{"xmlrpc is off by default", "/xmlrpc.php", on, 403},
+		{"xmlrpc with a trailing slash", "/xmlrpc.php/", on, 403},
+		{"xmlrpc with path info", "/xmlrpc.php/x", on, 403},
+		{"xmlrpc after an empty segment", "//xmlrpc.php", on, 400},
+		{"xmlrpc with a path parameter", "/xmlrpc.php;v=1", func(c *Config) { on(c); c.Paths.AllowPathParams = true }, 403},
 		{"xmlrpc allowed", "/xmlrpc.php", func(c *Config) { on(c); c.WordPress.AllowXMLRPC = true }, 200},
 		{"a script in uploads on a site not marked as WordPress", "/wp-content/uploads/shell.php", ruleSetOff, 200},
 	}
@@ -493,6 +498,19 @@ func TestWordPressPolicy(t *testing.T) {
 		}
 		if status, _ := s.raw(t, get("/wp-login.php")); status != 200 {
 			t.Fatalf("reading the login page was limited: %d", status)
+		}
+	})
+	t.Run("login spellings and addresses in one IPv6 /64 share the limit", func(t *testing.T) {
+		s := start(t, func(c *Config) { on(c); c.TrustedProxies = []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")} })
+		var statuses []int
+		for i, target := range []string{"/wp-login.php", "/wp-login.php/", "/wp-login.php/x", "/wp-login.php"} {
+			login := "POST " + target + " HTTP/1.1\r\n" + preamble + fmt.Sprintf("X-Forwarded-For: 2001:db8:1:2::%x\r\n", i+1) +
+				"Content-Type: application/x-www-form-urlencoded\r\nContent-Length: 11\r\nConnection: close\r\n\r\nlog=a&pwd=b"
+			status, _ := s.raw(t, login)
+			statuses = append(statuses, status)
+		}
+		if want := []int{200, 200, 200, 429}; !equalInts(statuses, want) {
+			t.Fatalf("statuses %v, want %v", statuses, want)
 		}
 	})
 }
@@ -581,6 +599,21 @@ func TestAPIRatePolicy(t *testing.T) {
 		}
 		if status, _ := s.raw(t, get("/api", "X-Forwarded-For: 198.51.100.2\r\n")); status != 200 {
 			t.Fatalf("a separate verified client got %d", status)
+		}
+	})
+	t.Run("addresses in one IPv6 /64 share a budget", func(t *testing.T) {
+		s := start(t, func(c *Config) { on(c); c.TrustedProxies = []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")} })
+		for i := 1; i <= 3; i++ {
+			want := 200
+			if i == 3 {
+				want = 429
+			}
+			if status, _ := s.raw(t, get("/api", fmt.Sprintf("X-Forwarded-For: 2001:db8:1:2::%x\r\n", i))); status != want {
+				t.Fatalf("status %d, want %d", status, want)
+			}
+		}
+		if status, _ := s.raw(t, get("/api", "X-Forwarded-For: 2001:db8:1:3::1\r\n")); status != 200 {
+			t.Fatalf("a client in another /64 got %d", status)
 		}
 	})
 	t.Run("state saturation refuses live traffic", func(t *testing.T) {
@@ -774,7 +807,40 @@ func TestOneAddressCannotHoldManyConnectionsOpen(t *testing.T) {
 	if status, _ := s.raw(t, get("/page")); status != 200 {
 		t.Fatalf("after one was closed, a new connection got %d", status)
 	}
+
+	t.Run("addresses in one IPv6 /64 share the cap", func(t *testing.T) {
+		l := newConnLimiter(2, nil, nil)
+		var open []*limitConn
+		for i, addr := range []string{"[2001:db8:1:2::1]:1000", "[2001:db8:1:2::2]:1000", "[2001:db8:1:2::3]:1000", "[2001:db8:1:3::1]:1000"} {
+			c := &limitConn{remote: addr}
+			l.state(c, http.StateNew)
+			if want := i != 2; c.closed == want {
+				t.Fatalf("%s: closed %v, want %v", addr, c.closed, !want)
+			}
+			open = append(open, c)
+		}
+		l.state(open[0], http.StateClosed)
+		again := &limitConn{remote: "[2001:db8:1:2::9]:1000"}
+		if l.state(again, http.StateNew); again.closed {
+			t.Fatal("a place freed in the /64 was not reused")
+		}
+	})
 }
+
+// limitConn is a connection with only an address, for the connection limiter.
+type limitConn struct {
+	net.Conn
+	remote string
+	closed bool
+}
+
+func (c *limitConn) RemoteAddr() net.Addr { return limitAddr(c.remote) }
+func (c *limitConn) Close() error         { c.closed = true; return nil }
+
+type limitAddr string
+
+func (a limitAddr) Network() string { return "tcp" }
+func (a limitAddr) String() string  { return string(a) }
 
 func TestHTTP2LimitsAreAdvertisedToClients(t *testing.T) {
 	s := start(t, ruleSetOff)

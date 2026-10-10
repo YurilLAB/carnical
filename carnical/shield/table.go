@@ -18,6 +18,7 @@ type table[K comparable, V any] struct {
 	seed     maphash.Seed
 	idle     func(v *V, now int64) bool // whether forgetting v loses nothing
 	lastUsed func(v *V) int64
+	keep     func(v *V, now int64) bool // whether v holds standing worth more than a stranger's entry; nil for none
 }
 
 type tableShard[K comparable, V any] struct {
@@ -25,9 +26,9 @@ type tableShard[K comparable, V any] struct {
 	m  map[K]*V
 }
 
-func newTable[K comparable, V any](size int, idle func(*V, int64) bool, lastUsed func(*V) int64) *table[K, V] {
+func newTable[K comparable, V any](size int, idle func(*V, int64) bool, lastUsed func(*V) int64, keep func(*V, int64) bool) *table[K, V] {
 	const shards = 64
-	t := &table[K, V]{shards: make([]tableShard[K, V], shards), per: max(size/shards, 16), seed: maphash.MakeSeed(), idle: idle, lastUsed: lastUsed}
+	t := &table[K, V]{shards: make([]tableShard[K, V], shards), per: max(size/shards, 16), seed: maphash.MakeSeed(), idle: idle, lastUsed: lastUsed, keep: keep}
 	for i := range t.shards {
 		t.shards[i].m = map[K]*V{}
 	}
@@ -64,19 +65,28 @@ func (t *table[K, V]) peek(k K, f func(v *V)) bool {
 }
 
 func (t *table[K, V]) evict(s *tableShard[K, V], now int64) {
-	var oldest K
-	oldestAt, n := int64(-1), 0
+	// The oldest entry without standing goes first; one with standing only if the whole sample has it.
+	var oldest, oldestKept K
+	oldestAt, keptAt, n := int64(-1), int64(-1), 0
 	for k, v := range s.m { // map order is random: a fair sample
 		if t.idle(v, now) {
 			delete(s.m, k)
 			return
 		}
-		if at := t.lastUsed(v); oldestAt < 0 || at < oldestAt {
+		at := t.lastUsed(v)
+		if t.keep != nil && t.keep(v, now) {
+			if keptAt < 0 || at < keptAt {
+				oldestKept, keptAt = k, at
+			}
+		} else if oldestAt < 0 || at < oldestAt {
 			oldest, oldestAt = k, at
 		}
 		if n++; n == 32 {
 			break
 		}
+	}
+	if oldestAt < 0 {
+		oldest = oldestKept
 	}
 	delete(s.m, oldest)
 }
@@ -116,6 +126,9 @@ func sourceIdle(s *source, now int64) bool {
 
 func sourceLast(s *source) int64 { return s.last }
 
+// sourceKeep is a ban or a known client's standing, which a flood of new addresses must not push out.
+func sourceKeep(s *source, now int64) bool { return s.bannedUntil > now || s.knownUntil > now }
+
 // subnet is what the shield remembers about one /24 (IPv4) or /48 (IPv6).
 type subnet struct {
 	req    bucket
@@ -128,9 +141,9 @@ func subnetIdle(s *subnet, now int64) bool { return now-s.last > 60e9 }
 
 func subnetLast(s *subnet) int64 { return s.last }
 
-// sourceKey is the unit the per-client limits apply to: an IPv4 address, or an IPv6 /64, the smallest block one
+// SourceKey is the unit the per-client limits apply to: an IPv4 address, or an IPv6 /64, the smallest block one
 // customer of an internet provider is given (anything finer and one machine is a million clients).
-func sourceKey(a netip.Addr) netip.Addr {
+func SourceKey(a netip.Addr) netip.Addr {
 	a = a.Unmap()
 	if a.Is6() {
 		p, _ := a.Prefix(64)

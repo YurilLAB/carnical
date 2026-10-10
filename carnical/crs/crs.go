@@ -117,6 +117,18 @@ func DefaultSettings() Settings {
 	return Settings{Mode: ModeBlock, ParanoiaLevel: 1, InboundThreshold: 5, OutboundThreshold: 4, RequestBodyLimit: 1 << 20}
 }
 
+// ResponseBodyLimit is the response body limit base/coraza.conf gives the rules (SecResponseBodyLimit): with
+// InspectResponses, the response body rules run when a response reaches it.
+const ResponseBodyLimit = 512 << 10
+
+// ResponseLimit is ResponseBodyLimit, or 0 when Before or After may change it.
+func (s Settings) ResponseLimit() int64 {
+	if strings.Contains(strings.ToLower(s.Before+s.After), "responsebodylimit") {
+		return 0
+	}
+	return ResponseBodyLimit
+}
+
 var methodShape = regexp.MustCompile(`^[A-Z][A-Z-]{0,19}$`)
 
 // pathShape keeps what is written into a SecLang directive from being able to end it or start another: no space,
@@ -144,6 +156,10 @@ func (s Settings) Validate() error {
 	}
 	if s.UploadDir != "" && (!filepath.IsAbs(s.UploadDir) || !pathShape.MatchString(s.UploadDir)) {
 		return fmt.Errorf("the upload directory must be an absolute path made of letters, digits and . _ - / : and backslash only")
+	}
+	// SecLang joins a line ending in a backslash to the next one, which would swallow the following directive.
+	if strings.HasSuffix(s.UploadDir, `\`) {
+		return fmt.Errorf("the upload directory must not end with a backslash")
 	}
 	for _, m := range s.AllowedMethods {
 		if !methodShape.MatchString(m) {

@@ -344,7 +344,18 @@ func (s *mpScanner) disposition(value string, at int) bool {
 			filename, hasFile = pr.value, true
 		case "filename*":
 			star, hasStar = pr.value, true
+		default:
+			// RFC 2231 extended or continued parameters (name*, filename*0, ...) are decoded by some parsers, Go's mime
+			// among them, and ignored by others, so the two read a different name or file name.
+			if strings.Contains(pr.name, "*") {
+				return !f.hit(rMPDisp, at, dExtParam)
+			}
 		}
+	}
+	// A filename* with no filename makes a file of the part for a parser that reads filename*, keeping its content out of the
+	// arguments the rules check, and a plain field for one that does not.
+	if hasStar && !hasFile {
+		return !f.hit(rMPFileMis, at, dStarOnly)
 	}
 	if s.formData && !hasName && f.hit(rMPDisp, at, dNoName) {
 		return false

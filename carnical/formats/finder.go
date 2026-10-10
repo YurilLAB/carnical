@@ -55,8 +55,16 @@ func (f *finder) record(r *rule, d detail, limit, off int) bool {
 		f.blocked = true
 	}
 	word, bit := r.idx/64, uint64(1)<<(uint(r.idx)%64)
-	if f.seen[word]&bit != 0 || len(f.verdicts) >= maxVerdicts {
+	if f.seen[word]&bit != 0 {
 		return block
+	}
+	if len(f.verdicts) >= maxVerdicts {
+		if !block {
+			return block
+		}
+		// The proxy refuses only on a blocking verdict, so a refusal takes the last place from a monitored finding,
+		// which its counter has already recorded.
+		f.verdicts = f.verdicts[:maxVerdicts-1]
 	}
 	f.seen[word] |= bit
 	msg := r.name + ": " + r.text

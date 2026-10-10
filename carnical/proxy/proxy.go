@@ -64,7 +64,7 @@ type Config struct {
 	// place only after its body has been read, so a slow upload does not use one up.
 	MaxUpstreamInFlight int
 	// EvalBudget is how long each phase of rule evaluation may take for one request (default 2 seconds). A request
-	// that goes over it is refused with 503. Reading a slow client's body is not counted.
+	// that goes over it is refused with 503. Reading a slow client's body is not counted. A negative value is refused.
 	EvalBudget time.Duration
 	// MaxEvaluations is how many requests may be in rule evaluation at once (default: the number of CPUs). The rules
 	// cost several milliseconds per KiB of body, so without this a few large requests use every core. Others wait up
@@ -179,6 +179,10 @@ func New(cfg Config) (*Edge, error) {
 		return nil, fmt.Errorf("API rate policy: %w", err)
 	}
 	cfg.APIRate = apiRate
+	if cfg.EvalBudget < 0 {
+		// The budget wrapper is also what applies MaxEvaluations, so this would quietly drop both limits.
+		return nil, errors.New("the evaluation budget must not be negative")
+	}
 	directives, err := cfg.CRS.Directives()
 	if err != nil {
 		return nil, err
@@ -219,7 +223,7 @@ func New(cfg Config) (*Edge, error) {
 	if e.cfg.MaxFormBody == 0 {
 		e.cfg.MaxFormBody = 128 << 10
 	}
-	e.handler = e.guard(txhttp.WrapHandler(withEvalBudget(waf, budget, evalSlots), e.forward()))
+	e.handler = e.guard(txhttp.WrapHandler(withEvalBudget(waf, budget, evalSlots, cfg.CRS.ResponseLimit()), e.forward()))
 	return e, nil
 }
 
@@ -402,6 +406,12 @@ func (e *Edge) guard(next http.Handler) http.Handler {
 				return
 			}
 			seen = ireq
+		}
+		// checkRequest let a compressed body through only for an inspector to decompress. If none did (monitor mode, a
+		// rule turned off, no inspector), the rules would read compressed bytes that the application then unpacks.
+		if hasBody && contentEncoded(r.Header) {
+			e.refuse(w, r, http.StatusUnsupportedMediaType, idRequestEncoding, "a compressed request body was not decompressed for inspection")
+			return
 		}
 		tw := &trackWriter{ResponseWriter: w}
 		ctx := context.WithValue(r.Context(), contextKey{}, addr)

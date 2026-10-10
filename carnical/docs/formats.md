@@ -21,7 +21,7 @@ Backend-specific behavior and unsupported formats still need separate review.
 | `-formats-mode block` | Enforce configured blocking findings after tuning legitimate traffic. |
 | `-formats-mode off` | Disable the inspector; incompatible with a policy file or encoding opt-in. |
 | `-formats-policy path.json` | Read a regular file, at most 1 MiB, before listening or confinement. |
-| `-allow-request-encoding` | Allow one bounded gzip/deflate layer. Both CRS and origin receive decoded bytes. |
+| `-allow-request-encoding` | Allow one bounded gzip/deflate layer. Both CRS and origin receive decoded bytes; a body that was not decoded (monitor mode or an `encoding-*` rule off) is refused with 415. |
 
 The CLI mode overrides the policy's `monitor` field. Per-rule overrides still apply. Proxy
 `-max-body`/`-max-form-body` limits and format body/decompression limits all apply independently.
@@ -60,7 +60,7 @@ Start in monitoring, review legitimate traffic, tune individual rules, then enab
 | YAML (off unless allowed) | Any explicit tag, more than 4 anchors or 8 aliases, depth over 32, more than 10,000 nodes or 1024 collection work units, a body over 32 KiB, more than one document (an empty one counts), a duplicate key |
 | Form | A bad percent escape, an escaped or raw NUL or control character, `;` as a separator, invalid UTF-8, more than 1,000 parameters, over-long names and values, brackets nested over 8, `__proto__` names; duplicate names are recorded |
 | URL query | The same parameter grammar checks on every method and endpoint, with independent query rules/limits; raw queries over 64 KiB; repeated parameters are monitored by default, with explicit `[]` arrays supported |
-| Multipart | No boundary, an invalid or over-long boundary, more than 100 parts, a part header that does not follow the grammar, a repeated Content-Disposition or Content-Type, a `filename` and `filename*` that disagree, a nested multipart, a transfer encoding other than 7bit, 8bit or binary, a bare line feed, no closing boundary, data before the first or after the last boundary, a line that starts with the boundary and is not a delimiter, a part with no name |
+| Multipart | No boundary, an invalid or over-long boundary, more than 100 parts, a part header that does not follow the grammar, a repeated Content-Disposition or Content-Type, a `filename` and `filename*` that disagree or a `filename*` alone, an extended parameter other than `filename*`, a nested multipart, a transfer encoding other than 7bit, 8bit or binary, a bare line feed, no closing boundary, data before the first or after the last boundary, a line that starts with the boundary and is not a delimiter, a part with no name |
 | Mismatch | A body that starts like JSON, XML or multipart under a Content-Type that says form, `text/plain` or multipart (or none); a body declared as JSON or XML that does not start like it |
 
 ## Policy
@@ -107,7 +107,7 @@ Positions in GraphQL messages are bytes of the decoded query text, not of the re
 
 * **Duplicate keys are compared after decoding escapes and with case folded** (a Unicode simple fold, so the Kelvin sign and the long s match `k` and `s`, as they do in Go's own decoder). Frameworks keep the first, the last, or merge, and some match keys without regard to case. This comparison catches those duplicate-key ambiguities; it does not establish equivalence with every backend parser.
 * **Form and multipart duplicate names are recorded, not refused**, by default (`form-duplicate-param`, `multipart-duplicate-name`): a group of checkboxes is a legitimate duplicate. Names ending in `[]` are never reported. A site that has no such field sets the rule to `block`.
-* **A lone `filename*` is recorded, not refused.** RFC 7578 forbids it in form data and browsers never send it, but some HTTP libraries do. A `filename*` that disagrees with `filename` (the Coraza decoy) is refused.
+* **A `filename*` next to `filename` is recorded, not refused** (`multipart-filename-star`). RFC 7578 forbids it in form data and browsers never send it, but some HTTP libraries do. A `filename*` that disagrees with `filename` (the Coraza decoy) is refused, and so is one with no `filename` (`multipart-filename-mismatch`): a parser that reads it, Go's among them, makes a file of the part and one that does not makes a plain field, so the two check different things. Other extended or continued parameters (`name*`, `filename*0`) are refused as an invalid Content-Disposition for the same reason.
 * **A byte order mark is refused for every text format**, XML included. A .NET client that writes one sets `body-bom` to `monitor`.
 * **`text/plain` is checked for a body that is a whole JSON or XML document** (it starts like one and ends like one): that is how a cross-site request carries JSON with no preflight. Plain prose that starts with a bracket is left alone. An HTML snippet posted as `text/plain` is refused as XML; a site that does this sets `mismatch-xml-body` to `monitor`.
 * **Gzip's `x-gzip` alias, a second member, and `deflate` without a zlib header are refused** (`allow_raw_deflate` accepts the last). These are differences between servers, and the proxy only passes `gzip` and `deflate` through anyway.

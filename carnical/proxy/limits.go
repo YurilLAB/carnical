@@ -8,6 +8,8 @@ import (
 	"net/netip"
 	"sync"
 	"time"
+
+	"github.com/YurilLAB/coraza/carnical/shield"
 )
 
 // rateLimiter counts admitted attempts in an exact sliding minute. A shared event ring bounds all timestamp storage,
@@ -100,8 +102,9 @@ func (l *connLimiter) state(c net.Conn, s http.ConnState) {
 		if isTrusted(ip, l.trusted) {
 			return // a load balancer carries many visitors on few connections
 		}
+		key := shield.SourceKey(ip) // an IPv6 client is its /64, as for the rate limits
 		l.mu.Lock()
-		if l.perIP[ip] >= l.max {
+		if l.perIP[key] >= l.max {
 			l.mu.Unlock()
 			if l.onLimit != nil {
 				l.onLimit(ip)
@@ -110,8 +113,8 @@ func (l *connLimiter) state(c net.Conn, s http.ConnState) {
 			c.Close()
 			return
 		}
-		l.perIP[ip]++
-		l.counted[c] = ip
+		l.perIP[key]++
+		l.counted[c] = key
 		l.mu.Unlock()
 	case http.StateClosed, http.StateHijacked:
 		l.mu.Lock()

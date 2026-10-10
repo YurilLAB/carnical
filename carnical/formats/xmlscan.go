@@ -15,7 +15,9 @@ import (
 
 const (
 	xmlnsXInclude = "http://www.w3.org/2001/XInclude"
-	xmlnsXSLT     = "http://www.w3.org/1999/XSL/Transform"
+	// xmlnsXInclude2003 is the namespace of the XInclude draft; libxml2 still processes it, with a warning.
+	xmlnsXInclude2003 = "http://www.w3.org/2003/XInclude"
+	xmlnsXSLT         = "http://www.w3.org/1999/XSL/Transform"
 )
 
 type xmlScanner struct {
@@ -579,7 +581,7 @@ func (p *xmlScanner) attrValue(name span) bool {
 	if string(n) == "xmlns" || bytes.HasPrefix(n, []byte("xmlns:")) {
 		uri := strings.TrimSpace(decodeRefs(b[vs:i]))
 		switch uri {
-		case xmlnsXInclude:
+		case xmlnsXInclude, xmlnsXInclude2003:
 			if p.f.hit(rXMLXInclude, vs, dNone) {
 				return false
 			}

@@ -186,6 +186,10 @@ var graphqlRows = register("graphql", []row{
 		tweak: func(p *Policy) { p.GraphQL.AllowIntrospection = true }},
 	{name: "introspection by get", method: "GET", path: "/graphql", query: "query=%7B__schema%7Btypes%7Bname%7D%7D%7D", want: idGQLIntro},
 	{name: "introspection by get on another path", method: "GET", path: "/api/x", query: "query=%7B__schema%7Btypes%7Bname%7D%7D%7D", want: idGQLIntro},
+	// A name over the lexer's cap is a limit, not a syntax error: on a path not named graphql a syntax error means "not GraphQL"
+	// and would skip every check, while a server with a longer cap runs the document.
+	{name: "introspection with an over-long name on another path", path: "/api/x", ct: appJSON,
+		body: gqlReq(`{ __schema { types { name } } ` + strings.Repeat("n", 300) + ` }`), want: idGQLLimit},
 	{name: "introspection by form", path: "/graphql", ct: form, body: "query=%7B__schema%7Btypes%7Bname%7D%7D%7D", want: idGQLIntro},
 	{name: "introspection by application/graphql", path: "/graphql", ct: "application/graphql", body: `{ __schema { types { name } } }`, want: idGQLIntro},
 

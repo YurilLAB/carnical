@@ -10,6 +10,8 @@ import (
 	"path"
 	"regexp"
 	"strings"
+
+	"github.com/YurilLAB/coraza/carnical/shield"
 )
 
 // The checks in this file and the next ones do not depend on the rule set. They hold with the rule set off or in
@@ -145,6 +147,16 @@ func isMethodOverrideHeader(key string) bool {
 	return key == "x-http-method-override" || key == "x-method-override" || key == "x-http-method"
 }
 
+// contentEncoded reports a Content-Encoding other than identity.
+func contentEncoded(h http.Header) bool {
+	for _, v := range h.Values("Content-Encoding") {
+		if enc := strings.ToLower(strings.TrimSpace(v)); enc != "" && enc != "identity" {
+			return true
+		}
+	}
+	return false
+}
+
 // refuse answers a request the proxy itself will not forward, and records why in the same form as a rule match.
 func (e *Edge) refuse(w http.ResponseWriter, r *http.Request, status int, id int, msg string) {
 	if e.cfg.OnMatch != nil {
@@ -178,7 +190,8 @@ func (e *Edge) checkRequest(w http.ResponseWriter, r *http.Request, client netip
 		return false
 	}
 	// A compressed request body is not something the rules can read, and an application that unpacks it would
-	// receive what nothing inspected. Browsers do not compress what they send.
+	// receive what nothing inspected. Browsers do not compress what they send. ServeHTTP refuses an allowed one that
+	// no inspector decompressed.
 	for _, v := range r.Header.Values("Content-Encoding") {
 		enc := strings.ToLower(strings.TrimSpace(v))
 		if e.cfg.AllowRequestEncoding && (enc == "gzip" || enc == "deflate") && len(r.Header.Values("Content-Encoding")) == 1 {
@@ -200,11 +213,11 @@ func (e *Edge) checkRequest(w http.ResponseWriter, r *http.Request, client netip
 			return false
 		}
 	}
-	if e.cfg.WordPress.Enabled && !e.checkWordPress(w, r, rawPath, client) {
+	if e.cfg.WordPress.Enabled && !e.checkWordPress(w, r, client) {
 		return false
 	}
 	if e.cfg.APIRate.PerMinute > 0 && e.cfg.APIRate.matches(r.URL.Path) {
-		return e.checkRate(w, r, "api:"+client.String(), e.cfg.APIRate.PerMinute, idAPIRateLimited, "too many API requests from one address")
+		return e.checkRate(w, r, "api:"+clientKey(client), e.cfg.APIRate.PerMinute, idAPIRateLimited, "too many API requests from one address")
 	}
 	return true
 }
@@ -240,12 +253,7 @@ func (p APIRatePolicy) normalized() (APIRatePolicy, error) {
 }
 
 func (p APIRatePolicy) matches(decoded string) bool {
-	// Account conservatively for application route normalization when a site permits encoded slashes or matrix parameters.
-	parts := strings.Split(strings.ReplaceAll(decoded, "\\", "/"), "/")
-	for i := range parts {
-		parts[i], _, _ = strings.Cut(parts[i], ";")
-	}
-	decoded = strings.ToLower(path.Clean(strings.Join(parts, "/")))
+	decoded = routePath(decoded)
 	for _, prefix := range p.Paths {
 		if prefix == "/" || decoded == prefix || strings.HasPrefix(decoded, prefix+"/") {
 			return true
@@ -253,6 +261,21 @@ func (p APIRatePolicy) matches(decoded string) bool {
 	}
 	return false
 }
+
+// routePath is a decoded path as an application is likely to route it: empty segments, a trailing slash and path
+// parameters removed, backslashes as slashes, in lower case. It accounts conservatively for sites that permit encoded
+// slashes or matrix parameters.
+func routePath(decoded string) string {
+	parts := strings.Split(strings.ReplaceAll(decoded, "\\", "/"), "/")
+	for i := range parts {
+		parts[i], _, _ = strings.Cut(parts[i], ";")
+	}
+	return strings.ToLower(path.Clean(strings.Join(parts, "/")))
+}
+
+// clientKey is what the per-client limits count: an IPv4 address or an IPv6 /64, as the shield does, so a client
+// cannot get a fresh budget by changing the low bits of its IPv6 address.
+func clientKey(a netip.Addr) string { return shield.SourceKey(a).String() }
 
 func (e *Edge) checkRate(w http.ResponseWriter, r *http.Request, key string, n, rule int, message string) bool {
 	switch e.limiter.allow(key, n) {
@@ -288,22 +311,26 @@ var (
 	wpScript   = regexp.MustCompile(`(?i)\.(php[0-9]?|phtml|pht|phps|phar|shtml?)(/|$)`)
 )
 
-func (e *Edge) checkWordPress(w http.ResponseWriter, r *http.Request, rawPath string, client netip.Addr) bool {
-	if wpWritable.MatchString(rawPath) && wpScript.MatchString(rawPath) {
+func (e *Edge) checkWordPress(w http.ResponseWriter, r *http.Request, client netip.Addr) bool {
+	// Empty segments, a trailing slash, path parameters and path info do not change which script PHP runs.
+	p := routePath(r.URL.Path)
+	if wpWritable.MatchString(p) && wpScript.MatchString(p) {
 		e.refuse(w, r, http.StatusForbidden, idWordPressPHP, "a script is requested from a directory WordPress only writes data to")
 		return false
 	}
-	lower := strings.ToLower(rawPath)
-	if lower == "/xmlrpc.php" && !e.cfg.WordPress.AllowXMLRPC {
+	if runsScript(p, "/xmlrpc.php") && !e.cfg.WordPress.AllowXMLRPC {
 		e.refuse(w, r, http.StatusForbidden, idXMLRPC, "xmlrpc.php is switched off")
 		return false
 	}
-	if lower == "/wp-login.php" && r.Method == http.MethodPost {
+	if runsScript(p, "/wp-login.php") && r.Method == http.MethodPost {
 		perMinute := e.cfg.WordPress.LoginPerMinute
 		if perMinute <= 0 {
 			perMinute = 10
 		}
-		return e.checkRate(w, r, "login:"+client.String(), perMinute, idRateLimited, "too many login attempts from one address")
+		return e.checkRate(w, r, "login:"+clientKey(client), perMinute, idRateLimited, "too many login attempts from one address")
 	}
 	return true
 }
+
+// runsScript reports a route path that runs script, directly or with path info after it.
+func runsScript(p, script string) bool { return p == script || strings.HasPrefix(p, script+"/") }

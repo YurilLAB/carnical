@@ -106,7 +106,10 @@ packet budgets are [configured separately](network-protection.md#choosing-a-budg
 - **Other clients** share a budget equal to the site's usual rate. API clients receive 503 and
   `Retry-After` rather than a challenge page.
 
-An address refused 30 times during an attack is banned for ten minutes. Rule IDs are 5004001
+An address refused 30 times during an attack is banned for ten minutes, and again after another 30
+refusals if it carries on once the ban runs out. When the address table is full, an entry without
+standing is forgotten first; a ban or a known client's standing goes only when every entry in the
+sample of 32 has one. Rule IDs are 5004001
 (address rate), 5004002 (network rate), 5004003 (attack cluster), 5004004 (unknown-client budget),
 5004005 (challenge shown), 5004006/5004007 (failed/passed) and 5004008 (ban).
 

@@ -142,7 +142,7 @@ func (m *sim) do(class string, v *simVisitor, path string, nav bool, headers []s
 			if !strings.HasPrefix(class, "legit") || attempt > 0 {
 				return false // bots do not run the page; a person who failed twice gives up
 			}
-			tok := m.s.token(sourceKey(v.addr), m.clock)
+			tok := m.s.token(SourceKey(v.addr), m.clock)
 			vr := httptest.NewRequest(http.MethodGet, VerifyPath+"?t="+tok+"&n="+solve(tok, 8)+"&to=/", nil)
 			vr.Header.Set("User-Agent", r.Header.Get("User-Agent"))
 			vd := m.s.Admit(vr, v.addr)

@@ -344,6 +344,33 @@ func TestMonitorModeLetsTheBodyThroughAndRecordsIt(t *testing.T) {
 	}
 }
 
+// The proxy lets a compressed body past its own checks only for the inspector to decompress. One that was not decompressed,
+// whatever the mode, must not reach the rules or the application as compressed bytes.
+func TestACompressedBodyThatWasNotDecompressedNeverReachesTheApplication(t *testing.T) {
+	bomb := gzipped(strings.Repeat("0", 1<<20))
+	corrupt := "not a gzip stream"
+	tests := []struct {
+		name, ctype string
+		pol         formats.Policy
+		body        string
+	}{
+		{"monitor mode, a gzip bomb", "application/json", formats.Policy{Monitor: true}, bomb},
+		{"monitor mode, a corrupt stream", "application/json", formats.Policy{Monitor: true}, corrupt},
+		{"the decoding rule off", "text/plain", formats.Policy{Rules: map[string]formats.Action{"encoding-corrupt": formats.Off}}, corrupt},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := startEdge(t, tt.pol, true)
+			if status := e.send(t, post("/api", tt.ctype, []string{"Content-Encoding: gzip"}, tt.body)); status != 415 {
+				t.Fatalf("status %d, want 415", status)
+			}
+			if n := len(e.app.requests()); n != 0 {
+				t.Fatalf("the application received %d compressed requests", n)
+			}
+		})
+	}
+}
+
 // TestAFindingTheSiteTurnedOffIsNotRecorded: the same body, with the rule off, passes without a trace.
 func TestARuleSetToOffIsSilent(t *testing.T) {
 	e := startEdge(t, formats.Policy{Rules: map[string]formats.Action{"json-duplicate-key": formats.Off}}, true)

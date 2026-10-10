@@ -126,8 +126,8 @@ type Config struct {
 	// UnknownFactor and MinUnknownRate set the budget during an attack for clients the shield does not know:
 	// UnknownFactor times the usual request rate, and at least MinUnknownRate a second (defaults 1 and 10).
 	UnknownFactor, MinUnknownRate float64
-	// BanAfter is how many requests refused during an attack get an address banned (default 30), for BanFor (default 10
-	// minutes).
+	// BanAfter is how many requests refused during an attack get an address banned (default 30, at most 65535), for
+	// BanFor (default 10 minutes). The count starts again after each ban.
 	BanAfter int
 	BanFor   time.Duration
 	// NoChallenge refuses unknown browsers during an attack instead of asking them to answer a challenge.
@@ -247,8 +247,8 @@ func (c Config) Validate() error {
 		return errors.New("shield: MaxConns must be at least 16, SubnetConns at least 1 and ReservedShare between 0 and 0.9")
 	case c.ConnRate < 0 || c.ConnBurst < 1:
 		return errors.New("shield: the connection rate must be positive and its burst at least 1")
-	case c.ClusterRate < 0 || c.UnknownFactor < 0 || c.MinUnknownRate < 0 || c.BanAfter < 1 || c.BanFor < time.Second:
-		return errors.New("shield: attack budgets must not be negative, BanAfter at least 1 and BanFor at least a second")
+	case c.ClusterRate < 0 || c.UnknownFactor < 0 || c.MinUnknownRate < 0 || c.BanAfter < 1 || c.BanAfter > 65535 || c.BanFor < time.Second:
+		return errors.New("shield: attack budgets must not be negative, BanAfter 1 to 65535 and BanFor at least a second")
 	case c.ChallengeBits < 8 || c.ChallengeBits > 24:
 		return errors.New("shield: ChallengeBits must be between 8 and 24")
 	case c.ClearanceFor < time.Minute || c.KnownAfter < 1 || c.KnownFor < time.Minute || c.MaxSources < 1024:
@@ -322,8 +322,8 @@ func New(cfg Config) (*Shield, error) {
 	cfg.Trusted = append([]netip.Prefix(nil), cfg.Trusted...)
 	s := &Shield{cfg: cfg, key: newKey(), det: newDetector(cfg.Detector), stop: make(chan struct{}), bans: make(chan banReq, 256),
 		connNets: make(map[netip.Prefix]int64)}
-	s.sources = newTable[netip.Addr, source](cfg.MaxSources, sourceIdle, sourceLast)
-	s.subnets = newTable[netip.Prefix, subnet](cfg.MaxSources/4, subnetIdle, subnetLast)
+	s.sources = newTable[netip.Addr, source](cfg.MaxSources, sourceIdle, sourceLast, sourceKeep)
+	s.subnets = newTable[netip.Prefix, subnet](cfg.MaxSources/4, subnetIdle, subnetLast, nil)
 	s.det.labeler, s.det.onEvent = cfg.Labeler, cfg.OnEvent
 	s.det.clusterRate, s.det.clusterShare = cfg.ClusterRate, cfg.ClusterShare
 	s.det.refSrc, s.det.refNet = cfg.RequestRate, cfg.SubnetRate
@@ -415,7 +415,7 @@ func (s *Shield) Admit(r *http.Request, client netip.Addr) Decision {
 	now := s.now()
 	ns := now.UnixNano()
 	client = client.Unmap()
-	key := sourceKey(client)
+	key := SourceKey(client)
 	trusted := s.trusted(client)
 	fp, fpLabel := fingerprint(r)
 	pt, ptLabel := pathTemplate(r)
@@ -545,8 +545,9 @@ func (s *Shield) strike(ns int64, key netip.Addr, info *attackInfo) {
 		if src.strikes < 65535 {
 			src.strikes++
 		}
-		if int(src.strikes) == s.cfg.BanAfter {
-			src.bannedUntil, src.knownUntil, ban = ns+int64(s.cfg.BanFor), 0, true
+		// Counting starts again, so an address that goes on after its ban runs out is banned again.
+		if int(src.strikes) >= s.cfg.BanAfter {
+			src.bannedUntil, src.knownUntil, src.strikes, ban = ns+int64(s.cfg.BanFor), 0, 0, true
 		}
 	})
 	if !ban {

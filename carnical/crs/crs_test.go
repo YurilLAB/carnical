@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"io/fs"
 	"net/http"
@@ -85,6 +86,17 @@ func TestBaseConfigIsUpstreamsRecommendedConfig(t *testing.T) {
 	norm := func(b []byte) []byte { return bytes.ReplaceAll(b, []byte("\r\n"), []byte("\n")) }
 	if !bytes.Equal(norm(upstream), norm(ours)) {
 		t.Fatal("crs/base/coraza.conf differs from coraza.conf-recommended")
+	}
+	// The proxy budgets only the response write that reaches this limit, so it must be the one the file sets.
+	if !bytes.Contains(norm(ours), []byte(fmt.Sprintf("\nSecResponseBodyLimit %d\n", crs.ResponseBodyLimit))) {
+		t.Fatal("crs.ResponseBodyLimit is not the SecResponseBodyLimit of base/coraza.conf")
+	}
+	s := crs.DefaultSettings()
+	if s.ResponseLimit() != crs.ResponseBodyLimit {
+		t.Fatal("the default settings do not report the base response limit")
+	}
+	if s.After = `SecRule REQUEST_URI "@beginsWith /export" "id:1,phase:1,pass,nolog,ctl:responseBodyLimit=1024"`; s.ResponseLimit() != 0 {
+		t.Fatal("a limit the operator's directives may change was reported as known")
 	}
 }
 

@@ -147,6 +147,8 @@ var typeRows = register("content-type", []row{
 	{name: "json under text/plain", ct: "text/plain", body: `{"admin":true}`, want: idMismatchJSON},
 	{name: "json array under text/plain", ct: "text/plain", body: `[{"a":1}]`, want: idMismatchJSON},
 	{name: "json with leading whitespace under text/plain", ct: "text/plain", body: "\n\t {\"a\": 1}\r\n", want: idMismatchJSON},
+	{name: "json padded after the brace under a form type", ct: form, body: "{" + strings.Repeat(" ", 100) + `"admin":true}`, want: idMismatchJSON},
+	{name: "json array padded after the bracket under text/plain", ct: "text/plain", body: "[" + strings.Repeat("\n", 100) + `{"a":1}]`, want: idMismatchJSON},
 	{name: "json after a byte order mark under text/plain", ct: "text/plain", body: "\xef\xbb\xbf{\"a\":1}", want: idMismatchJSON},
 	{name: "json with no Content-Type when that is allowed", body: `{"a":1}`, want: idMismatchJSON,
 		tweak: func(p *Policy) { p.Rules = map[string]Action{"type-missing": Off} }},
@@ -413,6 +415,28 @@ func TestRuleCountersAreBoundedAndConcurrent(t *testing.T) {
 				t.Fatal("the snapshot shares mutable storage")
 			}
 		})
+	}
+}
+
+// A body that breaks many monitored rules fills the verdict list; a refusal after that must still be reported, or the proxy,
+// which refuses only on a blocking verdict, lets the request through.
+func TestARefusalPastTheVerdictCapIsReported(t *testing.T) {
+	in := New(Policy{Monitor: true})
+	f := &finder{in: in}
+	for _, r := range registry[:maxVerdicts] {
+		if f.hit(r, -1, dNone) {
+			t.Fatalf("%s refused in monitor mode", r.name)
+		}
+	}
+	in.act[rInternal.idx] = Block
+	if !f.hit(rInternal, -1, dNone) {
+		t.Fatal("the blocking finding did not stop the parser")
+	}
+	if len(f.verdicts) > maxVerdicts {
+		t.Fatalf("%d verdicts, cap %d", len(f.verdicts), maxVerdicts)
+	}
+	if last := f.verdicts[len(f.verdicts)-1]; !last.Block || last.ID != rInternal.id {
+		t.Fatalf("the refusal was not reported: %+v", last)
 	}
 }
 

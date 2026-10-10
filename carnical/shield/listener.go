@@ -104,7 +104,7 @@ func (s *Shield) admitConn(c net.Conn) net.Conn {
 		return nil
 	}
 	ns := s.now().UnixNano()
-	sc := &conn{Conn: c, s: s, key: sourceKey(a), subnet: netOf(a), trusted: s.trusted(a)}
+	sc := &conn{Conn: c, s: s, key: SourceKey(a), subnet: netOf(a), trusted: s.trusted(a)}
 	attack := s.det.info.Load() != nil && !s.cfg.MonitorOnly
 	refused := false
 	scaleSrc, scaleNet := s.det.scales()

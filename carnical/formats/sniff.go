@@ -46,12 +46,12 @@ func sniff(b []byte, strict bool) sniffed {
 	}
 	switch b[i] {
 	case '{':
-		j := skipSpaces(b, i+1, 64)
+		j := skipSpaces(b, i+1)
 		if j < len(b) && (b[j] == '"' || b[j] == '}') {
 			s.json = !strict || b[end-1] == '}'
 		}
 	case '[':
-		j := skipSpaces(b, i+1, 64)
+		j := skipSpaces(b, i+1)
 		if j < len(b) && bytes.IndexByte([]byte("{[\"]-0123456789tfn"), b[j]) >= 0 {
 			s.json = !strict || b[end-1] == ']'
 		}
@@ -66,9 +66,10 @@ func sniff(b []byte, strict bool) sniffed {
 	return s
 }
 
-// skipSpaces moves past at most limit JSON whitespace bytes from i.
-func skipSpaces(b []byte, i, limit int) int {
-	for n := 0; i < len(b) && n < limit && xmlSpace(b[i]); n++ {
+// skipSpaces moves past the JSON whitespace from i. JSON allows any amount, so padding after the bracket must not hide a
+// document; it is one pass over bytes the body holds anyway.
+func skipSpaces(b []byte, i int) int {
+	for i < len(b) && xmlSpace(b[i]) {
 		i++
 	}
 	return i

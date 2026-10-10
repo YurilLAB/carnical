@@ -20,6 +20,7 @@ func TestUploadDirIsValidatedAndWritten(t *testing.T) {
 		{"a space", abs + " x", false},
 		{"a quote", abs + "\"", false},
 		{"a semicolon", abs + ";x", false},
+		{"a trailing backslash that would join the next directive", abs + `\`, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

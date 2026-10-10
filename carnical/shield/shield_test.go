@@ -468,6 +468,7 @@ func TestConfigValidation(t *testing.T) {
 		{"challenge too hard", func(c *Config) { c.ChallengeBits = 30 }, false},
 		{"trusted /0", func(c *Config) { c.Trusted = []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0")} }, false},
 		{"exit above entry", func(c *Config) { c.Detector.ExitFactor = 10 }, false},
+		{"a ban count the strike counter cannot reach", func(c *Config) { c.BanAfter = 70000 }, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -477,6 +478,50 @@ func TestConfigValidation(t *testing.T) {
 				t.Fatalf("Validate() = %v", err)
 			}
 		})
+	}
+}
+
+// An address that keeps attacking after its ban expires is banned again within the same attack.
+func TestABanIsRenewedWithinOneAttack(t *testing.T) {
+	now := time.Date(2026, 10, 6, 9, 0, 0, 0, time.UTC)
+	s := newTestShield(t, &now, func(c *Config) { c.BanAfter, c.BanFor = 5, time.Minute })
+	key, info := netip.MustParseAddr("203.0.113.9"), &attackInfo{epoch: 1}
+	banned := func() (b bool) {
+		s.sources.peek(key, func(src *source) { b = src.bannedUntil > now.UnixNano() })
+		return b
+	}
+	for round := 1; round <= 2; round++ {
+		for i := 0; i < 5; i++ {
+			s.strike(now.UnixNano(), key, info)
+		}
+		if !banned() {
+			t.Fatalf("round %d: not banned after BanAfter refusals", round)
+		}
+		now = now.Add(2 * time.Minute) // the ban runs out while the attack goes on
+		if banned() {
+			t.Fatalf("round %d: the ban did not expire", round)
+		}
+	}
+	if got := s.counters.banned.Load(); got != 2 {
+		t.Fatalf("%d bans, want 2", got)
+	}
+}
+
+// A flood of new addresses fills the table; it must push out its own entries before a ban or a known client's standing.
+func TestAFloodDoesNotEvictBansOrKnownClients(t *testing.T) {
+	tab := newTable[netip.Addr, source](1024, sourceIdle, sourceLast, sourceKeep)
+	const now = int64(1e12)
+	banned, known := netip.MustParseAddr("203.0.113.1"), netip.MustParseAddr("203.0.113.2")
+	tab.do(banned, 0, func(src *source) { src.bannedUntil = 2 * now })
+	tab.do(known, 0, func(src *source) { src.knownUntil = 2 * now })
+	for i := 0; i < 1<<16; i++ {
+		a := netip.AddrFrom4([4]byte{10, byte(i >> 16), byte(i >> 8), byte(i)})
+		tab.do(a, now, func(src *source) { src.last = now })
+	}
+	for _, a := range []netip.Addr{banned, known} {
+		if !tab.peek(a, func(*source) {}) {
+			t.Fatalf("%s was evicted by the flood", a)
+		}
 	}
 }
 

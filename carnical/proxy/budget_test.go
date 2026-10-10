@@ -2,12 +2,19 @@ package proxy
 
 import (
 	"bufio"
+	"context"
+	"errors"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/YurilLAB/coraza/carnical/crs"
+	"github.com/corazawaf/coraza/v3"
+	"github.com/corazawaf/coraza/v3/experimental"
 )
 
 func bigForm(kib int) string {
@@ -85,19 +92,135 @@ func TestEvaluationBudgetDoesNotTouchNormalRequestsOrSlowUploads(t *testing.T) {
 	}
 }
 
-// A timer that fires late must not cut a later phase short.
+// A phase's timer callback can run after the phase ended. It must neither expire a later phase nor undo its expiry.
 func TestALateTimerCannotCutALaterPhaseShort(t *testing.T) {
-	c := &budgetCtx{Context: t.Context()}
-	g1 := c.current.Add(1)
-	c.current.Add(1) // phase 1 ended
-	g2 := c.current.Add(1)
-	c.expired.Store(g1) // phase 1's timer fires late
-	if c.Err() != nil {
-		t.Fatal("a stale timer marked the current phase as expired")
+	for _, tc := range []struct {
+		name string
+		fire []int // callbacks run while the third phase is running; 2 is its own
+	}{
+		{"earlier phases' callbacks only", []int{0, 1}},
+		{"an earlier callback before its own", []int{0, 2}},
+		{"an earlier callback after its own", []int{2, 0}},
+		{"repeated earlier callbacks after its own", []int{2, 1, 0, 1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var callbacks []func()
+			tx := &budgetTx{ctx: &budgetCtx{Context: t.Context()}, d: time.Hour, after: func(d time.Duration, f func()) *time.Timer {
+				callbacks = append(callbacks, f)
+				return time.NewTimer(d)
+			}}
+			tx.run(func() {})
+			tx.run(func() {})
+			tx.run(func() {
+				expired := false
+				for _, i := range tc.fire {
+					callbacks[i]()
+					expired = expired || i == 2
+					if got := errors.Is(tx.ctx.Err(), context.DeadlineExceeded); got != expired {
+						t.Fatalf("after callback %d: phase expired %v, want %v", i, got, expired)
+					}
+				}
+			})
+			if err := tx.ctx.Err(); err != nil {
+				t.Fatalf("a finished phase kept its budget error: %v", err)
+			}
+		})
 	}
-	c.expired.Store(g2)
-	if c.Err() == nil {
-		t.Fatal("the current phase's own timer was ignored")
+	t.Run("parent cancellation outlasts the phase", func(t *testing.T) {
+		parent, cancel := context.WithCancel(t.Context())
+		tx := &budgetTx{ctx: &budgetCtx{Context: parent}, d: time.Hour}
+		tx.run(cancel)
+		if !errors.Is(tx.ctx.Err(), context.Canceled) {
+			t.Fatalf("parent cancellation was lost: %v", tx.ctx.Err())
+		}
+	})
+}
+
+// With ProcessPartial, writing the bytes that reach the response body limit runs the response body rules inside
+// WriteResponseBody, so that call must wait for a slot like the phases do.
+func TestAResponseBodyAtItsLimitIsEvaluatedInASlot(t *testing.T) {
+	waf, err := coraza.NewWAF(coraza.NewWAFConfig().WithDirectives(`
+SecRuleEngine On
+SecResponseBodyAccess On
+SecResponseBodyMimeType text/plain
+SecResponseBodyLimit 16
+SecResponseBodyLimitAction ProcessPartial
+SecRule RESPONSE_BODY "@contains secret" "id:4001,phase:4,deny,status:418"
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	slots := make(chan struct{}, 1)
+	budgeted := withEvalBudget(waf, 80*time.Millisecond, slots, 16).(experimental.WAFWithOptions)
+	for _, tc := range []struct {
+		name string
+		body string
+		busy bool
+		want int
+	}{
+		{"under the limit is only buffered", "secret", false, 0},
+		{"under the limit does not wait for a busy slot", "secret", true, 0},
+		{"at the limit waits for a slot", "a secret that is long enough", true, 503},
+		{"exactly at the limit waits for a slot", "0123456789secret", true, 503},
+		{"at the limit with a slot is evaluated", "a secret that is long enough", false, 418},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tx := budgeted.NewTransactionWithOptions(experimental.Options{Context: t.Context()})
+			defer tx.Close()
+			tx.ProcessURI("/", "GET", "HTTP/1.1")
+			tx.ProcessRequestHeaders()
+			if _, err := tx.ProcessRequestBody(); err != nil {
+				t.Fatal(err)
+			}
+			tx.AddResponseHeader("Content-Type", "text/plain")
+			tx.ProcessResponseHeaders(200, "HTTP/1.1")
+			if tc.busy {
+				slots <- struct{}{}
+				defer func() { <-slots }()
+			}
+			it, _, err := tx.WriteResponseBody([]byte(tc.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := 0
+			if it != nil {
+				got = it.Status
+			}
+			if got != tc.want {
+				t.Fatalf("interruption status %d, want %d", got, tc.want)
+			}
+			for _, m := range tx.MatchedRules() {
+				if m.Rule().ID() == 4001 && tc.busy {
+					t.Fatal("the response body rules ran without a slot")
+				}
+			}
+		})
+	}
+	t.Run("writes after the limit do not wait for a busy slot", func(t *testing.T) {
+		tx := budgeted.NewTransactionWithOptions(experimental.Options{Context: t.Context()})
+		defer tx.Close()
+		tx.ProcessURI("/", "GET", "HTTP/1.1")
+		tx.ProcessRequestHeaders()
+		if _, err := tx.ProcessRequestBody(); err != nil {
+			t.Fatal(err)
+		}
+		tx.AddResponseHeader("Content-Type", "text/plain")
+		tx.ProcessResponseHeaders(200, "HTTP/1.1")
+		if it, _, _ := tx.WriteResponseBody([]byte("nothing to see in this part")); it != nil {
+			t.Fatalf("the evaluated part was refused: %+v", it)
+		}
+		slots <- struct{}{}
+		defer func() { <-slots }()
+		if it, _, _ := tx.WriteResponseBody([]byte("more of the same")); it != nil {
+			t.Fatalf("a write after the evaluated part waited for a slot: %+v", it)
+		}
+	})
+}
+
+func TestANegativeEvaluationBudgetIsRefused(t *testing.T) {
+	u, _ := url.Parse("http://127.0.0.1:1")
+	if _, err := New(Config{Upstream: u, CRS: crs.DefaultSettings(), Origin: loopback, EvalBudget: -time.Second}); err == nil {
+		t.Fatal("a negative budget, which would also drop the evaluation slots, was accepted")
 	}
 }
 

