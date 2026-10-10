@@ -14,11 +14,13 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/url"
 	"os"
 	"os/signal"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -130,7 +132,7 @@ func runArgs(args []string) error {
 	maxForm := flags.Int64("max-form-body", 128<<10, "largest request body that is not a file upload, in bytes; uploads may be as large as -max-body")
 	details := flags.Bool("log-details", false, "log client address, URI, matched data and macro-expanded messages (may contain credentials)")
 	certFile := flags.String("tls-cert", "", "TLS certificate file")
-	keyFile := flags.String("tls-key", "", "TLS key file")
+	keyFile := flags.String("tls-key", "", "TLS key file (not accessible to everyone or writable by its group, as 0600 or 0640)")
 	showVersion := flags.Bool("version", false, "print the CRS version that is embedded and exit")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -161,7 +163,7 @@ func runArgs(args []string) error {
 	if *checkOriginHTTP && (!*check || !*checkOrigin) {
 		return errors.New("-check-origin-http requires -check and -check-origin")
 	}
-	lifecycle := lifecycleOptions{healthAddress: *healthListen, drain: *drainDelay, shutdown: *shutdownTimeout}
+	lifecycle := lifecycleOptions{healthAddress: *healthListen, drain: *drainDelay, shutdown: *shutdownTimeout, details: *details}
 	if err := lifecycle.validate(); err != nil {
 		return err
 	}
@@ -280,7 +282,15 @@ func runArgs(args []string) error {
 	// Everything the proxy needs from the outside is opened before it is confined: the certificate and key are read,
 	// and the listening socket exists. After that it needs no more files, and no new ports to listen on.
 	if *certFile != "" {
-		cert, err := tls.LoadX509KeyPair(*certFile, *keyFile)
+		certPEM, err := readTLSFile(*certFile, 1<<20, false)
+		if err != nil {
+			return fmt.Errorf("the certificate: %w", err)
+		}
+		keyPEM, err := readTLSFile(*keyFile, 64<<10, true)
+		if err != nil {
+			return fmt.Errorf("the TLS key: %w", err)
+		}
+		cert, err := tls.X509KeyPair(certPEM, keyPEM)
 		if err != nil {
 			return fmt.Errorf("the certificate: %w", err)
 		}
@@ -292,19 +302,35 @@ func runArgs(args []string) error {
 		if err != nil {
 			return fmt.Errorf("-confine-connect: %w", err)
 		}
-		if cs != nil && cs.ConnectPort() != 0 {
-			allowed := false
+		// The confined proxy can connect to these ports only, so a port it needs and was not given would pass -check and
+		// then fail every request.
+		listed := func(port uint16) bool {
 			for _, p := range ports {
-				if p == cs.ConnectPort() {
-					allowed = true
+				if p == port {
+					return true
 				}
 			}
-			if !allowed {
-				return errors.New("CrowdSec API TCP port must be listed in -confine-connect")
-			}
+			return false
+		}
+		originPort, err := upstreamPort(target)
+		if err != nil {
+			return err
+		}
+		if !listed(originPort) {
+			return fmt.Errorf("the upstream's TCP port %d must be listed in -confine-connect", originPort)
+		}
+		if cs != nil && cs.ConnectPort() != 0 && !listed(cs.ConnectPort()) {
+			return errors.New("CrowdSec API TCP port must be listed in -confine-connect")
 		}
 		confinement = sandbox.Policy{ReadOnly: splitList(*confineRead), ConnectTCP: ports, BindTCP: []uint16{}, Require: !*confineBestEffort}
-		if *uploadDir != "" {
+		// The engine writes the file parts of an upload to disk, and the confined proxy may not write the system temporary
+		// directory: without a directory of its own, such uploads are refused.
+		if *uploadDir == "" {
+			log.Warn("-confine without -upload-dir: uploads with file parts will be refused")
+		} else {
+			if err := checkUploadDir(*uploadDir); err != nil {
+				return fmt.Errorf("-upload-dir: %w", err)
+			}
 			confinement.ReadWrite = []string{*uploadDir}
 		}
 	}
@@ -384,6 +410,50 @@ func systemdListener() (net.Listener, error) {
 	f := os.NewFile(3, "systemd-socket")
 	defer f.Close() // FileListener duplicates it
 	return net.FileListener(f)
+}
+
+// readTLSFile reads the visitor certificate or key. Links are followed (certbot's live/ directory is links into archive/),
+// but only a regular file is read: it is opened without blocking, so a FIFO cannot hold start-up, and a key must not be
+// readable by everyone or writable by its group.
+func readTLSFile(path string, limit int64, private bool) ([]byte, error) {
+	// #nosec G304 -- The certificate and key paths are operator configuration, never request input.
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOCTTY, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	switch {
+	case err != nil:
+		return nil, err
+	case !info.Mode().IsRegular():
+		return nil, errors.New("not a regular file")
+	case private && runtime.GOOS != "windows" && info.Mode().Perm()&0o027 != 0:
+		return nil, fmt.Errorf("mode %04o: a private key must not be accessible to everyone or writable by its group", info.Mode().Perm())
+	}
+	data, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("larger than %d bytes", limit)
+	}
+	return data, nil
+}
+
+// checkUploadDir is checked before the proxy confines itself to its upload directory: one that other users may write would
+// let them reach what the proxy keeps there. (The engine has already checked that it is a directory it can write.)
+func checkUploadDir(path string) error {
+	info, err := os.Stat(path)
+	switch {
+	case err != nil:
+		return err
+	case !info.IsDir():
+		return errors.New("not a directory")
+	case runtime.GOOS != "windows" && info.Mode().Perm()&0o022 != 0:
+		return fmt.Errorf("mode %04o: it must not be writable by its group or by everyone", info.Mode().Perm())
+	}
+	return nil
 }
 
 // parsePorts reads a comma-separated list of TCP ports.

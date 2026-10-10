@@ -25,6 +25,22 @@ type deploymentCheck struct {
 	systemd, probe, probeHTTP bool
 }
 
+// upstreamPort is the TCP port the edge connects to the upstream on: the URL's own, or the scheme's.
+func upstreamPort(target *url.URL) (uint16, error) {
+	port := target.Port()
+	if port == "" {
+		port = "80"
+		if target.Scheme == "https" {
+			port = "443"
+		}
+	}
+	n, err := strconv.ParseUint(port, 10, 16)
+	if err != nil || n == 0 {
+		return 0, errors.New("the upstream must have a numeric port between 1 and 65535")
+	}
+	return uint16(n), nil
+}
+
 // checkDeployment never binds a listener, consumes inherited descriptors or
 // applies a sandbox. HTTP probing is a separate explicit action because a TLS
 // 1.3 peer's refusal of client authentication may appear on the next read.
@@ -39,15 +55,9 @@ func checkDeployment(options deploymentCheck) error {
 			return errors.New("-listen must have a valid TCP port")
 		}
 	}
-	port := target.Port()
-	if port == "" {
-		port = "80"
-		if target.Scheme == "https" {
-			port = "443"
-		}
-	}
-	if n, err := strconv.ParseUint(port, 10, 16); err != nil || n == 0 {
-		return errors.New("the upstream must have a numeric port between 1 and 65535")
+	port, err := upstreamPort(target)
+	if err != nil {
+		return err
 	}
 	if !probe {
 		return nil
@@ -90,7 +100,7 @@ func checkDeployment(options deploymentCheck) error {
 		}
 		return nil
 	}
-	address := net.JoinHostPort(target.Hostname(), port)
+	address := net.JoinHostPort(target.Hostname(), strconv.Itoa(int(port)))
 	var conn net.Conn
 	if target.Scheme == "https" {
 		dialer := tls.Dialer{NetDialer: policy.Dialer(), Config: tlsConfig}

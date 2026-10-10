@@ -58,7 +58,12 @@ func TestTheProxyServesOnASocketSystemdHandsOver(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	args := []string{"-systemd-socket", "-upstream", app.URL, "-origin-allow", "127.0.0.0/8", "-max-conns-per-ip", "-1", "-confine", "-confine-connect", fmt.Sprint(app.Listener.Addr().(*net.TCPAddr).Port)}
+	uploads, err := os.MkdirTemp("", "carnical-uploads") // as the unit gives it: a directory of its own, plain characters
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(uploads)
+	args := []string{"-systemd-socket", "-upstream", app.URL, "-origin-allow", "127.0.0.0/8", "-max-conns-per-ip", "-1", "-confine", "-confine-connect", fmt.Sprint(app.Listener.Addr().(*net.TCPAddr).Port), "-upload-dir", uploads}
 
 	// sd_listen_fds(3): the socket is descriptor 3 and LISTEN_PID is the process's own id, which the shell sets by exec.
 	var logs bytes.Buffer

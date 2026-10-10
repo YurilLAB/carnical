@@ -435,7 +435,16 @@ func setupQuote(value string) string {
 }
 
 func checkSetupCertificate(certPath, keyPath string, names []string) error {
-	pair, err := tls.LoadX509KeyPair(certPath, keyPath)
+	// Read as the proxy will read them at start-up, so setup does not accept a pair that start-up refuses.
+	certPEM, err := readTLSFile(certPath, 1<<20, false)
+	if err != nil {
+		return fmt.Errorf("cannot read the visitor certificate: %w", err)
+	}
+	keyPEM, err := readTLSFile(keyPath, 64<<10, true)
+	if err != nil {
+		return fmt.Errorf("cannot read the visitor private key: %w", err)
+	}
+	pair, err := tls.X509KeyPair(certPEM, keyPEM)
 	if err != nil {
 		return errors.New("cannot load the visitor certificate and matching private key")
 	}

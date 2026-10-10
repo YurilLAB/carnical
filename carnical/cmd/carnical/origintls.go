@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"syscall"
 
 	"github.com/YurilLAB/coraza/carnical/proxy"
 )
@@ -71,7 +72,7 @@ func readOriginFile(path string, limit int64, private bool) ([]byte, error) {
 	if err != nil || !info.Mode().IsRegular() || info.Size() > limit {
 		return nil, errors.New("invalid origin file")
 	}
-	file, err := root.Open(name)
+	file, err := root.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOCTTY, 0) // not blocking: it may have become a FIFO since
 	if err != nil {
 		return nil, err
 	}

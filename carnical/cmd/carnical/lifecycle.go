@@ -3,22 +3,120 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	stdlog "log"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
+	"regexp"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 )
 
 type lifecycleOptions struct {
 	healthAddress string
 	drain         time.Duration
 	shutdown      time.Duration
+	details       bool // client addresses in net/http's own error lines
+}
+
+// serverErrors takes the lines a server's net/http writes about connections ("TLS handshake error from 192.0.2.1:5678: EOF")
+// into the JSON log. Each kind of line is logged at most once a second, with a count of the rest, and cut to a bounded length,
+// so a scanner can neither flood the log nor hide a handler's panic or a failing accept behind its handshake errors. Addresses
+// and what the client sent (quoted in the line) are left out unless details are asked for, as everywhere else.
+type serverErrors struct {
+	log     *slog.Logger
+	details bool
+	windows [3]errorWindow // indexed by errorKinds
+	now     func() time.Time
+}
+
+type errorWindow struct{ second, dropped atomic.Int64 }
+
+var errorKinds = [3]string{"connection", "panic", "accept"}
+
+const (
+	maxErrorLine = 512     // a connection or accept error
+	maxPanicLine = 8 << 10 // a panic, with enough of its stack to find where
+)
+
+func newServerErrors(logger *slog.Logger, details bool) *serverErrors {
+	return &serverErrors{log: logger, details: details, now: time.Now}
+}
+
+// errorKind tells the lines apart by how net/http begins them: what a client sends only ever comes after that.
+func errorKind(line []byte) int {
+	switch {
+	case bytes.HasPrefix(line, []byte("http: panic serving ")) || bytes.HasPrefix(line, []byte("http2: panic serving ")):
+		return 1
+	case bytes.HasPrefix(line, []byte("http: Accept error: ")):
+		return 2
+	}
+	return 0
+}
+
+func (s *serverErrors) Write(p []byte) (int, error) {
+	kind := errorKind(bytes.TrimSpace(p))
+	w := &s.windows[kind]
+	second := s.now().Unix()
+	if previous := w.second.Load(); second == previous || !w.second.CompareAndSwap(previous, second) {
+		w.dropped.Add(1) // counted before anything is copied, so a flood costs little
+		return len(p), nil
+	}
+	line := strings.TrimSpace(string(p))
+	if !s.details {
+		line = redactAddresses(clientDataRe.ReplaceAllString(line, `"[client data]"`))
+	}
+	limit, cut := maxErrorLine, 0
+	if kind == 1 {
+		limit = maxPanicLine
+	}
+	if len(line) > limit { // cut after redaction, so no part of an address is left
+		end := limit
+		for end > 0 && !utf8.RuneStart(line[end]) {
+			end--
+		}
+		line, cut = line[:end], len(line)-end
+	}
+	s.log.Warn("server error", "kind", errorKinds[kind], "error", line, "dropped", w.dropped.Swap(0), "cut_bytes", cut)
+	return len(p), nil
+}
+
+// flush reports what was counted but not yet logged, as the server stops.
+func (s *serverErrors) flush() {
+	for i := range s.windows {
+		if n := s.windows[i].dropped.Swap(0); n > 0 {
+			s.log.Warn("server errors not logged", "kind", errorKinds[i], "dropped", n)
+		}
+	}
+}
+
+// clientDataRe is a Go-quoted string: in net/http's and crypto/tls's lines that is what the client sent (the protocols it
+// asked for, a greeting that was not HTTP/2).
+var clientDataRe = regexp.MustCompile(`"(?:[^"\\]|\\.)*"`)
+
+// addressRe finds what may be an address: a bracketed IPv6 address with or without a port, or a run of the characters
+// addresses, zones and ports are written with. A connection error names both ends as one word ("read tcp
+// 192.0.2.1:443->198.51.100.7:5678: i/o timeout"), so words are not enough. Each candidate is parsed before it is replaced.
+var addressRe = regexp.MustCompile(`\[[0-9A-Za-z:.%_-]+\](?::\d+)?|[0-9A-Za-z:.%_]+`)
+
+func redactAddresses(line string) string {
+	return addressRe.ReplaceAllStringFunc(line, func(w string) string {
+		core := strings.TrimRight(w, ":.")
+		_, errPort := netip.ParseAddrPort(core)
+		_, errAddr := netip.ParseAddr(strings.TrimSuffix(strings.TrimPrefix(core, "["), "]"))
+		if errPort == nil || errAddr == nil {
+			return "[address]" + w[len(core):]
+		}
+		return w
+	})
 }
 
 // validate runs in both check and serving modes. Health is deliberately confined
@@ -148,15 +246,25 @@ func serveRuntime(ctx context.Context, server *http.Server, listener net.Listene
 	health *runtimeHealth, options lifecycleOptions, log *slog.Logger) (err error) {
 	done := make(chan serveResult, 2)
 	count, received := 1, 0
+	// net/http's own lines go to the JSON log, each server's under its name.
+	serverLogs := []*serverErrors{newServerErrors(log.With("server", "visitor"), options.details)}
+	server.ErrorLog = stdlog.New(serverLogs[0], "", 0)
 	var healthServer *http.Server
 	if healthListener != nil {
 		count++
 		healthServer = health.server(healthListener.Addr().String())
+		serverLogs = append(serverLogs, newServerErrors(log.With("server", "health"), options.details))
+		healthServer.ErrorLog = stdlog.New(serverLogs[1], "", 0)
 		go func() { done <- serveResult{"health", healthServer.Serve(healthListener)} }()
 	}
 	// Close aborts ordinary active requests when Shutdown exhausts its budget.
 	// Explicitly opted-in upgraded connections terminate when the CLI exits.
 	defer func() {
+		defer func() {
+			for _, l := range serverLogs {
+				l.flush()
+			}
+		}()
 		health.draining.Store(true)
 		err = errors.Join(err, server.Close())
 		if healthServer != nil {

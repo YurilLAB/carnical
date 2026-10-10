@@ -148,10 +148,14 @@ ListenStream=
 ListenStream=0.0.0.0:443
 ```
 
-Match origin addresses/ports across `origin-allow`, `confine-connect` and the host policy. Private
-origins need explicit host-policy changes too. Leave `trusted-proxies` empty for direct visitors;
+Match origin addresses/ports across `origin-allow`, `confine-connect` and the host policy (with
+`confine`, a start-up check refuses an origin port missing from `confine-connect` and an `upload-dir`
+its group or everyone may write, and warns that uploads with file parts are refused without one).
+Private origins need explicit host-policy changes too. Leave `trusted-proxies` empty for direct visitors;
 otherwise name only real CDN/load-balancer peers. Renew visitor certificates through the certificate
-provider, validate the new pair and restart to load it.
+provider, validate the new pair and restart to load it. On Linux and macOS the visitor key must not
+be accessible to everyone or writable by its group (0600, or 0640 for a group that only reads it);
+start-up and `carnical setup` refuse it otherwise.
 
 Before cutover, test the real hostname/certificate against every edge IP:
 

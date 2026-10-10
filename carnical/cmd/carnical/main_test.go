@@ -28,10 +28,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/YurilLAB/coraza/carnical/formats"
 	"github.com/YurilLAB/coraza/carnical/inspect"
@@ -677,6 +680,17 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 		if err := checkSetupCertificate(certPath, brokenPath, []string{"localhost"}); err == nil {
 			t.Fatal("invalid visitor private key accepted")
 		}
+		// Setup refuses what start-up would refuse: the right key, but one everyone can read.
+		openPath := filepath.Join(dir, "open.key")
+		if err := os.WriteFile(openPath, serverIdentity.keyPEM, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(openPath, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := checkSetupCertificate(certPath, openPath, []string{"localhost"}); runtime.GOOS != "windows" && err == nil {
+			t.Fatal("a visitor key everyone can read was accepted")
+		}
 	})
 
 	identities := map[string]originCredential{}
@@ -901,6 +915,13 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 	upload := func(name, content string) string {
 		return "--B\r\nContent-Disposition: form-data; name=\"file\"; filename=\"" + name + "\"\r\nContent-Type: text/plain\r\n\r\n" + content + "\r\n--B--\r\n"
 	}
+	unix := runtime.GOOS != "windows" // file modes mean nothing on Windows, so a check of them passes there
+	onUnix := func(s string) string {
+		if unix {
+			return s
+		}
+		return ""
+	}
 	tests := []struct {
 		site                                                                        string
 		health                                                                      bool
@@ -920,6 +941,7 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 		statuses                                                                    []int
 		targets, forwarding, extraArgs                                              []string
 		name, mode, policy, method, target, ct, body, encoding, logRule, originBody string
+		says                                                                        string // what the log of a failure or a preflight must say
 		allowEncoding, fails, policyDir                                             bool
 		status                                                                      int
 	}{
@@ -964,7 +986,13 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 		{name: "site config private origin needs allowance", site: "{\"version\":1,\"flags\":{\"upstream\":\"$ORIGIN\"}}", fails: true},
 		{name: "site check does not listen or require inherited socket", site: "{\"version\":1,\"flags\":{\"upstream\":\"$ORIGIN\",\"origin-allow\":\"127.0.0.1/32\",\"systemd-socket\":true}}", preflight: true, extraArgs: []string{"-check"}},
 		{name: "site check verifies origin connectivity without HTTP", site: "{\"version\":1,\"flags\":{\"upstream\":\"$ORIGIN\",\"origin-allow\":\"127.0.0.1/32\"}}", preflight: true, extraArgs: []string{"-check", "-check-origin"}},
-		{name: "site check validates confine port list", site: "{\"version\":1,\"flags\":{\"upstream\":\"$ORIGIN\",\"origin-allow\":\"127.0.0.1/32\",\"confine\":true,\"confine-connect\":\"invalid\"}}", fails: true, extraArgs: []string{"-check"}},
+		{name: "site check validates confine port list", site: "{\"version\":1,\"flags\":{\"upstream\":\"$ORIGIN\",\"origin-allow\":\"127.0.0.1/32\",\"confine\":true,\"confine-connect\":\"invalid\"}}", fails: true, extraArgs: []string{"-check"}, says: "-confine-connect:"},
+		// A confined proxy can connect only to the listed ports: without the origin's it would pass the check and then refuse
+		// every request, and without its own upload directory it would refuse every upload.
+		{name: "confine refuses an origin port it may not connect to", extraArgs: []string{"-check", "-confine", "-upload-dir", "$UPLOADS"}, fails: true, says: "must be listed in -confine-connect"},
+		{name: "confine without an upload directory warns that uploads will be refused", extraArgs: []string{"-check", "-confine", "-confine-connect", "$ORIGINPORT,53"}, preflight: true, says: "uploads with file parts will be refused"},
+		{name: "confine refuses an upload directory its group may write", extraArgs: []string{"-check", "-confine", "-confine-connect", "$ORIGINPORT,53", "-upload-dir", "$SHAREDUPLOADS"}, fails: unix, preflight: !unix, says: onUnix("-upload-dir: mode 0770")},
+		{name: "confine check passes with the origin port and an upload directory", extraArgs: []string{"-check", "-confine", "-confine-connect", "$ORIGINPORT,53", "-upload-dir", "$UPLOADS"}, preflight: true},
 		{name: "site check permits named listening port", extraArgs: []string{"-check", "-listen", "127.0.0.1:http"}, preflight: true},
 		{name: "check validates listen syntax", extraArgs: []string{"-check", "-listen", "invalid"}, fails: true},
 		{name: "check validates upstream port", extraArgs: []string{"-check", "-upstream", "http://127.0.0.1:0"}, fails: true},
@@ -1148,6 +1176,24 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 				args = []string{"-listen", addr, "-config", path}
 			}
 			args = append(args, tc.extraArgs...)
+			if strings.Contains(strings.Join(tc.extraArgs, " "), "$") {
+				_, originPort, _ := net.SplitHostPort(strings.TrimPrefix(app.URL, "http://"))
+				uploads, err := os.MkdirTemp("", "carnical-uploads") // plain characters, which the upload directory must have
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { os.RemoveAll(uploads) })
+				shared := filepath.Join(uploads, "shared")
+				if err := os.Mkdir(shared, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(shared, 0o770); err != nil {
+					t.Fatal(err)
+				}
+				for i := range args {
+					args[i] = strings.NewReplacer("$ORIGINPORT", originPort, "$SHAREDUPLOADS", shared, "$UPLOADS", uploads).Replace(args[i])
+				}
+			}
 
 			if tc.originAuth != "" {
 				dir := t.TempDir()
@@ -1266,6 +1312,9 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 				if !bytes.Contains(data, []byte(`"msg":"configuration checked"`)) {
 					t.Fatal("missing preflight result")
 				}
+				if !bytes.Contains(data, []byte(tc.says)) {
+					t.Fatalf("the preflight did not say %q:\n%s", tc.says, data)
+				}
 				if conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond); err == nil {
 					conn.Close()
 					t.Fatal("preflight opened a listener")
@@ -1290,6 +1339,9 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 			if tc.fails {
 				if err := cmd.Run(); err == nil || ctx.Err() != nil {
 					t.Fatalf("invalid configuration did not fail promptly: %v", err)
+				}
+				if data, _ := os.ReadFile(logPath); !bytes.Contains(data, []byte(tc.says)) {
+					t.Fatalf("failed, but not saying %q:\n%s", tc.says, data)
 				}
 				if conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond); err == nil {
 					conn.Close()
@@ -1534,4 +1586,336 @@ func TestFormatStatsLifecycle(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The visitor's key and the CrowdSec bouncer key are read like the origin's: a key others can read is refused, and a FIFO
+// put where the file was expected does not hold start-up.
+func TestPrivateFilesAreReadWithCare(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name string, mode os.FileMode) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte("-----BEGIN PRIVATE KEY-----\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, mode); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	private, open := write("private.key", 0o600), write("open.key", 0o644)
+	groupRead, groupWrite := write("group.key", 0o640), write("groupwrite.key", 0o620)
+	readers := map[string]func(string, bool) error{
+		"visitor TLS": func(p string, priv bool) error { _, err := readTLSFile(p, 64<<10, priv); return err },
+		"CrowdSec":    func(p string, priv bool) error { _, err := readCrowdSecFile(p, 4096, priv); return err },
+		"origin":      func(p string, priv bool) error { _, err := readOriginFile(p, 64<<10, priv); return err },
+	}
+	for name, read := range readers {
+		t.Run(name, func(t *testing.T) {
+			if err := read(private, true); err != nil {
+				t.Fatalf("a private key: %v", err)
+			}
+			if err := read(groupRead, true); err != nil {
+				t.Fatalf("a key its group may read: %v", err)
+			}
+			if err := read(open, false); err != nil {
+				t.Fatalf("a public file: %v", err)
+			}
+			if err := read(open, true); runtime.GOOS != "windows" && err == nil {
+				t.Fatal("a key everyone can read was accepted")
+			}
+			if err := read(groupWrite, true); runtime.GOOS != "windows" && err == nil {
+				t.Fatal("a key its group may write was accepted")
+			}
+			if err := read(dir, false); err == nil {
+				t.Fatal("a directory was read")
+			}
+			if runtime.GOOS == "windows" {
+				return
+			}
+			fifo := filepath.Join(t.TempDir(), "fifo.key")
+			if err := exec.Command("mkfifo", "-m", "0600", fifo).Run(); err != nil {
+				t.Skipf("no FIFO here: %v", err)
+			}
+			for _, priv := range []bool{false, true} { // a mode the key check accepts, so only the file type can refuse it
+				done := make(chan error, 1)
+				go func() { done <- read(fifo, priv) }()
+				select {
+				case err := <-done:
+					if err == nil {
+						t.Fatalf("a FIFO was read (private %v)", priv)
+					}
+				case <-time.After(10 * time.Second):
+					t.Fatal("reading a FIFO blocked")
+				}
+			}
+		})
+	}
+	t.Run("visitor TLS through a link", func(t *testing.T) {
+		// certbot's live/ directory holds links into archive/; the visitor's pair is read through them.
+		link := filepath.Join(t.TempDir(), "privkey.pem")
+		if err := os.Symlink(private, link); err != nil {
+			t.Skipf("no symbolic links here: %v", err)
+		}
+		if _, err := readTLSFile(link, 64<<10, true); err != nil {
+			t.Fatalf("a key through a link: %v", err)
+		}
+	})
+}
+
+// TestUploadDirIsCheckedBeforeConfinement: the confined proxy can write only its upload directory, which Landlock can grant
+// only if it exists, and which must not be open to other users.
+func TestUploadDirIsCheckedBeforeConfinement(t *testing.T) {
+	dir := t.TempDir()
+	mk := func(name string, mode os.FileMode) string {
+		path := filepath.Join(dir, name)
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, mode); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	file := filepath.Join(dir, "file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unix := runtime.GOOS != "windows" // Windows has no such mode bits
+	for _, tt := range []struct {
+		name string
+		path string
+		ok   bool
+	}{
+		{"its own directory", mk("own", 0o700), true},
+		{"readable by others", mk("readable", 0o755), true},
+		{"not there", filepath.Join(dir, "missing"), false},
+		{"a file", file, false},
+		{"writable by its group", mk("group", 0o770), !unix},
+		{"writable by everyone", mk("everyone", 0o777), !unix},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := checkUploadDir(tt.path); (err == nil) != tt.ok {
+				t.Fatalf("accepted %v, want %v: %v", err == nil, tt.ok, err)
+			}
+		})
+	}
+}
+
+// net/http's own lines about connections reach the JSON log without the client's address, unless details are on, and at most
+// one a second.
+func TestServerErrorsAreLoggedWithoutAddresses(t *testing.T) {
+	type entry struct {
+		Msg, Kind, Error string
+		Dropped          int
+		CutBytes         int `json:"cut_bytes"`
+	}
+	logged := func(t *testing.T, out *bytes.Buffer) []entry {
+		t.Helper()
+		var got []entry
+		for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+			var e entry
+			if err := json.Unmarshal([]byte(line), &e); err != nil {
+				t.Fatalf("not JSON (%v): %s", err, line)
+			}
+			got = append(got, e)
+		}
+		return got
+	}
+	write := func(t *testing.T, s *serverErrors, line string) {
+		t.Helper()
+		if n, err := s.Write([]byte(line)); err != nil || n != len(line) {
+			t.Fatalf("Write took %d of %d bytes: %v", n, len(line), err)
+		}
+	}
+	at := func(out *bytes.Buffer, details bool, now func() time.Time) *serverErrors {
+		return &serverErrors{log: slog.New(slog.NewJSONHandler(out, nil)), details: details, now: now}
+	}
+	for _, tt := range []struct {
+		name    string
+		details bool
+		line    string
+		want    string
+	}{
+		{"IPv4 handshake", false, "http: TLS handshake error from 192.0.2.7:51234: EOF\n", "http: TLS handshake error from [address]: EOF"},
+		// What the client sent is quoted in the line; it is left out, and it cannot pass the line off as a panic.
+		{"protocols the client asked for", false, "http: TLS handshake error from 192.0.2.7:51234: tls: client requested unsupported application protocols ([\"panic serving\" \"x\\\"y\"])\n",
+			"http: TLS handshake error from [address]: tls: client requested unsupported application protocols ([\"[client data]\" \"[client data]\"])"},
+		{"a greeting that was not HTTP/2", false, "http2: server: error reading preface from client 192.0.2.7:51234: bogus greeting \"Accept error: 1.2.3.4:56\"\n",
+			"http2: server: error reading preface from client [address]: bogus greeting \"[client data]\""},
+		{"IPv6 preface", false, "http2: server: error reading preface from client [2001:db8::7]:443: bogus greeting\n", "http2: server: error reading preface from client [address]: bogus greeting"},
+		{"both ends of a timed-out connection", false, "http: TLS handshake error from 127.0.0.1:61492: read tcp 127.0.0.1:61491->127.0.0.1:61492: i/o timeout\n",
+			"http: TLS handshake error from [address]: read tcp [address]->[address]: i/o timeout"},
+		{"both ends with IPv6 zones", false, "http2: server: error reading preface from client [fe80::1%eth0]:51234: read tcp [fe80::2%eth0]:443->[fe80::1%eth0]:51234: read: connection reset by peer\n",
+			"http2: server: error reading preface from client [address]: read tcp [address]->[address]: read: connection reset by peer"},
+		{"an address without a port", false, "http: TLS handshake error from 192.0.2.7:51234: lookup example.com on 2001:db8::53: no such host\n",
+			"http: TLS handshake error from [address]: lookup example.com on [address]: no such host"},
+		{"a line with no address", false, "http: superfluous response.WriteHeader call from main.handler (main.go:12)\n", "http: superfluous response.WriteHeader call from main.handler (main.go:12)"},
+		{"details keep it", true, "http: TLS handshake error from 127.0.0.1:61492: read tcp 127.0.0.1:61491->127.0.0.1:61492: i/o timeout\n",
+			"http: TLS handshake error from 127.0.0.1:61492: read tcp 127.0.0.1:61491->127.0.0.1:61492: i/o timeout"},
+		{"details keep what the client sent", true, "http2: server: error reading preface from client 192.0.2.7:51234: bogus greeting \"PRI\"\n",
+			"http2: server: error reading preface from client 192.0.2.7:51234: bogus greeting \"PRI\""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var out bytes.Buffer
+			now := time.Unix(1000, 0)
+			s := at(&out, tt.details, func() time.Time { return now })
+			write(t, s, tt.line)
+			write(t, s, tt.line) // the same second: counted, not logged
+			now = now.Add(time.Second)
+			write(t, s, tt.line)
+			got := logged(t, &out)
+			if len(got) != 2 || got[0].Error != tt.want || got[1].Error != tt.want || got[0].Kind != "connection" {
+				t.Fatalf("logged %+v, want twice %q", got, tt.want)
+			}
+			if got[0].Dropped != 0 || got[1].Dropped != 1 {
+				t.Fatalf("the line dropped in the first second was not counted: %+v", got)
+			}
+		})
+	}
+	t.Run("each kind of line has its own second", func(t *testing.T) {
+		// A flood of handshake errors must not hide a handler's panic or a failing accept, even one that names them.
+		var out bytes.Buffer
+		s := at(&out, false, func() time.Time { return time.Unix(1000, 0) })
+		const handshake = "http: TLS handshake error from 192.0.2.7:51234: EOF\n"
+		const named = "http: TLS handshake error from 192.0.2.7:51234: tls: client requested unsupported application protocols ([\"panic serving\"])\n"
+		for _, line := range []string{handshake, named, "http: panic serving 192.0.2.7:51234: boom\ngoroutine 7 [running]:\n",
+			"http: Accept error: accept tcp [::]:443: accept4: too many open files; retrying in 5ms\n", named, handshake} {
+			write(t, s, line)
+		}
+		s.flush() // as the server stops: what was counted is reported
+		got := logged(t, &out)
+		want := []entry{
+			{"server error", "connection", "http: TLS handshake error from [address]: EOF", 0, 0},
+			{"server error", "panic", "http: panic serving [address]: boom\ngoroutine 7 [running]:", 0, 0},
+			{"server error", "accept", "http: Accept error: accept tcp [address]: accept4: too many open files; retrying in 5ms", 0, 0},
+			{"server errors not logged", "connection", "", 3, 0},
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("logged %+v\nwant   %+v", got, want)
+		}
+	})
+	t.Run("a long line is cut after its addresses are hidden", func(t *testing.T) {
+		for _, tt := range []struct {
+			line, start string
+			limit       int
+		}{
+			// The cut falls inside a two-byte character, so it must move back to where the character starts.
+			{"http: TLS handshake error from 192.0.2.7:51234: x" + strings.Repeat("é", 2000) + "\n", "http: TLS handshake error from [address]: xé", maxErrorLine - 1},
+			{"http: panic serving 192.0.2.7:51234: boom\n" + strings.Repeat("main.handler(...)\n", 2000), "http: panic serving [address]: boom\nmain.handler", maxPanicLine},
+		} {
+			var out bytes.Buffer
+			write(t, at(&out, false, time.Now), tt.line)
+			got := logged(t, &out)
+			if len(got) != 1 || len(got[0].Error) != tt.limit || !strings.HasPrefix(got[0].Error, tt.start) || !utf8.ValidString(got[0].Error) ||
+				strings.ContainsRune(got[0].Error, utf8.RuneError) || got[0].CutBytes == 0 {
+				t.Fatalf("logged %d bytes (cut %d), want %d starting %q", len(got[0].Error), got[0].CutBytes, tt.limit, tt.start)
+			}
+		}
+	})
+}
+
+// TestBothServersLogTheirOwnErrorsAsJSON: what net/http says about the visitor and health servers (here an accept that
+// failed for a while, as when descriptors run out) reaches the JSON log, not standard error.
+func TestBothServersLogTheirOwnErrorsAsJSON(t *testing.T) {
+	for _, failing := range []string{"visitor", "health"} {
+		t.Run(failing, func(t *testing.T) {
+			var out syncBuffer
+			listen := func() net.Listener {
+				ln, err := net.Listen("tcp", "127.0.0.1:0")
+				if err != nil {
+					t.Fatal(err)
+				}
+				return ln
+			}
+			visitor, health := listen(), listen()
+			flaky := &failingListener{fails: 2, retried: make(chan struct{})}
+			if failing == "visitor" {
+				flaky.Listener, visitor = visitor, flaky
+			} else {
+				flaky.Listener, health = health, flaky
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			server := &http.Server{Handler: http.NotFoundHandler(), ReadHeaderTimeout: time.Second}
+			done := make(chan error, 1)
+			go func() {
+				done <- serveRuntime(ctx, server, visitor, health, &runtimeHealth{}, lifecycleOptions{shutdown: time.Second},
+					slog.New(slog.NewJSONHandler(&out, nil)))
+			}()
+			select {
+			case <-flaky.retried: // net/http logs the failure before it tries again
+			case <-time.After(10 * time.Second):
+				t.Fatal("the server never tried again")
+			}
+			cancel()
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+			// Each failure is in the log: as a line of its own, or counted by a later line or when the server stopped (the
+			// second comes 5ms after the first, so it is nearly always held back to be reported then).
+			logged, accounted := 0, 0
+			for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+				var e struct {
+					Msg, Server, Kind, Error string
+					Dropped                  int
+				}
+				if err := json.Unmarshal([]byte(line), &e); err != nil {
+					t.Fatalf("not JSON (%v): %s", err, line)
+				}
+				switch {
+				case e.Server != failing || e.Kind != "accept":
+				case e.Msg == "server error" && strings.HasPrefix(e.Error, "http: Accept error: accept failed for a while; retrying"):
+					logged++
+					accounted += 1 + e.Dropped
+				case e.Msg == "server errors not logged":
+					accounted += e.Dropped
+				}
+			}
+			if logged == 0 || accounted != flaky.fails {
+				t.Fatalf("the %s server's %d failures: %d logged, %d accounted for:\n%s", failing, flaky.fails, logged, accounted, out.String())
+			}
+		})
+	}
+}
+
+// failingListener fails its first Accepts with an error net/http logs and retries, and says when it is asked again.
+type failingListener struct {
+	net.Listener
+	fails   int
+	calls   atomic.Int32
+	retried chan struct{}
+}
+
+func (l *failingListener) Accept() (net.Conn, error) {
+	switch n := int(l.calls.Add(1)); {
+	case n <= l.fails:
+		return nil, temporaryAcceptError{}
+	case n == l.fails+1:
+		close(l.retried)
+	}
+	return l.Listener.Accept()
+}
+
+type temporaryAcceptError struct{}
+
+func (temporaryAcceptError) Error() string   { return "accept failed for a while" }
+func (temporaryAcceptError) Timeout() bool   { return false }
+func (temporaryAcceptError) Temporary() bool { return true }
+
+// syncBuffer is a bytes.Buffer two servers can write at once.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
