@@ -107,6 +107,11 @@ func Running(src Source, policy ProcPolicy) audit.Check {
 			if why := linux(); why != "" {
 				return audit.Outcome{SkipReason: why}
 			}
+			// Under hidepid (which host-mounts asks for) another user's processes are not just unreadable but missing, so
+			// counting the ones that cannot be read does not show what was not seen.
+			if geteuid() != 0 && !policy.AllowPartial {
+				return audit.Outcome{SkipReason: "this needs root: other users' processes are hidden from, or cannot be read by, uid " + strconv.Itoa(geteuid())}
+			}
 			procs, unreadable, err := Processes(src)
 			if err != nil {
 				return audit.Outcome{SkipReason: "cannot read the process table: " + err.Error()}

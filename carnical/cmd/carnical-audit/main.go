@@ -47,7 +47,7 @@ func run() int {
 	jitter := flag.Duration("jitter", 0, "wait a random time up to this long before each run, so the runs are not predictable")
 	list := flag.Bool("list", false, "list the checks and exit")
 	hostChecks := flag.Bool("host", false, "also check this machine: kernel settings, mounts, the services' sandboxes, network and audit rules, who is listening, what is running, whether anything that should not change has changed (Linux; needs root to see other users' processes)")
-	baselineDir := flag.String("baseline-dir", "/var/lib/carnical/audit", "where the integrity and setuid baselines are kept")
+	baselineDir := flag.String("baseline-dir", "/var/lib/carnical/host-audit", "where the integrity and setuid baselines are kept: a directory only the user running the host checks (root) owns and can write")
 	writeBaseline := flag.Bool("write-baseline", false, "record the current integrity and setuid state as the baseline, and exit (run it once, when the machine is known to be good)")
 	force := flag.Bool("force", false, "with -write-baseline, replace a baseline that exists (a baseline rewritten by whoever changed the machine proves nothing)")
 	schedule := flag.String("print-schedule", "", "print how to run this on a schedule (systemd or schtasks) and exit; nothing is installed")
@@ -66,6 +66,9 @@ func run() int {
 		}
 		fmt.Print(text)
 		return 0
+	}
+	if *writeBaseline {
+		return writeBaselines(*baselineDir, *force) // the baselines are of this machine, not of the zones
 	}
 	if *zonesFile == "" {
 		fmt.Fprintln(os.Stderr, "carnical-audit: -zones is required")
@@ -86,9 +89,6 @@ func run() int {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "carnical-audit:", err)
 		return 2
-	}
-	if *writeBaseline {
-		return writeBaselines(*baselineDir, *force)
 	}
 	checks := catalogue(zm, proxy.OriginPolicy{Allow: allow})
 	if *hostChecks {
@@ -336,12 +336,12 @@ Description=Carnical segmentation audit
 [Service]
 Type=oneshot
 User=carnical-audit
-ExecStart=/usr/local/bin/carnical-audit -zones /etc/carnical/zones.json -origin-allow "" -log /var/log/carnical/audit.jsonl -status /var/lib/carnical/audit-status.json
+ExecStart=/usr/local/bin/carnical-audit -zones /etc/carnical/zones.json -origin-allow "" -log /var/log/carnical/audit.jsonl -status /var/lib/carnical/audit/audit-status.json
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-ReadWritePaths=/var/log/carnical /var/lib/carnical
+ReadWritePaths=/var/log/carnical /var/lib/carnical/audit
 
 # /etc/systemd/system/carnical-audit.timer   (four runs a day, each a random time up to 45 minutes late)
 [Unit]

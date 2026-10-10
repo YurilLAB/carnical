@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -46,11 +47,12 @@ var Sysctls = []Setting{
 	{"fs.suid_dumpable", 0, false, false},
 	{"vm.mmap_min_addr", 65536, true, false},
 	{"vm.unprivileged_userfaultfd", 0, false, true},
-	{"net.ipv4.conf.all.rp_filter", 1, true, false},
-	{"net.ipv4.conf.default.rp_filter", 1, true, false},
+	{"net.ipv4.conf.all.rp_filter", 1, false, false}, // 2 is not stricter: it is the loose mode
+	{"net.ipv4.conf.default.rp_filter", 1, false, false},
 	{"net.ipv4.conf.all.accept_redirects", 0, false, false},
 	{"net.ipv4.conf.default.accept_redirects", 0, false, false},
 	{"net.ipv4.conf.all.send_redirects", 0, false, false},
+	{"net.ipv4.conf.default.send_redirects", 0, false, false},
 	{"net.ipv4.conf.all.accept_source_route", 0, false, false},
 	{"net.ipv6.conf.all.accept_redirects", 0, false, true},
 	{"net.ipv6.conf.default.accept_redirects", 0, false, true},
@@ -66,6 +68,58 @@ func (s Setting) Satisfied(got int64) bool {
 		return got >= s.Want
 	}
 	return got == s.Want
+}
+
+// ifaceRule is how a net.*.conf.all setting combines with each interface's own copy (Documentation/networking/ip-sysctl.rst).
+type ifaceRule int
+
+const (
+	// ifaceEither: the setting is on for an interface if it is on in "all" or in the interface, so each must be off.
+	ifaceEither ifaceRule = iota + 1
+	// ifaceMax: the interface uses the larger of the two values.
+	ifaceMax
+)
+
+// PerInterface are the settings whose per-interface copies count too. A network card that existed before the settings file
+// was applied keeps its own value, and a distribution's own file may set every interface (systemd sets rp_filter to 2,
+// the loose mode), so "all" alone does not say what the kernel does. The settings file sets them with a glob.
+var PerInterface = map[string]ifaceRule{
+	"net.ipv4.conf.all.rp_filter":        ifaceMax,
+	"net.ipv4.conf.all.accept_redirects": ifaceEither,
+	"net.ipv4.conf.all.send_redirects":   ifaceEither,
+	"net.ipv6.conf.all.accept_redirects": ifaceEither,
+}
+
+// interfaceProblems reads each interface's copy of a per-interface setting whose "all" value is all.
+func interfaceProblems(src Source, s Setting, rule ifaceRule, all int64) (problems []string, checked int) {
+	base, leaf, _ := strings.Cut(s.Key, ".all.")
+	paths, err := src.Glob("/proc/sys/" + strings.ReplaceAll(base, ".", "/") + "/*/" + leaf)
+	if err != nil {
+		return []string{fmt.Sprintf("the interfaces' %s cannot be listed: %v", leaf, err)}, 1
+	}
+	for _, p := range paths {
+		iface := filepath.Base(filepath.Dir(p))
+		if iface == "all" || iface == "default" {
+			continue
+		}
+		key := base + "." + iface + "." + leaf
+		checked++
+		data, err := src.ReadFile(p)
+		if err != nil {
+			problems = append(problems, fmt.Sprintf("%s cannot be read: %v", key, err))
+			continue
+		}
+		got, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+		switch {
+		case err != nil:
+			problems = append(problems, key+" is not a number")
+		case rule == ifaceEither && !s.Satisfied(got):
+			problems = append(problems, fmt.Sprintf("%s is %d, should be %d (the interface's own value counts as well as all)", key, got, s.Want))
+		case rule == ifaceMax && !s.Satisfied(max(all, got)):
+			problems = append(problems, fmt.Sprintf("%s is %d, so the interface uses %d, should be %d", key, got, max(all, got), s.Want))
+		}
+	}
+	return problems, checked
 }
 
 // Sysctl checks the running kernel's settings against the baseline.
@@ -99,6 +153,10 @@ func Sysctl(src Source, baseline []Setting) audit.Check {
 						rel = "should be at least"
 					}
 					out.Problems = append(out.Problems, fmt.Sprintf("%s is %d, %s %d", s.Key, got, rel, s.Want))
+				}
+				if rule, ok := PerInterface[s.Key]; ok && err == nil {
+					problems, n := interfaceProblems(src, s, rule, got)
+					out.Problems, out.Checked = append(out.Problems, problems...), out.Checked+n
 				}
 			}
 			sort.Strings(out.Problems)

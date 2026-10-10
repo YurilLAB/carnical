@@ -120,8 +120,8 @@ func Unit(src Source, spec UnitSpec) audit.Check {
 	}
 }
 
-// NFT checks that the network policy is loaded: the input chain refuses by default and the edge's output chain refuses private
-// destinations.
+// NFT checks that the network policy is loaded and does what deploy/nftables/carnical.nft says: the host refuses by default,
+// and the edge's connections go through blocks on private destinations, this machine and the metadata service that drop.
 func NFT(src Source) audit.Check {
 	return audit.Check{
 		Name: "host-nft", Zone: "",
@@ -134,26 +134,21 @@ func NFT(src Source) audit.Check {
 			if err != nil {
 				return audit.Outcome{SkipReason: "nft could not be run: " + err.Error()}
 			}
-			text := string(data)
-			var out audit.Outcome
-			need := []struct{ what, token string }{
-				{"the carnical table", "table inet carnical"},
-				{"the input chain refusing by default", "policy drop"},
-				{"the edge's output chain", "chain edge_out"},
-				{"the edge being sent to that chain", "jump edge_out"},
-				{"the list of private IPv4 destinations", "@not_public4"},
-				{"the list of private IPv6 destinations", "@not_public6"},
-				{"the block on this machine's own addresses", "fib daddr type local"},
-				{"the block on the metadata service", "169.254.169.254"},
-				{"the internal services' output chain", "chain internal_out"},
-			}
-			for _, n := range need {
-				out.Checked++
-				if !strings.Contains(text, n.token) {
-					out.Problems = append(out.Problems, "the loaded rules have no "+n.what)
+			uids, _ := users(src)
+			forms := func(user string) []string {
+				out := []string{strconv.Quote(user)}
+				if uid, ok := uids[user]; ok {
+					out = append(out, strconv.Itoa(uid)) // nft prints a uid it has no name for
 				}
+				return out
 			}
-			return out
+			who := nftUsers{edge: forms(DefaultEdge.User)}
+			for _, u := range InternalUsers {
+				who.internal = append(who.internal, forms(u))
+			}
+			problems, checked := nftProblems(string(data), who)
+			sort.Strings(problems)
+			return audit.Outcome{Checked: checked, Problems: problems}
 		},
 	}
 }
@@ -162,6 +157,12 @@ func NFT(src Source) audit.Check {
 var AuditKeys = []string{"carnical_svc_exec", "carnical_abuse", "carnical_setuid", "carnical_persist", "carnical_priv", "carnical_ssh", "carnical_self", "carnical_honey"}
 
 var auditEnabledRe = regexp.MustCompile(`(?m)^enabled\s+(\d)`)
+
+// hasAuditKey reports whether `auditctl -l` lists a rule with the key. It prints a watch's key as "-k key" and a system call
+// rule's as "-F key=key", whichever way the rules file wrote it.
+func hasAuditKey(rules []byte, key string) bool {
+	return regexp.MustCompile(`(?m)(?:^|\s)(?:-k |-F key=)` + regexp.QuoteMeta(key) + `(?:\s|$)`).Match(rules)
+}
 
 // Auditd checks that the audit rules are loaded and locked until the next boot.
 func Auditd(src Source) audit.Check {
@@ -190,7 +191,7 @@ func Auditd(src Source) audit.Check {
 			}
 			for _, key := range AuditKeys {
 				out.Checked++
-				if !bytes.Contains(rules, []byte("-k "+key)) {
+				if !hasAuditKey(rules, key) {
 					out.Problems = append(out.Problems, "no audit rule with the key "+key)
 				}
 			}
@@ -204,7 +205,7 @@ type FileRule struct {
 	Path string
 	// Owner is a user name ("root" or a service user).
 	Owner string
-	// MaxMode is the most permissive mode allowed: any bit outside it is a problem.
+	// MaxMode is the most permissive mode allowed, in chmod's octal (04000 is setuid): any bit outside it is a problem.
 	MaxMode fs.FileMode
 }
 
@@ -219,12 +220,31 @@ var Files = []FileRule{
 	{"/etc/carnical/signer", "carnical-signer", 0o700},
 	{"/etc/systemd/system/carnical-edge.service", "root", 0o644},
 	{"/etc/systemd/system/carnical-edge.socket", "root", 0o644},
+	{"/var/lib/carnical", "root", 0o711},
 	{"/var/lib/carnical/edge", "carnical-edge", 0o700},
 	{"/var/lib/carnical/edge/uploads", "carnical-edge", 0o700},
 	{"/var/lib/carnical/portal", "carnical-portal", 0o700},
 	{"/var/lib/carnical/ctl", "carnical-ctl", 0o700},
 	{"/var/lib/carnical/signer", "carnical-signer", 0o700},
 	{"/var/lib/carnical/audit", "carnical-audit", 0o700},
+	{"/var/lib/carnical/host-audit", "root", 0o700},
+	{"/var/log/carnical", "carnical-audit", 0o750},
+	{"/var/log/carnical-host", "root", 0o700},
+}
+
+// unixMode is a mode as chmod writes it, with the setuid, setgid and sticky bits in their octal places.
+func unixMode(m fs.FileMode) uint32 {
+	u := uint32(m.Perm())
+	if m&fs.ModeSetuid != 0 {
+		u |= 0o4000
+	}
+	if m&fs.ModeSetgid != 0 {
+		u |= 0o2000
+	}
+	if m&fs.ModeSticky != 0 {
+		u |= 0o1000
+	}
+	return u
 }
 
 // Ownership checks the files above.
@@ -243,6 +263,11 @@ func Ownership(src Source, rules []FileRule) audit.Check {
 			var out audit.Outcome
 			for _, r := range rules {
 				out.Checked++
+				if target, err := src.Readlink(r.Path); err == nil {
+					// What is checked must be what is used: a link's target is wherever its owner points it next.
+					out.Problems = append(out.Problems, fmt.Sprintf("%s is a symbolic link (to %s)", r.Path, target))
+					continue
+				}
 				info, err := src.Stat(r.Path)
 				if err != nil {
 					out.Problems = append(out.Problems, r.Path+" does not exist")
@@ -255,8 +280,9 @@ func Ownership(src Source, rules []FileRule) audit.Check {
 				case info.UID != want:
 					out.Problems = append(out.Problems, fmt.Sprintf("%s is owned by uid %d, should be %s", r.Path, info.UID, r.Owner))
 				}
-				if extra := info.Mode.Perm() &^ r.MaxMode; extra != 0 {
-					out.Problems = append(out.Problems, fmt.Sprintf("%s has mode %04o, more than %04o", r.Path, info.Mode.Perm(), r.MaxMode))
+				// The setuid, setgid and sticky bits count: a root-owned program that is setuid gives root to whoever runs it.
+				if mode := unixMode(info.Mode); mode&^uint32(r.MaxMode) != 0 {
+					out.Problems = append(out.Problems, fmt.Sprintf("%s has mode %04o, more than %04o", r.Path, mode, r.MaxMode))
 				}
 			}
 			sort.Strings(out.Problems)

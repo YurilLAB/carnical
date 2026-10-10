@@ -3,9 +3,13 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -13,6 +17,47 @@ import (
 
 	"github.com/YurilLAB/coraza/carnical/audit"
 )
+
+// A unit copied from -print-schedule must write where the shipped unit does, inside the directories it may write.
+func TestPrintedScheduleMatchesTheShippedUnit(t *testing.T) {
+	printed, ok := scheduleText("systemd")
+	if !ok {
+		t.Fatal("no systemd schedule")
+	}
+	raw, err := os.ReadFile(filepath.Join("..", "..", "deploy", "systemd", "carnical-audit.service"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	shipped := strings.ReplaceAll(string(raw), "\r\n", "\n")
+	for _, re := range []*regexp.Regexp{regexp.MustCompile(`-status (\S+)`), regexp.MustCompile(`-log (\S+)`), regexp.MustCompile(`(?m)^ReadWritePaths=(.*)$`)} {
+		p, s := re.FindStringSubmatch(printed), re.FindStringSubmatch(shipped)
+		if p == nil || s == nil || p[1] != s[1] {
+			t.Errorf("%s: printed %q, shipped %q", re, p, s)
+		}
+	}
+}
+
+// The documented `carnical-audit -write-baseline` is about this machine, so it does not ask for a zone map.
+func TestWriteBaselineNeedsNoZoneMap(t *testing.T) {
+	if os.Getenv("CARNICAL_AUDIT_TEST_RUN") == "1" {
+		os.Args = append([]string{"carnical-audit"}, strings.Split(os.Getenv("CARNICAL_AUDIT_TEST_ARGS"), "\n")...)
+		os.Exit(run())
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestWriteBaselineNeedsNoZoneMap$")
+	cmd.Env = append(os.Environ(), "CARNICAL_AUDIT_TEST_RUN=1", "CARNICAL_AUDIT_TEST_ARGS=-write-baseline\n-baseline-dir\n"+t.TempDir())
+	var output bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &output, &output
+	err := cmd.Run()
+	var exit *exec.ExitError
+	switch {
+	case err != nil && !errors.As(err, &exit):
+		t.Fatalf("the command did not run: %v", err)
+	case exit != nil && exit.ExitCode() == 2, strings.Contains(output.String(), "-zones is required"):
+		t.Fatalf("-write-baseline was refused as a usage error: %v\n%s", err, output.String())
+	case !strings.Contains(output.String(), "carnical-audit:") && !strings.Contains(output.String(), "recorded the baselines"):
+		t.Fatalf("the command did not get as far as the baselines (%v):\n%s", err, output.String())
+	}
+}
 
 // Command-owned evidence I/O is outside the audit runner; real files exercise its failure reporting.
 func TestReportOutput(t *testing.T) {

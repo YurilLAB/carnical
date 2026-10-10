@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -127,9 +129,9 @@ func TestSysctlBaselineAndFileAgree(t *testing.T) {
 		}
 		inFile[strings.TrimSpace(k)] = n
 	}
-	inBaseline := map[string]bool{}
+	inBaseline := map[string]Setting{}
 	for _, s := range Sysctls {
-		inBaseline[s.Key] = true
+		inBaseline[s.Key] = s
 		got, ok := inFile[s.Key]
 		if !ok {
 			t.Errorf("%s is checked but the file does not set it", s.Key)
@@ -137,10 +139,77 @@ func TestSysctlBaselineAndFileAgree(t *testing.T) {
 			t.Errorf("the file sets %s to %d, which the check would not accept (want %d, at least: %v)", s.Key, got, s.Want, s.AtLeast)
 		}
 	}
-	for k := range inFile {
-		if !inBaseline[k] {
+	// A line for every interface (net.ipv4.conf.*.x) is what the check reads in each interface's copy of net.ipv4.conf.all.x.
+	for k, v := range inFile {
+		allKey := strings.Replace(k, ".*.", ".all.", 1)
+		s, checked := inBaseline[allKey]
+		_, perInterface := PerInterface[allKey]
+		switch {
+		case !checked:
 			t.Errorf("the file sets %s but nothing checks it", k)
+		case k != allKey && !perInterface:
+			t.Errorf("the file sets %s on every interface but the check does not read the interfaces' copies", k)
+		case k != allKey && !s.Satisfied(v):
+			t.Errorf("the file sets %s to %d, which the check would not accept", k, v)
 		}
+	}
+	for k := range PerInterface {
+		if _, ok := inFile[strings.Replace(k, ".all.", ".*.", 1)]; !ok {
+			t.Errorf("the check reads every interface's copy of %s, but the file does not set them", k)
+		}
+	}
+}
+
+// A network card's own copy counts: for redirects if either it or "all" is on, for rp_filter the larger of the two.
+func TestSysctlReadsEachInterface(t *testing.T) {
+	needLinux(t)
+	var baseline []Setting // the shipped settings, so that their rules are what is tested
+	for _, s := range Sysctls {
+		if s.Key == "net.ipv4.conf.all.rp_filter" || s.Key == "net.ipv4.conf.all.accept_redirects" {
+			baseline = append(baseline, s)
+		}
+	}
+	machine := func(eth0RP, eth0Redirects string) *fake {
+		f := &fake{files: map[string]string{
+			"/proc/sys/net/ipv4/conf/all/rp_filter": "1\n", "/proc/sys/net/ipv4/conf/all/accept_redirects": "0\n",
+			"/proc/sys/net/ipv4/conf/default/rp_filter": "2\n", // not an interface: "default" is checked on its own
+			"/proc/sys/net/ipv4/conf/lo/rp_filter":      "0\n", "/proc/sys/net/ipv4/conf/lo/accept_redirects": "0\n",
+			"/proc/sys/net/ipv4/conf/eth0/rp_filter": eth0RP, "/proc/sys/net/ipv4/conf/eth0/accept_redirects": eth0Redirects,
+		}, globs: map[string][]string{}}
+		for _, leaf := range []string{"rp_filter", "accept_redirects"} {
+			for _, d := range []string{"all", "default", "lo", "eth0"} {
+				if _, ok := f.files["/proc/sys/net/ipv4/conf/"+d+"/"+leaf]; ok {
+					f.globs["/proc/sys/net/ipv4/conf/*/"+leaf] = append(f.globs["/proc/sys/net/ipv4/conf/*/"+leaf], "/proc/sys/net/ipv4/conf/"+d+"/"+leaf)
+				}
+			}
+		}
+		return f
+	}
+	tests := []struct {
+		name, rp, redirects, contains string
+		want                          audit.Status
+	}{
+		{"every interface strict (lo at 0 still uses all's 1)", "1\n", "0\n", "", audit.Pass},
+		{"an interface in loose mode", "2\n", "0\n", "net.ipv4.conf.eth0.rp_filter is 2, so the interface uses 2, should be 1", audit.Fail},
+		{"an interface that accepts redirects", "1\n", "1\n", "net.ipv4.conf.eth0.accept_redirects is 1, should be 0", audit.Fail},
+		{"an interface whose value is not a number", "x\n", "0\n", "eth0.rp_filter is not a number", audit.Fail},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := run(Sysctl(machine(tt.rp, tt.redirects), baseline))
+			if r.Status != tt.want || (tt.contains != "" && !strings.Contains(strings.Join(r.Problems, "\n"), tt.contains)) {
+				t.Fatalf("%+v", r)
+			}
+			if tt.want == audit.Pass && r.Checked != 6 {
+				t.Fatalf("%d cases, want two settings and two interfaces each", r.Checked)
+			}
+		})
+	}
+	// rp_filter 2 in "all" is the loose mode, not a stricter setting.
+	loose := machine("1\n", "0\n")
+	loose.files["/proc/sys/net/ipv4/conf/all/rp_filter"] = "2\n"
+	if r := run(Sysctl(loose, baseline)); r.Status != audit.Fail || !strings.Contains(strings.Join(r.Problems, "\n"), "net.ipv4.conf.all.rp_filter is 2, should be 1") {
+		t.Fatalf("loose rp_filter: %+v", r)
 	}
 }
 
@@ -256,41 +325,193 @@ func TestTheUnitFileAsksForWhatTheCheckDemands(t *testing.T) {
 	}
 }
 
-const nftGood = `table inet carnical {
-	set not_public4 { type ipv4_addr }
-	set not_public6 { type ipv6_addr }
-	chain input { type filter hook input priority filter; policy drop; }
-	chain output { meta skuid 1001 jump edge_out ip daddr 169.254.169.254 drop }
-	chain edge_out { ip daddr @not_public4 drop ip6 daddr @not_public6 drop fib daddr type local drop }
-	chain internal_out { drop }
-}`
+func readLF(t *testing.T, parts ...string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(parts...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.ReplaceAll(string(data), "\r\n", "\n")
+}
 
+// TestNFT runs the check on what nft really prints for the shipped ruleset, and on that listing with one thing undone.
 func TestNFT(t *testing.T) {
 	needLinux(t)
-	m := func(s string) *fake { return &fake{runs: map[string]string{"nft list ruleset": s}} }
-	if r := run(NFT(m(nftGood))); r.Status != audit.Pass {
-		t.Fatalf("%+v", r)
+	good := readLF(t, "testdata", "nft-ruleset.txt")
+	passwd := "root:x:0:0::/root:/bin/sh\ncarnical-edge:x:990:990::/:/usr/sbin/nologin\n"
+	for i, u := range InternalUsers {
+		passwd += fmt.Sprintf("%s:x:%d:%d::/:/usr/sbin/nologin\n", u, 991+i, 991+i)
 	}
-	for name, broken := range map[string]string{
-		"no private-destination list": strings.ReplaceAll(nftGood, "@not_public4", "@x"),
-		"no edge chain":               strings.ReplaceAll(nftGood, "edge_out", "other"),
-		"input not refusing":          strings.Replace(nftGood, "policy drop", "policy accept", 1),
-		"nothing loaded":              "",
+	m := func(s string) *fake {
+		return &fake{files: map[string]string{"/etc/passwd": passwd}, runs: map[string]string{"nft list ruleset": s}}
+	}
+	edit := func(t *testing.T, old, new string) string {
+		t.Helper()
+		if n := strings.Count(good, old); n != 1 {
+			t.Fatalf("the listing has %q %d times", old, n)
+		}
+		return strings.Replace(good, old, new, 1)
+	}
+	const edgeJump = "\t\tmeta skuid 990 jump edge_out\n"
+	const edgeStart = "\tchain edge_out {\n"
+	const internalJump = "\t\tmeta skuid { 991, 992, 993, 994 } jump internal_out\n"
+	const privateBlock = `ip daddr @not_public4 counter name "egress_private_drop" jump edge_private_drop`
+	const inputStart = "\t\ttype filter hook input priority filter; policy drop;\n"
+	const forwardStart = "\t\ttype filter hook forward priority filter; policy drop;\n"
+	const inline = "\t\t\tip daddr 10.0.0.0/8 accept\n\t\t\tip daddr 192.0.2.1 drop\n\t\t}\n" // the body of an inline chain
+	chained := func(n int) string {                                                           // input jumps through n chains to one that accepts
+		s := "\t\tjump c1\n\t}\n"
+		for i := 1; i < n; i++ {
+			s += fmt.Sprintf("\n\tchain c%d {\n\t\tjump c%d\n\t}\n", i, i+1)
+		}
+		return s + fmt.Sprintf("\n\tchain c%d {\n\t\taccept\n", n)
+	}
+	for _, tt := range []struct{ name, old, new string }{
+		{"as listed", "", ""},
+		{"the edge's user by name", edgeJump, "\t\tmeta skuid \"carnical-edge\" jump edge_out\n"},
+		{"another table beside it", "table inet carnical {\n", "table ip other {\n\tchain input {\n\t\ttype filter hook input priority filter; policy accept;\n\t\taccept\n\t}\n}\ntable inet carnical {\n"},
+		{"the site's own resolver", edgeStart + "\t\tip daddr { 127.0.0.53, 127.0.0.54 } udp dport 53 accept\n", edgeStart + "\t\tip daddr 10.0.0.2 udp dport 53 counter accept\n"},
+		{"a verdict map after the blocks", "tcp dport { 80, 443 } accept", "tcp dport vmap { 80 : accept, 443 : accept }"},
+		{"an accept after input's last jump, which no packet reaches", "\t\tcounter name \"input_denied\" jump input_drop\n", "\t\tcounter name \"input_denied\" jump input_drop\n\t\taccept\n"},
+		{"an accept after a drop, which no packet reaches", "level info\n\t\tdrop\n", "level info\n\t\tdrop\n\t\taccept\n"},
+		{"replies accepted with a counter", "\tchain output {\n\t\ttype filter hook output priority filter; policy accept;\n\t\tct state established,related accept\n",
+			"\tchain output {\n\t\ttype filter hook output priority filter; policy accept;\n\t\tct state established,related counter packets 0 bytes 0 accept\n"},
+		{"IPv6 ranges merged by nft", "elements = { ::,\n\t\t\t     ::1,\n", "elements = { ::/127,\n"},
+		{"replies written as a set, in input", "\t\ticmpv6 type echo-request jump echo_guard\n\t\tct state established,related accept\n", "\t\ticmpv6 type echo-request jump echo_guard\n\t\tct state { established, related } accept\n"},
+		{"replies written as a set, in output", "\tchain output {\n\t\ttype filter hook output priority filter; policy accept;\n\t\tct state established,related accept\n",
+			"\tchain output {\n\t\ttype filter hook output priority filter; policy accept;\n\t\tct state { established, related } accept\n"},
+		{"another user held to the internal chain as well", internalJump, "\t\tmeta skuid { 991, 992, 993, 994, 65000 } jump internal_out\n"},
+		{"the internal users by name", internalJump, "\t\tmeta skuid { \"carnical-portal\", \"carnical-ctl\", \"carnical-signer\", \"carnical-audit\" } jump internal_out\n"},
+		{"another named port open", "\t\ttcp dport 443 accept\n", "\t\ttcp dport { 80, 443 } accept\n"},
+		{"a logged accept", "\t\tiif \"lo\" accept\n", "\t\tiif \"lo\" log prefix \"lo \" level info accept\n"},
+		{"administration from a range", "ip saddr 192.0.2.10 tcp dport 22", "ip saddr 198.51.100.0/24 tcp dport 22"},
+		{"a NAT table that runs before the filter, as Docker's does", "table inet carnical {\n", "table ip nat {\n\tchain OUTPUT {\n\t\ttype nat hook output priority dstnat; policy accept;\n\t\tfib daddr type local jump DOCKER\n\t}\n\n\tchain DOCKER {\n\t}\n}\ntable inet carnical {\n"},
 	} {
-		t.Run(name, func(t *testing.T) {
-			if r := run(NFT(m(broken))); r.Status != audit.Fail {
+		t.Run("passes: "+tt.name, func(t *testing.T) {
+			listing := good
+			if tt.old != "" {
+				listing = edit(t, tt.old, tt.new)
+			}
+			if r := run(NFT(m(listing))); r.Status != audit.Pass {
 				t.Fatalf("%+v", r)
 			}
 		})
 	}
-	// The tokens the check looks for must all be in the ruleset file.
-	file, err := os.ReadFile(filepath.Join("..", "..", "deploy", "nftables", "carnical.nft"))
-	if err != nil {
-		t.Fatal(err)
+	for _, tt := range []struct{ name, old, new, says string }{
+		{"input accepts by default", "hook input priority filter; policy drop;", "hook input priority filter; policy accept;", "input chain does not refuse"},
+		{"forward accepts by default", "hook forward priority filter; policy drop;", "hook forward priority filter; policy accept;", "forward chain does not refuse"},
+		{"input is no longer a base chain", "\t\ttype filter hook input priority filter; policy drop;\n", "", "not attached to the input hook"},
+		{"input accepts everything first", "\t\tct state invalid drop\n", "\t\tcounter accept\n\t\tct state invalid drop\n", "accepts every packet"},
+		{"input's last chain accepts", "log prefix \"carnical-in-drop \" level info\n\t\tdrop\n", "log prefix \"carnical-in-drop \" level info\n\t\taccept\n", "input chain accepts every packet"},
+		{"forward jumps to a chain that accepts", "\t\ttype filter hook forward priority filter; policy drop;\n", "\t\ttype filter hook forward priority filter; policy drop;\n\t\tjump allow_all\n\t}\n\n\tchain allow_all {\n\t\taccept\n", "forward chain accepts every packet"},
+		{"forward goes to a chain that accepts", "\t\ttype filter hook forward priority filter; policy drop;\n", "\t\ttype filter hook forward priority filter; policy drop;\n\t\tgoto allow_all\n\t}\n\n\tchain allow_all {\n\t\taccept\n", "forward chain accepts every packet"},
+		{"input decides through a verdict map", "\t\tct state invalid drop\n", "\t\tct state invalid drop\n\t\tmeta l4proto vmap { tcp : accept, udp : accept }\n", "verdict map"},
+		{"a chain input jumps to decides through a verdict map", "\tchain echo_guard {\n", "\tchain echo_guard {\n\t\tip saddr vmap { 10.0.0.0/8 : accept }\n", "input chain decides through a verdict map"},
+		{"input accepts after setting a mark", inputStart, inputStart + "\t\tmeta mark set 0x00000001 accept\n", `input chain accepts "meta mark set 0x00000001"`},
+		{"input accepts each address family", inputStart, inputStart + "\t\tmeta nfproto ipv4 accept\n\t\tmeta nfproto ipv6 accept\n", `input chain accepts "meta nfproto ipv4"`},
+		{"input accepts a range of ports", "\t\ttcp dport 443 accept\n", "\t\ttcp dport 1-65535 accept\n", `input chain accepts "tcp dport 1-65535"`},
+		{"input sends everything to the echo limit", "\t\ticmp type echo-request jump echo_guard\n", "\t\tjump echo_guard\n", `input chain accepts "limit rate 20/second burst 40 packets"`},
+		{"input accepts nine chains down", inputStart, inputStart + chained(9), "input chain accepts every packet"},
+		{"input jumps deeper than nft allows", inputStart, inputStart + chained(nftMaxJumps+2), "more chains than this check follows"},
+		{"input accepts in an inline chain", inputStart, inputStart + "\t\tjump {\n\t\t\taccept\n\t\t}\n", "input chain decides through an inline chain"},
+		{"input is a NAT chain", inputStart, "\t\ttype nat hook input priority filter; policy drop;\n", "input chain is not a filter chain"},
+		{"forward accepts each address family", forwardStart, forwardStart + "\t\tmeta nfproto ipv4 accept\n\t\tmeta nfproto ipv6 accept\n", `forward chain accepts "meta nfproto ipv4"`},
+		{"forward accepts a named port", forwardStart, forwardStart + "\t\ttcp dport 443 accept\n", `forward chain accepts "tcp dport 443"`},
+		{"output is a NAT chain", "type filter hook output priority filter; policy accept;", "type nat hook output priority filter; policy accept;", "output chain is not a filter chain"},
+		{"a NAT chain here rewrites the edge's connections", "\tchain output {\n", "\tchain natout {\n\t\ttype nat hook output priority srcnat; policy accept;\n\t\tmeta skuid 990 tcp dport 443 dnat ip to 10.0.0.5\n\t}\n\n\tchain output {\n", "NAT chain natout in table inet carnical"},
+		{"a NAT chain at the filter's own priority may run after it", "table inet carnical {\n", "table ip natx {\n\tchain o {\n\t\ttype nat hook output priority filter; policy accept;\n\t}\n}\ntable inet carnical {\n", "NAT chain o in table ip natx"},
+		{"another table's NAT chain rewrites them", "table inet carnical {\n", "table ip natx {\n\tchain o {\n\t\ttype nat hook output priority 100; policy accept;\n\t\tmeta skuid 990 dnat to 10.0.0.5\n\t}\n}\ntable inet carnical {\n", "NAT chain o in table ip natx"},
+		{"a set's comment names the missing range", "\t\telements = { 0.0.0.0/8, 10.0.0.0/8,\n", "\t\tcomment \"elements = { 10.0.0.0/8 }\"\n\t\telements = { 0.0.0.0/8,\n", "do not include 10.0.0.0/8"},
+		{"the table is dormant", "table inet carnical {\n", "table inet carnical {\n\tflags dormant\n", "dormant"},
+		{"private IPv4 destinations accepted", `ip daddr @not_public4 counter name "egress_private_drop" jump edge_private_drop`, "ip daddr @not_public4 accept", "lets private IPv4"},
+		{"private IPv6 destinations accepted", `ip6 daddr @not_public6 counter name "egress_private_drop" jump edge_private_drop`, "ip6 daddr @not_public6 accept", "lets private IPv6"},
+		{"this machine accepted", "fib daddr type local counter packets 0 bytes 0 jump edge_self_drop", "fib daddr type local accept", "lets this machine's own"},
+		{"the block's chain accepts", "log prefix \"carnical-edge-private \"\n\t\tdrop\n", "log prefix \"carnical-edge-private \"\n\t\taccept\n", "lets private IPv4"},
+		{"an accept ahead of the blocks", "tcp dport 53 accept\n", "tcp dport 53 accept\n\t\tip daddr 10.0.0.0/8 tcp dport 5432 accept\n", "ahead of the edge's blocks"},
+		{"a jump ahead of the blocks", "tcp dport 53 accept\n", "tcp dport 53 accept\n\t\tjump input\n", "ahead of the edge's blocks"},
+		{"an accept ahead of the blocks that names port 53 in a comment", edgeStart, edgeStart + "\t\tip daddr 10.0.0.0/8 accept comment \"dport 53\"\n", "ahead of the edge's blocks"},
+		{"a port range from 53 ahead of the blocks", edgeStart, edgeStart + "\t\ttcp dport 53-65535 accept\n", "ahead of the edge's blocks"},
+		{"a named verdict map ahead of the blocks", edgeStart, "\tmap bypass {\n\t\ttype ipv4_addr : verdict\n\t\tflags interval\n\t\telements = { 10.0.0.0/8 : accept }\n\t}\n\n" + edgeStart + "\t\tip daddr vmap @bypass\n", "ahead of the edge's blocks"},
+		{"an inline chain ahead of the blocks", edgeStart, edgeStart + "\t\tjump {\n" + inline, "ahead of the edge's blocks"},
+		{"name lookups to a whole set ahead of the blocks", edgeStart, edgeStart + "\t\tip daddr @not_public4 tcp dport 53 accept\n", "ahead of the edge's blocks"},
+		{"name lookups to a range ahead of the blocks", edgeStart, edgeStart + "\t\tip daddr 10.0.0.0/8 udp dport 53 accept\n", "ahead of the edge's blocks"},
+		{"the block's chain accepts in an inline chain", "log prefix \"carnical-edge-private \"\n\t\tdrop\n", "log prefix \"carnical-edge-private \"\n\t\tjump {\n" + inline + "\t\tdrop\n", "lets private IPv4"},
+		{"the private block narrowed to one port", privateBlock, `ip daddr @not_public4 tcp dport 22 counter name "egress_private_drop" jump edge_private_drop`, "block on private IPv4 destinations does not cover"},
+		{"the private block on the source", privateBlock, `ip saddr @not_public4 counter name "egress_private_drop" jump edge_private_drop`, "block on private IPv4 destinations does not cover"},
+		{"the edge's chain does not end in a drop", "\t\tcounter name \"egress_edge_drop\" jump edge_egress_drop\n", "", "edge's chain does not end"},
+		{"the internal chain does not end in a drop", "\t\tcounter name \"egress_internal_drop\" jump internal_egress_drop\n", "", "internal services' chain does not end"},
+		{"the metadata service accepted", `ip daddr 169.254.169.254 meta skuid != 0 counter name "egress_imds_drop" jump imds_drop`, "ip daddr 169.254.169.254 accept", "metadata service"},
+		{"the IPv6 metadata service accepted", `ip6 daddr fd00:ec2::254 meta skuid != 0 counter name "egress_imds_drop" jump imds_drop`, "ip6 daddr fd00:ec2::254 accept", "metadata service (fd00:ec2::254)"},
+		{"the metadata block narrowed to one user", `ip daddr 169.254.169.254 meta skuid != 0 counter`, `ip daddr 169.254.169.254 meta skuid 1000 counter`, "metadata service (169.254.169.254)"},
+		{"the edge accepted before its chain", edgeJump, "\t\tmeta skuid 990 accept\n" + edgeJump, "ahead of the edge's chain"},
+		{"an inline chain before the edge's chain", edgeJump, "\t\tmeta skuid 990 jump {\n" + inline + edgeJump, "ahead of the edge's chain"},
+		{"a verdict map before the edge's chain", edgeJump, "\t\tmeta skuid 990 ip daddr vmap { 10.0.0.0/8 : accept, 192.0.2.1 : drop }\n" + edgeJump, "ahead of the edge's chain"},
+		{"another user sent to the edge's chain", edgeJump, "\t\tmeta skuid 12345 jump edge_out\n", "not sent to its chain"},
+		{"the edge sent to its chain for one port", edgeJump, "\t\tmeta skuid 990 tcp dport 9 jump edge_out\n", "not sent to its chain"},
+		{"the internal services sent nowhere", "jump internal_out", "accept", "jump internal_out"},
+		{"the internal services sent to their chain for one port", internalJump, "\t\tmeta skuid { 991, 992, 993, 994 } tcp dport 9 jump internal_out\n", "jump internal_out"},
+		{"an internal service accepted before their chain", internalJump, "\t\tmeta skuid 991 accept\n" + internalJump, "ahead of the internal services' chain"},
+		{"another user sent to the internal chain", internalJump, "\t\tmeta skuid 65000 jump internal_out\n", "jump internal_out"},
+		{"one internal service left out", internalJump, "\t\tmeta skuid { 991, 992, 993 } jump internal_out\n", "jump internal_out"},
+		{"the internal chain accepts first", "\tchain internal_out {\n", "\tchain internal_out {\n\t\taccept\n", "internal services' chain lets connections out"},
+		{"the internal chain looks names up elsewhere", "\t\tip daddr { 127.0.0.53, 127.0.0.54 } udp dport 53 accept\n\t\tcounter name \"egress_internal_drop\"", "\t\tip daddr 8.8.8.8 udp dport 53 accept\n\t\tcounter name \"egress_internal_drop\"", "internal services' chain lets connections out"},
+		{"the internal chain returns", "\tchain internal_out {\n", "\tchain internal_out {\n\t\ttcp dport 25 return\n", "internal services' chain lets connections out"},
+		{"a private IPv4 range dropped", " 10.0.0.0/8,", "", "do not include 10.0.0.0/8"},
+		{"IPv6 loopback dropped", "\t\t\t     ::1,\n", "", "do not include ::1"},
+		{"no carnical table", "table inet carnical {", "table inet other {", "no carnical table"},
+	} {
+		t.Run("fails: "+tt.name, func(t *testing.T) {
+			r := run(NFT(m(edit(t, tt.old, tt.new))))
+			if r.Status != audit.Fail || !strings.Contains(strings.Join(r.Problems, "\n"), tt.says) {
+				t.Fatalf("want a failure saying %q: %+v", tt.says, r)
+			}
+		})
 	}
-	for _, tok := range []string{"table inet carnical", "policy drop", "chain edge_out", "jump edge_out", "@not_public4", "@not_public6", "fib daddr type local", "169.254.169.254", "chain internal_out"} {
-		if !strings.Contains(string(file), tok) {
-			t.Errorf("the check looks for %q, which the ruleset file does not contain", tok)
+	if r := run(NFT(m(""))); r.Status != audit.Fail {
+		t.Fatalf("nothing loaded: %+v", r)
+	}
+}
+
+// TestNFTListingMatchesTheRulesetFile keeps the listing above, and the ranges the check asks for, tied to the shipped file.
+func TestNFTListingMatchesTheRulesetFile(t *testing.T) {
+	file, ok := parseNFTTable(readLF(t, "..", "..", "deploy", "nftables", "carnical.nft"), "inet", "carnical")
+	listing, ok2 := parseNFTTable(readLF(t, "testdata", "nft-ruleset.txt"), "inet", "carnical")
+	if !ok || !ok2 {
+		t.Fatalf("the ruleset file has the table: %t; the listing has it: %t", ok, ok2)
+	}
+	if len(file.chains) != len(listing.chains) {
+		t.Errorf("the ruleset file has %d chains and the listing %d: regenerate the listing", len(file.chains), len(listing.chains))
+	}
+	for name, c := range file.chains {
+		l := listing.chains[name]
+		if l == nil || len(l.rules) != len(c.rules) || l.hook != c.hook || l.policy != c.policy {
+			t.Errorf("chain %s differs between the ruleset file and the listing: regenerate the listing", name)
+		}
+	}
+	internal := nftUsers{}
+	for _, u := range InternalUsers {
+		internal.internal = append(internal.internal, []string{strconv.Quote(u)})
+	}
+	sent := false
+	for _, r := range file.chains["output"].rules {
+		if kind, target, before := verdict(r); kind == "jump" && target == "internal_out" {
+			sent = internal.internalSet(conditions(before))
+		}
+	}
+	if !sent {
+		t.Errorf("the ruleset file does not send exactly %v to internal_out", InternalUsers)
+	}
+	for set, want := range map[string][]string{"not_public4": PrivateRanges4, "not_public6": PrivateRanges6} {
+		_, elements, _ := strings.Cut(file.sets[set], "elements = {")
+		var got []string
+		for _, e := range strings.FieldsFunc(elements, func(r rune) bool { return r == ',' || r == ' ' || r == '}' }) {
+			got = append(got, strings.TrimSuffix(e, "/128"))
+		}
+		sort.Strings(got)
+		w := append([]string(nil), want...)
+		sort.Strings(w)
+		if strings.Join(got, " ") != strings.Join(w, " ") {
+			t.Errorf("%s in the ruleset file is %v; the check asks for %v", set, got, w)
 		}
 	}
 }
@@ -312,6 +533,19 @@ func TestAuditd(t *testing.T) {
 	}
 	if r := run(Auditd(m("enabled 2\n", strings.ReplaceAll(rules.String(), "carnical_honey", "x")))); r.Status != audit.Fail {
 		t.Fatalf("a missing rule: %+v", r)
+	}
+	// What auditctl -l really prints: a watch's key as -k, a system call rule's as -F key=.
+	var listed strings.Builder
+	for _, k := range AuditKeys {
+		listed.WriteString("-a always,exit -F arch=b64 -S execve -F auid>=1000 -F key=" + k + "\n")
+	}
+	listed.WriteString("-w /etc/shadow -p wa -k carnical_honey\n")
+	if r := run(Auditd(m("enabled 2\n", listed.String()))); r.Status != audit.Pass {
+		t.Fatalf("rules as auditctl lists them: %+v", r)
+	}
+	// A key that only begins like the one wanted is not it.
+	if r := run(Auditd(m("enabled 2\n", strings.ReplaceAll(rules.String(), "-k carnical_abuse\n", "-k carnical_abuse_old\n")))); r.Status != audit.Fail {
+		t.Fatalf("a longer key: %+v", r)
 	}
 	// Every key must be in the rules file.
 	file, _ := os.ReadFile(filepath.Join("..", "..", "deploy", "auditd", "carnical.rules"))
@@ -345,6 +579,53 @@ func TestOwnership(t *testing.T) {
 	}
 	if r := run(Ownership(&fake{files: map[string]string{"/etc/passwd": passwd}}, rules)); r.Status != audit.Fail {
 		t.Fatalf("files that do not exist: %+v", r)
+	}
+	for _, tt := range []struct {
+		name     string
+		mode     fs.FileMode
+		link     string
+		contains string
+	}{
+		{"setuid root program", fs.ModeSetuid | 0o755, "", "/usr/local/bin/carnical has mode 4755, more than 0755"},
+		{"setgid program", fs.ModeSetgid | 0o755, "", "has mode 2755"},
+		{"a link in place of the program", 0o755, "/home/someone/carnical", "/usr/local/bin/carnical is a symbolic link (to /home/someone/carnical)"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &fake{files: map[string]string{"/etc/passwd": passwd}, links: map[string]string{}, stats: map[string]Info{
+				"/usr/local/bin/carnical": {Mode: tt.mode, UID: 0}, "/var/lib/carnical/edge": {Mode: fs.ModeDir | 0o700, UID: 990},
+			}}
+			if tt.link != "" {
+				f.links["/usr/local/bin/carnical"] = tt.link
+			}
+			if r := run(Ownership(f, rules)); r.Status != audit.Fail || !strings.Contains(strings.Join(r.Problems, "\n"), tt.contains) {
+				t.Fatalf("%+v", r)
+			}
+		})
+	}
+}
+
+// Every directory tmpfiles.d makes is one the ownership check looks at, with the same owner and mode.
+func TestOwnershipCoversTheDirectoriesTmpfilesMakes(t *testing.T) {
+	want := map[string]FileRule{}
+	for _, r := range Files {
+		want[r.Path] = r
+	}
+	for _, line := range strings.Split(readLF(t, "..", "..", "deploy", "tmpfiles.d", "carnical.conf"), "\n") {
+		f := strings.Fields(line)
+		if len(f) < 4 || f[0] != "d" {
+			continue
+		}
+		mode, err := strconv.ParseUint(f[2], 8, 32)
+		if err != nil {
+			t.Fatalf("%q: %v", line, err)
+		}
+		r, ok := want[f[1]]
+		switch {
+		case !ok:
+			t.Errorf("tmpfiles.d makes %s, which the ownership check does not look at", f[1])
+		case r.Owner != f[3] || uint32(r.MaxMode) != uint32(mode):
+			t.Errorf("%s: tmpfiles.d says %s %04o, the check %s %04o", f[1], f[3], mode, r.Owner, uint32(r.MaxMode))
+		}
 	}
 }
 
@@ -400,6 +681,8 @@ func TestListeners(t *testing.T) {
 		{"an undeclared listener", declared[:1], "127.0.0.1:8443 is listening, owned by carnical-ctl, and is not in the zone map"},
 		{"owned by the wrong user", []audit.Service{declared[0], {Name: "ctl", Addr: "127.0.0.1:8443", User: "carnical-edge"}}, "owned by carnical-ctl, but ctl is declared to be run by carnical-edge"},
 		{"wider than declared", []audit.Service{declared[0], {Name: "ctl", Addr: "10.0.0.5:8443", User: "carnical-ctl"}}, "it listens on 127.0.0.1, but 10.0.0.5:8443 is declared"},
+		// A service in another zone, declared by name with no user, says nothing about which socket here is it.
+		{"declared by name with no user", []audit.Service{declared[0], {Name: "remote-ctl", Addr: "control.internal:8443"}}, "remote-ctl is declared by name with no user"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -408,6 +691,10 @@ func TestListeners(t *testing.T) {
 				t.Fatalf("%+v", r)
 			}
 		})
+	}
+	// Declared by name with its user, the owner still tells it apart.
+	if r := run(Listeners(m, []audit.Service{declared[0], {Name: "ctl", Addr: "ctl.internal:8443", User: "carnical-ctl"}})); r.Status != audit.Pass {
+		t.Fatalf("declared by name with a user: %+v", r)
 	}
 	// Declared to listen on one address, found on every address.
 	wide := &fake{files: map[string]string{"/proc/net/tcp": strings.Replace(tcp, "0100007F:20FB", "00000000:20FB", 1), "/etc/passwd": passwd}}
@@ -418,6 +705,7 @@ func TestListeners(t *testing.T) {
 
 func TestRunning(t *testing.T) {
 	needLinux(t)
+	asRoot(t)
 	passwd := "root:x:0:0::/root:/bin/sh\ncarnical-edge:x:990:990::/:/bin/false\n"
 	proc := func(pid int, uid int, exe string, f *fake) {
 		dir := "/proc/" + strconv.Itoa(pid)
@@ -462,6 +750,15 @@ func TestRunning(t *testing.T) {
 	if r := run(Running(f, DefaultProcs)); r.Status != audit.Skip && r.Status != audit.Fail {
 		t.Fatalf("a check that saw nothing passed: %+v", r)
 	}
+	// Not as root under hidepid: other users' processes are simply missing, with nothing unreadable to count. A shell run by
+	// the edge would not be seen, so the check must not pass.
+	geteuid = func() int { return 1000 }
+	if r := run(Running(newMachine(), DefaultProcs)); r.Status != audit.Skip || !strings.Contains(r.Note, "needs root") {
+		t.Fatalf("not as root: %+v", r)
+	}
+	if r := run(Running(newMachine(), ProcPolicy{Services: DefaultProcs.Services, AllowPartial: true})); r.Status != audit.Pass {
+		t.Fatalf("not as root, partial allowed: %+v", r)
+	}
 }
 
 // ---- manifests ----
@@ -500,14 +797,268 @@ func TestIntegrity(t *testing.T) {
 	}
 }
 
+// privateDir is a temporary directory only this user can write, as a baseline directory must be.
+func privateDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// The audit believes its baselines, so it writes them only where no one else can, and refuses one that someone else could
+// have changed.
+func TestBaselinesAreKeptWhereOnlyTheAuditCanWrite(t *testing.T) {
+	needLinux(t)
+	dir := privateDir(t)
+	manifest, prog := filepath.Join(dir, "integrity.json"), filepath.Join(dir, "carnical")
+	if err := os.WriteFile(prog, []byte("the program"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A link planted at the name earlier versions wrote through is left alone, and so is what it points at.
+	victim := filepath.Join(t.TempDir(), "victim")
+	if err := os.WriteFile(victim, []byte("untouched"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victim, filepath.Join(dir, ".integrity.json.tmp")); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteIntegrity(OS{}, manifest, []string{prog}, false); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(victim); string(got) != "untouched" {
+		t.Fatalf("writing the baseline wrote through a planted link: %q", got)
+	}
+	if r := run(Integrity(OS{}, manifest)); r.Status != audit.Pass {
+		t.Fatalf("a private baseline: %+v", r)
+	}
+
+	// A directory others can write: nothing is written there, and a baseline found there is not believed.
+	if err := os.Chmod(dir, 0o770); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteIntegrity(OS{}, manifest, []string{prog}, true); err == nil || !strings.Contains(err.Error(), "others could replace") {
+		t.Fatalf("a baseline was written to a group-writable directory: %v", err)
+	}
+	if r := run(Integrity(OS{}, manifest)); r.Status != audit.Fail || !strings.Contains(r.Problems[0], "cannot be trusted") {
+		t.Fatalf("a baseline in a group-writable directory: %+v", r)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(manifest, 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if r := run(Integrity(OS{}, manifest)); r.Status != audit.Fail || !strings.Contains(r.Problems[0], "has mode 0666") {
+		t.Fatalf("a world-writable baseline: %+v", r)
+	}
+	if err := os.Chmod(manifest, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Owned by someone else (the segmentation audit's user, say).
+	geteuid = func() int { return 4242 }
+	defer func() { geteuid = os.Geteuid }()
+	if r := run(Integrity(OS{}, manifest)); r.Status != audit.Fail || !strings.Contains(r.Problems[0], "someone other than this audit") {
+		t.Fatalf("a baseline owned by another user: %+v", r)
+	}
+	if err := WriteIntegrity(OS{}, manifest, []string{prog}, true); err == nil || !strings.Contains(err.Error(), "not by this user") {
+		t.Fatalf("a baseline was written to another user's directory: %v", err)
+	}
+	geteuid = os.Geteuid
+	link := filepath.Join(privateDir(t), "integrity.json")
+	if err := os.Symlink(manifest, link); err != nil {
+		t.Fatal(err)
+	}
+	if r := run(Integrity(OS{}, link)); r.Status != audit.Fail || !strings.Contains(r.Problems[0], "is a symbolic link") {
+		t.Fatalf("a baseline reached through a link: %+v", r)
+	}
+}
+
+// A link whose target the audit cannot see (its own /tmp and /dev are private) is not the same as no file at all.
+func TestIntegrityTellsADanglingLinkFromNothing(t *testing.T) {
+	needLinux(t)
+	dir := privateDir(t)
+	manifest, preload := filepath.Join(dir, "integrity.json"), filepath.Join(dir, "ld.so.preload")
+	if err := WriteIntegrity(OS{}, manifest, []string{preload}, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "not-visible-here", "evil.so.list"), preload); err != nil {
+		t.Fatal(err)
+	}
+	if r := run(Integrity(OS{}, manifest)); r.Status != audit.Fail || !strings.Contains(r.Problems[0], "did not exist and now does") {
+		t.Fatalf("a dangling link where nothing must be: %+v", r)
+	}
+}
+
+// Reading never blocks on a FIFO and never reads a device: either would stop the audit or fill its memory.
+func TestReadFileReadsOnlyRegularFiles(t *testing.T) {
+	needLinux(t)
+	fifo := filepath.Join(t.TempDir(), "integrity.json")
+	if err := mkfifo(fifo); err != nil {
+		t.Skipf("no FIFO here: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { _, err := OS{}.ReadFile(fifo); done <- err }()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "not a regular file") {
+			t.Fatalf("a FIFO: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("reading a FIFO blocked")
+	}
+	if _, err := (OS{}).ReadFile("/dev/zero"); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("a device: %v", err)
+	}
+}
+
+// TestRunReadsUntranslatedMessages: the setuid scan reads find's errors, so the tools run without the machine's language.
+func TestRunReadsUntranslatedMessages(t *testing.T) {
+	needLinux(t)
+	t.Setenv("LC_ALL", "de_DE.UTF-8")
+	out, err := (OS{}).Run(context.Background(), "env")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := regexp.MustCompile(`(?m)^LC_ALL=.*$`).FindAllString(string(out), -1); len(got) != 1 || got[0] != "LC_ALL=C" {
+		t.Fatalf("the tool saw %q", got)
+	}
+}
+
+func TestSUIDRoots(t *testing.T) {
+	mounts := `/dev/sda1 / ext4 rw,relatime 0 0
+proc /proc proc rw,nosuid,nodev,noexec 0 0
+/dev/sda2 /home ext4 rw,relatime 0 0
+/dev/sda3 /srv/my\040data xfs rw 0 0
+tmpfs /tmp tmpfs rw,nosuid,nodev,noexec 0 0
+server:/export /mnt/nfs nfs4 rw 0 0
+/dev/sda4 /var ext4 rw,nosuid 0 0
+/dev/sda4 /var ext4 rw 0 0
+`
+	if got := strings.Join(suidRoots([]byte(mounts)), "|"); got != "/|/home|/srv/my data|/var" {
+		t.Fatalf("roots %q", got)
+	}
+}
+
+// suidFake answers find with a script, and the mount table from a fixture; the files are real.
+type suidFake struct {
+	runFake
+	mounts string
+	err    error
+	ran    []string // the last command, with its arguments
+}
+
+func (s *suidFake) ReadFile(p string) ([]byte, error) {
+	if p == "/proc/self/mounts" {
+		return []byte(s.mounts), nil
+	}
+	return s.runFake.ReadFile(p)
+}
+func (s *suidFake) Run(_ context.Context, name string, args ...string) ([]byte, error) {
+	s.ran = append([]string{name}, args...)
+	return []byte(s.out), s.err
+}
+
+func TestSUIDScanThatCouldNotLookEverywhere(t *testing.T) {
+	needLinux(t)
+	dir := privateDir(t)
+	baseline, sudo := filepath.Join(dir, "suid.json"), filepath.Join(dir, "sudo")
+	if err := os.WriteFile(sudo, []byte("sudo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Mounts the scan leaves out: another user's FUSE mount, one whose name holds a quote, and one named with a backslash.
+	mounts := "/dev/sda1 / ext4 rw 0 0\n/dev/sdb1 /srv ext4 rw 0 0\nu@h:/ /home/u/mnt fuse.sshfs rw,nosuid 0 0\n" +
+		"u@h:/ /home/u/it\\047s fuse.sshfs rw,nosuid 0 0\ntmpfs /var/lib/m\\134 tmpfs rw,nosuid 0 0\n" +
+		"u@h:/ /home/u/a\\011b fuse.sshfs rw,nosuid 0 0\nu@h:/ /home/u/x\x01y fuse.sshfs rw,nosuid 0 0\n"
+	src := &suidFake{runFake: runFake{files: OS{}, out: sudo + "\x00"}, mounts: mounts}
+	if err := WriteSUID(context.Background(), src, baseline, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(src.ran, " "); !strings.HasPrefix(got, "find / /srv -xdev -type f ") {
+		t.Fatalf("find was run as %q", got)
+	}
+	// find as it really ends: 1 when it could not do everything, or killed.
+	exited := func(script, stderr string) error {
+		var exit *exec.ExitError
+		if err := exec.Command("sh", "-c", script).Run(); !errors.As(err, &exit) {
+			t.Fatalf("%q: %v", script, err)
+		}
+		exit.Stderr = []byte(stderr)
+		return exit
+	}
+	for _, tt := range []struct {
+		name, script, stderr string
+		pass                 bool
+	}{
+		{"a file that went away while find looked", "exit 1", "find: '/tmp/x': No such file or directory\n", true},
+		// Root cannot look at another user's FUSE mount, but find would not have gone into it anyway: it is another file system.
+		{"a mount the scan leaves out", "exit 1", "find: '/home/u/mnt': Permission denied\n", true},
+		{"a mount the scan leaves out, with a quote in its name", "exit 1", "find: '/home/u/it\\'s': Permission denied\n", true},
+		{"a mount the scan leaves out, with a tab in its name", "exit 1", "find: '/home/u/a\\tb': Permission denied\n", true},
+		{"a mount the scan leaves out, with an unprintable byte in its name", "exit 1", "find: '/home/u/x\\001y': Permission denied\n", true},
+		{"a directory it could not read", "exit 1", "find: '/home/eve/hidden': Permission denied\n", false},
+		{"a whole mount it could not read", "exit 1", "find: '/srv': Permission denied\n", false},
+		{"a whole mount that is not there", "exit 1", "find: '/srv': No such file or directory\n", false},
+		{"inside a mount it should not have entered", "exit 1", "find: '/home/u/mnt/x': Permission denied\n", false},
+		{"a name that only looks like a left-out mount", "exit 1", "find: '/var/lib/m\\': x': Permission denied\n", false},
+		{"quotes of another language", "exit 1", "find: ‘/home/u/mnt’: Permission denied\n", false},
+		{"not find's form", "exit 1", "/home/u/mnt': Permission denied\n", false},
+		{"find was killed", "kill -9 $$", "find: '/tmp/x': No such file or directory\n", false},
+		{"find failed outright", "exit 2", "", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			src.err = exited(tt.script, tt.stderr)
+			r := run(SUID(src, baseline))
+			if tt.pass != (r.Status == audit.Pass) || !tt.pass && !strings.Contains(strings.Join(r.Problems, "\n"), "could not look everywhere") {
+				t.Fatalf("%+v", r)
+			}
+		})
+	}
+	// A file that went away is only harmless below where find started: here / is mounted nosuid, so /tmp was never a root.
+	if why := findFailure(exited("exit 1", "find: '/tmp/x': No such file or directory\n"), []string{"/srv"}, mountTable([]byte("/dev/sda1 / ext4 rw,nosuid 0 0\n/dev/sdb1 /srv ext4 rw 0 0\n"))); why == "" {
+		t.Fatal("a vanished file outside every root was taken as harmless")
+	}
+	src.err = exited("exit 1", "find: '/home/eve/hidden': Permission denied\n")
+	if err := WriteSUID(context.Background(), src, filepath.Join(dir, "other.json"), false); err == nil {
+		t.Fatal("a baseline was written from a scan that could not look everywhere")
+	}
+	// A setuid file that has been swapped for something that cannot be read is a finding, not silence.
+	src.err = nil
+	if err := os.Remove(sudo); err != nil {
+		t.Fatal(err)
+	}
+	if err := mkfifo(sudo); err != nil {
+		t.Skipf("no FIFO here: %v", err)
+	}
+	if r := run(SUID(src, baseline)); r.Status != audit.Fail || !strings.Contains(r.Problems[0], "cannot be read") {
+		t.Fatalf("a setuid file that cannot be read: %+v", r)
+	}
+	// A remote mount where setuid works is not walked, so it is a finding; mounted nosuid, it is not.
+	if err := os.Remove(sudo); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sudo, []byte("sudo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, opts := range []string{"rw", "rw,nosuid"} {
+		src.mounts = mounts + "server:/x /mnt/nfs nfs4 " + opts + " 0 0\n"
+		r := run(SUID(src, baseline))
+		if found := strings.Contains(strings.Join(r.Problems, "\n"), "setuid files would work on /mnt/nfs (nfs4)"); found != (opts == "rw") {
+			t.Fatalf("%s: %+v", opts, r)
+		}
+	}
+}
+
 func TestSUID(t *testing.T) {
 	needLinux(t)
 	dir := t.TempDir()
 	baseline := filepath.Join(dir, "suid.json")
 	sudo := filepath.Join(dir, "sudo")
 	os.WriteFile(sudo, []byte("sudo"), 0o755)
-	// The machine has sudo; the baseline is written from it.
-	src := &runFake{files: OS{}, out: sudo + "\x00"}
+	// The machine has sudo; the baseline is written from it. Its mounts are fixed, so the machine running the test does not
+	// add findings of its own.
+	src := &suidFake{runFake: runFake{files: OS{}, out: sudo + "\x00"}, mounts: "/dev/sda1 / ext4 rw 0 0\n"}
 	if err := WriteSUID(context.Background(), src, baseline, false); err != nil {
 		t.Fatal(err)
 	}

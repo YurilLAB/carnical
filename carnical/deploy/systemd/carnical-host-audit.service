@@ -10,15 +10,18 @@ After=nftables.service auditd.service
 [Service]
 Type=oneshot
 User=root
-ExecStart=/usr/local/bin/carnical-audit -zones /etc/carnical/zones.json -host -log /var/log/carnical/host-audit.jsonl -status /var/lib/carnical/audit/host-audit-status.json
+# Its baselines, status and log are in root's own directories (tmpfiles.d): the segmentation audit's are its user's, who must
+# not be able to change what this one believes, and this unit has no CAP_DAC_OVERRIDE to write there anyway.
+ExecStart=/usr/local/bin/carnical-audit -zones /etc/carnical/zones.json -host -baseline-dir /var/lib/carnical/host-audit -log /var/log/carnical-host/host-audit.jsonl -status /var/lib/carnical/host-audit/host-audit-status.json
 
 # Read any file (the manifests), read another user's /proc/PID/exe, list the firewall rules, read the audit rules. Nothing else.
 CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_SYS_PTRACE CAP_NET_ADMIN CAP_AUDIT_CONTROL CAP_AUDIT_READ
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=read-only
-PrivateTmp=yes
-PrivateDevices=yes
+# No PrivateTmp and no PrivateDevices: the setuid scan and the mount checks must see the machine's own /tmp, /var/tmp and
+# /dev/shm, the usual places to leave a setuid file. The audit writes nothing there, and DevicePolicy keeps it from devices.
+DevicePolicy=closed
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes
@@ -36,4 +39,4 @@ SystemCallFilter=@system-service
 RestrictAddressFamilies=AF_UNIX AF_NETLINK
 IPAddressDeny=any
 UMask=0077
-ReadWritePaths=/var/log/carnical /var/lib/carnical/audit
+ReadWritePaths=/var/log/carnical-host /var/lib/carnical/host-audit

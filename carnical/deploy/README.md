@@ -21,7 +21,7 @@ bind allowance described in that guide.
 | File | What it does |
 |---|---|
 | `sysusers.d/carnical.conf` | One user per part. None can log in. |
-| `tmpfiles.d/carnical.conf` | Each part's directory, owned by it and mode 0700. |
+| `tmpfiles.d/carnical.conf` | Each part's directory, owned by it and mode 0700, and root's own for the host audit. |
 | `systemd/carnical-edge.service`, `.socket` | The edge: no capabilities, a read-only machine, other services' data not visible, nothing but the system calls a service needs, port 443 from systemd. |
 | `systemd/carnical-audit.*` | The segmentation checks, as an unprivileged user, four times a day. |
 | `systemd/carnical-host-audit.*` | The checks of the machine itself, as root with five capabilities and no network sockets, four times a day. |
@@ -54,13 +54,13 @@ unless absolute.
 7. `./honeytokens.sh`, then `install -m 0640 auditd/carnical.rules /etc/audit/rules.d/ && augenrules --load`. The last line of the rules locks them until the next boot.
 8. Install the units, then `systemctl daemon-reload && systemctl enable --now carnical-edge.socket carnical-audit.timer carnical-host-audit.timer`.
 9. Mount `/tmp`, `/var/tmp` and `/dev/shm` with `nosuid,nodev,noexec` (a `tmp.mount` unit or `/etc/fstab`) and `/proc` with `hidepid=invisible`. The host audit reports each one that is not.
-10. **When the machine is known to be good**, record the baseline: `carnical-audit -write-baseline`. Copy `/var/lib/carnical/audit/integrity.json` and `suid.json` to somewhere an attacker on this machine cannot reach, and compare them from there now and then. A baseline kept only on the machine proves nothing against someone who can write to it.
+10. **When the machine is known to be good**, record the baseline as root: `carnical-audit -write-baseline`. It goes in `/var/lib/carnical/host-audit`, which only root owns and can write; the host audit refuses a baseline that anyone else could have changed. Copy `integrity.json` and `suid.json` from there to somewhere an attacker on this machine cannot reach, and compare them from there now and then. A baseline kept only on the machine proves nothing against someone who can write to it. (Baselines recorded in `/var/lib/carnical/audit` by earlier versions are not read: that directory belongs to the segmentation audit's user. Record them again.)
 
 ## Check that it works
 
 ```sh
 systemd-analyze security carnical-edge.service            # exposure 1.4 on the tested system; the host audit fails it above 2.0
-carnical-audit -zones /etc/carnical/zones.json -host      # every host check; a check that could not run is a failure, not a pass
+sudo carnical-audit -zones /etc/carnical/zones.json -host # every host check, as root; a check that could not run is a failure, not a pass
 sudo -u carnical-edge carnical-confine check              # the confinement, from inside: every forbidden action must be refused
 carnical-confine check -unconfined                        # the control: the same actions with no confinement must all go through
 ausearch -m SECCOMP -i                                    # the record the kernel writes when the filter ends a process
@@ -77,7 +77,8 @@ matched-concurrency runs and connection/TCP counters before increasing protectio
 ## What to do when something fails
 
 * A `host-processes`, `host-listeners` or `host-edge-confined` finding on a machine that was fine yesterday is an incident until shown otherwise. Do not restart the service first: the process and its open files are the evidence. `ausearch -k carnical_svc_exec -i` and `-m SECCOMP -i` show what it tried.
-* A `host-integrity` or `host-suid` finding is either an update you made (record the baseline again, from a machine you trust) or someone else's change.
+* A `host-integrity` or `host-suid` finding is either an update you made (record the baseline again, from a machine you trust) or someone else's change. `host-suid` also names a network file system (NFS, CIFS, sshfs) mounted without `nosuid`: setuid files would work there and the scan does not walk it, so mount it `nosuid`.
+* A `host-nft` finding names the rule. Where the policy lets traffic through, the check knows only the forms `carnical.nft` uses (named ports, the listed ICMP types, the resolver by address), so a rule you added on purpose, such as an accept for a private origin, is reported until it is one of those forms: the finding is then a record of the exception, not a fault.
 * A `host-sysctl`, `host-mounts` or `host-unit-*` finding is drift: something was set back. Find out what did it.
 
 ## Differences between systems

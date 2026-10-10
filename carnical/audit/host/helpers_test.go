@@ -9,6 +9,9 @@ import (
 
 func execCommand(name string, args ...string) *exec.Cmd { return exec.Command(name, args...) }
 
+// mkfifo makes a named pipe with the system's command, so that the tests build where there is no such call.
+func mkfifo(path string) error { return exec.Command("mkfifo", path).Run() }
+
 func listenOnce(t *testing.T) (net.Listener, int) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

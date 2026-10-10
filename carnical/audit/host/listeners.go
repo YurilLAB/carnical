@@ -71,7 +71,7 @@ func parseHexAddr(s string, v6 bool) (netip.Addr, uint16, error) {
 func Listeners(src Source, declared []audit.Service) audit.Check {
 	return audit.Check{
 		Name: "host-listeners", Zone: "",
-		What: "Only the sockets written in the zone map are listening, no wider than declared and owned by the user declared.",
+		What: "Only the TCP sockets written in the zone map are listening, no wider than declared and owned by the user declared.",
 		Run: func(ctx context.Context) audit.Outcome {
 			if why := linux(); why != "" {
 				return audit.Outcome{SkipReason: why}
@@ -138,7 +138,13 @@ func Listeners(src Source, declared []audit.Service) audit.Check {
 // listenerMismatch says why a listener is not the declared service, or "" if it is.
 func listenerMismatch(l Listener, who string, d audit.Service) string {
 	host, _, _ := net.SplitHostPort(d.Addr)
-	if want, err := netip.ParseAddr(host); err == nil && want.Unmap() != l.Addr {
+	want, err := netip.ParseAddr(host)
+	if err != nil && d.User == "" {
+		// A name says nothing about this machine's addresses, and with no user the owner cannot be checked either: any
+		// socket on the port would pass for it, including one for a service in another zone.
+		return fmt.Sprintf("%s is declared by name with no user, so this socket cannot be told apart from another on port %d", d.Name, l.Port)
+	}
+	if err == nil && want.Unmap() != l.Addr {
 		if l.Addr.IsUnspecified() {
 			return fmt.Sprintf("it listens on every address, but %s is declared for %s", d.Addr, d.Name)
 		}

@@ -59,13 +59,32 @@ func parseThreadStatus(data []byte) threadStatus {
 	return t
 }
 
+// asksToConfine reports whether a command line (NUL-separated, as /proc shows it) turns -confine on. Flags are read as the Go
+// flag package reads them: -confine or --confine, with an optional =value, and the last one given wins.
+func asksToConfine(cmdline []byte) bool {
+	on := false
+	for _, arg := range strings.Split(string(cmdline), "\x00") {
+		name, value, hasValue := strings.Cut(strings.TrimPrefix(strings.TrimPrefix(arg, "-"), "-"), "=")
+		if !strings.HasPrefix(arg, "-") || name != "confine" {
+			continue
+		}
+		if !hasValue {
+			on = true
+			continue
+		}
+		v, err := strconv.ParseBool(value)
+		on = err == nil && v
+	}
+	return on
+}
+
 // Confined checks the running edge itself: every thread of it has no_new_privs and a seccomp filter, and holds no capability.
 // The kernel reports this per thread, and a restriction that is on some threads and not others is the commonest way for
 // confinement to look applied and not be, so every thread is read.
 func Confined(src Source, spec EdgeSpec) audit.Check {
 	return audit.Check{
 		Name: "host-edge-confined", Zone: "",
-		What: "The running edge has no_new_privs, a seccomp filter and no capabilities on every one of its threads, and runs as its own user.",
+		What: "The running edge was started with -confine, has no_new_privs, a seccomp filter and no capabilities on every one of its threads, and runs as its own user.",
 		Run: func(ctx context.Context) audit.Outcome {
 			if why := linux(); why != "" {
 				return audit.Outcome{SkipReason: why}
@@ -82,13 +101,26 @@ func Confined(src Source, spec EdgeSpec) audit.Check {
 				}
 			}
 			if len(edge) == 0 {
-				if unreadable > 0 {
+				switch {
+				case unreadable > 0:
 					return audit.Outcome{SkipReason: fmt.Sprintf("no edge process was found, but %d programs could not be read (this needs root)", unreadable)}
+				case geteuid() != 0:
+					// Under hidepid another user's processes are not unreadable but missing.
+					return audit.Outcome{SkipReason: "no edge process was seen; not as root, /proc may hide it (this needs root)"}
 				}
 				return audit.Outcome{SkipReason: "the edge is not running"}
 			}
 			var out audit.Outcome
 			for _, p := range edge {
+				// The unit's own NoNewPrivileges and system call filter put the same marks on every thread, so the threads
+				// alone do not show that the edge confined itself: its command line has to ask for it.
+				out.Checked++
+				switch cmdline, err := src.ReadFile("/proc/" + strconv.Itoa(p.PID) + "/cmdline"); {
+				case err != nil:
+					out.Problems = append(out.Problems, fmt.Sprintf("pid %d: its command line cannot be read: %v", p.PID, err))
+				case !asksToConfine(cmdline):
+					out.Problems = append(out.Problems, fmt.Sprintf("pid %d was started without -confine, so it does not confine itself", p.PID))
+				}
 				tasks, _ := src.Glob("/proc/" + strconv.Itoa(p.PID) + "/task/[0-9]*")
 				if len(tasks) == 0 {
 					out.Problems = append(out.Problems, fmt.Sprintf("pid %d: its threads cannot be listed", p.PID))
