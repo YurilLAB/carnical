@@ -10,17 +10,26 @@ set -eu
 
 umask 077
 
+# Each file is written by the user who owns its directory, never by root. The directory is that user's, so after a takeover it
+# may already hold a link to somewhere else (/etc/ld.so.preload, a disk device): written as root, the file would land there.
+# Written as the owner, such a link leads only where the owner could write anyway, and noclobber refuses to replace anything.
 make() { # owner path
 	owner=$1
 	path=$2
+	if [ -L "$path" ]; then
+		echo "a symbolic link is in its place, which nothing here makes: look into it: $path" >&2
+		return
+	fi
 	if [ -e "$path" ]; then
 		echo "exists, left alone: $path"
 		return
 	fi
-	cat >"$path"
-	chown "$owner:$owner" "$path"
-	chmod 0600 "$path"
-	echo "created: $path"
+	if setpriv --reuid="$owner" --regid="$owner" --clear-groups --no-new-privs -- sh -c 'umask 077; set -C; cat >"$1"' sh "$path"; then
+		echo "created: $path"
+	else
+		echo "could not be created as $owner (is something in its place?): $path" >&2
+		return 1
+	fi
 }
 
 # A "backup" of the customer database: the SQLite header followed by random bytes, about the size of a small one.

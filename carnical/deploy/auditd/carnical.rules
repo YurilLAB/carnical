@@ -19,9 +19,10 @@
 ## Things an attacker does with a foothold, by any user that is not root.
 -a always,exit -F arch=b64 -S ptrace,process_vm_readv,process_vm_writev,memfd_create,bpf,unshare,setns,init_module,finit_module,delete_module,kexec_load -F auid=unset -F uid!=0 -k carnical_abuse
 
-## A file made setuid or setgid.
--a always,exit -F arch=b64 -S chmod,fchmod,fchmodat -F a1&04000 -k carnical_setuid
--a always,exit -F arch=b64 -S chmod,fchmod,fchmodat -F a1&02000 -k carnical_setuid
+## A file made setuid or setgid. The mode is the second argument of chmod and fchmod, and the third of fchmodat (after the
+## directory and the path), which is what chmod(1) calls.
+-a always,exit -F arch=b64 -S chmod,fchmod -F a1&06000 -k carnical_setuid
+-a always,exit -F arch=b64 -S fchmodat -F a2&06000 -k carnical_setuid
 
 ## Changes to what runs at boot or on a schedule, who may become root, how libraries are loaded, and how people log in.
 -w /etc/ld.so.preload -p wa -k carnical_persist
