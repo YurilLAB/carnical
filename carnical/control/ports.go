@@ -111,6 +111,11 @@ type PublishResult struct {
 }
 
 // Publisher turns an accepted revision into a signed configuration for the edges (docs/segmentation.md rule T5).
+//
+// Publish must assign a sequence only if revision is still the tenant's current revision, checked in the same transaction
+// that assigns it, and otherwise return an error that wraps ErrConflict. The server checks first, but a write can land
+// between that check and the publish; without the publisher's check an older publish that finishes last gets the higher
+// sequence, and the edges go back to the weaker policy.
 type Publisher interface {
 	Publish(ctx context.Context, tenant string, revision uint64, meta PublishMeta) (PublishResult, error)
 }

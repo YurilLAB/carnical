@@ -661,6 +661,34 @@ func TestPublish(t *testing.T) {
 			t.Fatalf("audit: %+v", h.audit.last())
 		}
 	})
+	t.Run("a repeated request gets the first answer after the revision moved on", func(t *testing.T) {
+		h := newHarness(t)
+		h.seed(tenantA, `{"mode":"block"}`)
+		first := pub(h, `{"revision":1}`, "retry-key-1")
+		h.seed(tenantA, `{"mode":"block","threshold":4}`) // another write while the first answer was lost
+		again := pub(h, `{"revision":1}`, "retry-key-1")
+		if first.Code != 200 || again.Code != 200 || first.Body.String() != again.Body.String() || h.pub.count() != 1 {
+			t.Fatalf("%d %s / %d %s, publishes %d", first.Code, first.Body.String(), again.Code, again.Body.String(), h.pub.count())
+		}
+		if w := pub(h, `{"revision":1}`, "retry-key-2"); w.Code != 409 || errorOf(t, w).Code != "revision_not_current" {
+			t.Fatalf("a new request for the old revision: %d %s", w.Code, w.Body.String())
+		}
+	})
+	t.Run("a revision that moved on while it was being published is a conflict", func(t *testing.T) {
+		// The server checks before it calls the publisher, but a write can land in between; the publisher's own check,
+		// made with the sequence, is the one that holds, and its refusal is the same answer as the server's.
+		h := newHarness(t)
+		h.seed(tenantA, `{"mode":"block"}`)
+		h.pub.err = fmt.Errorf("publish: %w", ErrConflict)
+		w := pub(h, `{"revision":1}`, "retry-key-1")
+		if w.Code != 409 || errorOf(t, w).Code != "revision_not_current" {
+			t.Fatalf("%d %s", w.Code, w.Body.String())
+		}
+		h.pub.err = nil
+		if w := pub(h, `{"revision":1}`, "retry-key-1"); w.Code != 200 {
+			t.Fatalf("the key was not released after the conflict: %d %s", w.Code, w.Body.String())
+		}
+	})
 	t.Run("the same key with a different request is refused", func(t *testing.T) {
 		h := newHarness(t)
 		h.seed(tenantA, `{"mode":"block"}`)
@@ -1247,6 +1275,20 @@ func TestAuditIsFailClosed(t *testing.T) {
 			t.Fatalf("the next change: %d", w.Code)
 		}
 	})
+	t.Run("a lost closing line refuses the next change even when the log works again", func(t *testing.T) {
+		h := newHarness(t)
+		h.srv.cfg.Audit = &failAfterAudit{inner: h.audit, okLines: 1, once: true}
+		if w := h.putPolicy("ui-a", tenantA, `{"mode":"block"}`, 0, 0); w.Code != 200 {
+			t.Fatalf("%d %s", w.Code, w.Body.String())
+		}
+		w := h.putPolicy("ui-a", tenantA, `{"mode":"block","threshold":4}`, 1, 0)
+		if w.Code != 503 || errorOf(t, w).Code != "audit_unavailable" || h.store.revisions(tenantA) != 1 {
+			t.Fatalf("the change after a lost closing line: %d %s, revisions %d", w.Code, w.Body.String(), h.store.revisions(tenantA))
+		}
+		if w := h.do(reqOpts{target: policyTarget(tenantA)}); w.Code != 200 {
+			t.Fatalf("a read after a lost closing line: %d", w.Code)
+		}
+	})
 	t.Run("an authentication failure that cannot be logged is still refused", func(t *testing.T) {
 		h := newHarness(t)
 		h.audit.setFailing(true)
@@ -1260,6 +1302,7 @@ type failAfterAudit struct {
 	mu      sync.Mutex
 	inner   *memAudit
 	okLines int
+	once    bool // fail only the first line after okLines, then work again
 	n       int
 }
 
@@ -1267,7 +1310,7 @@ func (f *failAfterAudit) Append(e AuditEntry) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.n++
-	if f.n > f.okLines {
+	if f.n > f.okLines && (!f.once || f.n == f.okLines+1) {
 		return errors.New("disk full")
 	}
 	return f.inner.Append(e)

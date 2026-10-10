@@ -111,7 +111,7 @@ key ids as above; at most 50 keys and 500 revoked ids; the root may not be liste
 any fault refuses the whole file) with two deliberate differences:
 
 - the signed bytes start with `carnical-keys-v1` and a listed key's role must be exactly `config`, so a release key list the same root signed (`sfw-v1`, role `manifest`) is **not** a valid Carnical key list, and the reverse. Without that, an old release list with a high sequence number could be handed to an edge to make it forget its signing keys;
-- it is read with `config.VerifyKeySet` / `config.AcceptKeySet`, and its sequence is kept in the same record store, under `keyset-<root key id>`.
+- it is read with `config.VerifyKeySet` / `config.AcceptKeySet`, and its sequence is kept in the same record store, under `keyset-<root key id>`. `AcceptKeySet` also requires it to be higher than the last list accepted from any root, kept under `keyset-all` as well, so the history of a root that has since been unpinned still counts: the new root's lists continue the old root's numbering, and an older list from either cannot bring a revoked key back. At start-up the persisted list is read with `config.LoadKeySet`, which refuses one older than the newest accepted.
 
 ```
 signed bytes: "carnical-keys-v1" (16 bytes), then as 4-byte-length fields: version (2 bytes, 00 01), root key id (16 ASCII), payload (the JSON, exact bytes)
@@ -168,8 +168,8 @@ replay the envelope.
 ### The sequence record
 
 `config.SeqStore` is the interface (`Advance(stream, seq)` atomically records a higher number or
-returns `rollback`; `Last(stream)`). `FileSeqStore` keeps one file per stream (a tenant id, or
-`keyset-<id>`) in one directory (mode 0700, files 0600):
+returns `rollback`; `Last(stream)`). `FileSeqStore` keeps one file per stream (a tenant id,
+`keyset-<id>` or `keyset-all`) in one directory (mode 0700, files 0600):
 
 ```
 carnical-seq-v1\n<stream>\n<decimal sequence>\n<first 16 hex digits of SHA-256 of those three lines>\n
@@ -223,7 +223,8 @@ p, err := policy.Decode(env.Payload)                                // strict ag
 c, err := policy.Compile(p)                                         // then build a new WAF off the request path and swap it in
 ```
 
-At start-up an edge loads its persisted envelope with `Verify`, not `Accept`.
+At start-up an edge loads its persisted key list with `LoadKeySet` and its persisted envelope with
+`Verify`, not `Accept`.
 
 ---
 

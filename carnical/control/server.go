@@ -123,6 +123,11 @@ type Config struct {
 	// AllowAllTenants honours credentials marked "all tenants". Leave it off except on the listener the owner's own
 	// tooling uses.
 	AllowAllTenants bool
+	// Authority, if set, is the host (and port, as clients write it in Host) this server is reached at. A request signed
+	// for another one is refused, so a request captured at one server that trusts the same credential cannot be sent to
+	// this one. Give each server its own; replay protection is per process, so servers that share an Authority must not
+	// share traffic.
+	Authority string
 	// Limits are the numbers the API holds itself to.
 	Limits Limits
 	// Now is the clock; default time.Now.
@@ -154,6 +159,9 @@ type Server struct {
 	stats struct {
 		authFailures, replayFull, panics, auditFailures atomic.Uint64
 	}
+	// auditGap is set when a change's closing line could not be written. Changes are refused from then on, until the log
+	// has been checked and the server started again: a log that has silently lost a line is not one to write more to.
+	auditGap atomic.Bool
 }
 
 // Stats are counters for the operator.
@@ -176,6 +184,9 @@ func (s *Server) Stats() Stats {
 func NewServer(cfg Config) (*Server, error) {
 	if cfg.Credentials == nil || cfg.Audit == nil {
 		return nil, errors.New("control: Credentials and Audit are required")
+	}
+	if a := cfg.Authority; a != "" && (len(a) > 261 || strings.ContainsAny(a, "/?#@ \t\\") || strings.HasPrefix(a, ":")) {
+		return nil, errors.New("control: Authority must be a host name, with an optional :port")
 	}
 	s := &Server{cfg: cfg, lim: cfg.Limits.withDefaults(), now: cfg.Now}
 	if s.now == nil {
@@ -470,6 +481,9 @@ func (s *Server) run(rc *reqCtx) (*result, *apiError) {
 		return nil, e
 	}
 	if rt.mutating {
+		if s.auditGap.Load() {
+			return nil, &apiError{status: http.StatusServiceUnavailable, code: "audit_unavailable", msg: "an earlier change's closing audit line was lost; check the log and restart the server", retry: 60}
+		}
 		// A change is written down before it is made. If the log cannot take the line, nothing is changed.
 		if err := s.cfg.Audit.Append(s.entry(rc, "started", "")); err != nil {
 			s.stats.auditFailures.Add(1)
@@ -502,6 +516,9 @@ func (s *Server) finishAudit(rc *reqCtx, outcome, detail string) {
 	if err := s.cfg.Audit.Append(s.entry(rc, outcome, detail)); err != nil {
 		s.stats.auditFailures.Add(1)
 		s.internal(rc.id, "audit", err)
+		if rc.route != nil && rc.route.mutating && outcome == "ok" { // a change was made and its record is incomplete
+			s.auditGap.Store(true)
+		}
 	}
 }
 
@@ -580,6 +597,8 @@ func (s *Server) authenticate(r *http.Request, rt *route, tenant string, body []
 	fp, haveCert := peerFingerprint(r, now)
 	fail(!haveCert, "no_certificate")
 	fail(!cred.MatchesCert(fp), "certificate_mismatch")
+	// The Host is signed; it must also be this server's, or a request captured at another one is good here too.
+	fail(s.cfg.Authority != "" && !strings.EqualFold(r.Host, s.cfg.Authority), "wrong_authority")
 
 	user := r.Header.Values(HeaderActingUser)
 	step := r.Header.Values(HeaderStepUp)

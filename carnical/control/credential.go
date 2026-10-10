@@ -19,7 +19,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -276,6 +278,9 @@ func ParseCredentials(r io.Reader) ([]Credential, error) {
 	if err := checkJSON(b, 16); err != nil {
 		return nil, fmt.Errorf("control: credentials: %w", err)
 	}
+	if err := exactCredentialNames(b); err != nil {
+		return nil, fmt.Errorf("control: credentials: %w", err)
+	}
 	var f credentialFile
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.DisallowUnknownFields()
@@ -299,6 +304,35 @@ func ParseCredentials(r io.Reader) ([]Credential, error) {
 		out = append(out, c)
 	}
 	return out, nil
+}
+
+var errCredentialName = errors.New("a field is not spelled exactly as the credentials format names it")
+
+// exactCredentialNames refuses a field name spelled other than exactly as the format has it. encoding/json matches names
+// without regard to case and lets the later one win, so "revoked":true,"Revoked":false would lift a revocation.
+func exactCredentialNames(b []byte) error {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(b, &top); err != nil {
+		return errJSONSyntax
+	}
+	for k := range top {
+		if k != "credentials" {
+			return errCredentialName
+		}
+	}
+	var recs []map[string]json.RawMessage
+	if err := json.Unmarshal(top["credentials"], &recs); err != nil && top["credentials"] != nil {
+		return errors.New("credentials must be a list of objects")
+	}
+	allowed := jsonFieldNames(CredentialRecord{})
+	for _, r := range recs {
+		for k := range r {
+			if !allowed[k] {
+				return errCredentialName
+			}
+		}
+	}
+	return nil
 }
 
 // Credential converts and validates a record.
@@ -519,7 +553,8 @@ func credentialFilePath(path string) (string, error) {
 	if isWindows() {
 		return filepath.Abs(path)
 	}
-	base, err := os.Getwd()
+	// The kernel's directory, not $PWD, which can name it through a symlink.
+	base, err := syscall.Getwd()
 	if err != nil {
 		return "", err
 	}
@@ -617,6 +652,13 @@ func (f *CredentialFile) Revoke(id string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	// The file changed since it last loaded and did not load (an edit in progress, a typo): it is replaced by the last good
+	// set with the revocation, and its bytes are kept beside it, so the edit is not thrown away.
+	if st, err := os.Stat(f.path); err == nil && (fileSig{st.ModTime(), st.Size()}) != f.sig {
+		if err := keepUnparsed(f.path, f.now()); err != nil {
+			return false, err
+		}
+	}
 	if err := writeFileAtomic(f.path, b); err != nil {
 		return false, err
 	}
@@ -626,8 +668,34 @@ func (f *CredentialFile) Revoke(id string) (bool, error) {
 	return true, nil
 }
 
+// keepUnparsed copies the file at path to a new private file beside it, named .<name>.unparsed-<time>.
+func keepUnparsed(path string, now time.Time) error {
+	data, err := os.ReadFile(path) // #nosec G304 -- the operator's own credentials file, the one this store was opened on
+	if err != nil {
+		return err
+	}
+	dir, name := filepath.Split(path)
+	if dir == "" {
+		dir = "."
+	}
+	// #nosec G304 -- a new private file (O_EXCL, 0600) beside the operator's credentials file, named from its own name and the time.
+	keep, err := os.OpenFile(filepath.Join(dir, "."+name+".unparsed-"+strconv.FormatInt(now.UnixNano(), 10)), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := keep.Write(data); err != nil {
+		return errors.Join(err, keep.Close())
+	}
+	return errors.Join(keep.Sync(), keep.Close())
+}
+
 func writeFileAtomic(path string, data []byte) error {
-	dir := filepath.Dir(path)
+	// Split keeps "link/.." for the kernel to resolve, as reads do; Dir would clean
+	// it lexically and stage the file in another directory or filesystem.
+	dir, _ := filepath.Split(path)
+	if dir == "" {
+		dir = "."
+	}
 	tmp, err := os.CreateTemp(dir, ".credentials-*")
 	if err != nil {
 		return err

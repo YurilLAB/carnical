@@ -500,10 +500,8 @@ func (s *Server) publish(rc *reqCtx) (*result, *apiError) {
 		return nil, e
 	}
 	rc.setBefore(cur)
-	if in.Revision != cur {
-		// Publishing an old revision would put back an older policy without the weakening check a rollback has.
-		return nil, withTag(&apiError{status: http.StatusConflict, code: "revision_not_current", msg: "only the current revision can be published; roll back first to publish an older one"}, cur)
-	}
+	// A repeated request gets its first answer even if the revision has moved on since, so the idempotency record is read
+	// before the revision is compared: the client may have lost that answer.
 	key := rc.cred.ID + "|" + rc.tenant + "|" + rc.idemKey
 	switch v, status, body := s.idem.begin(rc.cred.ID, key, sha256.Sum256(rc.body), rc.now); v {
 	case idemReplay:
@@ -520,7 +518,15 @@ func (s *Server) publish(rc *reqCtx) (*result, *apiError) {
 	// Failed calls, including panics recovered by ServeHTTP, release their
 	// claim. A successful finish marks it done, so abandon keeps the answer.
 	defer s.idem.abandon(key)
+	if in.Revision != cur {
+		// Publishing an old revision would put back an older policy without the weakening check a rollback has.
+		return nil, withTag(&apiError{status: http.StatusConflict, code: "revision_not_current", msg: "only the current revision can be published; roll back first to publish an older one"}, cur)
+	}
 	res, err := s.cfg.Publisher.Publish(rc.ctx, rc.tenant, in.Revision, PublishMeta{Actor: rc.user, Credential: rc.cred.ID, RequestID: rc.id, IdempotencyKey: rc.idemKey})
+	if errors.Is(err, ErrConflict) {
+		// A write landed after the check above; the publisher's check, made with the sequence, is the one that holds.
+		return nil, &apiError{status: http.StatusConflict, code: "revision_not_current", msg: "only the current revision can be published; roll back first to publish an older one"}
+	}
 	if err != nil {
 		return nil, s.fail(rc, "publish", err)
 	}

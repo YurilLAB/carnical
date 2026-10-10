@@ -188,17 +188,67 @@ func VerifyKeySet(raw []byte, roots []ed25519.PublicKey, now time.Time) (*KeySet
 }
 
 // AcceptKeySet is VerifyKeySet, and then records the list's sequence number in the store under KeySetStream(root key
-// id), atomically with the check that it is higher than the last list accepted from that root. An older list, which
-// could bring back a key that has since been revoked, gets ErrRollback.
+// id), atomically with the check that it is higher than the last list accepted from that root. It must also be higher
+// than the last list accepted from any other pinned root: during a root rotation both roots are pinned, and an older list
+// from the other root could bring back a key that has since been revoked. Such a list gets ErrRollback, so a new root's
+// lists continue the numbering of the root it replaces. One process accepts key lists at a time.
 func AcceptKeySet(raw []byte, roots []ed25519.PublicKey, now time.Time, store SeqStore) (*KeySet, error) {
 	ks, err := VerifyKeySet(raw, roots, now)
 	if err != nil {
+		return nil, err
+	}
+	floor, err := keySetFloor(roots, store)
+	if err != nil {
+		return nil, err
+	}
+	if ks.Seq <= floor {
+		return nil, ErrRollback
+	}
+	if err := store.Advance(KeySetAnyRoot, ks.Seq); err != nil {
 		return nil, err
 	}
 	if err := store.Advance(KeySetStream(ks.RootID), ks.Seq); err != nil {
 		return nil, err
 	}
 	return ks, nil
+}
+
+// LoadKeySet is VerifyKeySet for the list an edge persisted, read again at start-up: AcceptKeySet would refuse it as
+// not newer. It refuses (ErrRollback) a list older than the newest one accepted from any pinned root, which a swapped
+// file would otherwise bring back.
+func LoadKeySet(raw []byte, roots []ed25519.PublicKey, now time.Time, store SeqStore) (*KeySet, error) {
+	ks, err := VerifyKeySet(raw, roots, now)
+	if err != nil {
+		return nil, err
+	}
+	floor, err := keySetFloor(roots, store)
+	if err != nil {
+		return nil, err
+	}
+	if ks.Seq < floor {
+		return nil, ErrRollback
+	}
+	return ks, nil
+}
+
+// keySetFloor is the newest sequence accepted from any root: the KeySetAnyRoot record, and the records of the roots
+// pinned now (a store written before KeySetAnyRoot existed has only these).
+func keySetFloor(roots []ed25519.PublicKey, store SeqStore) (uint64, error) {
+	floor, err := store.Last(KeySetAnyRoot)
+	if err != nil {
+		return 0, err
+	}
+	for _, r := range roots {
+		if len(r) != ed25519.PublicKeySize {
+			continue
+		}
+		last, err := store.Last(KeySetStream(KeyID(r)))
+		if err != nil {
+			return 0, err
+		}
+		floor = max(floor, last)
+	}
+	return floor, nil
 }
 
 // Apply gives the verifier this list's keys, revoked ids and expiry, replacing what it had.

@@ -171,6 +171,10 @@ func TestParseCredentials(t *testing.T) {
 		{"an unknown top-level field", `{"credentials":[],"x":1}`, false},
 		{"an unknown field in a credential", strings.Replace(file(rec), `"revoked":false`, `"revoked":false,"admin":true`, 1), false},
 		{"a repeated key", strings.Replace(file(rec), `"id":"ui-prod"`, `"id":"ui-prod","id":"other-id"`, 1), false},
+		// encoding/json matches names without regard to case, and the later one wins.
+		{"a second spelling that would lift a revocation", strings.Replace(file(rec), `"revoked":false`, `"revoked":true,"Revoked":false`, 1), false},
+		{"a second spelling that would widen the tenants", strings.Replace(file(rec), `"revoked":false`, `"revoked":false,"TENANTS":"all"`, 1), false},
+		{"a top-level name in capitals", strings.Replace(file(rec), `"credentials"`, `"Credentials"`, 1), false},
 		{"two credentials with one id", file(rec, rec), false},
 		{"trailing data", file(rec) + ` {}`, false},
 		{"a bad fingerprint", edit(func(r *CredentialRecord) { r.CertSPKI = []string{"abc"} }), false},
@@ -502,6 +506,41 @@ func TestCredentialFile(t *testing.T) {
 		})
 	}
 
+	t.Run("a revocation keeps an edit that does not load yet", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "credentials.json")
+		data, err := MarshalCredentials([]Credential{a, b})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		clock := &fakeClock{t: epoch}
+		store, err := OpenCredentialFile(path, clock.now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		halfEdited := append(append([]byte(nil), data[:len(data)-2]...), []byte(`,"new":`)...)
+		if err := os.WriteFile(path, halfEdited, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		clock.advance(2 * time.Second)
+		if was, err := store.Revoke(a.ID); err != nil || !was {
+			t.Fatalf("revocation while the file does not load: %v, %v", was, err)
+		}
+		if got, ok := store.Lookup(a.ID); !ok || !got.Revoked {
+			t.Fatal("the revocation did not take effect")
+		}
+		kept, _ := filepath.Glob(filepath.Join(dir, ".credentials.json.unparsed-*"))
+		if len(kept) != 1 {
+			t.Fatalf("%d copies of the edit kept, want 1", len(kept))
+		}
+		if got, err := os.ReadFile(kept[0]); err != nil || string(got) != string(halfEdited) {
+			t.Fatalf("the edit was not kept as it was: %v", err)
+		}
+	})
+
 	if runtime.GOOS != "windows" {
 		t.Run("symlink parent traversal keeps its meaning", func(t *testing.T) {
 			base := t.TempDir()
@@ -525,24 +564,91 @@ func TestCredentialFile(t *testing.T) {
 			if err := os.WriteFile(originalPath, originalData, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(base, "credentials.json"), otherData, 0o600); err != nil {
+			decoyPath := filepath.Join(base, "credentials.json")
+			if err := os.WriteFile(decoyPath, otherData, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			for _, path := range []string{"link/../credentials.json", base + "/link/../credentials.json"} {
-				t.Chdir(base)
+			link := filepath.Join(base, "link")
+			t.Cleanup(func() { _ = os.Chmod(base, 0o700) })
+			for _, tc := range []struct{ cwd, path string }{
+				{base, "link/../credentials.json"},
+				{base, base + "/link/../credentials.json"},
+				{link, "../credentials.json"}, // t.Chdir sets $PWD to the symlinked spelling
+			} {
+				if err := os.WriteFile(originalPath, originalData, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				t.Chdir(tc.cwd)
 				clock := &fakeClock{t: epoch}
-				store, err := OpenCredentialFile(path, clock.now)
+				store, err := OpenCredentialFile(tc.path, clock.now)
 				if err != nil {
 					t.Fatal(err)
 				}
 				t.Chdir(t.TempDir())
 				clock.advance(2 * time.Second)
 				if _, ok := store.Lookup(a.ID); !ok {
-					t.Errorf("symlink parent path changed its meaning: %q", path)
+					t.Errorf("symlink parent path changed its meaning: %q", tc.path)
 				}
 				if _, ok := store.Lookup(b.ID); ok {
-					t.Errorf("lexically cleaned path was used: %q", path)
+					t.Errorf("lexically cleaned path was used: %q", tc.path)
 				}
+				// The revocation must be staged beside the file the path names; the
+				// lexical parent may be another directory or filesystem.
+				if err := os.Chmod(base, 0o500); err != nil {
+					t.Fatal(err)
+				}
+				was, err := store.Revoke(a.ID)
+				if err := os.Chmod(base, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err != nil || !was {
+					t.Errorf("revocation through %q: %v, %v", tc.path, was, err)
+				}
+				if got, ok := store.Lookup(a.ID); !ok || !got.Revoked {
+					t.Errorf("revocation through %q was not loaded back", tc.path)
+				}
+				if got, err := os.ReadFile(decoyPath); err != nil || string(got) != string(otherData) {
+					t.Errorf("lexical parent file changed: %v", err)
+				}
+			}
+		})
+		t.Run("a symlinked working directory is pinned at open", func(t *testing.T) {
+			base := t.TempDir()
+			for name, set := range map[string][]Credential{"one": {a}, "two": {b}} {
+				if err := os.MkdirAll(filepath.Join(base, name, "app"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				data, err := MarshalCredentials(set)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(base, name, "credentials.json"), data, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			link := filepath.Join(base, "current")
+			if err := os.Symlink(filepath.Join(base, "one", "app"), link); err != nil {
+				t.Fatal(err)
+			}
+			t.Chdir(link)
+			clock := &fakeClock{t: epoch}
+			store, err := OpenCredentialFile("../credentials.json", clock.now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// A release switch retargets the symlink the process started from.
+			if err := os.Remove(link); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(filepath.Join(base, "two", "app"), link); err != nil {
+				t.Fatal(err)
+			}
+			clock.advance(2 * time.Second)
+			if _, ok := store.Lookup(a.ID); !ok {
+				t.Error("credentials opened at start were dropped")
+			}
+			if _, ok := store.Lookup(b.ID); ok {
+				t.Error("refresh followed the retargeted working-directory symlink")
 			}
 		})
 		t.Run("missing working directory", func(t *testing.T) {

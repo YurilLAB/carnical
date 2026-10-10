@@ -101,6 +101,38 @@ func TestFileStoreSurvivesARestart(t *testing.T) {
 			}
 		})
 	}
+	if os.PathSeparator == '/' {
+		// $PWD can name the working directory through a symlink; ".." must still
+		// mean the physical parent, as it did before relative paths were pinned.
+		t.Run("working directory reached through a symlink", func(t *testing.T) {
+			root := t.TempDir()
+			release, shared := filepath.Join(root, "releases", "42"), filepath.Join(root, "releases", "seq")
+			if err := os.MkdirAll(release, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(filepath.Join(root, "srv"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			link := filepath.Join(root, "srv", "current")
+			if err := os.Symlink(release, link); err != nil {
+				t.Fatal(err)
+			}
+			if err := openStore(t, shared).Advance(tenantA, 10); err != nil {
+				t.Fatal(err)
+			}
+			t.Chdir(link)
+			s := openStore(t, "../seq")
+			if last, err := s.Last(tenantA); err != nil || last != 10 {
+				t.Errorf("store opened through the symlinked working directory: %d, %v, want 10", last, err)
+			}
+			if err := s.Advance(tenantA, 2); !errors.Is(err, ErrRollback) {
+				t.Errorf("old sequence through the symlinked working directory: %v, want rollback", err)
+			}
+			if _, err := os.Lstat(filepath.Join(root, "srv", "seq")); !errors.Is(err, fs.ErrNotExist) {
+				t.Errorf("lexical parent of the symlink was used: %v", err)
+			}
+		})
+	}
 }
 
 func TestFileStoreFilesAreOnePerStreamAndPrivate(t *testing.T) {

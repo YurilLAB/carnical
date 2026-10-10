@@ -255,6 +255,45 @@ func TestAnOlderKeyListCannotBringBackARevokedKey(t *testing.T) {
 	if _, err := r.ver.Verify(r.sign(t, tenantA, edgeID, 1), t0.Add(time.Minute)); !errors.Is(err, ErrRevokedKey) {
 		t.Fatalf("an envelope from the revoked key: %v", err)
 	}
+	t.Run("an older list from another pinned root, during a root rotation", func(t *testing.T) {
+		store := NewMemSeqStore()
+		rootB := seededKey(121)
+		both := []ed25519.PublicKey{rootPub, rootB.Public().(ed25519.PublicKey)}
+		oldA := signSet(t, KeySet{Seq: 3, Issued: issued, Expires: listEnds, Keys: []TrustedKey{key}, Revoked: []string{}})
+		revokingB, err := SignKeySet(rootB, KeySet{Seq: 10, Issued: issued, Expires: listEnds, Keys: []TrustedKey{}, Revoked: []string{key.ID}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := AcceptKeySet(revokingB, both, t0, store); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := AcceptKeySet(oldA, both, t0, store); !errors.Is(err, ErrRollback) {
+			t.Fatalf("root A's older list after root B revoked the key: %v", err)
+		}
+		// At start-up the persisted list is loaded, not accepted again; an older one must still be refused.
+		if _, err := LoadKeySet(oldA, both, t0, store); !errors.Is(err, ErrRollback) {
+			t.Fatalf("loading an older list at start-up: %v", err)
+		}
+		if ks, err := LoadKeySet(revokingB, both, t0, store); err != nil || ks.Seq != 10 {
+			t.Fatalf("loading the newest list at start-up: %v", err)
+		}
+		newerA := signSet(t, KeySet{Seq: 20, Issued: issued, Expires: listEnds, Keys: []TrustedKey{}, Revoked: []string{key.ID}})
+		if _, err := AcceptKeySet(newerA, both, t0, store); err != nil {
+			t.Fatalf("a newer list from root A: %v", err)
+		}
+		// Once root A is unpinned, its history must still count: root B's list 15 is older than A's list 20.
+		staleB, err := SignKeySet(rootB, KeySet{Seq: 15, Issued: issued, Expires: listEnds, Keys: []TrustedKey{key}, Revoked: []string{}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		onlyB := both[1:]
+		if _, err := AcceptKeySet(staleB, onlyB, t0, store); !errors.Is(err, ErrRollback) {
+			t.Fatalf("an older list after the other root was unpinned: %v", err)
+		}
+		if _, err := LoadKeySet(staleB, onlyB, t0, store); !errors.Is(err, ErrRollback) {
+			t.Fatalf("loading an older list after the other root was unpinned: %v", err)
+		}
+	})
 	t.Run("a rejected list does not use up its sequence number", func(t *testing.T) {
 		store := NewMemSeqStore()
 		bad := flipOneByte(raw1)

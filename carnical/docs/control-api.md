@@ -127,12 +127,15 @@ A credentials file is plain data; nothing in it is secret (the key is the public
 ```
 
 `"tenants": "all"` is for the owner's own tooling and works only on a server started with
-`AllowAllTenants`. The file is parsed strictly (no unknown field, no repeated key, no duplicate id)
-and refused whole if any credential is wrong, so a typo cannot remove a restriction.
+`AllowAllTenants`. The file is parsed strictly (no unknown field, no repeated key, a field name spelled
+exactly as above and not in other capitals, no duplicate id) and refused whole if any credential is
+wrong, so a typo cannot remove a restriction.
 `control.OpenCredentialFile` resolves a relative path against the working directory at open, so
 later directory changes do not redirect refreshes or revocations. It re-reads the file when it
 changes (at most once a second), keeps the last
-good set if a new one does not parse, and writes a revocation back atomically with mode 0600.
+good set if a new one does not parse, and writes a revocation back atomically with mode 0600. A file
+that changed and did not load (an edit in progress) is copied beside it as `.<name>.unparsed-<time>`
+before a revocation replaces it, so the edit is not lost.
 
 The client certificate's fingerprint is `sha256(cert.RawSubjectPublicKeyInfo)`:
 
@@ -193,7 +196,9 @@ even one the credential may also use, which fails the signature, not the tenant 
 make the acting user and the step-up part of what was signed, so a proxy cannot add or strengthen
 them; 12 and 13 stop a relay changing a write into one that overwrites a newer revision, or one
 publish into another; line 3 stops a request captured at one server being sent to another that
-trusts the same key.
+trusts the same key, once each server is given its own `Config.Authority` (a request whose Host is
+not it is refused as `wrong_authority`). The nonces a server remembers are its own, so servers that
+share an Authority must not share traffic.
 
 The step-up is therefore not a header anyone can add: it is part of the signed request.
 
@@ -402,7 +407,7 @@ lists.
 
 * **What is logged.** Every authenticated request. A read has one line; a change has two (`started`, written *before* anything
   changes, and the outcome after). Every authentication failure has one line with the reason (`bad_signature`,
-  `unknown_credential`, `certificate_mismatch`, `skew`, `replay`, ...: for the operator, never sent to the caller). A source
+  `unknown_credential`, `certificate_mismatch`, `wrong_authority`, `skew`, `replay`, ...: for the operator, never sent to the caller). A source
   that is waiting has one line for each wait, not one per blocked request. Outcomes: `ok`, `started`, `denied`, `invalid`,
   `conflict`, `error`, `auth_failed`, `refused`.
 * **What is never logged**: request bodies, policy content, targets, query strings, header values, or any secret. Text fields
@@ -410,7 +415,8 @@ lists.
   kept only if it has the form of an id.
 * **Fail closed.** If the first line of a change cannot be written the change is not made (`503 audit_unavailable`). A read
   whose line cannot be written is not served. If a change's closing line cannot be written the change stands, the failure is
-  counted (`Stats().AuditFailures`) and reported, and the next change is refused.
+  counted (`Stats().AuditFailures`) and reported, and later changes are refused (`503 audit_unavailable`) until the log has
+  been checked and the server started again, even if the log works again.
 * **Durability.** Opened for appending only, mode 0600 (a log other users can read is refused at open), every line flushed to
   disk before a successful `Append` returns. A failed write attempts rollback; a rollback failure closes the log and
   rejects subsequent appends. Windows repair uses a separate read/write handle and checks that it identifies the same
@@ -495,7 +501,7 @@ makes the routes that need it answer `501 not_implemented`; the server still aut
 | `Auditor` | `OpenFileAudit` is the implementation to use. Required |
 | `PolicyStore` | One revisioned, opaque JSON document per tenant. `Put(tenant, body, expect, meta)` must be atomic with the revision check and return `ErrConflict` if the current revision is not `expect` (0 means none yet); revisions rise by one and are never reused. It must only ever touch the named tenant's data. `History` is newest first for revisions below `before` |
 | `PolicyValidator` | The one place that knows what a document means, so the one place that knows what weakens it. Return `Problems` for a document that cannot be accepted, `Weakening` for the changes (against the current document; `nil` current means none yet) that reduce protection, each with a `Summary` in plain words for the customer, and `Diff`. Pure: no side effects. Do not repeat the customer's content verbatim in a message |
-| `Publisher` | Turn the current revision into a signed configuration for the edges (`segmentation.md` T5) and return its sequence number. Concurrent attempts for the same idempotency key are rejected, and a successful answer is replayed within its retention period. Failed calls release the key for retry. Claims are local to one server process; coordinate durable idempotency in the publisher when multiple control servers share it |
+| `Publisher` | Turn the current revision into a signed configuration for the edges (`segmentation.md` T5) and return its sequence number. It must check that the revision is still current in the same transaction that assigns the sequence, and return an error wrapping `ErrConflict` (answered `409 revision_not_current`) if it is not: a write can land between the server's check and the publish, and an older publish that finished last would otherwise get the higher sequence. Concurrent attempts for the same idempotency key are rejected, and a successful answer is replayed within its retention period. Failed calls release the key for retry. Claims are local to one server process; coordinate durable idempotency in the publisher when multiple control servers share it |
 | `StatusSource` | health, last publish, each edge's acknowledged sequence |
 | `EventSource` (control) | `Events` and `Traffic` for a tenant, newest first, a page at a time, with opaque cursors of 1 to 512 characters of `A-Z a-z 0-9 - _`. It must return at most `Limit` items |
 | `HostRegistry` | `Add` records a pending claim with the token the server made and returns the existing record for the same tenant and name; `ErrHostTaken` only when another tenant has **verified** it; `MarkVerified`; `MarkChecked`. **The edge must route a hostname only when its record says verified, and only to the tenant that holds it.** A nil registry disables the three host routes |

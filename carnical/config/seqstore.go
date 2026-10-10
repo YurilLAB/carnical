@@ -14,11 +14,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 )
 
 // SeqStore is the edge's memory of the newest configuration it has accepted, which is what stops an old envelope being
-// replayed. A stream is a tenant id (32 lower-case hex digits), or "keyset-" and a root key id for the key list (see
-// KeySetStream). Implementations must be safe for concurrent use and must make Advance atomic: of any number of calls
+// replayed. A stream is a tenant id (32 lower-case hex digits), "keyset-" and a root key id for the key list (see
+// KeySetStream), or KeySetAnyRoot. Implementations must be safe for concurrent use and must make Advance atomic: of any number of calls
 // racing for one stream, a call is accepted only if its number is higher than every number accepted before it, and the
 // highest number offered is always accepted.
 type SeqStore interface {
@@ -32,10 +33,14 @@ type SeqStore interface {
 	Last(stream string) (uint64, error)
 }
 
-var streamRe = regexp.MustCompile(`\A(?:[0-9a-f]{32}|keyset-[0-9a-f]{16})\z`)
+var streamRe = regexp.MustCompile(`\A(?:[0-9a-f]{32}|keyset-[0-9a-f]{16}|keyset-all)\z`)
 
 // KeySetStream is the stream name under which the sequence of a root key's key lists is kept.
 func KeySetStream(rootKeyID string) string { return "keyset-" + rootKeyID }
+
+// KeySetAnyRoot is the stream that keeps the newest key list accepted from any root, pinned now or not, so the
+// history of a root that has been unpinned still counts.
+const KeySetAnyRoot = "keyset-all"
 
 func checkStream(stream string) error {
 	if !streamRe.MatchString(stream) {
@@ -117,12 +122,26 @@ type fileOps interface {
 // Relative directories are resolved at open; later working-directory changes do not redirect the store.
 func OpenFileSeqStore(dir string) (*FileSeqStore, error) { return openFileSeqStore(dir, osOps{}) }
 
+// seqStorePath names the directory a relative open would have used. On Unix it starts from the kernel's
+// working directory, not $PWD: $PWD can name it through a symlink, and a lexical ".." would then leave
+// by the symlink's parent instead of the real one.
+func seqStorePath(dir string) (string, error) {
+	if filepath.IsAbs(dir) || os.PathSeparator != '/' {
+		return filepath.Abs(dir)
+	}
+	base, err := syscall.Getwd()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(base, dir), nil
+}
+
 func openFileSeqStore(dir string, ops fileOps) (*FileSeqStore, error) {
 	if dir == "" {
 		return nil, errors.New("config: no directory given for the sequence record")
 	}
 	// Resolve once so a later working-directory change cannot select another rollback floor.
-	dir, err := filepath.Abs(dir)
+	dir, err := seqStorePath(dir)
 	if err != nil {
 		return nil, storeFailure(err)
 	}

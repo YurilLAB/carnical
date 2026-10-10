@@ -412,6 +412,29 @@ func TestReplay(t *testing.T) {
 	}
 }
 
+// The Host a request was signed for is line 3 of what is signed; with an Authority set, a request signed for another server
+// that trusts the same credential is refused, so one captured at that server cannot be sent here.
+func TestARequestSignedForAnotherServerIsRefused(t *testing.T) {
+	h := newHarness(t)
+	h.srv.cfg.Authority = "control.test"
+	status := "/v1/tenants/" + tenantA + "/status"
+	if w := h.do(reqOpts{target: status}); w.Code != 200 {
+		t.Fatalf("a request for this server: %d", w.Code)
+	}
+	if w := h.do(reqOpts{target: status, host: "CONTROL.TEST"}); w.Code != 200 {
+		t.Fatalf("a host name in other capitals: %d", w.Code)
+	}
+	if w := h.do(reqOpts{target: status, host: "control-2.test"}); w.Code != 401 {
+		t.Fatalf("a request signed for another server: %d", w.Code)
+	}
+	if r, _ := lastFailure(h); r != "wrong_authority" {
+		t.Fatalf("reason %q", r)
+	}
+	if _, err := NewServer(Config{Credentials: h.srv.cfg.Credentials, Audit: h.srv.cfg.Audit, Authority: "https://control.test/"}); err == nil {
+		t.Fatal("an Authority that is not host[:port] was accepted")
+	}
+}
+
 func nonceOf(r *http.Request) string {
 	return regexp.MustCompile(`nonce=([0-9a-f]{32})`).FindStringSubmatch(r.Header.Get("Authorization"))[1]
 }
