@@ -215,6 +215,16 @@ func TestImportDefendsAgainstAHostileDocument(t *testing.T) {
 		{"a reference that is not there", `{"openapi":"3.0.0","paths":{"/a":{"post":{"requestBody":{"content":{"application/json":{"schema":{"$ref":"#/components/schemas/Nope"}}}}}}}}`, "", "could not be followed"},
 		{"a parameter reference that loops", `{"openapi":"3.0.0","paths":{"/a":{"get":{"parameters":[{"$ref":"#/components/parameters/p"}]}}},"components":{"parameters":{"p":{"$ref":"#/components/parameters/p"}}}}`, "", "chain of references"},
 		{"a pattern that is not RE2", `{"openapi":"3.0.0","paths":{"/a":{"get":{"parameters":[{"name":"x","in":"query","schema":{"type":"string","pattern":"^(?=a)"}}]}}}}`, "", "not RE2"},
+		// What the guard cannot hold a request to is reported, so block mode, which refuses any warning, never runs weaker
+		// than the description reads.
+		{"a type name the guard does not know", `{"openapi":"3.0.0","paths":{"/a":{"get":{"parameters":[{"name":"x","in":"query","schema":{"type":"Integer"}}]}}}}`, "", "type this guard does not know"},
+		{"a length that is not a whole number", `{"openapi":"3.0.0","paths":{"/a":{"get":{"parameters":[{"name":"x","in":"query","schema":{"type":"string","maxLength":"8"}}]}}}}`, "", "maxLength"},
+		{"keywords beside a 3.1 reference", `{"openapi":"3.1.0","paths":{"/a":{"get":{"parameters":[{"name":"x","in":"query","schema":{"$ref":"#/components/schemas/N","maximum":10}}]}}},"components":{"schemas":{"N":{"type":"integer"}}}}`, "", "beside a $ref"},
+		{"a dynamic reference", `{"openapi":"3.1.0","paths":{"/a":{"post":{"requestBody":{"content":{"application/json":{"schema":{"$dynamicRef":"#node"}}}}}}}}`, "", "$dynamicRef"},
+		{"a required list longer than the guard keeps", `{"openapi":"3.0.0","paths":{"/a":{"post":{"requestBody":{"content":{"application/json":{"schema":{"type":"object","required":[` +
+			strings.TrimSuffix(strings.Repeat(`"p",`, 1001), ",") + `]}}}}}}}}`, "", "required"},
+		{"parameters that share a path segment", `{"openapi":"3.0.0","paths":{"/r/{a}-{b}":{"get":{"parameters":[{"name":"a","in":"path","required":true,"schema":{"type":"string"}},{"name":"b","in":"path","required":true,"schema":{"type":"string"}}]}}}}`, "", "share one path segment"},
+		{"a path parameter the template does not name", `{"openapi":"3.0.0","paths":{"/r/{id}":{"get":{"parameters":[{"name":"userId","in":"path","required":true,"schema":{"type":"integer"}}]}}}}`, "", "does not name"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -230,6 +240,22 @@ func TestImportDefendsAgainstAHostileDocument(t *testing.T) {
 				t.Fatalf("err = %v", err)
 			case tt.warn != "" && !strings.Contains(strings.Join(rep.Warnings, "\n"), tt.warn):
 				t.Fatalf("warnings = %q, want one containing %q", rep.Warnings, tt.warn)
+			}
+		})
+	}
+}
+
+// Block mode refuses a description with any warning, so nothing that loses no constraint may warn.
+func TestImportWarnsOnlyWhenAConstraintIsLost(t *testing.T) {
+	for _, tc := range []struct{ name, doc string }{
+		{"maximums no request can reach", `{"openapi":"3.0.0","paths":{"/a":{"post":{"requestBody":{"content":{"application/json":{"schema":{"type":"object",
+			"maxProperties":9223372036854775807,"properties":{"s":{"type":"string","maxLength":9007199254740991},"l":{"type":"array","items":{"type":"string"},"maxItems":99999999999999999999}}}}}}}}}}`},
+		{"annotations beside a 3.1 reference", `{"openapi":"3.1.0","paths":{"/a":{"get":{"parameters":[{"name":"x","in":"query","schema":{"$ref":"#/components/schemas/N","description":"d","summary":"s","x-note":1}}]}}},"components":{"schemas":{"N":{"type":"integer"}}}}`},
+		{"one parameter per segment, with a prefix and suffix", `{"openapi":"3.0.0","paths":{"/r/v{id}.json":{"get":{"parameters":[{"name":"id","in":"path","required":true,"schema":{"type":"integer"}}]}}}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, rep, err := ImportOpenAPI([]byte(tc.doc)); err != nil || len(rep.Warnings) != 0 {
+				t.Fatalf("err = %v, warnings = %q", err, rep.Warnings)
 			}
 		})
 	}

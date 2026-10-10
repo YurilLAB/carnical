@@ -4,6 +4,7 @@ package apiguard
 
 import (
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/YurilLAB/coraza/carnical/inspect"
@@ -43,6 +44,7 @@ type reqView struct {
 
 	qdone  bool
 	query  []qpair
+	qmore  bool // pairs past maxQueryPairs were not read
 	qstore [12]qpair
 
 	parsed bool
@@ -61,7 +63,7 @@ func (v *reqView) init(r *inspect.Request) {
 func (v *reqView) q() []qpair {
 	if !v.qdone {
 		v.qdone = true
-		v.query = parseQuery(v.r.RawQuery, v.qstore[:0])
+		v.query, v.qmore = parseQuery(v.r.RawQuery, v.qstore[:0])
 	}
 	return v.query
 }
@@ -169,8 +171,9 @@ func bestVariant(s *Schema, raw string) any {
 	return vs[0]
 }
 
-// cookieValue finds a cookie in a Cookie header without allocating more than the value.
-func cookieValue(h http.Header, name string) (string, bool) {
+// cookieValues finds every value a cookie is given in the Cookie headers. Servers differ about which of several they read,
+// and browsers send several for cookies set on different paths, so each of them is checked.
+func cookieValues(h http.Header, name string, buf []string) []string {
 	for _, line := range h.Values("Cookie") {
 		for rest := line; rest != ""; {
 			var pair string
@@ -178,11 +181,11 @@ func cookieValue(h http.Header, name string) (string, bool) {
 			pair = strings.TrimSpace(pair)
 			k, v, ok := strings.Cut(pair, "=")
 			if ok && k == name {
-				return strings.Trim(v, `"`), true
+				buf = append(buf, strings.Trim(v, `"`))
 			}
 		}
 	}
-	return "", false
+	return buf
 }
 
 // maxFindings is how many findings one request may produce from one route. The first is what decides; the rest are for the log.
@@ -217,7 +220,11 @@ func (g *Guard) checkRoute(rt *Route, rv *reqView, caps *captures, ids *idSet, c
 			add(ids.pathParam, paramDetail(ids, p.Name, k))
 		}
 	}
-	// Query parameters.
+	// Query parameters. The application reads the pairs past the ones parsed here, so a query that has more is refused rather
+	// than checked in part.
+	if rv.q(); rv.qmore {
+		add(ids.queryParam, "more query parameters than the guard reads")
+	}
 	var vbuf [4]string
 	for i := range rt.Params {
 		p := &rt.Params[i]
@@ -237,6 +244,10 @@ func (g *Guard) checkRoute(rt *Route, rv *reqView, caps *captures, ids *idSet, c
 	}
 	if (rt.StrictQuery || (ids.named && g.config().RefuseUnknownParams)) && len(rv.q()) > 0 {
 		for _, q := range rv.q() {
+			// The API key the description's security scheme puts in the query is the description's own parameter.
+			if credNames != nil && slices.Contains(credNames.CredentialQuery, q.name) {
+				continue
+			}
 			if _, known := c.query[q.name]; !known {
 				if !hasDeepObjectPrefix(c, q.name) {
 					add(ids.unknownQuery, "")
@@ -259,15 +270,18 @@ func (g *Guard) checkRoute(rt *Route, rv *reqView, caps *captures, ids *idSet, c
 		}
 	}
 	for _, p := range c.cookies {
-		v, ok := cookieValue(r.Header, p.Name)
-		if !ok {
+		vals := cookieValues(r.Header, p.Name, vbuf[:0])
+		if len(vals) == 0 {
 			if p.Required {
 				add(ids.missingParam, paramDetail(ids, p.Name, vkRequired))
 			}
 			continue
 		}
-		if k := p.validateText([]string{v}); k != vkNone {
-			add(ids.cookieParam, paramDetail(ids, p.Name, k))
+		for _, v := range vals {
+			if k := p.validateText([]string{v}); k != vkNone {
+				add(ids.cookieParam, paramDetail(ids, p.Name, k))
+				break
+			}
 		}
 	}
 	// The body.

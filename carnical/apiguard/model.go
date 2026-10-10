@@ -122,7 +122,7 @@ type Model struct {
 // routeC is what a route needs to be checked quickly, derived from the route and never saved.
 type routeC struct {
 	pathNames  []string
-	pathParams []*Param // aligned with pathNames; nil where the template names a parameter the route does not declare
+	pathParams []*Param // aligned with pathNames, one per capture; nil where no single declared parameter fills it
 	query      map[string]*Param
 	headers    []*Param
 	cookies    []*Param
@@ -460,8 +460,14 @@ func (m *Model) resolveRefs() {
 func (r *Route) compile() {
 	c := &routeC{query: map[string]*Param{}}
 	for _, seg := range splitTemplate(r.Path) {
-		if seg.kind != segLiteral {
-			c.pathNames = append(c.pathNames, seg.names...)
+		switch {
+		case seg.kind == segLiteral:
+		case len(seg.names) == 1:
+			c.pathNames = append(c.pathNames, seg.names[0])
+		default:
+			// Several parameters in one segment are one capture: none of them can be checked on its own (the import warns),
+			// and the parameters after it keep their places.
+			c.pathNames = append(c.pathNames, "")
 		}
 	}
 	c.pathParams = make([]*Param, len(c.pathNames))

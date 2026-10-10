@@ -142,7 +142,8 @@ func credentialOf(h http.Header, query string, m *Model) string {
 	if query != "" && (strings.Contains(query, "api_key") || strings.Contains(query, "apikey") || strings.Contains(query, "api-key") ||
 		strings.Contains(query, "access_token") || (m != nil && len(m.CredentialQuery) > 0)) {
 		var buf [16]qpair
-		for _, p := range parseQuery(query, buf[:0]) {
+		pairs, _ := parseQuery(query, buf[:0])
+		for _, p := range pairs {
 			switch strings.ToLower(p.name) {
 			case "api_key", "apikey", "api-key", "access_token":
 				if p.value != "" {
@@ -176,9 +177,9 @@ type qpair struct{ name, value string }
 
 const maxQueryPairs = 256
 
-// parseQuery splits a raw query string into decoded names and values, at most maxQueryPairs of them. A piece that is not valid
-// percent-encoding is kept as it was written.
-func parseQuery(raw string, out []qpair) []qpair {
+// parseQuery splits a raw query string into decoded names and values, at most maxQueryPairs of them, and reports whether more
+// were left unread. A piece that is not valid percent-encoding is kept as it was written.
+func parseQuery(raw string, out []qpair) ([]qpair, bool) {
 	for raw != "" && len(out) < maxQueryPairs {
 		var part string
 		part, raw, _ = strings.Cut(raw, "&")
@@ -188,7 +189,7 @@ func parseQuery(raw string, out []qpair) []qpair {
 		name, value, _ := strings.Cut(part, "=")
 		out = append(out, qpair{queryUnescape(name), queryUnescape(value)})
 	}
-	return out
+	return out, strings.Trim(raw, "&") != ""
 }
 
 func queryUnescape(s string) string {

@@ -162,6 +162,24 @@ func asInt(v any) (int, bool) {
 	return int(i), true
 }
 
+// schemaInt reads a count keyword (minLength and the like). One that is there but is not a whole number the guard can use is
+// reported rather than ignored without a word.
+func (im *importer) schemaInt(m map[string]any, keyword string) (int, bool) {
+	v, present := m[keyword]
+	if !present {
+		return 0, false
+	}
+	n, ok := asInt(v)
+	if !ok {
+		// A maximum larger than any request can reach loses nothing when it is held at 2^31.
+		if num, isNum := v.(Num); isNum && strings.HasPrefix(keyword, "max") && num != "" && strings.Trim(string(num), "0123456789") == "" {
+			return 1 << 31, true
+		}
+		im.warnOnce("int:"+keyword, "a "+keyword+" that is not a whole number from 0 to 2^31 was ignored")
+	}
+	return n, ok
+}
+
 func (im *importer) schemaNumber(v any, keyword string) (float64, bool) {
 	n, ok := v.(Num)
 	if !ok {
@@ -266,11 +284,30 @@ func (im *importer) schema(node any, depth int) *Schema {
 		return &Schema{Not: &Schema{}}
 	case map[string]any:
 		if ref, ok := x["$ref"].(string); ok {
+			if im.ver == "3.1" {
+				im.refSiblings(x)
+			}
 			return im.schemaRef(ref, x, depth)
 		}
 		return im.schemaBody(x, depth)
 	}
 	return &Schema{}
+}
+
+// refSiblings reports constraints beside a $ref. OpenAPI 3.1 applies them, and only the flags withFlags copies are read.
+func (im *importer) refSiblings(holder map[string]any) {
+	for k := range holder {
+		switch k {
+		case "$ref", "nullable", "readOnly", "writeOnly", "description", "summary", "title", "example", "examples", "default",
+			"deprecated", "$comment", "externalDocs", "xml":
+			continue
+		}
+		if strings.HasPrefix(k, "x-") {
+			continue
+		}
+		im.warnOnce("ref-siblings", "keywords beside a $ref were not checked (OpenAPI 3.1 applies them, so the schema accepts more)")
+		return
+	}
 }
 
 func (im *importer) schemaRef(ref string, holder map[string]any, depth int) *Schema {
@@ -337,7 +374,8 @@ var schemaTypes = map[string]bool{"integer": true, "number": true, "string": tru
 
 // ignoredKeywords are the schema keywords that are valid and that this guard does not check.
 var ignoredKeywords = []string{"if", "then", "else", "patternProperties", "dependentRequired", "dependentSchemas", "dependencies",
-	"unevaluatedProperties", "unevaluatedItems", "prefixItems", "contains", "propertyNames", "contentMediaType", "contentEncoding"}
+	"unevaluatedProperties", "unevaluatedItems", "prefixItems", "contains", "propertyNames", "contentMediaType", "contentEncoding",
+	"$dynamicRef"}
 
 func (im *importer) schemaBody(m map[string]any, depth int) *Schema {
 	im.charge(1)
@@ -346,6 +384,8 @@ func (im *importer) schemaBody(m map[string]any, depth int) *Schema {
 	case string:
 		if schemaTypes[t] {
 			s.Type = []string{t}
+		} else {
+			im.warnOnce("type", "a schema type this guard does not know was accepted as any value")
 		}
 	case []any:
 		for _, e := range t {
@@ -355,6 +395,7 @@ func (im *importer) schemaBody(m map[string]any, depth int) *Schema {
 		}
 		if len(s.Type) != len(t) {
 			s.Type = nil // a type this guard does not know: accept any
+			im.warnOnce("type", "a schema type this guard does not know was accepted as any value")
 		}
 	}
 	if v, ok := asBool(m["nullable"]); ok {
@@ -398,10 +439,10 @@ func (im *importer) schemaBody(m map[string]any, depth int) *Schema {
 	if f, ok := im.schemaNumber(m["multipleOf"], "multipleOf"); ok && f > 0 {
 		s.MultipleOf = &f
 	}
-	if n, ok := asInt(m["minLength"]); ok {
+	if n, ok := im.schemaInt(m, "minLength"); ok {
 		s.MinLength = &n
 	}
-	if n, ok := asInt(m["maxLength"]); ok {
+	if n, ok := im.schemaInt(m, "maxLength"); ok {
 		s.MaxLength = &n
 	}
 	if p, ok := m["pattern"].(string); ok {
@@ -411,19 +452,19 @@ func (im *importer) schemaBody(m map[string]any, depth int) *Schema {
 			im.warnOnce("pattern-len", "a pattern longer than 512 bytes was ignored")
 		}
 	}
-	if n, ok := asInt(m["minItems"]); ok {
+	if n, ok := im.schemaInt(m, "minItems"); ok {
 		s.MinItems = &n
 	}
-	if n, ok := asInt(m["maxItems"]); ok {
+	if n, ok := im.schemaInt(m, "maxItems"); ok {
 		s.MaxItems = &n
 	}
 	if b, ok := asBool(m["uniqueItems"]); ok {
 		s.UniqueItems = b
 	}
-	if n, ok := asInt(m["minProperties"]); ok {
+	if n, ok := im.schemaInt(m, "minProperties"); ok {
 		s.MinProperties = &n
 	}
-	if n, ok := asInt(m["maxProperties"]); ok {
+	if n, ok := im.schemaInt(m, "maxProperties"); ok {
 		s.MaxProperties = &n
 	}
 	if b, ok := asBool(m["readOnly"]); ok {
@@ -452,6 +493,9 @@ func (im *importer) schemaBody(m map[string]any, depth int) *Schema {
 			if name, ok := e.(string); ok && len(s.Required) < 1000 {
 				s.Required = append(s.Required, name)
 			}
+		}
+		if len(req) > 1000 {
+			im.warnOnce("required", "a required list with more than 1000 names was cut to the first 1000")
 		}
 	}
 	switch ap := m["additionalProperties"].(type) {
@@ -641,12 +685,33 @@ func (im *importer) pathItem(m *Model, path string, node any, bases []string) {
 			if full == "" {
 				full = "/"
 			}
-			m.Routes = append(m.Routes, im.operation(strings.ToUpper(method), full, shared, op))
+			r := im.operation(strings.ToUpper(method), full, shared, op)
+			im.checkPathParams(&r)
+			m.Routes = append(m.Routes, r)
 		}
 	}
 	for _, other := range []string{"trace", "connect"} {
 		if _, ok := item[other]; ok {
 			im.warnOnce("method:"+other, "a "+strings.ToUpper(other)+" operation was ignored (the method is not allowed by the guard)")
+		}
+	}
+}
+
+// checkPathParams reports path parameters the guard cannot check: several sharing one segment of the template are one value
+// to it, and a declared parameter the template does not name has nothing to be checked against.
+func (im *importer) checkPathParams(r *Route) {
+	named := map[string]bool{}
+	for _, seg := range splitTemplate(r.Path) {
+		if len(seg.names) > 1 {
+			im.warnOnce("shared:"+r.Path, "path parameters that share one path segment are not checked: "+r.Path)
+		}
+		for _, n := range seg.names {
+			named[n] = true
+		}
+	}
+	for _, p := range r.Params {
+		if p.In == "path" && !named[p.Name] {
+			im.warnOnce("unnamed:"+r.Path+"\x00"+p.Name, "a path parameter that the template does not name is not checked: "+p.Name+" in "+r.Path)
 		}
 	}
 }

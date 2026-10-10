@@ -60,8 +60,11 @@ func TestSchemaValidation(t *testing.T) {
 		{"large integer enum member", `{"type":"integer","enum":[9007199254740992]}`, `9007199254740992`, true, vkNone},
 		{"distinct large integer is not an enum member", `{"type":"integer","enum":[9007199254740992]}`, `9007199254740993`, true, vkEnum},
 		{"const distinguishes large integers", "{\"const\":9007199254740992}", "9007199254740993", true, vkEnum},
-		{"exclusive decimal minimum", "{\"type\":\"number\",\"exclusiveMinimum\":1}", "1.0000000000000001", true, vkNone},
-		{"exclusive decimal maximum", "{\"type\":\"number\",\"exclusiveMaximum\":1}", "0.99999999999999999", true, vkNone},
+		// A float64 origin reads these as the bound itself, which an exclusive bound refuses.
+		{"exclusive decimal minimum that rounds onto it", "{\"type\":\"number\",\"exclusiveMinimum\":1}", "1.0000000000000001", true, vkBounds},
+		{"exclusive decimal maximum that rounds onto it", "{\"type\":\"number\",\"exclusiveMaximum\":1}", "0.99999999999999999", true, vkBounds},
+		{"tiny number above an exclusive zero minimum", "{\"type\":\"number\",\"exclusiveMinimum\":0}", "1e-400", true, vkBounds},
+		{"exclusive decimal minimum that stays above it", "{\"type\":\"number\",\"exclusiveMinimum\":1}", "1.000000000000001", true, vkNone},
 		{"tiny nonzero number is not zero", `{"enum":[0]}`, `1e-400`, true, vkEnum},
 		{"rounded fraction is not an integer", `{"type":"integer"}`, `1.0000000000000001`, true, vkType},
 		{"fraction just above the maximum", `{"type":"number","maximum":1}`, `1.0000000000000001`, true, vkBounds},
@@ -186,6 +189,7 @@ func TestPatternsAreRE2AndBounded(t *testing.T) {
 		{"unbalanced", `(a`, false},
 		{"nested counted repeats multiply", `((a{100}){100}){100}`, false},
 		{"one large counted repeat", `a{1000}`, true},
+		{"a counted class, as identifiers are written", `^[a-zA-Z0-9._-]{1,255}$`, true},
 		{"too long", strings.Repeat("a", 600), false},
 		{"empty", ``, false},
 	}
@@ -201,6 +205,32 @@ func TestPatternsAreRE2AndBounded(t *testing.T) {
 	s := schemaFrom(t, `{"type":"string","pattern":"^(?=a)a$"}`)
 	if _, ok, _ := s.validateBody("zzz", true); !ok {
 		t.Fatal("a dropped pattern must not refuse")
+	}
+}
+
+// A counted repeat keeps that many threads alive for every byte, so matching costs more than the subject's length; an array of
+// long values under such a pattern held a core for half a second per request when only the length was charged.
+func TestPatternMatchingIsChargedForItsRepeats(t *testing.T) {
+	item := `"` + strings.Repeat("q", maxPatternSubject-2) + `z"` // every item matches, so every one is checked
+	body := "[" + strings.TrimSuffix(strings.Repeat(item+",", 31), ",") + "]"
+	for _, tc := range []struct {
+		pattern  string
+		wantOver bool
+	}{
+		{`q[a-z]*z`, false},
+		{`[a-z]{0,300}z`, true},
+	} {
+		t.Run(tc.pattern, func(t *testing.T) {
+			s := schemaFrom(t, `{"type":"array","items":{"type":"string","pattern":"`+tc.pattern+`"}}`)
+			start := nowNano()
+			_, _, over := s.validateBody(mustParse(t, body), true)
+			if over != tc.wantOver {
+				t.Fatalf("over the work limit: %v, want %v", over, tc.wantOver)
+			}
+			if elapsed := nowNano() - start; elapsed > 3e8 {
+				t.Fatalf("took %v ns", elapsed)
+			}
+		})
 	}
 }
 

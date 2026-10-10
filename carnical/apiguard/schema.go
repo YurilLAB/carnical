@@ -71,6 +71,7 @@ type Schema struct {
 	// Derived by prepare, never saved.
 	ref       *Schema
 	re        *regexp.Regexp
+	reWeight  int // patternWeight of the pattern re runs
 	enumV     []any
 	constV    any
 	propNames []string
@@ -145,11 +146,33 @@ func estimateProgram(re *syntax.Regexp, depth int) int {
 	case syntax.OpLiteral:
 		return len(re.Rune)
 	case syntax.OpCharClass:
-		return 1 + len(re.Rune)/2
+		return 1 // one instruction however many ranges it has
 	case syntax.OpCapture:
 		return sub + 2
 	}
 	return sub + 1
+}
+
+// patternWeight is what a byte of subject costs against the work budget, beyond its length: about the number of NFA threads the
+// pattern's counted repeats can keep alive at once. RE2 compiles x{0,300} as 300 copies of x, each live for every byte of a
+// subject of the right shape; a star or a small count costs nothing extra.
+func patternWeight(p string) int {
+	tree, err := syntax.Parse(p, syntax.Perl)
+	if err != nil {
+		return 1
+	}
+	var threads func(re *syntax.Regexp) int
+	threads = func(re *syntax.Regexp) int {
+		inner := 0
+		for _, s := range re.Sub {
+			inner += threads(s)
+		}
+		if count := max(re.Min, re.Max); re.Op == syntax.OpRepeat && count > 16 {
+			return min(count*max(inner, 1), maxPatternProgram)
+		}
+		return inner
+	}
+	return max(1, threads(tree))
 }
 
 // prepare compiles what validation needs and cannot be saved: patterns, enum values, the sorted property names. It is called once
@@ -171,6 +194,9 @@ func (s *Schema) prepare(seen map[*Schema]bool, patterns map[string]*regexp.Rege
 			patterns[s.Pattern] = re
 		}
 		s.re = re
+		if re != nil {
+			s.reWeight = patternWeight(s.Pattern)
+		}
 	}
 	s.enumV = s.enumV[:0]
 	for _, e := range s.Enum {
@@ -386,7 +412,8 @@ func (s *Schema) validNumber(n Num, t jtype, c *vctx) bool {
 		return true
 	}
 	d, ok := n.decimal()
-	if _, finite := n.float(); !ok || !finite {
+	f, finite := n.float()
+	if !ok || !finite {
 		return c.fail(vkType)
 	}
 	for _, bound := range []struct {
@@ -405,6 +432,11 @@ func (s *Schema) validNumber(n Num, t jtype, c *vctx) bool {
 		}
 		cmp := d.cmp(b)
 		if (bound.minimum && cmp < 0) || (!bound.minimum && cmp > 0) || (bound.exclusive && cmp == 0) {
+			return c.fail(vkBounds)
+		}
+		// Most origins read a JSON number as a float64, which can round a value onto an exclusive bound (1e-400 is 0).
+		// Rounding is monotone, so an inclusive bound that holds exactly also holds after it.
+		if bound.exclusive && (bound.minimum && !(f > *bound.value) || !bound.minimum && !(f < *bound.value)) {
 			return c.fail(vkBounds)
 		}
 	}
@@ -447,7 +479,11 @@ func (s *Schema) validString(str string, c *vctx) bool {
 		if len(str) > maxPatternSubject {
 			return c.fail(vkPattern)
 		}
-		c.steps -= len(str) / 16
+		// Charged before it runs, for the threads its counted repeats keep alive as well as the length.
+		if c.steps -= (len(str)/16 + 1) * max(s.reWeight, 1); c.steps < 0 {
+			c.over = true
+			return true
+		}
 		if !s.re.MatchString(str) {
 			return c.fail(vkPattern)
 		}
@@ -714,6 +750,9 @@ func scalarVariants(s *Schema, raw string) []any {
 	lower := strings.ToLower(raw)
 	switch want {
 	case "integer", "number":
+		if n := urlNumber(raw); n != "" {
+			return []any{Num(n)}
+		}
 		if isNum {
 			return []any{num}
 		}
@@ -730,7 +769,9 @@ func scalarVariants(s *Schema, raw string) []any {
 		return []any{raw}
 	case "":
 		out := make([]any, 0, 3)
-		if isNum {
+		if n := urlNumber(raw); n != "" {
+			out = append(out, Num(n))
+		} else if isNum {
 			out = append(out, num)
 		}
 		if lower == "true" {
@@ -745,6 +786,29 @@ func scalarVariants(s *Schema, raw string) []any {
 
 // looksNumeric reports whether s is written as a number in decimal: an optional sign, digits, an optional fraction and exponent.
 // Leading zeros are accepted (a form value of 007 is the integer 7 to most servers).
+// urlNumber reads a number written in a URL as the common server-side parsers do (Go strconv, Python int and float, PHP,
+// Java): a leading plus sign and leading zeros are allowed. It returns the JSON spelling of the same value, so its bounds are
+// checked, or "" when raw is not such a number.
+func urlNumber(raw string) string {
+	s, sign := raw, ""
+	if s != "" && (s[0] == '+' || s[0] == '-') {
+		if s[0] == '-' {
+			sign = "-"
+		}
+		s = s[1:]
+	}
+	if s == "" || s[0] < '0' || s[0] > '9' {
+		return ""
+	}
+	for len(s) > 1 && s[0] == '0' && s[1] >= '0' && s[1] <= '9' {
+		s = s[1:]
+	}
+	if !looksNumeric(sign + s) {
+		return ""
+	}
+	return sign + s
+}
+
 func looksNumeric(s string) bool {
 	if s == "" || len(s) > 40 {
 		return false

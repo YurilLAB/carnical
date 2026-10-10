@@ -300,15 +300,19 @@ func (in *inspection) run() {
 		}
 	}
 
-	// Level 1: the API's own description.
+	// Level 1: the API's own description. A CORS preflight (no body, and the method it asks about) is the one request a
+	// described route need not list a method for, and only for a method the route does take. Any other OPTIONS request
+	// reaches a handler that may not check the method.
+	acrm := strings.ToUpper(strings.TrimSpace(r.Header.Get("Access-Control-Request-Method")))
+	preflight := method == "OPTIONS" && !hasBody && acrm != ""
 	if decl != nil {
 		switch {
 		case dnode == nil:
-			if lk.view == nil && method != "OPTIONS" && in.emit(IDSpecUnknownRoute, "", cfg.Modes.Spec) {
+			if lk.view == nil && in.emit(IDSpecUnknownRoute, "", cfg.Modes.Spec) {
 				return
 			}
 		case drt == nil:
-			if method != "OPTIONS" && lk.view == nil && in.emit(IDSpecMethodNotAllowed, "the route takes "+strings.Join(dnode.methods, ", "), cfg.Modes.Spec) {
+			if (!preflight || !slices.Contains(dnode.methods, acrm)) && lk.view == nil && in.emit(IDSpecMethodNotAllowed, "the route takes "+strings.Join(dnode.methods, ", "), cfg.Modes.Spec) {
 				return
 			}
 		default:
@@ -330,7 +334,7 @@ func (in *inspection) run() {
 					return
 				}
 			}
-		case decl == nil && method != "OPTIONS" && g.learn.enforceable.Load() > 0:
+		case decl == nil && !preflight && g.learn.enforceable.Load() > 0:
 			id, why := IDLearnedUnknownRoute, ""
 			if lk.otherMethod {
 				id = IDLearnedMethodNotSeen

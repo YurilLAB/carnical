@@ -137,7 +137,7 @@ bodies are scanned; a form post that sets `role=admin` is not.
 YAML. The description is not trusted:
 
 * At most 5 MiB (`MaxDocumentBytes`) and 500,000 values, counting every use of a YAML alias in full; nesting at most 64 deep. A YAML document is checked before the library sees it for the shapes that would make it slow or exhaust a stack (very deep brackets or indentation, long runs of `- - -`, more than 12,000 keys in one mapping, more values than the limit): the YAML library reads a block mapping in time that grows with the square of its keys (measured: 32,000 keys take 2.2 s and 300,000 keys in a 5 MiB document take 7 minutes 42 seconds), so without that check an origin could hold a CPU for that long.
-* Only references inside the document (`#/...`) are followed, never a file or an address. A reference that is missing, that points outside, or that is a chain of more than sixteen is cut and reported, and what stands in its place accepts anything: a description the importer cannot fully read refuses less, never more. The same is true of a schema keyword this guard does not check (`if/then/else`, `patternProperties`, `dependentRequired`, `unevaluated*`, `prefixItems`, `contains`, `propertyNames`) and of a pattern that is not RE2 or is too large (at most 512 bytes and about 1,000 instructions; the subject is at most 4,096 bytes; Go's regexp package runs in time proportional to the subject).
+* Only references inside the document (`#/...`) are followed, never a file or an address. A reference that is missing, that points outside, or that is a chain of more than sixteen is cut and reported, and what stands in its place accepts anything: a description the importer cannot fully read refuses less, never more. The same is true of a schema keyword this guard does not check (`if/then/else`, `patternProperties`, `dependentRequired`, `unevaluated*`, `prefixItems`, `contains`, `propertyNames`) and of a pattern that is not RE2 or is too large (at most 512 bytes and about 1,000 instructions, a character class counting as one; the subject is at most 4,096 bytes; Go's regexp package runs in time proportional to the subject).
 * A schema that refers back to itself (a tree, a thread of comments) is read once and named, and is checked to whatever depth the data has. The expanded size of a description, counting each use of a reference in full, is limited to 400,000 nodes, so a description whose references fan out (A uses B twice, B uses C twice, thirty times) is refused before it is built.
 * More than 5,000 routes, 64 parameters on one route, 1,000 properties in one schema or 64 alternatives in one `oneOf` is an error, not a truncation: a model with some of the routes missing would refuse real traffic.
 
@@ -159,11 +159,20 @@ says), `oneOf`, `anyOf`, `allOf`, `not`, `nullable` and read-only properties (a 
 one, and a required read-only property is not required in a request).
 
 A validation does at most 400,000 steps (a value visited, an alternative tried); past that it stops
-and reports `5003115` rather than spending more. A value in a URL is text and is read as the type
-the schema asks for; a scalar parameter given twice is reported (parameter pollution).
+and reports `5003115` rather than spending more. A pattern is charged before it runs for its
+subject's length times the threads its counted repeats can keep alive (`[a-z]{0,300}` some 300), so
+an expensive pattern over many long values stops at the limit. A value in a URL is text and is read
+as the type the schema asks for, a number with an optional sign and leading zeros as server-side
+parsers read it (`007` is 7, and its bounds apply); a scalar query or header parameter given twice
+is reported (parameter pollution). With `RefuseUnknownParams`, the API key a security scheme puts in
+the query is not an unknown parameter. A cookie may come more than once (browsers send one per path it was set on), so every
+value is checked. The guard reads the first 256 query parameters; a query with more is reported on a
+checked route rather than checked in part.
 
 Numbers are compared as exact decimals for integer types, enums, constants, bounds, decimal
 multiples and array uniqueness. Equivalent numeric spellings such as `1` and `1.0` compare equally.
+An exclusive bound must also hold for the value as a float64, which is how most applications read
+it: `1e-400` does not satisfy `exclusiveMinimum: 0`.
 Bounds and `multipleOf` remain float64 fields in the SDK; import and saved-model loading refuse
 constraints whose shortest float64 decimal representation would change their value, rather than
 round them.
@@ -180,8 +189,17 @@ suffix (`{name}.json`), and that before a plain `{parameter}`; when a branch has
 backs up, so `/users/me/orders` finds `/users/{id}/orders` if `/users/me` has no `orders`.
 
 Two templates that differ only in parameter names are one route; the first is kept and the import
-report says so. `HEAD` is served by the `GET` route; `OPTIONS` on a known path is not held to the
-description (it is a preflight).
+report says so. `HEAD` is served by the `GET` route. A CORS preflight (`OPTIONS` with no body and an
+`Access-Control-Request-Method` header naming a method the route takes) is not refused for its
+method; a preflight to an undescribed route, and any other `OPTIONS` request, are held to the
+description, since they reach a handler that may not check the method. The learned model treats
+`OPTIONS` the same way.
+
+The import report warns where the guard would check less than the description says: a type name it
+does not know, a count keyword that is not a whole number, keywords beside a `$ref` in OpenAPI 3.1,
+`$dynamicRef`, a `required` list cut at 1,000 names, path parameters that share one segment
+(`/r/{a}-{b}`), and a path parameter the template does not name. `carnical -api-spec-mode block`
+refuses to start while the report has warnings.
 
 Messages name the parameter or property only where the name comes from the description (it is the
 owner's), never from the request.
