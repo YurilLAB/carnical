@@ -1183,6 +1183,11 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 					t.Fatal(err)
 				}
 				t.Cleanup(func() { os.RemoveAll(uploads) })
+				// A Windows temp directory can be named by its 8.3 short name (C:\Users\RUNNER~1\...), whose ~ the setting
+				// refuses; the long name is the same directory in plain characters.
+				if uploads, err = filepath.EvalSymlinks(uploads); err != nil {
+					t.Fatal(err)
+				}
 				shared := filepath.Join(uploads, "shared")
 				if err := os.Mkdir(shared, 0o700); err != nil {
 					t.Fatal(err)
