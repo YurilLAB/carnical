@@ -441,6 +441,134 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 		}
 	})
 
+	t.Run("new site file starts private", func(t *testing.T) {
+		fixture := t.TempDir()
+		dir := filepath.Join(fixture, "root")
+		if err := os.Mkdir(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if runtime.GOOS == "windows" {
+			if out, err := exec.Command("icacls", dir, "/grant", "*S-1-1-0:(OI)(CI)(R)").CombinedOutput(); err != nil {
+				t.Fatalf("shared-directory fixture: %v %s", err, out)
+			}
+		}
+		root, err := os.OpenRoot(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer root.Close()
+		file, err := createSiteFile(root, "key.bin")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer file.Close()
+		// Check immediately after creation, before any later ACL change or write.
+		if err := checkPrivateSiteFile(file); err != nil {
+			t.Fatalf("new file permits inherited access before protection: %v", err)
+		}
+		if runtime.GOOS == "windows" {
+			for _, name := range []string{"../escape.key", "nested/key.bin", "nested\\key.bin", "key.bin:stream", "key\x00.bin", "NUL", "key.bin.", "."} {
+				t.Run(name, func(t *testing.T) {
+					if f, err := createSiteFile(root, name); err == nil {
+						f.Close()
+						t.Fatal("unsafe filename accepted")
+					}
+				})
+			}
+		}
+		if _, err := file.WriteString("original"); err != nil {
+			t.Fatal(err)
+		}
+		if f, err := createSiteFile(root, "key.bin"); err == nil || !os.IsExist(err) {
+			if f != nil {
+				f.Close()
+			}
+			t.Fatalf("existing file accepted: %v", err)
+		}
+		if data, err := os.ReadFile(filepath.Join(dir, "key.bin")); err != nil || string(data) != "original" {
+			t.Fatalf("existing contents changed: %v", err)
+		}
+		// Windows roots hold a directory handle that prevents this rename.
+		if runtime.GOOS != "windows" {
+			moved := filepath.Join(fixture, "moved")
+			if err := os.Rename(dir, moved); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(dir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			pinned, err := createSiteFile(root, "pinned.key")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer pinned.Close()
+			if err := checkPrivateSiteFile(pinned); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(filepath.Join(dir, "pinned.key")); !os.IsNotExist(err) {
+				t.Fatal("creation followed a replacement directory")
+			}
+			if _, err := os.Stat(filepath.Join(moved, "pinned.key")); err != nil {
+				t.Fatal(err)
+			}
+		}
+	})
+
+	t.Run("setup commands quote paths for the host shell", func(t *testing.T) {
+		// Printed commands are for PowerShell on Windows, which also ends a
+		// single-quoted string at a typographic quote, and for sh elsewhere.
+		var quotes string
+		for _, r := range []rune{0x2018, 0x2019, 0x201a, 0x201b} {
+			quotes += string(r)
+		}
+		values := []string{
+			filepath.Join(t.TempDir(), "site.json"),
+			`C:\Site Files\it's "here" $HOME $(id) ` + "`date`;&|",
+			"a" + quotes + "b",
+			"x" + string(rune(0x2019)) + "; Write-Output injected; " + string(rune(0x2019)) + "y",
+		}
+		var script strings.Builder
+		var shell *exec.Cmd
+		if runtime.GOOS == "windows" {
+			script.WriteString("\xef\xbb\xbf") // UTF-8 BOM for Windows PowerShell 5.1
+			for _, value := range values {
+				fmt.Fprintf(&script, "[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(%s))\n", setupQuote(value))
+			}
+			path := filepath.Join(t.TempDir(), "quote.ps1")
+			if err := os.WriteFile(path, []byte(script.String()), 0600); err != nil {
+				t.Fatal(err)
+			}
+			shell = exec.Command("powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", path)
+		} else {
+			script.WriteString(`printf '%s\n'`)
+			for _, value := range values {
+				script.WriteString(" " + setupQuote(value))
+			}
+			shell = exec.Command("sh", "-c", script.String())
+		}
+		out, err := shell.Output()
+		if err != nil {
+			t.Fatalf("host shell rejected the printed quoting: %v", err)
+		}
+		lines := strings.Split(strings.TrimRight(strings.ReplaceAll(string(out), "\r\n", "\n"), "\n"), "\n")
+		if len(lines) != len(values) {
+			t.Fatalf("host shell read %d values, want %d: %q", len(lines), len(values), out)
+		}
+		for i, value := range values {
+			got := lines[i]
+			if runtime.GOOS == "windows" {
+				decoded, err := base64.StdEncoding.DecodeString(got)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got = string(decoded)
+			}
+			if got != value {
+				t.Errorf("host shell read %q, want %q", got, value)
+			}
+		}
+	})
+
 	type received struct {
 		body, encoding string
 		length         int64

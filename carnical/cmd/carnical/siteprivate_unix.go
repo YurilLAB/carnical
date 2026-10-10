@@ -9,6 +9,10 @@ import (
 	"os"
 )
 
+func createSiteFile(root *os.Root, name string) (*os.File, error) {
+	return root.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+}
+
 func protectSiteFile(file *os.File) error {
 	if err := file.Chmod(0600); err != nil {
 		return err

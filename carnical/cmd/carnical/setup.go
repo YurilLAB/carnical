@@ -418,7 +418,18 @@ func setupValidationArgs(values map[string]any) []string {
 
 func setupQuote(value string) string {
 	if runtime.GOOS == "windows" {
-		return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+		// PowerShell also ends single-quoted strings at typographic single quotes;
+		// doubling any of them keeps it literal.
+		var quoted strings.Builder
+		quoted.WriteByte('\'')
+		for _, r := range value {
+			if r == '\'' || r >= 0x2018 && r <= 0x201b {
+				quoted.WriteRune(r)
+			}
+			quoted.WriteRune(r)
+		}
+		quoted.WriteByte('\'')
+		return quoted.String()
 	}
 	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }

@@ -174,7 +174,7 @@ func writeNewSiteFile(path string, data []byte) (err error) {
 	}
 	defer root.Close()
 	name := filepath.Base(path)
-	file, err := root.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	file, err := createSiteFile(root, name)
 	if err != nil {
 		return err
 	}

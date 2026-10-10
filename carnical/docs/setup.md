@@ -72,7 +72,10 @@ is refused. The printed check and start commands include `-config-key-file` for 
 
 The key file contains exactly 32 binary bytes. Linux keys require owner-only permissions;
 setup writes 0600. Windows setup uses a protected ACL with access only for the setup account
-and SYSTEM. Inherited or additional grants are refused when loading the key.
+and SYSTEM. Windows applies that ACL during exclusive file creation, before another
+account can obtain an inherited read handle. Inherited or additional grants are refused
+when loading the key. Windows filenames with streams, reserved devices or trailing dots
+and spaces are refused. Existing files remain untouched.
 
 Private certificate/key contents remain in their existing credential files. Setup asks for
 paths, never raw passwords, tokens or private keys, and does not rewrite those files. Protect

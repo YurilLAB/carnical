@@ -4,55 +4,65 @@ package main
 
 import (
 	"errors"
+	"math"
 	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
+	"unicode/utf8"
 
 	"golang.org/x/sys/windows"
 )
 
-func protectSiteFile(file *os.File) error {
-	// os.OpenFile does not request WRITE_DAC. Reopen the empty file with the
-	// required rights and verify identity before changing its ACL. Never secure
-	// a path then assume that the original open handle refers to that path.
-	path, err := windows.UTF16PtrFromString(file.Name())
+func createSiteFile(root *os.Root, name string) (*os.File, error) {
+	if !utf8.ValidString(name) || !filepath.IsLocal(name) || filepath.Base(name) != name || name == "." || strings.TrimRight(name, " .") != name {
+		return nil, errors.New("site file requires an unambiguous local filename")
+	}
+	parent, err := root.Open(".")
 	if err != nil {
-		return err
+		return nil, err
 	}
-	handle, err := windows.CreateFile(path, windows.WRITE_DAC|windows.READ_CONTROL,
-		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, nil,
-		windows.OPEN_EXISTING, windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
-	if err != nil {
-		return err
-	}
-	aclFile := os.NewFile(uintptr(handle), file.Name())
-	defer aclFile.Close()
-	original, err := file.Stat()
-	if err != nil {
-		return err
-	}
-	reopened, err := aclFile.Stat()
-	if err != nil {
-		return err
-	}
-	if !os.SameFile(original, reopened) {
-		return errors.New("site file changed while protecting its ACL")
-	}
+	defer parent.Close()
 	user, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil {
-		return err
+		return nil, err
 	}
-	sd, err := privateSiteDescriptor(user.User.Sid, false)
+	descriptor, err := privateSiteDescriptor(user.User.Sid, false)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	dacl, _, err := sd.DACL()
+	objectName, err := windows.NewNTUnicodeString(name)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if err := windows.SetSecurityInfo(handle, windows.SE_FILE_OBJECT,
-		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, dacl, nil); err != nil {
-		return err
+	size := reflect.TypeFor[windows.OBJECT_ATTRIBUTES]().Size()
+	if size > math.MaxUint32 {
+		return nil, errors.New("file attributes exceed the Windows API size limit")
 	}
+	attributes := &windows.OBJECT_ATTRIBUTES{
+		Length:             uint32(size),
+		RootDirectory:      windows.Handle(parent.Fd()),
+		ObjectName:         objectName,
+		Attributes:         windows.OBJ_CASE_INSENSITIVE,
+		SecurityDescriptor: descriptor,
+	}
+	var handle windows.Handle
+	// Set the protected ACL in the creation call. Tightening an inherited ACL
+	// later cannot revoke read handles obtained before the change.
+	err = windows.NtCreateFile(&handle, windows.FILE_GENERIC_WRITE|windows.FILE_READ_ATTRIBUTES,
+		attributes, &windows.IO_STATUS_BLOCK{}, nil, windows.FILE_ATTRIBUTE_NORMAL,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, windows.FILE_CREATE,
+		windows.FILE_SYNCHRONOUS_IO_NONALERT|windows.FILE_NON_DIRECTORY_FILE|windows.FILE_OPEN_REPARSE_POINT, 0, 0)
+	if err != nil {
+		if status, ok := err.(windows.NTStatus); ok {
+			err = status.Errno()
+		}
+		return nil, &os.PathError{Op: "create", Path: name, Err: err}
+	}
+	return os.NewFile(uintptr(handle), filepath.Join(root.Name(), name)), nil
+}
+
+func protectSiteFile(file *os.File) error {
 	return checkPrivateSiteFile(file)
 }
 
