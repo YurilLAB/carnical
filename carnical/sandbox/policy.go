@@ -37,8 +37,9 @@ type Policy struct {
 	// Skip names layers not to apply: "landlock", "seccomp". It is for staged rollouts and for the tests that need a
 	// weakened confinement to prove the checks can tell the difference. The Report says what was skipped.
 	Skip []string
-	// Require makes Apply fail if any layer cannot be applied (an old kernel without Landlock, say) instead of
-	// applying the layers that are available and reporting which they were.
+	// Require makes Apply fail if any layer cannot be applied (an old kernel without Landlock, or without the port rules
+	// a port list needs) instead of applying the layers that are available and reporting which they were. Abstract-socket
+	// and signal scoping, which needs Landlock ABI 6 (Linux 6.12), is not required: without it Notes says so.
 	Require bool
 }
 

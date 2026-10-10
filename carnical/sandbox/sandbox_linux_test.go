@@ -10,8 +10,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"syscall"
 	"testing"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
@@ -116,6 +119,17 @@ func TestTheFilterDecidesEachCallAsIntended(t *testing.T) {
 		{"socket: MPTCP IPv6 with flags", block, seccompData(auditArch, unix.SYS_SOCKET, unix.AF_INET6, unix.SOCK_STREAM|unix.SOCK_CLOEXEC|unix.SOCK_NONBLOCK, unix.IPPROTO_MPTCP), noProto},
 		{"socket: MPTCP when starting programs is allowed", allowExec, seccompData(auditArch, unix.SYS_SOCKET, unix.AF_INET, unix.SOCK_STREAM, unix.IPPROTO_MPTCP), noProto},
 		{"socket: MPTCP high argument bits", block, seccompData(auditArch, unix.SYS_SOCKET, unix.AF_INET, unix.SOCK_STREAM, 1<<40|unix.IPPROTO_MPTCP), noProto},
+		{"socket: TCP with flags", block, seccompData(auditArch, unix.SYS_SOCKET, unix.AF_INET6, unix.SOCK_STREAM|unix.SOCK_CLOEXEC|unix.SOCK_NONBLOCK, 0), allow},
+		{"socket: UDP with flags", block, seccompData(auditArch, unix.SYS_SOCKET, unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC|unix.SOCK_NONBLOCK, 0), allow},
+		{"socket: SCTP stream", block, seccompData(auditArch, unix.SYS_SOCKET, unix.AF_INET, unix.SOCK_STREAM, unix.IPPROTO_SCTP), noProto},
+		{"socket: SCTP one-to-many IPv6", block, seccompData(auditArch, unix.SYS_SOCKET, unix.AF_INET6, unix.SOCK_SEQPACKET, unix.IPPROTO_SCTP), noProto},
+		{"socket: sequenced packets with no protocol (SCTP)", block, seccompData(auditArch, unix.SYS_SOCKET, unix.AF_INET, unix.SOCK_SEQPACKET, 0), noProto},
+		{"socket: sequenced packets, high type bits", block, seccompData(auditArch, unix.SYS_SOCKET, unix.AF_INET, 1<<40|unix.SOCK_SEQPACKET, 0), noProto},
+		{"socket: DCCP", block, seccompData(auditArch, unix.SYS_SOCKET, unix.AF_INET6, unix.SOCK_DCCP, unix.IPPROTO_DCCP), noProto},
+		{"socket: UDP-Lite", block, seccompData(auditArch, unix.SYS_SOCKET, unix.AF_INET, unix.SOCK_DGRAM, unix.IPPROTO_UDPLITE), noProto},
+		{"socket: ICMP echo", block, seccompData(auditArch, unix.SYS_SOCKET, unix.AF_INET, unix.SOCK_DGRAM, unix.IPPROTO_ICMP), noProto},
+		{"socket: raw IP", block, seccompData(auditArch, unix.SYS_SOCKET, unix.AF_INET, unix.SOCK_RAW, unix.IPPROTO_RAW), noProto},
+		{"socket: SCTP when starting programs is allowed", allowExec, seccompData(auditArch, unix.SYS_SOCKET, unix.AF_INET, unix.SOCK_STREAM, unix.IPPROTO_SCTP), noProto},
 		{"socket: UNIX", block, seccompData(auditArch, unix.SYS_SOCKET, unix.AF_UNIX, unix.SOCK_STREAM, 0), allow},
 		{"socket: netlink, routing", block, seccompData(auditArch, unix.SYS_SOCKET, unix.AF_NETLINK, unix.SOCK_RAW, unix.NETLINK_ROUTE), allow},
 		{"socket: netlink, audit", block, seccompData(auditArch, unix.SYS_SOCKET, unix.AF_NETLINK, unix.SOCK_RAW, unix.NETLINK_AUDIT), kill},
@@ -142,6 +156,70 @@ func TestTheFilterDecidesEachCallAsIntended(t *testing.T) {
 				t.Fatalf("action %#x, want %#x", got, tt.want)
 			}
 		})
+	}
+}
+
+// A thread with a filter of its own cannot take the process-wide one, and the kernel then installs it on no thread. It says
+// so with the thread's id as the return value, not with an error number. It runs in a child process: a filter cannot be
+// taken off again.
+func TestAFilterThatReachesNoThreadIsAnError(t *testing.T) {
+	if os.Getenv("CARNICAL_SANDBOX_TSYNC_CHILD") == "1" {
+		tsyncChild(t)
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestAFilterThatReachesNoThreadIsAnError$", "-test.count=1", "-test.v")
+	cmd.Env = append(os.Environ(), "CARNICAL_SANDBOX_TSYNC_CHILD=1")
+	out, err := cmd.CombinedOutput()
+	if bytes.Contains(out, []byte("--- SKIP")) {
+		t.Skipf("the child could not set the case up:\n%s", out)
+	}
+	if err != nil || !bytes.Contains(out, []byte("--- PASS")) {
+		t.Fatalf("child: %v\n%s", err, out)
+	}
+}
+
+func tsyncChild(t *testing.T) {
+	ready, stop := make(chan error), make(chan struct{})
+	defer close(stop)
+	go func() {
+		runtime.LockOSThread() // this thread keeps a filter of its own until the process ends
+		if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
+			ready <- err
+			return
+		}
+		prog := []unix.SockFilter{{Code: bpfRetK, K: seccompRetAllow}}
+		fprog := unix.SockFprog{Len: 1, Filter: &prog[0]}
+		if _, _, errno := syscall.Syscall(unix.SYS_SECCOMP, seccompSetModeFilter, 0, uintptr(unsafe.Pointer(&fprog))); errno != 0 {
+			ready <- errno
+			return
+		}
+		ready <- nil
+		<-stop
+	}()
+	if err := <-ready; err != nil {
+		t.Skipf("a filter for one thread: %v", err)
+	}
+	// The thread that installs the filter needs no_new_privs itself; the kernel gives it to the others.
+	runtime.LockOSThread()
+	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
+		t.Skipf("no_new_privs: %v", err)
+	}
+	err := applySeccomp(false)
+	if err == nil || !strings.Contains(err.Error(), "could not take the filter") {
+		t.Fatalf("applySeccomp returned %v, want the thread that could not take the filter", err)
+	}
+	ts, terr := Threads()
+	if terr != nil {
+		t.Fatal(terr)
+	}
+	filtered := 0
+	for _, th := range ts {
+		if th.Seccomp == 2 {
+			filtered++
+		}
+	}
+	if filtered != 1 {
+		t.Fatalf("%d of %d threads have a filter, want only the one that installed its own", filtered, len(ts))
 	}
 }
 
@@ -322,7 +400,8 @@ func TestTheCheckNoticesAWeakenedConfinement(t *testing.T) {
 			if tt.weaken == "seccomp" {
 				control := runProbe(t, bin, "-unconfined")
 				for _, r := range control.Results {
-					if r.Action == "open a Multipath TCP socket" && r.Got == "allowed" {
+					// Only where the kernel has them: unconfined, the socket must be one that opens.
+					if (r.Action == "open a Multipath TCP socket" || r.Action == "open an SCTP socket") && r.Got == "allowed" {
 						tt.failing = append(tt.failing, r.Action)
 					}
 				}

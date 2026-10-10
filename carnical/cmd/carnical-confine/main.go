@@ -147,6 +147,14 @@ var actions = []action{
 		}
 		return unix.Close(fd)
 	}},
+	// A sequenced-packet socket with no protocol named is SCTP, which Landlock's port rules do not cover either.
+	{"open an SCTP socket", always(refused), refusedOrErr, func(e *env) error {
+		fd, err := unix.Socket(unix.AF_INET, unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC, 0)
+		if err != nil {
+			return err
+		}
+		return unix.Close(fd)
+	}},
 	{"connect to a port that is not allowed", ifABI(4, refused), allowed, func(e *env) error { return dial(e.forbiddenPort) }},
 	{"listen on a port that is not allowed", ifABI(4, refused), allowed, func(e *env) error { return listen(e.bindNo) }},
 	{"connect to another process's abstract socket", ifABI(6, refused), allowed, func(e *env) error {

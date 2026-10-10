@@ -28,7 +28,7 @@ func setNoNewPrivsAllThreads() error {
 
 // Apply confines the process. Call it once, early in main, after the listeners are open and the keys and
 // certificates are read, and before the first request is served. What was applied is in the Report; with
-// Policy.Require, anything that could not be applied is an error and nothing is half-done silently.
+// Policy.Require, a layer that could not be applied is an error and nothing is half-done silently (see Policy.Require).
 //
 // It cannot be undone, and it applies to every thread of the process.
 func Apply(p Policy) (Report, error) {

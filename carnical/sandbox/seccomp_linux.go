@@ -206,11 +206,22 @@ func buildFilter(allowExec bool) ([]unix.SockFilter, error) {
 	a.label("netlink-proto")
 	a.load(offArg0 + 16) // the third argument, protocol: NETLINK_ROUTE is 0
 	a.jeq(unix.NETLINK_ROUTE, "allow", "kill")
-	// Landlock does not restrict Multipath TCP, which can speak ordinary TCP.
-	// Return an unsupported-protocol error so Go safely falls back to TCP.
+	// IPv4 and IPv6: TCP and UDP only. Landlock's port rules cover TCP alone, so another transport (Multipath TCP, which
+	// can speak ordinary TCP, or SCTP, which a sequenced-packet socket gets by default) would reach any port. Refuse with
+	// an unsupported-protocol error rather than end the process: Go then falls back from Multipath TCP to TCP.
 	a.label("inet-proto")
+	a.load(offArg0 + 8) // the second argument, type, without SOCK_NONBLOCK and SOCK_CLOEXEC
+	a.and(0xf)
+	a.jeq(unix.SOCK_STREAM, "inet-protocol", "type-dgram")
+	a.label("type-dgram")
+	a.jeq(unix.SOCK_DGRAM, "inet-protocol", "no-proto")
+	a.label("inet-protocol")
 	a.load(offArg0 + 16)
-	a.jeq(unix.IPPROTO_MPTCP, "no-proto", "allow")
+	a.jeq(0, "allow", "proto-tcp")
+	a.label("proto-tcp")
+	a.jeq(unix.IPPROTO_TCP, "allow", "proto-udp")
+	a.label("proto-udp")
+	a.jeq(unix.IPPROTO_UDP, "allow", "no-proto")
 	a.label("after-socket")
 	a.load(offNr)
 
@@ -241,9 +252,13 @@ func applySeccomp(allowExec bool) error {
 	}
 	fprog := unix.SockFprog{Len: uint16(len(prog)), Filter: &prog[0]} // #nosec G115 -- The preceding check bounds program length to 1..4096.
 	// #nosec G103 -- Existing kernel ABI binding using unix.SockFprog and a live 1..4096-entry filter; conversion occurs directly in the syscall argument.
-	_, _, errno := syscall.Syscall(unix.SYS_SECCOMP, seccompSetModeFilter, seccompFilterFlagTsync, uintptr(unsafe.Pointer(&fprog)))
+	tid, _, errno := syscall.Syscall(unix.SYS_SECCOMP, seccompSetModeFilter, seccompFilterFlagTsync, uintptr(unsafe.Pointer(&fprog)))
 	if errno != 0 {
 		return fmt.Errorf("seccomp: %w", errno)
+	}
+	// A thread that cannot take the filter (it has one of its own) is named by its id, and then no thread has it.
+	if tid != 0 {
+		return fmt.Errorf("seccomp: thread %d could not take the filter, so no thread has it", tid)
 	}
 	return nil
 }
