@@ -145,7 +145,7 @@ func (c *matchCtx) multipartBody() bool {
 		return false
 	}
 	c.raw(kArgs)
-	return c.multipartOK
+	return c.multipartOK && !c.multipartPartial
 }
 
 func (v *view) add(name, val string) {
@@ -263,7 +263,7 @@ func (c *matchCtx) buildArgs() {
 	}
 	c.views[kArgs].php = true
 	req := c.req
-	c.multipartOK = false
+	c.multipartOK, c.multipartPartial = false, false
 	if req.RawQuery != "" {
 		q := req.RawQuery
 		if len(q) <= maxValue {
@@ -327,6 +327,10 @@ func clipValue(s string) string {
 
 // addArg records one argument.
 func (c *matchCtx) addArg(name, val, leaf string) bool {
+	if len(val) > maxValue {
+		head, tail := c.capped(val)
+		return c.addArg(name, head, leaf) && c.addArg(name, tail, leaf)
+	}
 	args := &c.views[kArgs]
 	if len(args.vals) >= maxArgs {
 		c.truncated = true
@@ -338,6 +342,16 @@ func (c *matchCtx) addArg(name, val, leaf string) bool {
 	names := &c.views[kArgNames]
 	names.vals = append(names.vals, name)
 	return true
+}
+
+// capped splits a value longer than maxValue into its first and last maxValue bytes (the rest of it, when it is under twice
+// that), as addCapped does, so a payload after a long run of padding is still seen.
+func (c *matchCtx) capped(s string) (head, tail string) {
+	c.truncated = true
+	if len(s) < 2*maxValue {
+		return s[:maxValue], s[maxValue:]
+	}
+	return s[:maxValue], s[len(s)-maxValue:]
 }
 
 // formPairs reads name=value pairs separated by '&'. A ';' is part of the value, as it is for PHP, Java, ASP.NET, Go and Python's
@@ -464,31 +478,19 @@ func looksLikeJSON(b []byte) bool {
 	return false
 }
 
+// formBody reads the whole body: cutting it at a byte offset would leave the pair across the cut seen only in part. Splitting
+// is linear, the number of arguments is bounded by maxArgs and a long value is capped as addArg caps it.
 func (c *matchCtx) formBody() {
-	s := c.bodyString()
-	if len(s) <= maxValue {
-		c.formPairs(s, false)
-		return
-	}
-	c.truncated = true
-	c.formPairs(s[:maxValue], false)
-	tail := s[len(s)-maxValue:]
-	if len(s) < 2*maxValue {
-		tail = s[maxValue:]
-	}
-	c.formPairs(tail, true)
+	c.formPairs(c.bodyString(), false)
 }
 
 // jsonArgs flattens a JSON document into arguments, with the names ModSecurity and Coraza give them (and the signature feeds
 // are written for): "json" and then the object keys and array indices leading to the value, joined by dots, so that
 // {"a":{"b":[7]}} is the argument json.a.b.0 with the value 7. Strings, numbers and booleans are the values; null is an empty
 // string. Each argument's name is also an argument name. It does not recurse: the document is read as a stream of tokens, and a
-// document that is malformed, too deep or too big is read as far as it is good.
+// document that is malformed, too deep or too big (maxJSONNodes, maxArgs) is read as far as it is good. The whole body is read, so
+// a key after a long first value is still an argument.
 func (c *matchCtx) jsonArgs(body []byte) {
-	if len(body) > maxValue {
-		c.truncated = true
-		body = body[:maxValue]
-	}
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber()
 	type frame struct {
@@ -619,6 +621,10 @@ func (c *matchCtx) looseStrings(b []byte) {
 
 // addJSONArg adds a flattened JSON value as an argument, and its name as an argument name.
 func (c *matchCtx) addJSONArg(path, val, leaf string) bool {
+	if len(val) > maxValue {
+		head, tail := c.capped(val)
+		return c.addJSONArg(path, head, leaf) && c.addJSONArg(path, tail, leaf)
+	}
 	args := &c.views[kArgs]
 	if len(args.vals) >= maxArgs {
 		c.truncated = true
@@ -641,7 +647,8 @@ func (c *matchCtx) multipartArgs() {
 	}
 	body := req.Body
 	if len(body) > maxMultipartBody {
-		c.truncated = true
+		// The parts past the cut reach the application unread, so the raw body is offered too (multipartBody).
+		c.truncated, c.multipartPartial = true, true
 		body = body[:maxMultipartBody]
 	}
 	mr := multipart.NewReader(bytes.NewReader(body), params["boundary"])
@@ -657,8 +664,10 @@ func (c *matchCtx) multipartArgs() {
 		filename, hasFile := "", false
 		if cd := part.Header.Get("Content-Disposition"); cd != "" {
 			if _, p, err := mime.ParseMediaType(cd); err == nil {
+				// The filename parameter (or filename*, which mime decodes into it), not the word anywhere in the header: a
+				// part with note="filename" is a field to PHP and Go, and its content is an argument.
 				name = p["name"]
-				filename, hasFile = p["filename"], p["filename"] != "" || strings.Contains(strings.ToLower(cd), "filename")
+				filename, hasFile = p["filename"], p["filename"] != ""
 			}
 		}
 		if len(names.vals) < maxArgs {
@@ -667,28 +676,62 @@ func (c *matchCtx) multipartArgs() {
 		if hasFile {
 			files.vals = append(files.vals, filename)
 			if c.snap.needUploads {
-				content, _ := io.ReadAll(io.LimitReader(part, maxPartRead))
-				if len(content) > 0 {
-					c.addCapped(uploads, "", string(content))
+				if content := c.readEnds(part); len(content) > 0 {
+					c.addCapped(uploads, "", content)
 				}
 			}
 			continue
 		}
-		content, _ := io.ReadAll(io.LimitReader(part, maxPartRead))
-		val := string(content)
-		if len(val) > maxValue {
-			c.truncated = true
-			val = val[:maxValue]
-		}
-		if !c.addArgOnly(name, val) {
+		if !c.addArgOnly(name, c.readEnds(part)) {
 			return
 		}
 	}
+	// As many parts as are read: if there is another, the rest reach the application unread unless the raw body is offered too.
+	if _, err := mr.NextPart(); err == nil {
+		c.truncated, c.multipartPartial = true, true
+	}
+}
+
+// readEnds reads a part to its end and keeps its first and last maxValue bytes, so a payload after a long run of padding is
+// seen without holding the whole part.
+func (c *matchCtx) readEnds(r io.Reader) string {
+	head, _ := io.ReadAll(io.LimitReader(r, maxPartRead)) // grows with the part: a small part costs a small buffer
+	if len(head) < maxPartRead {
+		return string(head)
+	}
+	// Longer than twice maxValue: keep the newest maxValue bytes in a ring while the rest is read.
 	c.truncated = true
+	ring := make([]byte, maxValue)
+	pos, filled := 0, false
+	buf := make([]byte, 32<<10)
+	for {
+		m, err := r.Read(buf)
+		for data := buf[:m]; len(data) > 0; {
+			k := copy(ring[pos:], data)
+			data = data[k:]
+			if pos += k; pos == len(ring) {
+				pos, filled = 0, true
+			}
+		}
+		if err != nil {
+			break
+		}
+	}
+	tail := head[maxValue:] // fewer than maxValue more bytes: the tail is the end of head plus what was read
+	if filled {
+		tail = append(append([]byte(nil), ring[pos:]...), ring[:pos]...)
+	} else if pos > 0 {
+		tail = append(append([]byte(nil), head[maxValue+pos:]...), ring[:pos]...)
+	}
+	return string(head[:maxValue]) + string(tail)
 }
 
 // addArgOnly adds an argument whose name is already in the argument names.
 func (c *matchCtx) addArgOnly(name, val string) bool {
+	if len(val) > maxValue {
+		head, tail := c.capped(val)
+		return c.addArgOnly(name, head) && c.addArgOnly(name, tail)
+	}
 	args := &c.views[kArgs]
 	if len(args.vals) >= maxArgs {
 		c.truncated = true

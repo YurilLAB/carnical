@@ -3,6 +3,7 @@
 package vpatch
 
 import (
+	"fmt"
 	"math/rand"
 	"regexp/syntax"
 	"sort"
@@ -158,6 +159,20 @@ func TestRegexRejections(t *testing.T) {
 func TestRegexProgramSizeLimit(t *testing.T) {
 	if _, err := compileRx(`(?:(?:a{1000}){1000})`, ""); err == nil {
 		t.Fatal("a million-instruction expression compiled")
+	}
+	// Go's regexp has no DFA: an alternation whose branches stay alive together costs its whole program on every byte. The
+	// largest expression in the shipped feeds compiles to about 6,500 instructions; one past the limit is refused.
+	var branches, shared []string
+	for i := 0; i < 1000; i++ {
+		branches = append(branches, fmt.Sprintf("x%dy%dz", i*7919%1000, i))
+		shared = append(shared, fmt.Sprintf("a%04dz", i))
+	}
+	if _, err := compileRx(strings.Join(branches, "|"), ""); err == nil || !strings.Contains(err.Error(), "instructions") {
+		t.Fatalf("a thousand-branch alternation of more than 8,000 instructions: %v", err)
+	}
+	// The parser factors branches that share their start, so the same number of words with common prefixes stays small.
+	if _, err := compileRx(strings.Join(shared, "|"), ""); err != nil {
+		t.Fatal(err)
 	}
 }
 

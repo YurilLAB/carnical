@@ -577,6 +577,62 @@ func TestWorkAllowance(t *testing.T) {
 	}
 }
 
+// The allowance is charged by what an expression costs, not only by the bytes it reads: a bounded repeat compiles to about a
+// thousand instructions, each of which can be live for every byte, and one such pattern held a core for a minute on one request.
+func TestWorkAllowanceChargesForTheExpressionsCost(t *testing.T) {
+	value := "qq" + strings.Repeat("q", 20000)
+	for _, tc := range []struct {
+		name, pattern string
+		wantLimited   bool
+	}{
+		{"a cheap expression reads the whole value", `qq.*zz`, false},
+		{"an expensive one is charged for its program", `qq[^z]{0,990}zz`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := loadOne(t, Options{MaxWork: 100_000, ResultCache: -1}, sig("C", cond("rx", tc.pattern, tg("args"))))
+			res := e.Inspect(mkReq("GET", "/?a="+value, nil, ""))
+			limited := false
+			for _, v := range res.Verdicts {
+				limited = limited || v.ID == IDWorkLimit
+			}
+			if limited != tc.wantLimited {
+				t.Fatalf("limited=%v, want %v", limited, tc.wantLimited)
+			}
+		})
+	}
+}
+
+// The allowance is a deterministic bound on counted repeats; time spent is the bound for what no static count sees (an
+// alternation whose branches a hostile value keeps alive together). Each expression is run only while time is left.
+func TestEvaluationTimeBudget(t *testing.T) {
+	q := "/?"
+	for i := range 8 {
+		q += fmt.Sprintf("a=needle%03dx&", i) // values the expression must run on and none of which matches
+	}
+	for _, tc := range []struct {
+		name        string
+		budget      time.Duration
+		wantLimited bool
+	}{
+		{"within the time budget", time.Hour, false},
+		{"past the time budget", time.Second, true},
+		{"with the time budget switched off", -1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC)
+			clock := func() time.Time { now = now.Add(400 * time.Millisecond); return now } // every reading is 0.4 s later
+			e := loadOne(t, Options{MaxEvalTime: tc.budget, Now: clock, ResultCache: -1}, sig("T", cond("rx", `needle\d{4}`, tg("args"))))
+			limited := false
+			for _, v := range e.Inspect(mkReq("GET", q, nil, "")).Verdicts {
+				limited = limited || v.ID == IDWorkLimit
+			}
+			if limited != tc.wantLimited {
+				t.Fatalf("limited=%v, want %v", limited, tc.wantLimited)
+			}
+		})
+	}
+}
+
 func TestStatsCount(t *testing.T) {
 	e := loadOne(t, Options{Mode: ModeBlock}, sig("S", cond("contains", "/x", tg("path"))))
 	e.Inspect(mkReq("GET", "/x", nil, ""))

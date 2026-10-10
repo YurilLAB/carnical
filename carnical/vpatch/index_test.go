@@ -212,7 +212,8 @@ func TestIndexedMatchEqualsBruteForce(t *testing.T) {
 			name = "cache on"
 		}
 		t.Run(name, func(t *testing.T) {
-			e := New(Options{Tiers: allTiers, ResultCache: cache})
+			// No time budget: whether the index finds what brute force finds must not depend on how busy the machine is.
+			e := New(Options{Tiers: allTiers, ResultCache: cache, MaxEvalTime: -1})
 			e.Load(sigs)
 			all := requestsForEquivalence(t, e, generated)
 			var reqs []*inspect.Request
@@ -262,7 +263,7 @@ func TestEquivalenceTestDetectsABrokenIndex(t *testing.T) {
 		return n
 	}
 	t.Run("a signature that is never nominated", func(t *testing.T) {
-		e := New(Options{Tiers: allTiers, ResultCache: -1})
+		e := New(Options{Tiers: allTiers, ResultCache: -1, MaxEvalTime: -1})
 		e.Load(sigs)
 		if n := count(e); n != 0 {
 			t.Fatalf("the intact index already differs on %d samples", n)
@@ -280,7 +281,7 @@ func TestEquivalenceTestDetectsABrokenIndex(t *testing.T) {
 		}
 	})
 	t.Run("a literal that is not the one the expression requires", func(t *testing.T) {
-		e := New(Options{Tiers: allTiers, ResultCache: -1, mutateAnchors: func(l []string) []string {
+		e := New(Options{Tiers: allTiers, ResultCache: -1, MaxEvalTime: -1, mutateAnchors: func(l []string) []string {
 			out := make([]string, len(l))
 			for i, s := range l {
 				out[i] = s + "zz"
@@ -293,7 +294,7 @@ func TestEquivalenceTestDetectsABrokenIndex(t *testing.T) {
 		}
 	})
 	t.Run("a gate that cannot pass", func(t *testing.T) {
-		e := New(Options{Tiers: allTiers, ResultCache: -1})
+		e := New(Options{Tiers: allTiers, ResultCache: -1, MaxEvalTime: -1})
 		e.Load(sigs)
 		snap := e.cur.Load()
 		// make every condition's literal "unseen" by pointing the gates at a condition that never gets marked: the last one in the set
@@ -382,8 +383,8 @@ func TestTheResultTableNeverChangesAnAnswer(t *testing.T) {
 
 	t.Run("dataset equivalence", func(t *testing.T) {
 		sigs := library(t)
-		on := New(Options{Tiers: allTiers})
-		off := New(Options{Tiers: allTiers, ResultCache: -1})
+		on := New(Options{Tiers: allTiers, MaxEvalTime: -1})
+		off := New(Options{Tiers: allTiers, ResultCache: -1, MaxEvalTime: -1})
 		on.Load(sigs)
 		off.Load(sigs)
 		r := rand.New(rand.NewSource(3))

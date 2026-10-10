@@ -146,6 +146,65 @@ func TestRequestBounds(t *testing.T) {
 			t.Fatalf("%d parts read", got)
 		}
 	})
+	// What a cap leaves out must still be seen by some signature: an application reads all of the request.
+	const marker = "zqxmarkerzqx"
+	multipartOf := func(fillers int, cd, value string) *inspect.Request {
+		var b strings.Builder
+		for i := 0; i < fillers; i++ {
+			fmt.Fprintf(&b, "--B\r\nContent-Disposition: form-data; name=\"f%d\"\r\n\r\nv\r\n", i)
+		}
+		fmt.Fprintf(&b, "--B\r\nContent-Disposition: %s\r\n\r\n%s\r\n--B--\r\n", cd, value)
+		return &inspect.Request{Method: "POST", Path: "/", Header: http.Header{"Content-Type": {"multipart/form-data; boundary=B"}}, Body: []byte(b.String())}
+	}
+	withType := func(ct, body string) *inspect.Request {
+		return &inspect.Request{Method: "POST", Path: "/", Header: http.Header{"Content-Type": {ct}}, Body: []byte(body)}
+	}
+	straddle := "pad=" + strings.Repeat("p", maxValue-len("pad=")-len("&target=")-len(marker)/2) + "&target=" + marker + "&z=1"
+	for _, tc := range []struct {
+		name    string
+		targets []string
+		req     *inspect.Request
+	}{
+		{"a part after the parts that are read", tg("args", "body"), multipartOf(200, `form-data; name="target"`, marker)},
+		{"a field whose header merely mentions filename", tg("args"), multipartOf(0, `form-data; name="target"; note="filename"`, marker)},
+		{"the end of a long multipart field", tg("args"), multipartOf(0, `form-data; name="target"`, strings.Repeat("p", 3*maxValue)+marker)},
+		{"a form value across the 64 KiB mark", tg("arg:target"), withType("application/x-www-form-urlencoded", straddle)},
+		{"a JSON argument after the first 64 KiB", tg("arg:target"), withType("application/json", `{"pad":"`+strings.Repeat("p", maxValue)+`","target":"`+marker+`"}`)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := loadOne(t, Options{Mode: ModeBlock}, sig("CAP", cond("contains", marker, tc.targets)))
+			if len(e.Match(tc.req)) != 1 {
+				t.Fatal("a signature did not see the marker")
+			}
+		})
+	}
+	t.Run("the raw body is offered only when parts were left unread", func(t *testing.T) {
+		for _, tc := range []struct {
+			parts   int
+			wantRaw bool
+		}{{maxMultipartParts, false}, {maxMultipartParts + 1, true}} {
+			r := multipartOf(tc.parts-1, `form-data; name="last"`, "v")
+			if got := len(viewOf(t, r, kBody)) > 0; got != tc.wantRaw {
+				t.Fatalf("%d parts: raw body offered %v, want %v", tc.parts, got, tc.wantRaw)
+			}
+		}
+	})
+	t.Run("a part is read to its end, keeping both ends", func(t *testing.T) {
+		for _, n := range []int{0, 5, 2*maxValue - 1, 2 * maxValue, 2*maxValue + 10, 3*maxValue - 1, 3 * maxValue, 3*maxValue + 7, 5*maxValue + 3} {
+			s := make([]byte, n)
+			for i := range s {
+				s[i] = byte('a' + i%23)
+			}
+			want := string(s)
+			if n > 2*maxValue {
+				want = string(s[:maxValue]) + string(s[n-maxValue:])
+			}
+			c := &matchCtx{}
+			if got := c.readEnds(bytes.NewReader(s)); got != want {
+				t.Fatalf("length %d: kept %d bytes, not the first and last %d", n, len(got), maxValue)
+			}
+		}
+	})
 	t.Run("a hostile request does not panic", func(t *testing.T) {
 		for _, body := range []string{"", "{", "[", `{"a":`, strings.Repeat("[", 5000), "\x00\xff\xfe=&&;;==", `"`, `{"` + strings.Repeat(`\`, 10001)} {
 			for _, ct := range []string{"", "application/json", "multipart/form-data; boundary=", "multipart/form-data; boundary=x", "application/x-www-form-urlencoded", "text/xml"} {

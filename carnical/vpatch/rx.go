@@ -16,16 +16,45 @@ import (
 // so a pattern is checked for what it would cost before it is allowed near a request.
 const (
 	maxPatternLen = 32 << 10
-	maxProgInsts  = 60000
+	// maxProgInsts bounds one program, and so one expression run: Go's regexp has no DFA, and an alternation whose branches
+	// stay alive together costs the whole program on every byte. The largest in the shipped feeds compiles to about 6,500.
+	maxProgInsts = 8000
 	// reMaxRepeat is the largest repeat count RE2 accepts.
 	reMaxRepeat = 1000
+	// rxWeightUnit is how many live NFA threads one byte of allowance pays for: an expression without large counted repeats is
+	// charged one per byte, a repeat of a thousand some sixty.
+	rxWeightUnit = 16
+	// rxSmallRepeat is the largest count that is not charged for: \d{4} or [a-f]{1,8} keep few threads alive.
+	rxSmallRepeat = 16
 )
+
+// repeatThreads estimates how many NFA threads an expression's counted repeats can keep alive at once. RE2 compiles x{0,990}
+// as 990 copies of x, and on a value of the right shape every copy is live for every byte, so the time per byte grows with the
+// count (and with the product of counts, when they are nested). A star is one loop and costs nothing extra, nor does a small
+// count. It reads the expression before Simplify, which expands the counts away.
+func repeatThreads(re *syntax.Regexp) int {
+	inner := 0
+	for _, s := range re.Sub {
+		inner += repeatThreads(s)
+	}
+	if re.Op != syntax.OpRepeat {
+		return inner
+	}
+	count := max(re.Min, re.Max)
+	if count <= rxSmallRepeat {
+		return inner
+	}
+	return min(count*max(inner, 1), maxProgInsts)
+}
 
 // rxProg is a compiled regular expression: the programs that must all match one value, whether the value is read as bytes, the
 // literals a value must contain for it to match, and what had to be rewritten to get here.
 type rxProg struct {
 	res      []*regexp.Regexp
 	byteMode bool
+	// weight is what one byte of input costs against a request's work allowance: repeatThreads in units of rxWeightUnit, at
+	// least 1. RE2's time per byte grows with the threads that can be live at once.
+	weight int
 	// anchors is the clause of lower-case ASCII literals, at least one of which must occur in any value the expression matches,
 	// or nil if no safe one was found.
 	anchors []string
@@ -106,6 +135,7 @@ func compileRx(pattern, flags string) (*rxProg, error) {
 	}
 
 	prog := &rxProg{byteMode: byteMode, notes: tr.notes()}
+	threads := 0
 	var clauses [][]string
 	for _, part := range parts {
 		src := prefix + part
@@ -116,6 +146,7 @@ func compileRx(pattern, flags string) (*rxProg, error) {
 		if err := tr.verifyMarkers(ast); err != nil {
 			return nil, err
 		}
+		threads += repeatThreads(ast)
 		p, err := syntax.Compile(ast.Simplify())
 		if err != nil {
 			return nil, fmt.Errorf("not valid for RE2: %s", cleanReErr(err))
@@ -131,6 +162,7 @@ func compileRx(pattern, flags string) (*rxProg, error) {
 		clauses = append(clauses, extractClauses(ast)...)
 	}
 	prog.anchors = bestClause(clauses)
+	prog.weight = max(1, threads/rxWeightUnit)
 	return prog, nil
 }
 

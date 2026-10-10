@@ -130,7 +130,7 @@ func fuzzEngine(tb testing.TB) *Engine {
 		sig("F8", Condition{Operator: "contains", Pattern: "ok", Targets: tg("query"), Negate: true}, cond("contains", "/admin", tg("path"), "normpath")),
 		sig("F9", cond("rx", `\A(?=[\s\S]*?foo)[\s\S]*?bar`, tg("body"), "jsdecode", "cssdecode", "utf8unicode")),
 	}
-	e := New(Options{Tiers: allTiers, MaxWork: 1 << 24})
+	e := New(Options{Tiers: allTiers, MaxWork: 1 << 24, MaxEvalTime: -1}) // a busy fuzzing machine must not look like a difference
 	if rep := e.Load(sigs); len(rep.Rejected) != 0 {
 		tb.Fatalf("%+v", rep.Rejected)
 	}

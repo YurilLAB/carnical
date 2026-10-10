@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync/atomic"
+	"time"
 	"unicode/utf8"
 
 	"github.com/YurilLAB/coraza/carnical/inspect"
@@ -27,7 +28,10 @@ type matchCtx struct {
 	ct          string
 	bodyStr     string
 	truncated   bool
+	deadline    time.Time // when the request's time for expressions runs out; zero for none
 	multipartOK bool
+	// multipartPartial is set when some of a multipart body was not read into parts, so its raw form is offered too.
+	multipartPartial bool
 
 	seenCond []uint32 // epoch at which a condition's required literal was found
 	candMark []uint32 // epoch at which a signature was nominated
@@ -144,6 +148,10 @@ func (e *Engine) run(r *inspect.Request, brute bool) matchRes {
 	c.truncated, c.over, c.work = false, false, 0
 	c.cands, c.hits = c.cands[:0], c.hits[:0]
 	c.maxWork = e.opts.MaxWork
+	c.deadline = time.Time{}
+	if e.opts.MaxEvalTime > 0 && !brute {
+		c.deadline = e.opts.Now().Add(e.opts.MaxEvalTime)
+	}
 	if brute {
 		c.maxWork = math.MaxInt
 		for si := range snap.sigs {
@@ -439,11 +447,20 @@ func (c *matchCtx) rxMatch(cd *condC, ci int32, s string) bool {
 			return v&1 == 1
 		}
 	}
-	if c.work > c.maxWork {
+	// Run only while the request has time left: an expression cannot be stopped once it runs, so this bounds a request to its
+	// time plus one expression (a program is at most maxProgInsts and a value at most maxValue).
+	if !c.deadline.IsZero() && e.opts.Now().After(c.deadline) {
 		c.over = true
 		return false
 	}
-	c.work += len(s)
+	// Charged before it runs, by what the expression costs, so neither a long value nor a large program can take more than the
+	// allowance that is left.
+	cost := int64(len(s)) * int64(max(cd.prog.weight, 1))
+	if int64(c.work)+cost > int64(c.maxWork) {
+		c.over = true
+		return false
+	}
+	c.work += int(cost)
 	in := s
 	if cd.prog.byteMode {
 		in = latin1ToUTF8(s)

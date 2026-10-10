@@ -45,8 +45,13 @@ const (
 
 // Engine defaults.
 const (
-	// DefaultMaxWork is the default allowance of regular-expression input per request, in bytes.
-	DefaultMaxWork = 4 << 20
+	// DefaultMaxWork is the default allowance of regular-expression input per request, in bytes charged by each
+	// expression's cost. It is sized so that no request of the equivalence corpus, padded attack variants included, runs
+	// out (8 MiB was not quite enough). It bounds what counted repeats can cost; DefaultMaxEvalTime bounds the rest.
+	DefaultMaxWork = 12 << 20
+	// DefaultMaxEvalTime is the default time one request may spend matching expressions, as the proxy gives each phase of
+	// rule evaluation two seconds.
+	DefaultMaxEvalTime = 2 * time.Second
 	// DefaultMaxVerdicts is the default number of verdicts one request can produce.
 	DefaultMaxVerdicts = 16
 	// DefaultResultCache is the default size of the result table, in entries (256 KiB).
@@ -70,9 +75,15 @@ type Options struct {
 	MinSeverity string
 	// ExperimentalMayBlock lets an experimental-tier signature block. By default the experimental tier only ever records.
 	ExperimentalMayBlock bool
-	// MaxWork bounds the regular-expression work one request may cause, in bytes of text given to expressions. Zero means
-	// DefaultMaxWork. When it is used up the remaining signatures are not checked and a verdict says so.
+	// MaxWork bounds the regular-expression work one request may cause, in bytes of text given to expressions, each charged
+	// by the expression's cost (see repeatThreads). Zero means DefaultMaxWork. When it is used up the remaining signatures
+	// are not checked and a verdict says so.
 	MaxWork int
+	// MaxEvalTime bounds the time one request may spend matching expressions, read from Now before each one runs; zero means
+	// DefaultMaxEvalTime and a negative value no limit. MaxWork is the deterministic bound on counted repeats; this one is for
+	// what no static count sees, an alternation whose branches a hostile value keeps alive together. When it runs out the
+	// remaining signatures are not checked and the work-limit verdict says so.
+	MaxEvalTime time.Duration
 	// BlockOnWorkLimit makes a request that used up its allowance a blocking verdict (in ModeBlock), instead of a recorded one.
 	BlockOnWorkLimit bool
 	// MaxVerdicts bounds the verdicts one request produces. Zero means DefaultMaxVerdicts.
@@ -142,6 +153,9 @@ func New(opts Options) *Engine {
 	}
 	if e.opts.MaxWork <= 0 {
 		e.opts.MaxWork = DefaultMaxWork
+	}
+	if e.opts.MaxEvalTime == 0 {
+		e.opts.MaxEvalTime = DefaultMaxEvalTime
 	}
 	if e.opts.MaxVerdicts <= 0 {
 		e.opts.MaxVerdicts = DefaultMaxVerdicts

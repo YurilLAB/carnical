@@ -35,10 +35,29 @@ check is not a general memory budget for signature compilation.
 ## Request work limits
 
 Regular expressions, transformation views, extracted values, output verdicts and per-request
-matching work are bounded. The default regex-input work allowance is 4 MiB and the default verdict
-cap is 16. Work exhaustion reports rule 5100001; `BlockOnWorkLimit` makes it refuse requests in
-block mode. `Stats()` exposes request, match, refusal and limit totals. Callers must still provide
-bounded request bodies and preserve the proxy's inspected/forwarded request contract.
+matching work are bounded. The default regex-input work allowance is 12 MiB and the default verdict
+cap is 16. A byte given to an expression is charged by what the expression costs: once for most,
+and about once per 16 NFA threads its large counted repeats can keep alive (`x{0,990}` some 60
+times), charged before it runs, so a value that would take more than is left is not run. No request
+of the equivalence corpus, padded attack variants included, runs out at the default allowance.
+
+Go's regular expressions have no DFA, so an alternation whose branches stay alive together costs
+its whole program on every byte, which the charge for counted repeats does not see. Two more bounds
+cover that: an expression may compile to at most 8,000 instructions (the largest in the shipped
+feeds is about 6,500), and a request has a time budget for expressions, `MaxEvalTime` (two seconds
+by default, as the proxy gives each phase of rule evaluation; negative switches it off). Once it has
+passed no further expression runs, so a request takes at most its budget plus one run. The largest
+shipped expressions take some 40 ms on a hostile 128 KiB value; one built to keep 8,000 instructions
+alive can take a few seconds. Work exhaustion and the time budget both report rule
+5100001; `BlockOnWorkLimit` makes it refuse requests in block mode. `Stats()` exposes request,
+match, refusal and limit totals. Callers must still provide bounded request bodies and preserve the
+proxy's inspected/forwarded request contract.
+
+Form and JSON bodies are read whole into arguments (at most 1,024); a value longer than 64 KiB, in
+any target, is matched as its first and last 64 KiB. Multipart parts are read to their end on the
+same terms. A multipart body with more than 64 parts, or longer than 8 MiB, is also offered raw to
+`body` signatures, since the parts that were not read still reach the application. A part is a file
+only when its `filename` parameter is set.
 
 ## Result cache
 
