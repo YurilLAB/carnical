@@ -160,6 +160,7 @@ func TestOriginGuardCatchesAnAllowListThatCoversTheBackend(t *testing.T) {
 		{"a range that covers the control plane", allow("10.0.0.0/8"), "10.20.0.5"},
 		{"a range that covers only the owner zone", allow("10.99.0.0/24"), "10.99.0.0"},
 		{"the metadata range", allow("169.254.0.0/16"), "169.254.169.254"},
+		{"Azure's platform address", allow("168.63.128.0/17"), "168.63.129.16"},
 		{"loopback", allow("127.0.0.0/8"), "127.0.0.1"},
 	}
 	for _, tt := range tests {

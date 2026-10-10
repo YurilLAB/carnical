@@ -39,6 +39,8 @@ func TestOriginPolicyCheck(t *testing.T) {
 		{"just outside 172.16/12", OriginPolicy{}, "172.32.0.1", true},
 		{"cloud metadata", OriginPolicy{}, "169.254.169.254", false},
 		{"aws v6 metadata", OriginPolicy{}, "fd00:ec2::254", false},
+		{"azure platform address", OriginPolicy{}, "168.63.129.16", false},
+		{"beside the azure platform address", OriginPolicy{}, "168.63.129.17", true},
 		{"carrier-grade nat", OriginPolicy{}, "100.64.0.1", false},
 		{"unspecified", OriginPolicy{}, "0.0.0.0", false},
 		{"v6 unspecified", OriginPolicy{}, "::", false},

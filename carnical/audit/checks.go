@@ -15,8 +15,8 @@ import (
 // sentinels are addresses that must never be reachable as an origin whatever the map says: the machine itself, the
 // cloud metadata services, and a private address of each kind.
 var sentinels = []string{
-	"127.0.0.1", "::1", "169.254.169.254", "fd00:ec2::254", "100.100.100.200", "10.0.0.1", "172.16.0.1", "192.168.0.1",
-	"fe80::1", "0.0.0.0",
+	"127.0.0.1", "::1", "169.254.169.254", "fd00:ec2::254", "100.100.100.200", "168.63.129.16", "10.0.0.1", "172.16.0.1",
+	"192.168.0.1", "fe80::1", "0.0.0.0",
 }
 
 // publicControl is a public address used to prove the policy still allows what it should.

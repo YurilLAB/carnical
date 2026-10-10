@@ -617,17 +617,20 @@ def test(binary, investigate=False):
         for uid, host, port, connected, counter in [
             (61001, "198.51.100.2", 80, 16, None),
             (61001, "127.0.0.1", origin.server_port, 0, "egress_private_drop"),
+            (61001, "168.63.129.16", 80, 0, "egress_private_drop"),
             (61001, "169.254.169.254", 80, 0, "egress_imds_drop"),
             (61001, "198.51.100.2", 25, 0, "egress_edge_drop"),
             (61002, "198.51.100.2", 80, 0, "egress_internal_drop"),
         ]:
+            # Counters add up across rows, so each row must raise its own by the attempts it makes.
+            before = lab.count(counter) if counter else 0
             task = {"uid": uid, "host": host, "port": port, "attempts": 16, "timeout": 2 if connected else 0.05}
             result = json.loads(run(sys.executable, str(pathlib.Path(__file__).resolve()), "--egress", input=json.dumps(task)))
             equal(result["connected"], connected, "service UID egress policy")
             if counter:
-                lab.expect(counter, 16)
+                lab.expect(counter, before + 16)
         # Six refusals beyond each logging burst must still be refused; successful public-port connections are the control.
-        print("PASS: service-UID egress still refuses private/metadata/SMTP/internal traffic after log-budget exhaustion", flush=True)
+        print("PASS: service-UID egress still refuses private/metadata/Azure platform/SMTP/internal traffic after log-budget exhaustion", flush=True)
 
         # Exercise the same deployed policy at small and large budgets, including shared peers, finite overflow,
         # ordinary HTTP keep-alive and the entire WAF with its Go connection shield enabled.

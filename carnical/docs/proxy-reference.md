@@ -18,7 +18,7 @@ guard](../proxy/origin.go), [CLI](../cmd/carnical/main.go).
 | Methods | Refuse CONNECT, mixed/lowercase method tokens and method-override headers. |
 | Framework controls | Remove `x-middleware-*` and `x-invoke-*` headers. |
 | Hostnames | `-hosts` restricts the names a site serves. |
-| Origin addresses | Check the actual address at dial time; private, loopback, link-local, metadata and local-host destinations need an explicit operator allowance where supported. |
+| Origin addresses | Check the actual address at dial time; private, loopback, link-local, metadata (including Azure's 168.63.129.16) and local-host destinations need an explicit operator allowance where supported. |
 | Trailers/upgrades | Drop trailers; refuse protocol upgrades by default. Explicitly allowed upgrades are uninspected. |
 | Origin framing | Body-bearing requests use separate origin connections; interim 1xx responses are dropped before final response inspection. |
 

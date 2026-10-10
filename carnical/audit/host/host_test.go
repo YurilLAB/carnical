@@ -323,6 +323,13 @@ func TestTheUnitFileAsksForWhatTheCheckDemands(t *testing.T) {
 			t.Errorf("%s: unit file %q, check %q", k, got, want)
 		}
 	}
+	// IPAddressDeny is not among what the check reads back from the running unit, so the file itself is held to it here.
+	deny := " " + set["IPAddressDeny"] + " "
+	for _, want := range []string{"link-local", "168.63.129.16"} {
+		if !strings.Contains(deny, " "+want+" ") {
+			t.Errorf("the unit file's IPAddressDeny=%q does not refuse %s", set["IPAddressDeny"], want)
+		}
+	}
 }
 
 func readLF(t *testing.T, parts ...string) string {
@@ -422,6 +429,7 @@ func TestNFT(t *testing.T) {
 		{"a NAT chain at the filter's own priority may run after it", "table inet carnical {\n", "table ip natx {\n\tchain o {\n\t\ttype nat hook output priority filter; policy accept;\n\t}\n}\ntable inet carnical {\n", "NAT chain o in table ip natx"},
 		{"another table's NAT chain rewrites them", "table inet carnical {\n", "table ip natx {\n\tchain o {\n\t\ttype nat hook output priority 100; policy accept;\n\t\tmeta skuid 990 dnat to 10.0.0.5\n\t}\n}\ntable inet carnical {\n", "NAT chain o in table ip natx"},
 		{"a set's comment names the missing range", "\t\telements = { 0.0.0.0/8, 10.0.0.0/8,\n", "\t\tcomment \"elements = { 10.0.0.0/8 }\"\n\t\telements = { 0.0.0.0/8,\n", "do not include 10.0.0.0/8"},
+		{"Azure's platform address left out", "\t\t\t     168.63.129.16, 169.254.0.0/16,\n", "\t\t\t     169.254.0.0/16,\n", "do not include 168.63.129.16"},
 		{"the table is dormant", "table inet carnical {\n", "table inet carnical {\n\tflags dormant\n", "dormant"},
 		{"private IPv4 destinations accepted", `ip daddr @not_public4 counter name "egress_private_drop" jump edge_private_drop`, "ip daddr @not_public4 accept", "lets private IPv4"},
 		{"private IPv6 destinations accepted", `ip6 daddr @not_public6 counter name "egress_private_drop" jump edge_private_drop`, "ip6 daddr @not_public6 accept", "lets private IPv6"},

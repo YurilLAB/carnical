@@ -12,6 +12,7 @@
 define mgmt4 = { 192.0.2.10 }            # addresses that may reach SSH: yours, written in. Documentation addresses stand in.
 define mgmt6 = { 2001:db8::10 }
 define resolver = { 127.0.0.53, 127.0.0.54 }   # what /etc/resolv.conf points at
+# Prefer a local stub. If the edge must ask Azure's 168.63.129.16 itself, its unit also needs IPAddressAllow=168.63.129.16.
 
 define edge_port = 443
 
@@ -103,11 +104,13 @@ table inet carnical {
 
 	# Addresses a customer's site must never be reached at, whatever its name resolves to. The proxy refuses them too (the
 	# origin guard); this is the same rule enforced by the kernel, so that a bug in one is not a way through both.
+	# 168.63.129.16 is Azure's platform address (its DNS resolver, DHCP and the VM agent's wire server); the edge resolves
+	# names through the local stub, which forwards there itself.
 	set not_public4 {
 		type ipv4_addr
 		flags interval
-		elements = { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.0.0.0/24,
-		             192.168.0.0/16, 198.18.0.0/15, 224.0.0.0/4, 240.0.0.0/4 }
+		elements = { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 168.63.129.16, 169.254.0.0/16, 172.16.0.0/12,
+		             192.0.0.0/24, 192.168.0.0/16, 198.18.0.0/15, 224.0.0.0/4, 240.0.0.0/4 }
 	}
 	set not_public6 {
 		type ipv6_addr

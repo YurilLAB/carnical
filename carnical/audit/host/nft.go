@@ -417,8 +417,8 @@ func (t *nftTable) endsInDrop(rule string) bool {
 // PrivateRanges4 and PrivateRanges6 are the destinations the edge must never reach, as deploy/nftables/carnical.nft lists them
 // in not_public4 and not_public6 (nft prints a single address without its /32 or /128). A test keeps the two the same.
 var (
-	PrivateRanges4 = []string{"0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12",
-		"192.0.0.0/24", "192.168.0.0/16", "198.18.0.0/15", "224.0.0.0/4", "240.0.0.0/4"}
+	PrivateRanges4 = []string{"0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "168.63.129.16", "169.254.0.0/16",
+		"172.16.0.0/12", "192.0.0.0/24", "192.168.0.0/16", "198.18.0.0/15", "224.0.0.0/4", "240.0.0.0/4"}
 	PrivateRanges6 = []string{"::", "::1", "64:ff9b::/96", "100::/64", "2002::/16", "fc00::/7", "fe80::/10", "ff00::/8"}
 )
 

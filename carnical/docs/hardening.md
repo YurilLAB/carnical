@@ -15,7 +15,7 @@ files](../deploy/).
 |---|---|---|---|
 | 1 | **The process confines itself** | After start-up it can no longer start a program, ptrace, mount, load kernel code, create a namespace, open a raw or kernel-crypto socket, use io_uring or BPF; it can read and write only its own files; its internet sockets are TCP and UDP only, and TCP connects and listens only on named ports (UDP, which name lookups need, is left to the network policy); it is not dumpable, so another process of the same user cannot read its memory. Applied to every thread. A filtered call ends the process and leaves an audit record that names it. | `sandbox/`, `carnical -confine` |
 | 2 | **systemd sandboxes the unit from outside** | No capabilities, the whole machine read-only except its own directory, other services' data not present, no other users' processes visible, no memory that is both writable and executable, a system call allow list, no metadata-service access. | `deploy/systemd/` |
-| 3 | **Network policy by user** | The edge may connect only to public addresses on 80 and 443 (and DNS to the local resolver): not to private ranges, this machine's own address, or the metadata service. Everything else on the machine may connect nowhere but this machine. The kernel decides by the user that owns the socket. | `deploy/nftables/` |
+| 3 | **Network policy by user** | The edge may connect only to public addresses on 80 and 443 (and DNS to the local resolver): not to private ranges, this machine's own address, the metadata service, or Azure's platform address (168.63.129.16). Everything else on the machine may connect nowhere but this machine. The kernel decides by the user that owns the socket. | `deploy/nftables/` |
 | 4 | **The kernel is set so the usual steps fail** | No ptrace between same-user processes, no kernel address leaks, no BPF or io_uring, no user namespaces, no link tricks in sticky directories, no setuid core dumps; modules attackers use cannot be loaded. | `deploy/sysctl/`, `deploy/modprobe/` |
 | 5 | **Separate users and directories** | One user per part, none can log in, each directory 0700 to its own user; programs are root-owned. | `deploy/sysusers.d/`, `tmpfiles.d/` |
 | 6 | **Things are recorded** | An exec by a service, a use of the calls an attacker needs, a change to what runs at boot, a new setuid file, and any read of a honeytoken. | `deploy/auditd/`, `deploy/honeytokens.sh` |
@@ -38,7 +38,7 @@ stopped for an attacker who is **only** the edge user.
 | Read another service's files (the signer key, other customers) | Landlock, `InaccessiblePaths`, mode 0700 per user | the honeytokens; `carnical_honey` | Stopped |
 | Read another process's environment or memory | `ProtectProc=invisible`, `ptrace_scope=2`, non-dumpable, Landlock | `carnical_abuse` | Stopped (**Measured**: a non-dumpable process hides its own program path from an unprivileged process of the same user) |
 | Reach other services over loopback | nftables (no loopback for the edge), Landlock port rules, no shared sockets | `carnical-edge-private` log lines | Blocked by the supplied policy; required local services need a reviewed UNIX socket or narrow policy exception |
-| Reach the cloud metadata service | nftables, `IPAddressDeny=link-local`, the proxy's origin guard | `carnical-imds` log lines | Stopped |
+| Reach the cloud metadata service, or Azure's platform address (168.63.129.16) | nftables, `IPAddressDeny=link-local 168.63.129.16`, the proxy's origin guard | `carnical-imds` and `carnical-edge-private` log lines | Stopped |
 | Reverse shell, tunnel out, download tools | no exec; egress limited to public 80 and 443 | `carnical-edge-egress` log lines | A shell: stopped. Traffic over 443 to a public address from inside the process: **not**, until the egress list is the registered origins (below) |
 | Write to boot, cron, systemd or library-loading files | read-only machine, Landlock, `RestrictSUIDSGID` | `carnical_persist`, `host-integrity` | Stopped |
 | Plant an SSH key | `ProtectHome`, no shell, Landlock | `carnical_ssh`, `host-integrity` | Stopped |
@@ -79,7 +79,7 @@ stopped for an attacker who is **only** the edge user.
 **Not verified, because it needs root on the target machine:**
 
 * The units, sysctls, modprobe entries, nftables policy for real users (`meta skuid`), and audit rules have not been installed on any machine.
-  In particular, how the unit's system call filter, `SocketBindDeny=any` and `IPAddressDeny=link-local` behave with the proxy running under them
+  In particular, how the unit's system call filter, `SocketBindDeny=any` and `IPAddressDeny=link-local 168.63.129.16` behave with the proxy running under them
   has not been seen; the first start should be watched, with `SystemCallErrorNumber=EPERM` set temporarily so that a filtered call is an error and not a kill.
 * Landlock ABIs 1 to 6 and kernels older than 6.18, and Ubuntu 22.04, Ubuntu 24.04 and Debian 12 (see `deploy/README.md`).
 * The audit rules have not been loaded (`augenrules`), so their syntax is checked only by reading.
