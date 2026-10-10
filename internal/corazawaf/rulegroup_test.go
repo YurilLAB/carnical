@@ -9,6 +9,7 @@ import (
 
 	"github.com/corazawaf/coraza/v3/experimental/plugins/macro"
 	"github.com/corazawaf/coraza/v3/types"
+	"github.com/corazawaf/coraza/v3/types/variables"
 )
 
 func newTestRule(id int) *Rule {
@@ -134,4 +135,27 @@ func TestRuleEvaluationStopsWhenTheTransactionContextIsDone(t *testing.T) {
 			}
 		})
 	}
+	// The logging phase runs whatever happened before it, a client that has gone included: its rules record the request.
+	t.Run("a done context still lets logging rules read the request", func(t *testing.T) {
+		if multiphaseEvaluation {
+			t.Skip("with multiphase evaluation a variable is read in the phase it becomes ready, not in the logging phase")
+		}
+		waf := NewWAF()
+		r := newTestRule(2)
+		r.Phase_ = types.PhaseLogging
+		if err := r.AddVariable(variables.ArgsGet, "", false); err != nil {
+			t.Fatal(err)
+		}
+		r.SetOperator(&dummyEqOperator{}, "@eq", "0")
+		if err := waf.Rules.Add(r); err != nil {
+			t.Fatal(err)
+		}
+		tx := waf.NewTransactionWithOptions(Options{Context: done})
+		defer tx.Close()
+		tx.AddGetRequestArgument("a", "0")
+		tx.ProcessLogging()
+		if n := len(tx.MatchedRules()); n != 1 {
+			t.Fatalf("%d logging rules matched, want 1", n)
+		}
+	})
 }

@@ -262,8 +262,10 @@ func (r *Rule) doEvaluate(logger debuglog.Logger, phase types.RulePhase, tx *Tra
 			var errs []error
 			var argsLen int
 			for i, arg := range values {
-				if tx.contextDone() {
-					return matchedValues // out of time: Eval ends the phase and refuses the transaction
+				// Out of time: Eval ends the phase and refuses the transaction. The logging phase runs whatever happened
+				// before it, as Eval runs it after an interruption, so its rules still read the request.
+				if phase != types.PhaseLogging && tx.contextDone() {
+					return matchedValues
 				}
 				if r.MultiMatch {
 					args, errs = r.transformMultiMatchArg(arg)
