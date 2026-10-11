@@ -598,6 +598,12 @@ func (e *Edge) forward() http.Handler {
 				out.Host = e.cfg.UpstreamHost
 			}
 			stripClaims(out.Header)
+			if e.cfg.CRS.InspectResponses {
+				// The response rules read the body the application sends. Asked by the client, the application compresses it and
+				// the rules read gzip bytes; without the client's Accept-Encoding the transport asks for gzip itself and hands on
+				// the body decompressed, so the visitor gets it uncompressed.
+				out.Header.Del("Accept-Encoding")
+			}
 			// The proxy has the whole body before it forwards anything, so the application has nothing to wait for.
 			out.Header.Del("Expect")
 			out.Trailer = nil
@@ -621,6 +627,10 @@ func (e *Edge) forward() http.Handler {
 			markOrigin(resp.Request.Context())
 			if resp.StatusCode == http.StatusSwitchingProtocols && !e.cfg.AllowUpgrade {
 				return errors.New("upstream protocol upgrade is not supported")
+			}
+			if e.cfg.CRS.InspectResponses && encodedResponse(resp.Header) {
+				// Compressed without being asked (the transport decompresses the gzip it asks for): the rules could not read it.
+				return errors.New("the application compressed a response that is to be inspected")
 			}
 			path, _, _ := strings.Cut(resp.Request.URL.Opaque, "?")
 			e.cfg.Responses.harden(resp, path)
@@ -684,6 +694,18 @@ func (e *Edge) forward() http.Handler {
 		}
 		rp.ServeHTTP(noInterim{w}, r)
 	})
+}
+
+// encodedResponse reports a response body in a content coding other than identity.
+func encodedResponse(h http.Header) bool {
+	for _, v := range h.Values("Content-Encoding") {
+		for _, coding := range strings.Split(v, ",") {
+			if c := strings.TrimSpace(coding); c != "" && !strings.EqualFold(c, "identity") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // noInterim drops interim (1xx) responses from the application. The engine takes the first status it is given for the

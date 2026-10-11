@@ -1,6 +1,8 @@
 package proxy
 
 import (
+	"compress/flate"
+	"compress/gzip"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,24 +12,48 @@ import (
 // A database error page: the Core Rule Set's response rules (951xxx) block it when response inspection is on.
 const sqlErrorPage = "<html><body>You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near ''' at line 1</body></html>"
 
-func TestResponseInspectionSeesTheRealResponseAfterAnInterimOne(t *testing.T) {
+func TestResponseInspectionSeesTheRealResponse(t *testing.T) {
 	app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/early" {
 			w.Header().Add("Link", "</style.css>; rel=preload; as=style")
 			w.WriteHeader(http.StatusEarlyHints) // 103: the real response follows
 		}
 		w.Header().Set("Content-Type", "text/html")
-		w.Write([]byte(sqlErrorPage))
+		switch {
+		case r.URL.Path == "/deflate": // compressed whatever the request asked for
+			w.Header().Set("Content-Encoding", "deflate")
+			zw, _ := flate.NewWriter(w, flate.BestSpeed)
+			zw.Write([]byte(sqlErrorPage))
+			zw.Close()
+		case strings.Contains(r.Header.Get("Accept-Encoding"), "gzip"):
+			w.Header().Set("Content-Encoding", "gzip")
+			zw := gzip.NewWriter(w)
+			zw.Write([]byte(sqlErrorPage))
+			zw.Close()
+		default:
+			w.Write([]byte(sqlErrorPage))
+		}
 	}))
 	defer app.Close()
 	inspect := func(c *Config) {
 		c.CRS.InspectResponses = true
 		c.Upstream = mustURL(app.URL)
 	}
-	for _, path := range []string{"/plain", "/early"} {
-		t.Run(path, func(t *testing.T) {
+	for _, tt := range []struct {
+		name, path, header string
+		want               int
+	}{
+		{"a plain response", "/plain", "", 403},
+		{"the response after an interim one", "/early", "", 403},
+		{"a client that accepts compression", "/plain", "Accept-Encoding: gzip, deflate, br\r\n", 403},
+		{"an application that compresses unasked", "/deflate", "", 502},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
 			s := start(t, inspect)
-			_, reply := s.raw(t, get(path))
+			status, reply := s.raw(t, get(tt.path, tt.header))
+			if status != tt.want {
+				t.Fatalf("status %d, want %d:\n%.400s", status, tt.want, reply)
+			}
 			if strings.Contains(reply, "error in your SQL syntax") {
 				t.Fatalf("the error page reached the visitor:\n%.400s", reply)
 			}
