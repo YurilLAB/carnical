@@ -1330,6 +1330,11 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 				}
 				args = append(args, "-health-listen", healthAddress)
 			}
+			if !tc.preflight && !tc.fails {
+				// The proxy picks its own port and says which. A port picked here is free only until something else takes
+				// it, and another test's server that did would answer in the proxy's place.
+				args[1] = "127.0.0.1:0"
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
 			cmd := exec.CommandContext(ctx, bin, args...)
@@ -1407,7 +1412,7 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 					_ = cmd.Wait()
 				}
 			}()
-			url := "http://" + addr
+			url := "http://" + listeningAddress(ctx, t, logPath)
 			for {
 				resp, err := client.Get(url + "/__cli_test_ready")
 				if err == nil {
@@ -2163,6 +2168,23 @@ func TestFloodFlagsBecomeShieldSettings(t *testing.T) {
 			}
 			s.Close()
 		})
+	}
+}
+
+// listeningAddress waits for a proxy that was started on port 0 to say in its log which address it took.
+func listeningAddress(ctx context.Context, t *testing.T, logPath string) string {
+	t.Helper()
+	for {
+		data, _ := os.ReadFile(logPath)
+		if _, rest, ok := bytes.Cut(data, []byte(`"msg":"listening","addr":"`)); ok {
+			if addr, _, ok := bytes.Cut(rest, []byte(`"`)); ok {
+				return string(addr)
+			}
+		}
+		if ctx.Err() != nil {
+			t.Fatalf("the firewall did not start listening\n%s", data)
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
 }
 
