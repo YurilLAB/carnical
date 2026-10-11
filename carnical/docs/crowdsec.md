@@ -31,7 +31,8 @@ sudo chmod 0640 /etc/carnical-crowdsec/carnical-edge-1.key
 
 Supply the key through a private file, never as a flag value or in source control. On Linux and
 macOS, Carnical refuses a key file that its group can write or that others can access at all (0640
-as above is fine). It reads it once at startup; rotate it by replacing the file and restarting. Key and CA file symlinks must
+as above is fine); on Windows it reads the file's access list and refuses one that gives Everyone,
+Users or the like any access, or another account the right to write, and a file such a group owns. It reads it once at startup; rotate it by replacing the file and restarting. Key and CA file symlinks must
 resolve within their named parent directory; use the actual file path for a target elsewhere. An
 initial authenticated, complete decision snapshot must succeed before listening, even with
 `-crowdsec-fail-open` enabled.

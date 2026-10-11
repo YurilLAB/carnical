@@ -80,6 +80,11 @@ func readCrowdSecFile(path string, limit int64, private bool) ([]byte, error) {
 	if private && runtime.GOOS != "windows" && info.Mode().Perm()&0o027 != 0 {
 		return nil, errors.New("a private file must not be accessible to everyone or writable by its group")
 	}
+	if private { // on Windows the mode says nothing: the access list does
+		if err := privateFileAccess(f); err != nil {
+			return nil, err
+		}
+	}
 	b, err := io.ReadAll(io.LimitReader(f, limit+1))
 	if err != nil || int64(len(b)) > limit {
 		return nil, errors.New("file too large or unreadable")

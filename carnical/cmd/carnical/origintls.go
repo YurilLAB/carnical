@@ -84,6 +84,11 @@ func readOriginFile(path string, limit int64, private bool) ([]byte, error) {
 	if private && runtime.GOOS != "windows" && opened.Mode().Perm()&0027 != 0 {
 		return nil, errors.New("origin key must not be world accessible or group writable")
 	}
+	if private { // on Windows the mode says nothing: the access list does
+		if err := privateFileAccess(file); err != nil {
+			return nil, err
+		}
+	}
 	data, err := io.ReadAll(io.LimitReader(file, limit+1))
 	if err != nil || int64(len(data)) > limit {
 		return nil, errors.New("origin file is too large or unreadable")

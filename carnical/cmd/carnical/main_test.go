@@ -650,6 +650,7 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 		if err := os.WriteFile(keyPath, serverIdentity.keyPEM, 0600); err != nil {
 			t.Fatal(err)
 		}
+		keyMode(t, keyPath, 0o600)
 		for _, tc := range []struct {
 			name  string
 			hosts []string
@@ -685,6 +686,7 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 		if err := os.WriteFile(brokenPath, []byte("not a private key"), 0600); err != nil {
 			t.Fatal(err)
 		}
+		keyMode(t, brokenPath, 0o600)
 		if err := checkSetupCertificate(certPath, brokenPath, []string{"localhost"}); err == nil {
 			t.Fatal("invalid visitor private key accepted")
 		}
@@ -693,10 +695,8 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 		if err := os.WriteFile(openPath, serverIdentity.keyPEM, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.Chmod(openPath, 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if err := checkSetupCertificate(certPath, openPath, []string{"localhost"}); runtime.GOOS != "windows" && err == nil {
+		keyMode(t, openPath, 0o644)
+		if err := checkSetupCertificate(certPath, openPath, []string{"localhost"}); err == nil {
 			t.Fatal("a visitor key everyone can read was accepted")
 		}
 	})
@@ -736,9 +736,6 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 			{name: "oversized key", mode: 0600, oversized: true, bad: true},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
-				if runtime.GOOS == "windows" && (tc.mode == 0644 || tc.mode == 0660) {
-					t.Skip("Unix permissions do not describe Windows ACLs")
-				}
 				dir := t.TempDir()
 				path := filepath.Join(dir, "edge.key")
 				data := identities["good"].keyPEM
@@ -751,11 +748,7 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 					if err := os.WriteFile(path, data, tc.mode); err != nil {
 						t.Fatal(err)
 					}
-					if runtime.GOOS != "windows" {
-						if err := os.Chmod(path, tc.mode); err != nil {
-							t.Fatal(err)
-						}
-					}
+					keyMode(t, path, tc.mode)
 				}
 				if tc.symlink {
 					link := filepath.Join(dir, "link.key")
@@ -1270,6 +1263,7 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 					if err := os.WriteFile(keyPath, key, 0600); err != nil {
 						t.Fatal(err)
 					}
+					keyMode(t, keyPath, 0o600)
 					args = append(args, "-origin-client-cert", certPath, "-origin-client-key", keyPath)
 				}
 			}
@@ -1762,9 +1756,7 @@ func TestPrivateFilesAreReadWithCare(t *testing.T) {
 		if err := os.WriteFile(path, []byte("-----BEGIN PRIVATE KEY-----\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.Chmod(path, mode); err != nil {
-			t.Fatal(err)
-		}
+		keyMode(t, path, mode)
 		return path
 	}
 	private, open := write("private.key", 0o600), write("open.key", 0o644)
@@ -1785,16 +1777,59 @@ func TestPrivateFilesAreReadWithCare(t *testing.T) {
 			if err := read(open, false); err != nil {
 				t.Fatalf("a public file: %v", err)
 			}
-			if err := read(open, true); runtime.GOOS != "windows" && err == nil {
+			if err := read(open, true); err == nil {
 				t.Fatal("a key everyone can read was accepted")
 			}
-			if err := read(groupWrite, true); runtime.GOOS != "windows" && err == nil {
+			if err := read(groupWrite, true); err == nil {
 				t.Fatal("a key its group may write was accepted")
 			}
 			if err := read(dir, false); err == nil {
 				t.Fatal("a directory was read")
 			}
 			if runtime.GOOS == "windows" {
+				// What an access list can say that a mode cannot. Each file starts with a list of its own, for this
+				// account and SYSTEM, as keyMode makes it.
+				for _, tt := range []struct {
+					name   string
+					args   []string // for icacls; or one argument that is the whole access list, as SDDL
+					public bool     // too widely readable or writable for a key
+				}{
+					{"only this account and SYSTEM", nil, false},
+					{"Users may read", []string{"/grant", "*S-1-5-32-545:(R)"}, true},
+					{"Authenticated Users may read", []string{"/grant", "*S-1-5-11:(R)"}, true},
+					{"Guests may read", []string{"/grant", "*S-1-5-32-546:(R)"}, true},
+					{"interactive logons may read", []string{"/grant", "*S-1-5-4:(R)"}, true},
+					{"every service may read", []string{"/grant", "*S-1-5-6:(R)"}, true},
+					{"all application packages may read", []string{"/grant", "*S-1-15-2-1:(R)"}, true},
+					{"Everyone may only read its attributes", []string{"/grant", "*S-1-1-0:(RA)"}, true},
+					{"Everyone has full access", []string{"/grant", "*S-1-1-0:(F)"}, true},
+					{"Everyone is denied writing", []string{"/deny", "*S-1-1-0:(WD)"}, false},
+					{"another account may read and run", []string{"/grant", "*S-1-5-20:(RX)"}, false},
+					{"another account may change the access list", []string{"/grant", "*S-1-5-20:(R,WDAC)"}, true},
+					{"another account may take ownership", []string{"/grant", "*S-1-5-20:(R,WO)"}, true},
+					{"another account may append", []string{"/grant", "*S-1-5-20:(R,AD)"}, true},
+					{"another account may write data", []string{"/grant", "*S-1-5-20:(R,WD)"}, true},
+					{"no access list at all", []string{"D:NO_ACCESS_CONTROL"}, true},
+					{"another account has full access", []string{"/grant", "*S-1-5-19:(F)"}, true},
+					{"Administrators have full access", []string{"/grant", "*S-1-5-32-544:(F)"}, false},
+				} {
+					t.Run(tt.name, func(t *testing.T) {
+						path := write("acl.key", 0o600)
+						defer os.Remove(path)
+						switch {
+						case len(tt.args) == 1:
+							setSDDL(t, path, tt.args[0])
+						case tt.args != nil:
+							icacls(t, path, tt.args...)
+						}
+						if err := read(path, true); (err != nil) != tt.public {
+							t.Fatalf("read as a private key: %v", err)
+						}
+						if err := read(path, false); err != nil {
+							t.Fatalf("read as a public file: %v", err)
+						}
+					})
+				}
 				return
 			}
 			fifo := filepath.Join(t.TempDir(), "fifo.key")
@@ -2127,6 +2162,172 @@ func TestFloodFlagsBecomeShieldSettings(t *testing.T) {
 				t.Fatalf("the shield refuses these settings: %v", err)
 			}
 			s.Close()
+		})
+	}
+}
+
+// keyMode gives a key file a mode on every system. Windows has none, and a file there takes its access list from its
+// directory, which on some machines lets other accounts write; so the list is replaced by one that says the same as
+// the mode: this account and SYSTEM, Everyone for "others", and the network service account, which is neither this
+// account nor an administrator, for "the group".
+func keyMode(t *testing.T, path string, mode os.FileMode) {
+	t.Helper()
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(path, mode); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	args := []string{"/inheritance:r", "/grant:r", me(t) + ":(F)", "*S-1-5-18:(F)"}
+	for _, grant := range []struct {
+		bit   os.FileMode
+		entry string
+	}{{0o004, "*S-1-1-0:(R)"}, {0o040, "*S-1-5-20:(R)"}, {0o020, "*S-1-5-20:(W)"}} {
+		if mode&grant.bit != 0 {
+			args = append(args, grant.entry)
+		}
+	}
+	icacls(t, path, args...)
+}
+
+// icacls changes a file's access list on Windows.
+func icacls(t *testing.T, path string, args ...string) {
+	t.Helper()
+	if out, err := exec.Command("icacls", append([]string{path}, args...)...).CombinedOutput(); err != nil {
+		t.Fatalf("icacls %v: %v %s", args, err, out)
+	}
+}
+
+// setSDDL replaces a file's access list on Windows with one written as SDDL, for the lists icacls cannot make.
+func setSDDL(t *testing.T, path, sddl string) {
+	t.Helper()
+	script := "$a = New-Object System.Security.AccessControl.FileSecurity; $a.SetSecurityDescriptorSddlForm($env:KEYSDDL, 'Access'); [System.IO.File]::SetAccessControl($env:KEYFILE, $a)"
+	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script)
+	cmd.Env = append(os.Environ(), "KEYFILE="+path, "KEYSDDL="+sddl)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("setting the access list %s: %v %s", sddl, err, out)
+	}
+}
+
+// me is the account the tests run as, as icacls takes it.
+func me(t *testing.T) string {
+	t.Helper()
+	out, err := exec.Command("whoami").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// A Windows access list is read from its text form, and what is not understood is refused, on every system the tests
+// run on (the reading is plain text; who an entry names is resolved on Windows only).
+func TestWindowsAccessListsAreReadStrictly(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		sddl string
+		want []daclEntry
+		err  error // nil: none
+	}{
+		{"two full entries", "D:P(A;;FA;;;SY)(A;;FA;;;BA)", []daclEntry{{"SY", 0x1f01ff}, {"BA", 0x1f01ff}}, nil},
+		{"handed down, rights as a number", "D:PAI(A;ID;0x1200a9;;;BU)", []daclEntry{{"BU", 0x1200a9}}, nil},
+		{"an account by its SID", "D:(A;;FR;;;S-1-5-21-1-2-3-1001)", []daclEntry{{"S-1-5-21-1-2-3-1001", 0x120089}}, nil},
+		{"rights named one after another", "D:AI(A;;FRFW;;;AU)", []daclEntry{{"AU", 0x120089 | 0x120116}}, nil},
+		{"single rights", "D:(A;;RCWDWO;;;NS)", []daclEntry{{"NS", 0x20000 | 0x40000 | 0x80000}}, nil},
+		{"generic rights", "D:(A;;GAGR;;;WD)", []daclEntry{{"WD", 0x10000000 | 0x80000000}}, nil},
+		{"a denial allows nothing", "D:(D;;FA;;;WD)(A;;FR;;;SY)", []daclEntry{{"SY", 0x120089}}, nil},
+		{"an entry for children only", "D:(A;OICIIO;FA;;;WD)(A;OICI;FR;;;SY)", []daclEntry{{"SY", 0x120089}}, nil},
+		{"an entry that allows nothing", "D:(A;;;;;WD)(A;;0x0;;;AU)", nil, nil},
+		{"an empty list", "D:", nil, nil},
+		{"an empty protected list", "D:PAI", nil, nil},
+		{"no list at all", "D:NO_ACCESS_CONTROL", nil, errNoDACL},
+		{"no list at all, with flags", "D:PNO_ACCESS_CONTROL", nil, errNoDACL},
+		{"not an access list", "O:BAG:SY", nil, errDACLUnread},
+		{"an audit list", "S:(AU;SA;FA;;;WD)", nil, errDACLUnread},
+		{"an owner before the list", "O:BAD:(A;;FA;;;SY)", nil, errDACLUnread},
+		{"unknown flags before the entries", "D:X(A;;FA;;;SY)", nil, errDACLUnread},
+		{"an entry with a condition", "D:(XA;;FA;;;WD;(Title==1))", nil, errDACLUnread},
+		{"an allow entry with a seventh field", "D:(A;;FA;;;WD;x)", nil, errDACLUnread},
+		{"an entry for an object type", "D:(OA;;CR;ab721a53-1e2f-11d0-9819-00aa0040529b;;WD)", nil, errDACLUnread},
+		{"an allow entry that names an object type", "D:(A;;CR;ab721a53-1e2f-11d0-9819-00aa0040529b;;WD)", nil, errDACLUnread},
+		{"an entry of an unknown kind", "D:(ZZ;;FA;;;WD)", nil, errDACLUnread},
+		{"an unknown right", "D:(A;;FAZZ;;;WD)", nil, errDACLUnread},
+		{"a registry right", "D:(A;;KA;;;WD)", nil, errDACLUnread},
+		{"half a right", "D:(A;;FAF;;;WD)", nil, errDACLUnread},
+		{"a number that is none", "D:(A;;0x;;;WD)", nil, errDACLUnread},
+		{"a number too large", "D:(A;;0x100000000;;;WD)", nil, errDACLUnread},
+		{"an unknown flag", "D:(A;ZZ;FA;;;WD)", nil, errDACLUnread},
+		{"half a flag", "D:(A;I;FA;;;WD)", nil, errDACLUnread},
+		{"no account", "D:(A;;FA;;;)", nil, errDACLUnread},
+		{"too few fields", "D:(A;;FA;;WD)", nil, errDACLUnread},
+		{"an entry that does not end", "D:(A;;FA;;;SY", nil, errDACLUnread},
+		{"text between entries", "D:(A;;FA;;;SY)x(A;;FA;;;BA)", nil, errDACLUnread},
+		{"an entry that does not begin", "D:(A;;FA;;;SY)xA;;FR;;;WD)", nil, errDACLUnread},
+		{"text after the entries", "D:(A;;FA;;;SY)S:", nil, errDACLUnread},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseDACL(tt.sddl)
+			if !errors.Is(err, tt.err) || (tt.err == nil && err != nil) {
+				t.Fatalf("error %v, want %v", err, tt.err)
+			}
+			if !slices.Equal(got, tt.want) {
+				t.Fatalf("entries %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+// The rule for a private key's access list: nothing for a principal that stands for everyone, and no writing for an
+// account that is neither trusted nor the owner. What an account is comes from the system (see accountKind on
+// Windows); here it is given.
+func TestWhoMayHaveAPrivateKey(t *testing.T) {
+	who := func(account string) (principal, string, error) {
+		switch account {
+		case "ME", "SY", "OWNER":
+			return principalTrusted, "", nil
+		case "WD":
+			return principalEveryone, "Everyone", nil
+		case "BU":
+			return principalEveryone, "Users", nil
+		case "??":
+			return principalOther, "", errors.New("no such account")
+		}
+		return principalOther, "", nil
+	}
+	const read, readRun, full = 0x120089, 0x1200a9, 0x1f01ff
+	for _, tt := range []struct {
+		name    string
+		entries []daclEntry
+		refused string // part of the reason; "" if the key is accepted
+	}{
+		{"nobody at all", nil, ""},
+		{"this account and SYSTEM in full", []daclEntry{{"ME", full}, {"SY", full}}, ""},
+		{"the owner in full", []daclEntry{{"OWNER", full}, {"ME", read}}, ""},
+		{"another account may read", []daclEntry{{"ME", full}, {"NS", read}}, ""},
+		{"another account may read and run", []daclEntry{{"ME", full}, {"NS", readRun}}, ""},
+		{"another account may delete it", []daclEntry{{"ME", full}, {"NS", read | 0x10000}}, ""},
+		{"Everyone may read", []daclEntry{{"ME", full}, {"WD", read}}, "accessible to Everyone"},
+		{"Everyone may read its attributes", []daclEntry{{"ME", full}, {"WD", 0x80}}, "accessible to Everyone"},
+		{"Users in full, after the trusted ones", []daclEntry{{"ME", full}, {"SY", full}, {"BU", full}}, "accessible to Users"},
+		{"another account may write data", []daclEntry{{"ME", full}, {"NS", read | 0x2}}, "writable by NS"},
+		{"another account may append", []daclEntry{{"NS", read | 0x4}}, "writable by NS"},
+		{"another account may change the list", []daclEntry{{"NS", read | 0x40000}}, "writable by NS"},
+		{"another account may take ownership", []daclEntry{{"NS", read | 0x80000}}, "writable by NS"},
+		{"another account has every generic right", []daclEntry{{"NS", 0x10000000}}, "writable by NS"},
+		{"another account may write, generically", []daclEntry{{"NS", 0x40000000}}, "writable by NS"},
+		{"another account in full", []daclEntry{{"ME", full}, {"NS", full}}, "writable by NS"},
+		{"an account that cannot be told", []daclEntry{{"ME", full}, {"??", read}}, "access list cannot be read"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := keyAccessProblem(tt.entries, who)
+			if tt.refused == "" {
+				if err != nil {
+					t.Fatalf("refused: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.refused) {
+				t.Fatalf("%v, want one about %q", err, tt.refused)
+			}
 		})
 	}
 }

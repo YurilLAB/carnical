@@ -77,8 +77,14 @@ together. Invalid, expired, future-dated, mismatched or unsuitable identities fa
 
 Certificates/CA bundles are capped at 1 MiB and keys at 64 KiB. Files must be regular with no
 symlink at the supplied path. Unix keys may use 0600, or 0640 with a dedicated read-only group;
-world access and group write are refused. On Windows, enforce service/admin access with ACLs; the
-Unix mode check does not validate them. Keep parent directories under operator control.
+world access and group write are refused. On Windows a key's access list is read instead. An entry
+for Everyone, Users, Authenticated Users or any other principal that stands for everyone is refused
+whatever it allows; so is one that lets an account other than the service's own, the file's owner,
+SYSTEM or Administrators write to the key; and so is a file with no access list, or one that such a
+principal owns (an owner can always rewrite the list). A key in a folder
+that hands its own list down (most do, and many let Users read) needs one of its own:
+`icacls key.pem /inheritance:r /grant:r "<service account>:(R)" "*S-1-5-18:(F)" "*S-1-5-32-544:(F)"`
+(the last two are SYSTEM and Administrators). Keep parent directories under operator control.
 
 For NGINX, adapt [origin-mtls.conf](../deploy/nginx/origin-mtls.conf) in the `http` context. Replace
 names, paths and the approved certificate serial using:
@@ -155,7 +161,8 @@ Private origins need explicit host-policy changes too. Leave `trusted-proxies` e
 otherwise name only real CDN/load-balancer peers. Renew visitor certificates through the certificate
 provider, validate the new pair and restart to load it. On Linux and macOS the visitor key must not
 be accessible to everyone or writable by its group (0600, or 0640 for a group that only reads it);
-start-up and `carnical setup` refuse it otherwise.
+start-up and `carnical setup` refuse it otherwise. On Windows the same is asked of its access list,
+as described above.
 
 Before cutover, test the real hostname/certificate against every edge IP:
 

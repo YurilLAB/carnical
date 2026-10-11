@@ -455,7 +455,7 @@ func systemdListener() (net.Listener, error) {
 
 // readTLSFile reads the visitor certificate or key. Links are followed (certbot's live/ directory is links into archive/),
 // but only a regular file is read: it is opened without blocking, so a FIFO cannot hold start-up, and a key must not be
-// readable by everyone or writable by its group.
+// readable by everyone or writable by its group (on Windows: by what its access list says, see privateFileAccess).
 func readTLSFile(path string, limit int64, private bool) ([]byte, error) {
 	// #nosec G304 -- The certificate and key paths are operator configuration, never request input.
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOCTTY, 0)
@@ -471,6 +471,11 @@ func readTLSFile(path string, limit int64, private bool) ([]byte, error) {
 		return nil, errors.New("not a regular file")
 	case private && runtime.GOOS != "windows" && info.Mode().Perm()&0o027 != 0:
 		return nil, fmt.Errorf("mode %04o: a private key must not be accessible to everyone or writable by its group", info.Mode().Perm())
+	}
+	if private { // on Windows the mode says nothing: the access list does
+		if err := privateFileAccess(f); err != nil {
+			return nil, err
+		}
 	}
 	data, err := io.ReadAll(io.LimitReader(f, limit+1))
 	if err != nil {
