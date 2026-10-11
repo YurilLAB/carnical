@@ -51,6 +51,14 @@ paths = ["^carnical/proxy/proxy_test\\.go$"]
 regexes = ["^SECRETMARK\\-4711$", "^dGhlIHNhbXBsZSBub25jZQ==$"]
 
 [[allowlists]]
+description = "Verified fixture: edge/proxy/proxy_test.go, the same test before the module moved"
+condition = "AND"
+targetRules = ["generic-api-key"]
+regexTarget = "secret"
+paths = ["^edge/proxy/proxy_test\\.go$"]
+regexes = ["^SECRETMARK\\-4711$"]
+
+[[allowlists]]
 description = "Verified fixture: examples/plugins/operator-jwt/jwt_test.go"
 condition = "AND"
 targetRules = ["jwt"]
