@@ -173,9 +173,11 @@ RulesLoop:
 			break RulesLoop
 		}
 		// A transaction whose context is done has used the time it was given, or its client has gone. Evaluation
-		// stops here, and a blocking engine refuses the transaction instead of letting it through unchecked.
+		// stops here, and a blocking engine refuses the transaction instead of letting it through unchecked. The rules
+		// not reached read this phase's variables in a later phase they run in, if multiphase evaluation scheduled them here.
 		if phase != types.PhaseLogging && tx.contextDone() {
 			tx.interruptForContext()
+			deferRules(tx, rg.rules[i:], phase)
 			break RulesLoop
 		}
 		// Rules with phase 0 will always run
@@ -264,9 +266,20 @@ RulesLoop:
 			tx.variables.matchedVars.Reset()
 		}
 
+		matched := len(tx.matchedRules)
 		r.Evaluate(phase, tx, transformationCache)
 		tx.Capture = false // we reset captures
 		usedRules++
+		if multiphaseEvaluation {
+			// A rule during which the time ran out may have stopped before reading all its values, so it reads them in
+			// a later phase. One that matched had finished, and must not match twice. One that finished has read what
+			// an earlier cut phase owed it.
+			if phase != types.PhaseLogging && len(tx.matchedRules) == matched && tx.contextDone() {
+				deferRules(tx, rg.rules[i:i+1], phase)
+			} else if tx.deferredPhases != nil {
+				delete(tx.deferredPhases, r)
+			}
+		}
 	}
 	// The last rule of the phase may be the one that ran out the time.
 	if phase != types.PhaseLogging && !tx.IsInterrupted() && tx.contextDone() {

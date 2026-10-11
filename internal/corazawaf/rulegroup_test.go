@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/corazawaf/coraza/v3/experimental/plugins/macro"
+	"github.com/corazawaf/coraza/v3/experimental/plugins/plugintypes"
 	"github.com/corazawaf/coraza/v3/types"
 	"github.com/corazawaf/coraza/v3/types/variables"
 )
@@ -135,27 +136,107 @@ func TestRuleEvaluationStopsWhenTheTransactionContextIsDone(t *testing.T) {
 			}
 		})
 	}
-	// The logging phase runs whatever happened before it, a client that has gone included: its rules record the request.
-	t.Run("a done context still lets logging rules read the request", func(t *testing.T) {
-		if multiphaseEvaluation {
-			t.Skip("with multiphase evaluation a variable is read in the phase it becomes ready, not in the logging phase")
+	// A phase cut short must not hide the request from the phases after it. The rules it did not reach read later what
+	// multiphase evaluation would have given them in it, the rules it reached do not read it twice, and the logging phase
+	// runs whatever happened before it, a client that has gone included.
+	t.Run("rules a cut phase did not reach still read the request later", func(t *testing.T) {
+		tests := []struct {
+			name       string
+			engine     types.RuleEngineStatus
+			spend      bool // rule 1 uses up the time phase 1 was given
+			renew      bool // the next phase has time again, as with the proxy's per-phase budget
+			wantOnce   []int
+			wantStatus int
+		}{
+			{"a live context lets every rule read the request once", types.RuleEngineDetectionOnly, false, false, []int{10, 1, 100, 500}, 0},
+			{"phase 1 out of time in detection-only mode", types.RuleEngineDetectionOnly, true, true, []int{10, 1, 100, 500}, 503},
+			{"a blocking engine after the client has gone", types.RuleEngineOn, true, false, []int{1, 500}, 503},
 		}
-		waf := NewWAF()
-		r := newTestRule(2)
-		r.Phase_ = types.PhaseLogging
-		if err := r.AddVariable(variables.ArgsGet, "", false); err != nil {
-			t.Fatal(err)
-		}
-		r.SetOperator(&dummyEqOperator{}, "@eq", "0")
-		if err := waf.Rules.Add(r); err != nil {
-			t.Fatal(err)
-		}
-		tx := waf.NewTransactionWithOptions(Options{Context: done})
-		defer tx.Close()
-		tx.AddGetRequestArgument("a", "0")
-		tx.ProcessLogging()
-		if n := len(tx.MatchedRules()); n != 1 {
-			t.Fatalf("%d logging rules matched, want 1", n)
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				ctx := &spentContext{Context: context.Background()}
+				waf := NewWAF()
+				waf.RuleEngine = tt.engine
+				// Rule 10 comes before the cut, and multiphase evaluation runs it there; 100 and 500 come after it.
+				for _, rule := range []struct {
+					id    int
+					phase types.RulePhase
+					op    plugintypes.Operator
+				}{
+					{10, types.PhaseRequestBody, &dummyEqOperator{}},
+					{1, types.PhaseRequestHeaders, &spendTimeOperator{ctx: ctx, spend: tt.spend}},
+					{100, types.PhaseRequestBody, &dummyEqOperator{}},
+					{500, types.PhaseLogging, &dummyEqOperator{}},
+				} {
+					r := newTestRule(rule.id)
+					r.Phase_ = rule.phase
+					if err := r.AddVariable(variables.RequestHeaders, "x-attack", false); err != nil {
+						t.Fatal(err)
+					}
+					r.SetOperator(rule.op, "@eq", "0")
+					if err := waf.Rules.Add(r); err != nil {
+						t.Fatal(err)
+					}
+				}
+				tx := waf.NewTransactionWithOptions(Options{Context: ctx})
+				defer tx.Close()
+				tx.AddRequestHeader("X-Attack", "0")
+				tx.ProcessRequestHeaders()
+				ctx.spent = ctx.spent && !tt.renew
+				if _, err := tx.ProcessRequestBody(); err != nil {
+					t.Fatal(err)
+				}
+				tx.ProcessLogging()
+
+				matched := map[int]int{}
+				for _, mr := range tx.MatchedRules() {
+					matched[mr.Rule().ID()]++
+				}
+				for _, id := range tt.wantOnce {
+					if matched[id] == 0 {
+						t.Errorf("rule %d never matched, want once", id)
+					}
+				}
+				for id, n := range matched {
+					if n > 1 {
+						t.Errorf("rule %d matched %d times, want once", id, n)
+					}
+				}
+				// The refusal is recorded in either mode: a detection-only engine keeps the one it would have made.
+				status := 0
+				if it := tx.Interruption(); it != nil {
+					status = it.Status
+				} else if it := tx.DetectionOnlyInterruption(); it != nil {
+					status = it.Status
+				}
+				if status != tt.wantStatus {
+					t.Errorf("refusal status %d, want %d", status, tt.wantStatus)
+				}
+			})
 		}
 	})
+}
+
+// spentContext is done once a rule has used up the time its transaction was given.
+type spentContext struct {
+	context.Context
+	spent bool
+}
+
+func (c *spentContext) Err() error {
+	if c.spent {
+		return context.DeadlineExceeded
+	}
+	return c.Context.Err()
+}
+
+// spendTimeOperator matches anything, and uses up the time of its transaction on the way if spend is set.
+type spendTimeOperator struct {
+	ctx   *spentContext
+	spend bool
+}
+
+func (o *spendTimeOperator) Evaluate(plugintypes.TransactionState, string) bool {
+	o.ctx.spent = o.ctx.spent || o.spend
+	return true
 }

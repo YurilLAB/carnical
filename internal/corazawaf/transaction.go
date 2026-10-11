@@ -137,6 +137,11 @@ type Transaction struct {
 	variables TransactionVariables
 
 	transformationCache map[transformationKey]transformationValue
+
+	// deferredPhases is only used by multiphase evaluation, which reads each variable in the earliest phase it is ready
+	// in. It holds, for each rule a phase cut short by the transaction's context did not get through, the phases whose
+	// variables the rule has not read yet, so that the next phase the rule runs in reads them. It is nil until a cut.
+	deferredPhases map[*Rule]inferredPhases
 }
 
 func (tx *Transaction) ID() string {

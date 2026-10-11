@@ -239,7 +239,7 @@ func (r *Rule) doEvaluate(logger debuglog.Logger, phase types.RulePhase, tx *Tra
 		}
 		ecol := tx.ruleRemoveTargetByID[rid]
 		for _, v := range r.variables {
-			if multiphaseEvaluation && multiphaseSkipVariable(r, v.Variable, phase) {
+			if multiphaseEvaluation && multiphaseSkipVariable(r, v.Variable, phase, tx.deferredPhases[r]) {
 				continue
 			}
 			var values []types.MatchData
@@ -263,7 +263,8 @@ func (r *Rule) doEvaluate(logger debuglog.Logger, phase types.RulePhase, tx *Tra
 			var argsLen int
 			for i, arg := range values {
 				// Out of time: Eval ends the phase and refuses the transaction. The logging phase runs whatever happened
-				// before it, as Eval runs it after an interruption, so its rules still read the request.
+				// before it, as Eval runs it after an interruption, so its rules still read the request. With multiphase
+				// evaluation, a rule the phase did not get through reads that phase's variables in the next phase it runs in.
 				if phase != types.PhaseLogging && tx.contextDone() {
 					return matchedValues
 				}

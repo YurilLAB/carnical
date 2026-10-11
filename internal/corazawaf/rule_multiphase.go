@@ -267,7 +267,26 @@ func computeRuleChainMinPhase(r *Rule) {
 	}
 }
 
-func multiphaseSkipVariable(r *Rule, variable variables.RuleVariable, phase types.RulePhase) bool {
+// deferRules records that the rules have not read the variables of phase, because the transaction's context cut the
+// phase short before they ran or while they ran. Multiphase evaluation reads a variable only in the earliest phase it is
+// ready in, so without this a rule that runs again in a later phase would never read them.
+func deferRules(tx *Transaction, rules []Rule, phase types.RulePhase) {
+	if !multiphaseEvaluation {
+		return
+	}
+	if tx.deferredPhases == nil {
+		tx.deferredPhases = make(map[*Rule]inferredPhases, len(rules))
+	}
+	for i := range rules {
+		phases := tx.deferredPhases[&rules[i]]
+		phases.set(phase)
+		tx.deferredPhases[&rules[i]] = phases
+	}
+}
+
+// multiphaseSkipVariable reports whether the rule skips the variable in this phase. deferred holds the earlier phases
+// whose variables the rule has not read yet (see deferRules); the rule reads them now instead.
+func multiphaseSkipVariable(r *Rule, variable variables.RuleVariable, phase types.RulePhase, deferred inferredPhases) bool {
 	if r.ParentID_ == 0 && (!r.HasChain || phase >= r.chainMinPhase) {
 		min := minPhase(variable)
 		// When multiphase evaluation is enabled, any variable is evaluated at its
@@ -278,7 +297,7 @@ func multiphaseSkipVariable(r *Rule, variable variables.RuleVariable, phase type
 					// The variable was previously available but not evaluated yet because the
 					// chain wasn't available. We evaluate once during the chainMinPhase and
 					// skip the rest.
-					if phase != r.chainMinPhase {
+					if phase != r.chainMinPhase && !deferred.has(r.chainMinPhase) {
 						return true
 					}
 				}
@@ -289,7 +308,7 @@ func multiphaseSkipVariable(r *Rule, variable variables.RuleVariable, phase type
 				// }
 			} else {
 				// For rules that have no chains, we know the variable is evaluated in its min phase and no other phases.
-				if min != phase {
+				if min != phase && !deferred.has(min) {
 					return true
 				}
 			}
