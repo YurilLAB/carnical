@@ -14,6 +14,7 @@ import (
 	"io/fs"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -114,6 +115,14 @@ type Settings struct {
 	// LocalRulesOff switches single local rules off by id, for a site whose ordinary traffic one of them refuses (an
 	// admin reaching its own diagnostic page, say). At most 32 ids, each a local rule's.
 	LocalRulesOff []int
+	// LocalRulesOn switches on single stricter local rules (5006101 to 5006103), which are off unless named here because
+	// ordinary requests on some sites look the same as what they refuse.
+	LocalRulesOn []int
+	// SiteHosts are the names of this site (the proxy fills them from its AllowedHosts). The local rules that refuse an
+	// address on another host let through one on these names and their subdomains. The request's own Host header says
+	// nothing by itself, because the client writes it: with no names here, no address counts as this site's. At most
+	// 4,096 names.
+	SiteHosts []string
 }
 
 // DefaultSettings blocks at paranoia level 1 with the standard thresholds.
@@ -181,7 +190,75 @@ func (s Settings) Validate() error {
 			return fmt.Errorf("%d is not a local rule id", id)
 		}
 	}
+	if len(s.LocalRulesOn) > len(stricterLocalRules) {
+		return fmt.Errorf("more stricter local rules switched on than there are")
+	}
+	for _, id := range s.LocalRulesOn {
+		if !isStricterLocalRule(id) {
+			return fmt.Errorf("%d is not a stricter local rule id", id)
+		}
+		if slices.Contains(s.LocalRulesOff, id) {
+			return fmt.Errorf("local rule %d is switched both on and off", id)
+		}
+	}
+	if len(s.SiteHosts) > maxSiteHosts {
+		return fmt.Errorf("more than %d site names", maxSiteHosts)
+	}
+	for _, h := range s.SiteHosts {
+		if !IsSiteHost(h) {
+			return fmt.Errorf("a site name must be a host name or an address in lower case, without a port")
+		}
+	}
 	return nil
+}
+
+// IsSiteHost reports whether h can be one of Settings.SiteHosts.
+func IsSiteHost(h string) bool { return len(h) <= 253 && siteHostShape.MatchString(h) }
+
+// siteHostShape is a host name or address as the proxy normalizes it. Nothing in it can end a quoted SecLang string.
+var siteHostShape = regexp.MustCompile(`^(?:[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?)*|\[[0-9a-f:.]+\])$`)
+
+// The rule parser reads a line at a time into a buffer of 64 KiB, and at a line that does not fit it stops without an
+// error: every rule after that line would be missing, and the engine would start as if nothing were wrong. So no line
+// of maxDirectiveLine bytes or more is handed to it (Directives refuses one), and the site's names, which can be many
+// and long, go into as many rules as it takes to keep each under siteRuleBytes.
+const (
+	maxDirectiveLine = 60 << 10
+	siteRuleBytes    = 8 << 10
+	maxSiteHosts     = 4096
+	siteRuleID       = 5006200 // the first of the rules that hold the site's names
+)
+
+// siteDirectives sets tx.carnical_site, which the local rules compare the host of a URL with. It starts as a value no
+// host can end with, and becomes the request's Host (lower case, without a port, a trailing dot or a leading "www.")
+// only when that is one of the operator's names.
+func (s Settings) siteDirectives() []string {
+	out := []string{
+		// tx.carnical_host is the host the request was made to, as the client wrote it, for rule 5006103.
+		`SecRule REQUEST_HEADERS:Host "@rx \A(.*?)\.?(?::[0-9]{1,5})?\z" "id:5006097,phase:1,pass,t:none,t:lowercase,nolog,capture,setvar:'tx.carnical_host=%{tx.1}'"`,
+		`SecAction "id:5006098,phase:1,pass,t:none,nolog,setvar:'tx.carnical_site=!'"`,
+	}
+	var names []string
+	for _, h := range s.SiteHosts {
+		if n := regexp.QuoteMeta(strings.TrimPrefix(h, "www.")); !slices.Contains(names, n) {
+			names = append(names, n)
+		}
+	}
+	if len(names) == 0 {
+		return out
+	}
+	slices.Sort(names)
+	for id := siteRuleID; len(names) > 0; id++ {
+		n, size := 1, len(names[0])
+		for n < len(names) && size+1+len(names[n]) <= siteRuleBytes {
+			size += 1 + len(names[n])
+			n++
+		}
+		out = append(out, fmt.Sprintf(`SecRule REQUEST_HEADERS:Host "@rx \A(?:www\.)?(%s)\.?(?::[0-9]{1,5})?\z" `+
+			`"id:%d,phase:1,pass,t:none,t:lowercase,nolog,capture,setvar:'tx.carnical_site=%%{tx.1}'"`, strings.Join(names[:n], "|"), id))
+		names = names[n:]
+	}
+	return out
 }
 
 // Directives returns the SecLang that configures the engine and loads the whole CRS from FS(). Give it to
@@ -237,12 +314,21 @@ func (s Settings) Directives() (string, error) {
 		if path == "owasp_crs/REQUEST-901-INITIALIZATION.conf" {
 			initialized = true
 			if !s.DisableLocalRules {
+				for _, d := range s.siteDirectives() {
+					line("%s", d)
+				}
 				line("Include local/*.conf")
-				if len(s.LocalRulesOff) > 0 {
-					ids := make([]string, len(s.LocalRulesOff))
-					for i, id := range s.LocalRulesOff {
-						ids[i] = strconv.Itoa(id)
+				// What is switched off, and the stricter rules that were not switched on.
+				var ids []string
+				for _, id := range s.LocalRulesOff {
+					ids = append(ids, strconv.Itoa(id))
+				}
+				for _, id := range stricterLocalRules {
+					if !slices.Contains(s.LocalRulesOn, id) && !slices.Contains(s.LocalRulesOff, id) {
+						ids = append(ids, strconv.Itoa(id))
 					}
+				}
+				if len(ids) > 0 {
 					line("SecRuleRemoveById %s", strings.Join(ids, " "))
 				}
 			}
@@ -254,5 +340,11 @@ func (s Settings) Directives() (string, error) {
 	if s.After != "" {
 		line("%s", s.After)
 	}
-	return b.String(), nil
+	out := b.String()
+	for l := range strings.Lines(out) {
+		if len(l) >= maxDirectiveLine {
+			return "", fmt.Errorf("a rule line of %d bytes is longer than the rule parser reads (%d): %.60q", len(l), maxDirectiveLine, l)
+		}
+	}
+	return out, nil
 }

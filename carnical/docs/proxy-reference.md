@@ -17,7 +17,7 @@ guard](../proxy/origin.go), [CLI](../cmd/carnical/main.go).
 | Trusted proxies | Read X-Forwarded-For from the right only for configured peer ranges; a `/0` trust range is refused. |
 | Methods | Refuse CONNECT, mixed/lowercase method tokens and method-override headers. |
 | Framework controls | Remove `x-middleware-*` and `x-invoke-*` headers. |
-| Hostnames | `-hosts` restricts the names a site serves. |
+| Hostnames | `-hosts` restricts the names a site serves. They are also the only hosts the local rules count as this site's when a parameter holds an address ([input hardening](input-hardening.md)); the rule set takes at most 4,096 of them, and the proxy does not start with more. |
 | Origin addresses | Check the actual address at dial time; private, loopback, link-local, metadata (including Azure's 168.63.129.16) and local-host destinations need an explicit operator allowance where supported. |
 | Trailers/upgrades | Drop trailers; refuse protocol upgrades by default. Explicitly allowed upgrades are uninspected. |
 | Origin framing | Body-bearing requests use separate origin connections; interim 1xx responses are dropped before final response inspection. |

@@ -121,9 +121,18 @@ func TestSettingsAreValidated(t *testing.T) {
 		"lower-case method":        func(s *crs.Settings) { s.AllowedMethods = []string{"get"} },
 		"method with a space":      func(s *crs.Settings) { s.AllowedMethods = []string{"GET HEAD"} },
 		"method with a quote":      func(s *crs.Settings) { s.AllowedMethods = []string{`GET"`} },
-		"a CRS rule as local":      func(s *crs.Settings) { s.LocalRulesOff = []int{942100} },
-		"an unknown local rule":    func(s *crs.Settings) { s.LocalRulesOff = []int{5006012, 5006999} },
-		"33 local rules off":       func(s *crs.Settings) { s.LocalRulesOff = slices.Repeat([]int{5006012}, 33) },
+		"a rule line the parser cannot read whole": func(s *crs.Settings) {
+			s.Before = `SecAction "id:1,phase:1,pass,nolog,msg:'` + strings.Repeat("x", 60<<10) + `'"`
+		},
+		"such a line after the rule set": func(s *crs.Settings) {
+			s.After = "SecAction \"id:1,phase:1,pass,nolog\"\n# " + strings.Repeat("x", 60<<10)
+		},
+		"a CRS rule as local":        func(s *crs.Settings) { s.LocalRulesOff = []int{942100} },
+		"an unknown local rule":      func(s *crs.Settings) { s.LocalRulesOff = []int{5006012, 5006999} },
+		"33 local rules off":         func(s *crs.Settings) { s.LocalRulesOff = slices.Repeat([]int{5006012}, 33) },
+		"a default rule as stricter": func(s *crs.Settings) { s.LocalRulesOn = []int{5006012} },
+		"an unknown stricter rule":   func(s *crs.Settings) { s.LocalRulesOn = []int{5006101, 5006199} },
+		"a rule both on and off":     func(s *crs.Settings) { s.LocalRulesOn, s.LocalRulesOff = []int{5006101}, []int{5006101} },
 	} {
 		s := good
 		change(&s)
@@ -145,6 +154,10 @@ func TestSettingsAreValidated(t *testing.T) {
 		"32 local rules off": func(s *crs.Settings) {
 			s.LocalRulesOff = append(slices.Repeat([]int{5006012}, 31), 5006001)
 		},
+		"stricter rules on":    func(s *crs.Settings) { s.LocalRulesOn = []int{5006101, 5006102} },
+		"one stricter rule on": func(s *crs.Settings) { s.LocalRulesOn, s.LocalRulesOff = []int{5006102}, []int{5006101} },
+		"site names":           func(s *crs.Settings) { s.SiteHosts = []string{"shop.example.test", "192.0.2.7", "[2001:db8::1]"} },
+		"256 site names":       func(s *crs.Settings) { s.SiteHosts = slices.Repeat([]string{"shop.example.test"}, 256) },
 	} {
 		s := good
 		change(&s)
@@ -224,7 +237,14 @@ func do(t testing.TB, srv *httptest.Server, method, target, contentType, body st
 		req.Header.Set("Content-Type", contentType)
 	}
 	for k, v := range headers {
-		req.Header.Set(k, v)
+		if k == "Host" {
+			req.Host = v
+			continue
+		}
+		req.Header.Del(k)
+		for _, one := range strings.Split(v, "\n") { // one header line for each
+			req.Header.Add(k, one)
+		}
 	}
 	resp, err := srv.Client().Do(req)
 	if err != nil {
@@ -237,8 +257,15 @@ func do(t testing.TB, srv *httptest.Server, method, target, contentType, body st
 
 const form = "application/x-www-form-urlencoded"
 
+// siteSettings are the defaults for a site that was given its name, as the proxy does from its allowed hosts.
+func siteSettings() crs.Settings {
+	s := crs.DefaultSettings()
+	s.SiteHosts = []string{"shop.example.test"}
+	return s
+}
+
 func TestTheRuleSetBlocksCommonAttacksAndPassesOrdinaryTraffic(t *testing.T) {
-	srv, _ := serve(t, crs.DefaultSettings())
+	srv, _ := serve(t, siteSettings())
 	q := func(v string) string { return "/search?q=" + url.QueryEscape(v) }
 	for name, tc := range map[string]struct {
 		method, target, ct, body string
@@ -331,6 +358,39 @@ func TestTheRuleSetBlocksCommonAttacksAndPassesOrdinaryTraffic(t *testing.T) {
 		"scheme-less host in any field":        {"GET", "/x?u=" + url.QueryEscape("//evil.example/x"), "", "", nil, 403},
 		"remote text file in any field":        {"GET", "/x?u=" + url.QueryEscape("http://evil.example/shell.txt"), "", "", nil, 403},
 		"remote include file in a JSON body":   {"POST", "/api", "application/json", `{"u":"https://evil.example/a/b.inc?x=1"}`, nil, 403},
+		"web shell named shell":                {"GET", "/shell.php", "", "", nil, 403},
+		"web shell in a folder":                {"GET", "/media/webshell.php?cmd=id", "", "", nil, 403},
+		"backdoor by name":                     {"GET", "/images/backdoor.php", "", "", nil, 403},
+		"Adminer":                              {"GET", "/adminer.php", "", "", nil, 403},
+		"Adminer with a version":               {"GET", "/tools/adminer-4.8.1-mysql-en.php?server=db", "", "", nil, 403},
+		"phpMyAdmin":                           {"GET", "/phpmyadmin/", "", "", nil, 403},
+		"phpMyAdmin's index":                   {"GET", "/phpmyadmin/index.php", "", "", nil, 403},
+		"phpMyAdmin with a version":            {"GET", "/phpMyAdmin-5.2.1-all-languages/index.php", "", "", nil, 403},
+		"phpPgAdmin":                           {"GET", "/phppgadmin/", "", "", nil, 403},
+		"PHP information page":                 {"GET", "/info.php", "", "", nil, 403},
+		"phpinfo page":                         {"GET", "/phpinfo.php", "", "", nil, 403},
+		"PHP test page in a folder":            {"GET", "/blog/test.php?x=1", "", "", nil, 403},
+		"encoded PHP information page":         {"GET", "/%69nfo.php", "", "", nil, 403},
+		"Werkzeug debugger command":            {"GET", "/console?__debugger__=yes&cmd=x&frm=0&s=abc", "", "", nil, 403},
+		"Werkzeug debugger on any page":        {"GET", "/page?__debugger__=yes&cmd=pinauth&pin=1", "", "", nil, 403},
+		"WebLogic console login":               {"GET", "/console/login/LoginForm.jsp", "", "", nil, 403},
+		"WebLogic console portal":              {"GET", "/console/css/%252e%252e%252fconsole.portal", "", "", nil, 403},
+		"JBoss JMX console":                    {"GET", "/jmx-console/HtmlAdaptor", "", "", nil, 403},
+		"JBoss invoker":                        {"POST", "/invoker/JMXInvokerServlet", "application/json", `{}`, nil, 403},
+		"H2 console":                           {"GET", "/h2-console/login.jsp", "", "", nil, 403},
+		"Rails web console":                    {"GET", "/__web_console/repl_sessions/abc", "", "", nil, 403},
+		"Tomcat manager":                       {"GET", "/manager/html", "", "", nil, 403},
+		"Tomcat host manager":                  {"GET", "/host-manager/html/list", "", "", nil, 403},
+		"script on another host in the query":  {"GET", "/api/loadtest/rfi?input=" + url.QueryEscape("http://evil.example/loadtest.php"), "", "", nil, 403},
+		"script on another host with a port":   {"GET", "/api/loadtest/rfi?input=" + url.QueryEscape("http://evil.example:8080/loadtest.php"), "", "", nil, 403},
+		"script on another host with a query":  {"GET", "/api/loadtest/rfi?input=" + url.QueryEscape("https://evil.example/loadtest.php?x=1"), "", "", nil, 403},
+		"script on another host and path info": {"GET", "/x?view=" + url.QueryEscape("http://evil.example/a.phtml/b"), "", "", nil, 403},
+		"script behind a look-alike host":      {"GET", "/wp-content/themes/x/timthumb.php?src=" + url.QueryEscape("http://flickr.com.evil.example/shell.php"), "", "", nil, 403},
+		"script on another host in capitals":   {"GET", "/x?view=" + url.QueryEscape("HTTP://EVIL.EXAMPLE/A.PHP"), "", "", nil, 403},
+		"forwarded host with a folded line":    {"GET", "/", "", "", map[string]string{"X-Forwarded-Host": "evil.example  x: y"}, 403},
+		"forwarded host with a path":           {"GET", "/", "", "", map[string]string{"X-Forwarded-Host": "evil.example/x"}, 403},
+		"forwarded host with userinfo":         {"GET", "/", "", "", map[string]string{"X-Forwarded-Host": "shop.example.test@evil.example"}, 403},
+		"X-Host with a space":                  {"GET", "/", "", "", map[string]string{"X-Host": "a b"}, 403},
 		// No XXE case: the CRS has no rule for external entities. Block them in the XML parser or with a rule of our own.
 		"XPath in an XML attribute":    {"POST", "/api", "application/xml", `<input value="' or true() or 'a'='b"/>`, nil, 403},
 		"benign XML attribute":         {"POST", "/api", "application/xml", `<input value="O'Brien"/>`, nil, 200},
@@ -373,6 +433,26 @@ func TestTheRuleSetBlocksCommonAttacksAndPassesOrdinaryTraffic(t *testing.T) {
 		"paths in a JSON array":        {"POST", "/api", "application/json", `{"files":["a/b.txt","c.pdf"],"page":[1,2]}`, nil, 200},
 		"a text file on this site":     {"GET", "/x?u=" + url.QueryEscape("https://shop.example.test/robots.txt"), "", "", nil, 200},
 		"a text file mentioned":        {"GET", "/x?q=" + url.QueryEscape("see http://example.org/notes.txt for details"), "", "", nil, 200},
+		"a jacket called shell":        {"GET", "/shop/shell-jacket", "", "", nil, 200},
+		"a page about PowerShell":      {"GET", "/docs/powershell.php", "", "", nil, 200},
+		"a wiki page on phpMyAdmin":    {"GET", "/wiki/phpMyAdmin", "", "", nil, 200},
+		"a phpMyAdmin tutorial":        {"GET", "/blog/phpmyadmin-tutorial/", "", "", nil, 200},
+		"a guide to Adminer":           {"GET", "/docs/adminer-guide.php", "", "", nil, 200},
+		"an information page":          {"GET", "/information.php", "", "", nil, 200},
+		"a contest page":               {"GET", "/contest.php?id=3", "", "", nil, 200},
+		"a page of games consoles":     {"GET", "/console", "", "", nil, 200},
+		"a console in a shop":          {"GET", "/shop/console/ps5", "", "", nil, 200},
+		"a manager's status page":      {"GET", "/manager/status", "", "", nil, 200},
+		"a script on this site":        {"GET", "/x?view=" + url.QueryEscape("https://shop.example.test/loadtest.php"), "", "", nil, 200},
+		"a script in a link field":     {"GET", "/out?url=" + url.QueryEscape("https://forum.example.org/viewtopic.php?t=1"), "", "", nil, 200},
+		"a script as a return address": {"GET", "/login?returnUrl=" + url.QueryEscape("https://partner.example.org/cb.php"), "", "", nil, 200},
+		"a script as a redirect URI":   {"GET", "/authorize?redirect_uri=" + url.QueryEscape("https://client.example.org/callback.php"), "", "", nil, 200},
+		"a script address in a search": {"GET", q("see http://example.org/a.php for details"), "", "", nil, 200},
+		"a page on another site":       {"GET", "/x?view=" + url.QueryEscape("https://www.example.org/page.html"), "", "", nil, 200},
+		"a script in a form field":     {"POST", "/contact", form, "input_3=" + url.QueryEscape("http://myblog.example.org/index.php"), nil, 200},
+		"a forwarded host":             {"GET", "/", "", "", map[string]string{"X-Forwarded-Host": "shop.example.test"}, 200},
+		"a list of forwarded hosts":    {"GET", "/", "", "", map[string]string{"X-Forwarded-Host": "a.example.test, b.example.test:8443"}, 200},
+		"a forwarded IPv6 host":        {"GET", "/", "", "", map[string]string{"X-Forwarded-Host": "[2001:db8::1]:443"}, 200},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if got := do(t, srv, tc.method, tc.target, tc.ct, tc.body, tc.headers); got != tc.want {
@@ -520,7 +600,7 @@ func TestExclusionsCanBeAddedBeforeTheRules(t *testing.T) {
 // detection rules removed (911000 to 948999; the scoring and the blocking decision stay) what refuses a request is a local rule
 // alone, so a weakening of one of them cannot hide behind the CRS.
 func TestLocalRulesRefuseOnTheirOwn(t *testing.T) {
-	s := crs.DefaultSettings()
+	s := siteSettings()
 	s.After = "SecRuleRemoveById 911000-948999"
 	srv, _ := serve(t, s)
 	if got := do(t, srv, "GET", "/search?q="+url.QueryEscape("1' OR '1'='1' --"), "", "", nil); got != 200 {
@@ -553,6 +633,55 @@ func TestLocalRulesRefuseOnTheirOwn(t *testing.T) {
 		"remote text file":             {"/x?u=" + url.QueryEscape("http://evil.example/shell.txt"), nil, 403},
 		"remote include file":          {"/x?u=" + url.QueryEscape("https://evil.example/lib.inc?x=1"), nil, 403},
 		"include with a bracket index": {inc("page[0]", "http://evil.example/x"), nil, 403},
+		"web shell named shell":        {"/shell.php", nil, 403},
+		"Adminer":                      {"/adminer.php", nil, 403},
+		"phpMyAdmin":                   {"/phpmyadmin/", nil, 403},
+		"phpPgAdmin":                   {"/phppgadmin/", nil, 403},
+		"PHP information page":         {"/info.php", nil, 403},
+		"PHP test page":                {"/test.php", nil, 403},
+		"phpinfo page":                 {"/phpinfo.php", nil, 403},
+		"php_info page":                {"/php_info.php", nil, 403},
+		"pinfo page":                   {"/pinfo.php", nil, 403},
+		"phptest page":                 {"/php-test.php", nil, 403},
+		"Werkzeug debugger":            {"/page?__debugger__=yes&cmd=x", nil, 403},
+		"WebLogic console portal":      {"/console/console.portal", nil, 403},
+		"WebLogic console login":       {"/console/login/LoginForm.jsp", nil, 403},
+		"JBoss JMX console":            {"/jmx-console/", nil, 403},
+		"JBoss invoker":                {"/invoker/EJBInvokerServlet", nil, 403},
+		"H2 console":                   {"/h2-console", nil, 403},
+		"Rails web console":            {"/__web_console/repl_sessions/abc", nil, 403},
+		"Tomcat manager":               {"/manager/html", nil, 403},
+		"Tomcat host manager":          {"/host-manager/html", nil, 403},
+		"script on another host":       {"/x?view=" + url.QueryEscape("http://evil.example/a.php"), nil, 403},
+		"script as a phar":             {"/x?view=" + url.QueryEscape("https://evil.example/a.phar?x=1"), nil, 403},
+		"script behind userinfo":       {"/x?view=" + url.QueryEscape("http://shop.example.test@evil.example/a.php5"), nil, 403},
+		"script on an IPv6 host":       {"/x?view=" + url.QueryEscape("http://[2001:db8::1]/a.php"), nil, 403},
+		"script after a local one":     {"/x?view=" + url.QueryEscape("https://shop.example.test/a.php") + "&view=" + url.QueryEscape("http://evil.example/b.php"), nil, 403},
+		"script with a version suffix": {"/x?view=" + url.QueryEscape("http://evil.example/a.php7"), nil, 403},
+		"script in a photo field":      {"/x?photo=" + url.QueryEscape("http://evil.example/a.php"), nil, 403},
+		"script in a sitemap field":    {"/x?sitemap=" + url.QueryEscape("http://evil.example/a.php"), nil, 403},
+		"script on a one-word host":    {"/x?view=" + url.QueryEscape("http://intranet/a.php"), nil, 403},
+		"script on a look-alike host":  {"/x?view=" + url.QueryEscape("http://evilshop.example.test/a.php"), nil, 403},
+		"script before a local one":    {"/x?view=" + url.QueryEscape("http://evil.example/b.php") + "&view=" + url.QueryEscape("https://shop.example.test/a.php"), nil, 403},
+		"a page named like a script":   {"/x?view=" + url.QueryEscape("https://docs.example.org/intro.php.html"), nil, 200},
+		"a longer extension":           {"/x?view=" + url.QueryEscape("https://docs.example.org/a.phpx"), nil, 200},
+		"text on a look-alike host":    {"/x?view=" + url.QueryEscape("http://evilshop.example.test/a.txt"), nil, 403},
+		"FTP on a look-alike host":     {"/x?view=" + url.QueryEscape("ftp://evilshop.example.test/a"), nil, 403},
+		"forwarded host from a slash":  {"/", map[string]string{"X-Forwarded-Host": "/evil.example"}, 403},
+		"forwarded host from an at":    {"/", map[string]string{"X-Forwarded-Host": "@evil.example"}, 403},
+		"forwarded host and a path":    {"/", map[string]string{"X-Forwarded-Host": "evil.example/x"}, 403},
+		"forwarded host with a space":  {"/", map[string]string{"X-Forwarded-Host": "evil.example x"}, 403},
+		"forwarded server with a tab":  {"/", map[string]string{"X-Forwarded-Server": "a\tb"}, 403},
+		"original host with a slash":   {"/", map[string]string{"X-Original-Host": "a/b"}, 403},
+		"a script on this site":        {"/x?view=" + url.QueryEscape("https://shop.example.test/a.php"), nil, 200},
+		"a script in a link field":     {"/x?ref=" + url.QueryEscape("https://forum.example.org/viewtopic.php?t=1"), nil, 200},
+		"a script in a named link":     {"/x?" + url.QueryEscape("links[home_url]") + "=" + url.QueryEscape("https://forum.example.org/index.php"), nil, 200},
+		"a style sheet elsewhere":      {"/x?view=" + url.QueryEscape("https://cdn.example.org/a.css"), nil, 200},
+		"a forwarded host":             {"/", map[string]string{"X-Forwarded-Host": "www.example.org"}, 200},
+		"an empty forwarded host":      {"/", map[string]string{"X-Forwarded-Host": ""}, 200},
+		"a forwarding server's name":   {"/", map[string]string{"X-Forwarded-Server": "_gateway"}, 200},
+		"forwarded hosts with a gap":   {"/", map[string]string{"X-Forwarded-Host": "a.example.test,, b.example.test"}, 403},
+		"forwarded host from a hyphen": {"/", map[string]string{"X-Forwarded-Host": "-a.example.test"}, 403},
 		"this site in page":            {inc("page", "https://shop.example.test/about"), nil, 200},
 		"this site in a text file":     {"/x?u=" + url.QueryEscape("https://shop.example.test/robots.txt"), nil, 200},
 		"a subdomain of this site":     {"/x?u=" + url.QueryEscape("ftp://files.shop.example.test/x"), nil, 200},
@@ -561,6 +690,200 @@ func TestLocalRulesRefuseOnTheirOwn(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			if got := do(t, srv, "GET", tc.target, "", "", tc.headers); got != tc.want {
+				t.Errorf("status %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// The Host header is the client's to write. An address counts as this site's only when the request was made to a name
+// the operator gave, so a request cannot make its own remote address local by naming that host.
+func TestThisSiteIsOnlyWhatTheOperatorNamed(t *testing.T) {
+	named := crs.DefaultSettings()
+	named.SiteHosts = []string{"shop.example.test", "www.brand.example.test", "192.0.2.7"}
+	inc := func(name, value string) string { return "/index.php?" + name + "=" + url.QueryEscape(value) }
+	for name, tc := range map[string]struct {
+		settings     crs.Settings
+		host, target string
+		want         int
+	}{
+		"no names: this site is not exempt":    {crs.DefaultSettings(), "shop.example.test", inc("page", "https://shop.example.test/about"), 403},
+		"no names: a bare host is not exempt":  {crs.DefaultSettings(), "shop.example.test", "/x?u=" + url.QueryEscape("//shop.example.test/x"), 403},
+		"no names: a trailing dot":             {crs.DefaultSettings(), "shop.example.test", inc("page", "http://evil.example./x"), 403},
+		"no names: an empty host":              {crs.DefaultSettings(), "shop.example.test", inc("page", "http:///x"), 403},
+		"the request names the remote host":    {named, "evil.example", inc("page", "http://evil.example/x"), 403},
+		"the same with an FTP address":         {named, "evil.example", "/x?u=" + url.QueryEscape("ftp://evil.example/x"), 403},
+		"the same with a text file":            {named, "evil.example", "/x?u=" + url.QueryEscape("http://evil.example/shell.txt"), 403},
+		"the same with a script":               {named, "evil.example", "/x?view=" + url.QueryEscape("http://evil.example/a.php"), 403},
+		"a host that ends like a site name":    {named, "shop.example.test.evil.example", inc("page", "http://shop.example.test.evil.example/x"), 403},
+		"a host that starts like a site name":  {named, "evilshop.example.test", inc("page", "http://evilshop.example.test/x"), 403},
+		"a request to a host ending in a name": {named, "evilshop.example.test", inc("page", "https://shop.example.test/about"), 403},
+		"a request to a host starting with it": {named, "shop.example.test.evil.example", inc("page", "https://shop.example.test/about"), 403},
+		"a trailing dot on a remote address":   {named, "shop.example.test", inc("page", "http://evil.example./x"), 403},
+		"another of the site's names":          {named, "shop.example.test", inc("page", "https://brand.example.test/a"), 403},
+		"this site":                            {named, "shop.example.test", inc("page", "https://shop.example.test/about"), 200},
+		"this site with a port":                {named, "shop.example.test:8443", inc("page", "https://shop.example.test:8443/about"), 200},
+		"this site in capitals and with a dot": {named, "SHOP.Example.Test.", inc("page", "https://shop.example.test/about"), 200},
+		"the name without its www":             {named, "www.brand.example.test", inc("page", "https://brand.example.test/a"), 200},
+		"a subdomain of the name without www":  {named, "www.brand.example.test", inc("page", "https://cdn.brand.example.test/a"), 200},
+		"the bare name of a www site":          {named, "brand.example.test", inc("page", "https://www.brand.example.test/a"), 200},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv, _ := serve(t, tc.settings)
+			if got := do(t, srv, "GET", tc.target, "", "", map[string]string{"Host": tc.host}); got != tc.want {
+				t.Errorf("status %d, want %d", got, tc.want)
+			}
+		})
+	}
+	for name, hosts := range map[string][]string{
+		"a name with a quote":    {`shop.example.test"`},
+		"a name with a space":    {"shop example.test"},
+		"a name with a slash":    {"shop.example.test/x"},
+		"a name with a wildcard": {"*.example.test"},
+		"an empty name":          {""},
+		"a name of 254 letters":  {strings.Repeat("a", 254)},
+		"a name in capitals":     {"Shop.Example.Test"},
+		"a name with a capital":  {"Shop.example.test"},
+		"4,097 names":            slices.Repeat([]string{"shop.example.test"}, 4097),
+	} {
+		s := crs.DefaultSettings()
+		s.SiteHosts = hosts
+		if _, err := s.Directives(); err == nil {
+			t.Errorf("%s accepted", name)
+		}
+	}
+	// Many long names do not fit one line of rules, and the rule parser stops without a word at a line longer than its
+	// buffer of 64 KiB: every rule after it would be missing. With 256 names of full length the rules are all there, and
+	// the first name and the last are both this site.
+	long := crs.DefaultSettings()
+	label := strings.Repeat("a", 61)
+	for i := range 256 {
+		long.SiteHosts = append(long.SiteHosts, fmt.Sprintf("t%03d.%s.%s.%s.%s.example.test", i, label, label, label, strings.Repeat("b", 49)))
+	}
+	if n := len(long.SiteHosts[0]); n != 253 {
+		t.Fatalf("the names are %d letters long, want the longest a name can be", n)
+	}
+	srv, _ := serve(t, long)
+	for name, tc := range map[string]struct {
+		host, target string
+		want         int
+	}{
+		"an injection":                         {long.SiteHosts[0], "/?id=" + url.QueryEscape("1' OR '1'='1' -- "), 403},
+		"a link to the first name":             {long.SiteHosts[0], inc("page", "https://"+long.SiteHosts[0]+"/about"), 200},
+		"a link to the last name":              {long.SiteHosts[255], inc("page", "https://"+long.SiteHosts[255]+"/about"), 200},
+		"a link from one name to another host": {long.SiteHosts[255], inc("page", "https://evil.example/about"), 403},
+	} {
+		t.Run("many long names: "+name, func(t *testing.T) {
+			if got := do(t, srv, "GET", tc.target, "", "", map[string]string{"Host": tc.host}); got != tc.want {
+				t.Errorf("status %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// The stricter rules refuse what some sites receive in ordinary use (a page called /console, a visitor's own web address
+// in a form), so each is off until it is named.
+func TestStricterLocalRulesAreOffUntilSwitchedOn(t *testing.T) {
+	both, console := siteSettings(), siteSettings()
+	both.LocalRulesOn = []int{5006101, 5006102}
+	console.LocalRulesOn = []int{5006101}
+	script := func(field, value string) string { return field + "=" + url.QueryEscape(value) }
+	for name, tc := range map[string]struct {
+		settings                 crs.Settings
+		method, target, ct, body string
+		want                     int
+	}{
+		"on: the request names the remote host": {both, "POST", "/contact?host=evil.example", form, script("input_3", "http://evil.example/a.php"), 403},
+		"off: a console page":                   {siteSettings(), "GET", "/console", "", "", 200},
+		"off: a script in a form":               {siteSettings(), "POST", "/contact", form, script("input_3", "http://evil.example/a.php"), 200},
+		"off: a script in JSON":                 {siteSettings(), "POST", "/api", "application/json", `{"input":"http://evil.example/loadtest.php"}`, 200},
+		"on: a console page":                    {both, "GET", "/console", "", "", 403},
+		"on: a console page with a slash":       {both, "GET", "/console/", "", "", 403},
+		"on: a console page in capitals":        {both, "GET", "/Console", "", "", 403},
+		"on: a script in a form":                {both, "POST", "/contact", form, script("input_3", "http://evil.example/a.php"), 403},
+		"on: a script in JSON":                  {both, "POST", "/api", "application/json", `{"input":"http://evil.example/loadtest.php"}`, 403},
+		"on: a script in nested JSON":           {both, "POST", "/api", "application/json", `{"a":{"b":["https://evil.example/x.php?y=1"]}}`, 403},
+		"on: a script with a port":              {both, "POST", "/contact", form, script("input", "http://evil.example:8080/loadtest.php"), 403},
+		"on: a script on a look-alike host":     {both, "POST", "/contact", form, script("input", "http://evilshop.example.test/a.php"), 403},
+		"on: a script before one on this site":  {both, "POST", "/contact", form, script("a", "http://evil.example/a.php") + "&" + script("b", "https://shop.example.test/b.php"), 403},
+		"on: a console in a shop":               {both, "GET", "/shop/console", "", "", 200},
+		"on: a console page further down":       {both, "GET", "/console/ps5", "", "", 200},
+		"on: a script in a link field":          {both, "POST", "/profile", form, script("website", "http://myblog.example.org/index.php"), 200},
+		"on: a script in a JSON link field":     {both, "POST", "/api", "application/json", `{"profile":{"homepage_url":"http://myblog.example.org/index.php"}}`, 200},
+		"on: a script on this site":             {both, "POST", "/contact", form, script("input_3", "https://shop.example.test/a.php"), 200},
+		"on: a script inside a message":         {both, "POST", "/contact", form, script("message", "my site is http://myblog.example.org/index.php thanks"), 200},
+		"on: a page on another site":            {both, "POST", "/contact", form, script("input_3", "http://myblog.example.org/about.html"), 200},
+		"one on: a console page":                {console, "GET", "/console", "", "", 403},
+		"one on: a script in a form":            {console, "POST", "/contact", form, script("input_3", "http://evil.example/a.php"), 200},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv, _ := serve(t, tc.settings)
+			var headers map[string]string
+			if _, host, ok := strings.Cut(tc.target, "?host="); ok {
+				headers = map[string]string{"Host": host}
+			}
+			if got := do(t, srv, tc.method, tc.target, tc.ct, tc.body, headers); got != tc.want {
+				t.Errorf("status %d, want %d", got, tc.want)
+			}
+		})
+	}
+	// 5006103: a forwarded host that is not the host the request was made to. A load balancer in front may send the
+	// public name there while it asks for the origin's, which is why the rule is not on for everyone.
+	forwarded, unnamed := siteSettings(), crs.DefaultSettings()
+	forwarded.LocalRulesOn, unnamed.LocalRulesOn = []int{5006103}, []int{5006103}
+	for name, tc := range map[string]struct {
+		settings            crs.Settings
+		host, header, value string
+		want                int
+	}{
+		"off: another host forwarded":               {siteSettings(), "", "X-Forwarded-Host", "evil.example", 200},
+		"other rules on: another host forwarded":    {console, "", "X-Forwarded-Host", "evil.example", 200},
+		"on: another host forwarded":                {forwarded, "", "X-Forwarded-Host", "evil.example", 403},
+		"on: another host as X-Host":                {forwarded, "", "X-Host", "evil.example", 403},
+		"on: another host as X-Original-Host":       {forwarded, "", "X-Original-Host", "evil.example", 403},
+		"on: a host that ends like this one":        {forwarded, "", "X-Forwarded-Host", "evilshop.example.test", 403},
+		"on: a host that starts like this one":      {forwarded, "", "X-Forwarded-Host", "shop.example.test.evil.example", 403},
+		"on: a subdomain of this host":              {forwarded, "", "X-Forwarded-Host", "cdn.shop.example.test", 403},
+		"on: this host and another":                 {forwarded, "", "X-Forwarded-Host", "shop.example.test, evil.example", 403},
+		"on: another host and this one":             {forwarded, "", "X-Forwarded-Host", "evil.example, shop.example.test", 403},
+		"on: another host with a port":              {forwarded, "", "X-Forwarded-Host", "evil.example:443", 403},
+		"on: another host, then this one again":     {forwarded, "", "X-Forwarded-Host", "evil.example\nshop.example.test", 403},
+		"on: this host twice":                       {forwarded, "", "X-Forwarded-Host", "shop.example.test\nshop.example.test:443", 200},
+		"on: this host":                             {forwarded, "", "X-Forwarded-Host", "shop.example.test", 200},
+		"on: this host in capitals, dot and port":   {forwarded, "", "X-Forwarded-Host", " Shop.Example.Test.:443\t", 200},
+		"on: another host with spaces around it":    {forwarded, "", "X-Host", "\tevil.example ", 403},
+		"on: this host, asked for with a port":      {forwarded, "shop.example.test:8443", "X-Forwarded-Host", "shop.example.test", 200},
+		"on: this host, asked for in capitals":      {forwarded, "SHOP.example.test.", "X-Host", "shop.example.test:8443", 200},
+		"on: the proxy's own name is not a host":    {forwarded, "", "X-Forwarded-Server", "lb7.internal.example", 200},
+		"on: no forwarded host":                     {forwarded, "", "Accept-Language", "en", 200},
+		"on: an empty forwarded host":               {forwarded, "", "X-Forwarded-Host", "", 200},
+		"on: a forwarded host of spaces":            {forwarded, "", "X-Original-Host", " \t ", 200},
+		"on: a forwarded host of a dot":             {forwarded, "", "X-Host", ".", 403},
+		"on, no names given: another host":          {unnamed, "", "X-Forwarded-Host", "evil.example", 403},
+		"on, no names given: this host":             {unnamed, "", "X-Forwarded-Host", "shop.example.test", 200},
+		"on, no names given: the host as asked for": {unnamed, "other.example.test", "X-Forwarded-Host", "other.example.test", 200},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv, _ := serve(t, tc.settings)
+			headers := map[string]string{tc.header: tc.value}
+			if tc.host != "" {
+				headers["Host"] = tc.host
+			}
+			got := 0
+			if strings.Trim(tc.value, " \t") == tc.value {
+				got = do(t, srv, "GET", "/", "", "", headers)
+			} else {
+				// HTTP/2 hands a value over with the spaces around it, and HTTP/1 has trimmed them by then, so this
+				// one goes to the handler as it is.
+				req := httptest.NewRequest("GET", "http://shop.example.test/", nil)
+				req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36")
+				req.Header.Set("Accept", "text/html,application/json")
+				req.Header[tc.header] = []string{tc.value}
+				rec := httptest.NewRecorder()
+				srv.Config.Handler.ServeHTTP(rec, req)
+				got = rec.Code
+			}
+			if got != tc.want {
 				t.Errorf("status %d, want %d", got, tc.want)
 			}
 		})

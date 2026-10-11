@@ -7,13 +7,15 @@ rules](../crs/local/), [CLI](../cmd/carnical/main.go).
 ## Local rules
 
 Carnical supplements the verified, unmodified CRS release with local rules under `crs/local/`. These
-inspect ARGS, XML text/attributes and cookies (5006011 to 5006014, the request path or the User-Agent), adding five inbound PL1
+inspect ARGS, XML text/attributes and cookies (5006011 to 5006014 and 5006018 to 5006020, the request path or the User-Agent;
+5006022, the forwarded-host headers), adding five inbound PL1
 anomaly points per finding before the CRS blocking evaluation. They load after CRS score initialization and before its attack
 rules, preserving scores in multiphase builds. They share `-mode` and thresholds;
 `-local-rules=false` omits them, and `-local-rules-off 5006012,5006013` omits single rules by id (at most 32;
-an id that is not a local rule is refused at start). The library settings are `crs.Settings.DisableLocalRules` and
-`crs.Settings.LocalRulesOff`; a policy file cannot change them. URL, HTML and JavaScript decoding is for detection
-only; values are not rewritten.
+an id that is not a local rule is refused at start). `-local-rules-on 5006101,5006102,5006103` switches on the [stricter
+rules](#stricter-rules), which are off unless named. The library settings are `crs.Settings.DisableLocalRules`,
+`crs.Settings.LocalRulesOff` and `crs.Settings.LocalRulesOn`; a policy file cannot change them. URL, HTML and JavaScript
+decoding is for detection only; values are not rewritten.
 
 | Rule | Family |
 | --- | --- |
@@ -23,19 +25,38 @@ only; values are not rewritten.
 | 5006006 | Parent traversal, including nested percent-encoded markers |
 | 5006007 | Base64/hex Java serialization stream markers |
 | 5006008 | Non-HTTP fetch protocols and ambiguous numeric/userinfo authorities |
-| 5006011 | Paths only an attacker asks for: PHPUnit's `eval-stdin.php`, PHP in WordPress's uploads, cache or upgrade folders (also behind a second extension or path info), the File Manager connectors and PHP in its files folder, Slider Revolution's update folder, and well-known web shells by name. The path is decoded, normalized and lower-cased for matching. It runs for every site, since a scanner asks whether or not WordPress is there; the site's WordPress protections (`wordpress.enabled`) refuse scripts in more of its writable folders and limit logins and xmlrpc.php. Laravel Ignition's `execute-solution` (CVE-2021-3129) is in the same rule |
+| 5006011 | Paths only an attacker asks for: PHPUnit's `eval-stdin.php`, PHP in WordPress's uploads, cache or upgrade folders (also behind a second extension or path info), the File Manager connectors and PHP in its files folder, Slider Revolution's update folder, and web shells by name (`c99.php`, `r57.php`, `wso.php`, `b374k.php`, `shell.php`, `webshell.php`, `backdoor.php`). The path is decoded, normalized and lower-cased for matching. It runs for every site, since a scanner asks whether or not WordPress is there; the site's WordPress protections (`wordpress.enabled`) refuse scripts in more of its writable folders and limit logins and xmlrpc.php. Laravel Ignition's `execute-solution` (CVE-2021-3129) is in the same rule |
 | 5006012 | Debug and diagnostic interfaces that hold secrets or run code: Spring Boot actuator endpoints other than `health`, `info` and `metrics` (also behind a path parameter), Jolokia, Go's `/debug/pprof` and `/debug/vars`, Apache `server-status` and `server-info`, the Symfony profiler and Yii's debug module. A site that serves one on purpose turns the rule off with `-local-rules-off 5006012` |
 | 5006013 | Installers: WordPress `install.php` and `setup-config.php`, Joomla's `installation/index.php` and Drupal's `core/install.php`. Turn it off with `-local-rules-off 5006013` while installing through the edge |
 | 5006014 | Scanners the CRS list leaves out, by their default User-Agent: dirsearch and jaeles |
 | 5006015 | A URL of any scheme, or a `//` or `\\` path, to another host in a parameter named like something to include (`page`, `file`, `path`, `include`, `template`, `module`, `lang`, `theme` and similar, also with a bracket suffix such as `template[0]`, as an item of a JSON array (`{"page":["http://..."]}`), or after a dot such as `settings.module`) |
 | 5006016 | An FTP, SMB or SSH2 address, or a scheme-less `//host/` path, to another host in any parameter |
 | 5006017 | An `http(s)` URL to another host that ends in `.txt` or `.inc`: how remote file inclusion serves PHP without running it first |
+| 5006018 | Database administration tools: Adminer by its file name (`adminer.php`, `adminer-4.8.1.php`), phpMyAdmin and phpPgAdmin by their folder (`/phpmyadmin/`, `/phpMyAdmin-5.2.1-all-languages/`). A page that is only named after one (`/wiki/phpMyAdmin`) passes. Turn it off with `-local-rules-off 5006018` for a site that serves one through the edge on purpose |
+| 5006019 | Pages left behind that print the server's settings: `info.php`, `phpinfo.php`, `php_info.php`, `pinfo.php`, `test.php`, `phptest.php`. Turn it off with `-local-rules-off 5006019` for a site whose own page has one of these names |
+| 5006020 | Consoles that run what they are sent: the Werkzeug debugger (any request with a `__debugger__` parameter), WebLogic's console (`console.portal`, `/console/login/LoginForm.jsp`), JBoss's `/jmx-console` and invoker servlets, `/h2-console`, the Rails `/__web_console` and Tomcat's `/manager/html` and `/host-manager/html` |
+| 5006021 | The `http(s)` address of a PHP script (`.php`, `.phtml`, `.phar` and the like) on another host, as the whole value of a parameter in the URL. Parameters named like a link are left alone (`url`, `website`, `ref`, `redirect_uri`, `returnUrl`, `source`, `u`, `q` and similar): a visitor's own site, a return address or a referrer may well be a `.php` page |
+| 5006022 | An `X-Forwarded-Host`, `X-Forwarded-Server`, `X-Host` or `X-Original-Host` header that is not a host name with an optional port, a list of them, or empty: a space left by a folded line, a path, a user name. The proxy removes these headers before the application sees them; this refuses the request that carried one |
 
-Rules 5006015 to 5006017 compare each URL's host with the request's own `Host` header. Every match keeps its host under a key of its
-own, so a repeated parameter cannot hide one URL behind another, and a link to this site or one of its subdomains passes. The
-comparison trusts that header, so set `-hosts` to the names the site answers to (setup does) and the header cannot be chosen by the
-visitor. A link to a `.php` page on another host is not refused in an ordinary parameter: Matomo's `urlref`, comment forms and
-payment callbacks carry those.
+Rules 5006015 to 5006017 and 5006021 keep each URL's host under a key of its own, so a repeated parameter cannot hide one URL
+behind another, and they let through a link to this site or one of its subdomains. This site is the request's `Host` (without a
+port, a trailing dot or a leading `www.`), and only when that is one of the names given with `-hosts` (setup sets them; the
+library setting is `crs.Settings.SiteHosts`, which the proxy fills from its allowed hosts). The `Host` header alone proves
+nothing, because the visitor writes it: a request that named the remote host as its own `Host` would make any address local. With
+no names given, no address counts as this site's, and a link to the site itself in such a parameter is refused like any other.
+
+### Stricter rules
+
+Three rules refuse what some sites receive in ordinary use, so each is off until `-local-rules-on` names it:
+
+| Rule | Refuses | Why it is not on for everyone |
+| --- | --- | --- |
+| 5006101 | The path `/console`, and nothing under it: where the Werkzeug debugger and WebLogic's console start | A shop may have a page of games consoles there |
+| 5006102 | Rule 5006021 for the fields of a form or a JSON body | A form may ask for a visitor's web address under a field name that does not say so (`input_3`), and that address may be a `.php` page |
+| 5006103 | An `X-Forwarded-Host`, `X-Host` or `X-Original-Host` header that names a host other than the one the request was made to (case, a port and a trailing dot aside): how password-reset links and caches are poisoned through an application that believes the header. An empty header names no host. The proxy replaces the header with its own either way | A load balancer in front may send the public name there while it asks for the origin's |
+
+Joomla's `/administrator/index.php?option=com_config` is not refused by any rule: it is the settings page every Joomla
+administrator uses, behind Joomla's own login.
 
 Default match logs contain fixed family labels, rule IDs, severity and transaction IDs, omitting
 request content. `-log-details` enables sensitive details. Format rules 5002608/5002809 additionally

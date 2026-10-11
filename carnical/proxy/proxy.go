@@ -24,6 +24,7 @@ import (
 	"net/netip"
 	"net/url"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -187,11 +188,7 @@ func New(cfg Config) (*Edge, error) {
 		// The budget wrapper is also what applies MaxEvaluations, so this would quietly drop both limits.
 		return nil, errors.New("the evaluation budget must not be negative")
 	}
-	directives, err := cfg.CRS.Directives()
-	if err != nil {
-		return nil, err
-	}
-	e := &Edge{cfg: cfg, originTLS: originTLS, hosts: map[string]bool{}, deny: map[string]bool{}}
+	e := &Edge{originTLS: originTLS, hosts: map[string]bool{}, deny: map[string]bool{}}
 	for _, h := range cfg.AllowedHosts {
 		if n := normHost(h); n != "" {
 			e.hosts[n] = true
@@ -200,6 +197,21 @@ func New(cfg Config) (*Edge, error) {
 	if len(cfg.AllowedHosts) > 0 && len(e.hosts) == 0 {
 		return nil, errors.New("AllowedHosts has no usable name")
 	}
+	// The names this site answers to are also what the rule set takes for this site, when it lets a link to the site
+	// itself through. A request for any other name never reaches the rules (see checkRequest).
+	if len(cfg.CRS.SiteHosts) == 0 {
+		for h := range e.hosts {
+			if crs.IsSiteHost(h) {
+				cfg.CRS.SiteHosts = append(cfg.CRS.SiteHosts, h)
+			}
+		}
+		slices.Sort(cfg.CRS.SiteHosts)
+	}
+	directives, err := cfg.CRS.Directives()
+	if err != nil {
+		return nil, err
+	}
+	e.cfg = cfg
 	for _, h := range cfg.DenyHeaders {
 		e.deny[strings.ReplaceAll(strings.ToLower(strings.TrimSpace(h)), "_", "-")] = true
 	}

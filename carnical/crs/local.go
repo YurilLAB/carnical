@@ -2,6 +2,18 @@
 
 package crs
 
+// stricterLocalRules are in the rule file like the others and removed again unless Settings.LocalRulesOn names them.
+var stricterLocalRules = [...]int{5006101, 5006102, 5006103}
+
+func isStricterLocalRule(id int) bool {
+	for _, s := range stricterLocalRules {
+		if s == id {
+			return true
+		}
+	}
+	return false
+}
+
 // LocalRuleMessage returns a fixed, request-independent label for a local rule.
 // Do not use a rule's macro-expanded message in a default log.
 func LocalRuleMessage(id int) string {
@@ -40,6 +52,22 @@ func LocalRuleMessage(id int) string {
 		return "FTP, SMB or scheme-less reference to another host"
 	case 5006017:
 		return "Remote text or include file URL"
+	case 5006018:
+		return "Database administration tool"
+	case 5006019:
+		return "PHP information or test page"
+	case 5006020:
+		return "Debugger or server console"
+	case 5006021:
+		return "Script on another host in a URL parameter"
+	case 5006022:
+		return "Forwarded host header that is not a host name"
+	case 5006101:
+		return "Console path"
+	case 5006102:
+		return "Script on another host in a body parameter"
+	case 5006103:
+		return "Forwarded host that is not the host asked for"
 	default:
 		return ""
 	}

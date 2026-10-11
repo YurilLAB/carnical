@@ -765,6 +765,7 @@ func TestApplyToSetsOnlyWhatThePolicyDecides(t *testing.T) {
 	cfg := proxy.Config{MaxUpstreamInFlight: 7, EvalBudget: 3 * time.Second, UpstreamHost: "origin.internal", MaxConnsPerIP: 9, AllowUpgrade: true, LogDetails: true}
 	cfg.CRS.UploadDir = "/var/lib/carnical/uploads"
 	cfg.CRS.DisableLocalRules, cfg.CRS.LocalRulesOff = true, []int{5006012}
+	cfg.CRS.LocalRulesOn, cfg.CRS.SiteHosts = []int{5006101}, []string{"old.example.test"}
 	c.ApplyTo(&cfg)
 	if cfg.MaxUpstreamInFlight != 7 || cfg.EvalBudget != 3*time.Second || cfg.UpstreamHost != "origin.internal" || cfg.MaxConnsPerIP != 9 || !cfg.AllowUpgrade || !cfg.LogDetails {
 		t.Errorf("ApplyTo changed a setting that belongs to the machine: %+v", cfg)
@@ -774,6 +775,12 @@ func TestApplyToSetsOnlyWhatThePolicyDecides(t *testing.T) {
 	}
 	if !cfg.CRS.DisableLocalRules || !reflect.DeepEqual(cfg.CRS.LocalRulesOff, []int{5006012}) {
 		t.Errorf("the operator's choice of local rules was overwritten: %v %v", cfg.CRS.DisableLocalRules, cfg.CRS.LocalRulesOff)
+	}
+	if !reflect.DeepEqual(cfg.CRS.LocalRulesOn, []int{5006101}) {
+		t.Errorf("the operator's stricter local rules were overwritten: %v", cfg.CRS.LocalRulesOn)
+	}
+	if len(cfg.CRS.SiteHosts) != 0 {
+		t.Errorf("site names from before the policy were kept: %v (the proxy takes them from the policy's hosts)", cfg.CRS.SiteHosts)
 	}
 	if !reflect.DeepEqual(cfg.AllowedHosts, []string{"a.example.test"}) || !cfg.WordPress.Enabled || cfg.MaxFormBody != 4096 || !cfg.CRS.InspectResponses || !reflect.DeepEqual(cfg.DenyHeaders, []string{"next-action"}) {
 		t.Errorf("the policy's settings were not applied: %+v", cfg)

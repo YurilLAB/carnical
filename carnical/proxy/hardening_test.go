@@ -1429,6 +1429,68 @@ func TestAWriteWatchSeesAFlushThatIsStuck(t *testing.T) {
 	}
 }
 
+// The rules that refuse an address on another host let one on this site through, and "this site" is what the operator
+// named: the Host header is the client's to write, so a request must not be able to make a remote address local by
+// naming that host. With AllowedHosts set such a request never reaches the rules; without it nothing is this site's.
+func TestOnlyTheSitesOwnNamesMakeAnAddressLocal(t *testing.T) {
+	named := func(c *Config) { c.AllowedHosts = []string{"Shop.Example.Test.", "www.brand.example.test"} }
+	req := func(host, target string, headers ...string) string {
+		return "GET " + target + " HTTP/1.1\r\nHost: " + host + "\r\nUser-Agent: Mozilla/5.0 Chrome/120\r\nAccept: text/html\r\n" +
+			strings.Join(headers, "") + "Connection: close\r\n\r\n"
+	}
+	page := func(u string) string { return "/index.php?page=" + url.QueryEscape(u) }
+	for _, tt := range []struct {
+		name    string
+		change  func(*Config)
+		request string
+		want    int
+		id      int
+	}{
+		{"this site, named", named, req("shop.example.test", page("https://shop.example.test/about")), 200, 0},
+		{"this site on a port, named", named, req("shop.example.test:8443", page("https://cdn.shop.example.test:8443/a")), 200, 0},
+		{"the name without www, named", named, req("www.brand.example.test", page("https://brand.example.test/a")), 200, 0},
+		{"this site beside a name the rules cannot take", func(c *Config) { c.AllowedHosts = []string{"bücher.example.test", "shop.example.test"} },
+			req("shop.example.test", page("https://shop.example.test/about")), 200, 0},
+		{"another host, named", named, req("shop.example.test", page("http://evil.example/x")), 403, 5006015},
+		{"the request names the remote host, named", named, req("evil.example", page("http://evil.example/x")), 421, idHostNotAllowed},
+		{"the request names the remote host", nil, req("evil.example", page("http://evil.example/x")), 403, 5006015},
+		{"the same with a text file", nil, req("evil.example", "/x?u="+url.QueryEscape("http://evil.example/shell.txt")), 403, 5006017},
+		{"the same with a script", nil, req("evil.example", "/x?view="+url.QueryEscape("http://evil.example/a.php")), 403, 5006021},
+		{"this site, not named", nil, req("shop.example.test", page("https://shop.example.test/about")), 403, 5006015},
+		{"a forwarded host folded over two lines", nil, req("shop.example.test", "/", "X-Forwarded-Host: evil.example\r\n x: y\r\n"), 403, 5006022},
+		{"a forwarded host with a bare line feed", nil, req("shop.example.test", "/", "X-Forwarded-Host: evil.example\n x: y\r\n"), 403, 5006022},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var seen refusals
+			s := start(t, func(c *Config) {
+				c.OnMatch = seen.record
+				if tt.change != nil {
+					tt.change(c)
+				}
+			})
+			status, _ := s.raw(t, tt.request)
+			if status != tt.want {
+				t.Fatalf("status %d, want %d", status, tt.want)
+			}
+			if got := len(s.up.requests()) > 0; got != (tt.want == 200) {
+				t.Fatalf("reached the application: %v", got)
+			}
+			if tt.id != 0 && seen.count(tt.id) == 0 {
+				t.Fatalf("rule %d was not recorded (recorded %v)", tt.id, seen.ids)
+			}
+		})
+	}
+	// A forwarded host that is a host name is not refused, and is never what the application is told.
+	s := start(t, nil)
+	if status, _ := s.raw(t, req("shop.example.test", "/", "X-Forwarded-Host: evil.example\r\n", "X-Host: evil.example\r\n")); status != 200 {
+		t.Fatalf("an ordinary forwarded host: status %d", status)
+	}
+	got := s.up.requests()
+	if len(got) != 1 || got[0].Header.Get("X-Forwarded-Host") != "shop.example.test" || got[0].Header.Get("X-Host") != "" {
+		t.Fatalf("the application was told %q and %q", got[0].Header.Values("X-Forwarded-Host"), got[0].Header.Values("X-Host"))
+	}
+}
+
 func mustURL(s string) *url.URL {
 	u, err := url.Parse(s)
 	if err != nil {
