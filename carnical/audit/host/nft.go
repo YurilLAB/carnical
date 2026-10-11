@@ -619,7 +619,8 @@ func (t *nftTable) endsInDrop(rule string) bool {
 var (
 	PrivateRanges4 = []string{"0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "168.63.129.16", "169.254.0.0/16",
 		"172.16.0.0/12", "192.0.0.0/24", "192.168.0.0/16", "198.18.0.0/15", "224.0.0.0/4", "240.0.0.0/4"}
-	PrivateRanges6 = []string{"::", "::1", "64:ff9b::/96", "100::/64", "2002::/16", "fc00::/7", "fe80::/10", "ff00::/8"}
+	PrivateRanges6 = []string{"::", "::1", "64:ff9b::/96", "64:ff9b:1::/48", "100::/64", "2001::/23", "2001:db8::/32", "2002::/16",
+		"fc00::/7", "fe80::/10", "fec0::/10", "ff00::/8"}
 )
 
 // InternalUsers are the services that may reach only this machine, as deploy/nftables/carnical.nft sends them to internal_out.
