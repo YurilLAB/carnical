@@ -63,7 +63,7 @@ func TestTheConfinedProxyStillDoesItsJob(t *testing.T) {
 			if confined {
 				args = append(args, "-confine", "-confine-connect", fmt.Sprint(appPort))
 			}
-			var logs bytes.Buffer
+			var logs lockedLog // written by the child while the test reads it
 			cmd := exec.Command(bin, args...)
 			cmd.Stdout, cmd.Stderr = &logs, &logs
 			if err := cmd.Start(); err != nil {

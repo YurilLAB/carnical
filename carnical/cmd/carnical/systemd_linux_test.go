@@ -3,7 +3,6 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
 	"io"
 	"net"
@@ -66,7 +65,7 @@ func TestTheProxyServesOnASocketSystemdHandsOver(t *testing.T) {
 	args := []string{"-systemd-socket", "-upstream", app.URL, "-origin-allow", "127.0.0.0/8", "-max-conns-per-ip", "-1", "-confine", "-confine-connect", fmt.Sprint(app.Listener.Addr().(*net.TCPAddr).Port), "-upload-dir", uploads}
 
 	// sd_listen_fds(3): the socket is descriptor 3 and LISTEN_PID is the process's own id, which the shell sets by exec.
-	var logs bytes.Buffer
+	var logs lockedLog // written by the child while the test reads it
 	cmd := exec.Command("sh", append([]string{"-c", `export LISTEN_PID=$$ LISTEN_FDS=1; exec "$0" "$@"`, bin}, args...)...)
 	cmd.ExtraFiles = []*os.File{file}
 	cmd.Stdout, cmd.Stderr = &logs, &logs
