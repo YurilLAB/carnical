@@ -23,10 +23,12 @@ import (
 )
 
 // Manifest is a record of the state of a set of files, written when the machine was known to be good: a hash for each file that
-// exists, "absent" for a file that must not.
+// exists, "absent" for a file that must not. The record of setuid files also has each one's mode and owners (see suidMode);
+// one written before that was added has none, and is compared by contents alone.
 type Manifest struct {
 	Created string            `json:"created"`
 	Files   map[string]string `json:"files"`
+	Modes   map[string]string `json:"modes,omitempty"`
 }
 
 const absent = "absent"
@@ -380,15 +382,76 @@ func WriteSUID(ctx context.Context, src Source, path string, replace bool) error
 	if err != nil {
 		return err
 	}
-	m := Manifest{Created: time.Now().UTC().Format(time.RFC3339), Files: map[string]string{}}
+	m := Manifest{Created: time.Now().UTC().Format(time.RFC3339), Files: map[string]string{}, Modes: map[string]string{}}
 	for _, f := range files {
 		h, err := hashFile(src, f)
 		if err != nil {
 			return fmt.Errorf("%s: %w", f, err)
 		}
-		m.Files[f] = h
+		mode, err := suidMode(src, f)
+		if err != nil {
+			return fmt.Errorf("%s: %w", f, err)
+		}
+		m.Files[f], m.Modes[f] = h, mode
 	}
 	return writeJSON(path, m)
+}
+
+// suidMode is who a setuid or setgid file runs as, and for whom: its permission bits with the setuid, setgid and sticky
+// ones, and its owner and group, as "4755 0:0". The same program is another way to become another user once it is
+// setuid where it was setgid, or belongs to someone else.
+func suidMode(src Source, path string) (string, error) {
+	info, err := src.Stat(path)
+	if err != nil {
+		return "", err
+	}
+	bits := uint32(info.Mode.Perm())
+	for _, b := range []struct {
+		mode fs.FileMode
+		bit  uint32
+	}{{fs.ModeSetuid, 0o4000}, {fs.ModeSetgid, 0o2000}, {fs.ModeSticky, 0o1000}} {
+		if info.Mode&b.mode != 0 {
+			bits |= b.bit
+		}
+	}
+	return fmt.Sprintf("%04o %d:%d", bits, info.UID, info.GID), nil
+}
+
+// comesAndGoes are the kinds of mount that hold a copy of a tree that is also somewhere else, under a path that changes
+// with every copy: a container's view of its image (overlay) and a package image such as a snap's (squashfs).
+var comesAndGoes = map[string]bool{"overlay": true, "squashfs": true}
+
+// mountOf is the mount a path is on: the longest mount point it is at or below. A path on none the table has is on a
+// mount of no kind.
+func mountOf(path string, table map[string]mount) (dir string, m mount) {
+	for d, mt := range table {
+		if (path == d || strings.HasPrefix(path, strings.TrimSuffix(d, "/")+"/")) && len(d) > len(dir) {
+			dir, m = d, mt
+		}
+	}
+	return dir, m
+}
+
+// knownCopy reports whether a setuid file that the baseline does not have at its path is one the baseline has all the
+// same: it is on a mount of a kind that comes and goes, and the baseline holds a file with the same contents (and,
+// where it records them, the same mode and owners) at the same place below wherever its own copy of the tree was. A
+// container started from a recorded image, or the next revision of a snap whose setuid programs did not change, then
+// adds nothing new; a program that is not in the recorded image, or was changed, still does.
+func knownCopy(path, hash, mode string, table map[string]mount, base Manifest, byHash map[string][]string) bool {
+	dir, m := mountOf(path, table)
+	if !comesAndGoes[m.fstype] {
+		return false
+	}
+	below := strings.TrimPrefix(path, strings.TrimSuffix(dir, "/")) // from the mount point down, with its leading slash
+	if below == "" {
+		return false // the mount is the file itself: it has no place in a tree to be the same as
+	}
+	for _, p := range byHash[hash] {
+		if recorded := base.Modes[p]; strings.HasSuffix(p, below) && (recorded == "" || recorded == mode) {
+			return true
+		}
+	}
+	return false
 }
 
 // SUID checks the set of setuid and setgid files against the recorded one.
@@ -419,25 +482,40 @@ func SUID(src Source, manifestPath string) audit.Check {
 				return audit.Outcome{SkipReason: "find could not be run: " + err.Error()}
 			}
 			var out audit.Outcome
+			table := map[string]mount{}
 			if mounts, err := src.ReadFile("/proc/self/mounts"); err == nil {
+				table = mountTable(mounts)
 				for _, m := range unscannedSUIDMounts(mounts) {
 					out.Problems = append(out.Problems, "setuid files would work on "+m+", which the scan does not walk: mount it nosuid")
 				}
+			}
+			byHash := map[string][]string{}
+			for p, h := range m.Files {
+				byHash[h] = append(byHash[h], p)
 			}
 			seen := map[string]bool{}
 			for _, f := range now {
 				out.Checked++
 				seen[f] = true
+				got, err := hashFile(src, f)
+				mode, modeErr := suidMode(src, f)
 				want, known := m.Files[f]
 				if !known {
-					out.Problems = append(out.Problems, f+" is a new setuid or setgid file")
+					if err != nil || modeErr != nil || !knownCopy(f, got, mode, table, m, byHash) {
+						out.Problems = append(out.Problems, f+" is a new setuid or setgid file")
+					}
 					continue
 				}
-				switch got, err := hashFile(src, f); {
+				switch recorded := m.Modes[f]; {
 				case err != nil:
 					out.Problems = append(out.Problems, fmt.Sprintf("%s is a setuid or setgid file that cannot be read: %v", f, err))
 				case got != want:
 					out.Problems = append(out.Problems, f+" is a setuid or setgid file that has changed")
+				case recorded == "": // a baseline from before modes were recorded
+				case modeErr != nil:
+					out.Problems = append(out.Problems, fmt.Sprintf("%s is a setuid or setgid file that cannot be examined: %v", f, modeErr))
+				case mode != recorded:
+					out.Problems = append(out.Problems, fmt.Sprintf("%s is a setuid or setgid file whose mode or owner has changed: it was %s and is %s", f, recorded, mode))
 				}
 			}
 			for f := range m.Files {

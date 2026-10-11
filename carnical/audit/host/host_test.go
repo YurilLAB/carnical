@@ -1362,6 +1362,220 @@ func TestSUID(t *testing.T) {
 	}
 }
 
+// A container's view of its image, and a snap's revision, are copies of a tree under a path that is new every time. A
+// setuid program in one is not new when the baseline has the same program, with the same mode and owners, at the same
+// place in another copy; anything else there still is.
+func TestSUIDCopiesOfARecordedTree(t *testing.T) {
+	needLinux(t)
+	dir := privateDir(t)
+	baseline := filepath.Join(dir, "suid.json")
+	put := func(mode os.FileMode, content string, path ...string) string {
+		t.Helper()
+		full := filepath.Join(append([]string{dir}, path...)...)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(full, mode); err != nil {
+			t.Fatal(err)
+		}
+		return full
+	}
+	const setuid, setgid = 0o755 | os.ModeSetuid, 0o755 | os.ModeSetgid
+	// What was there when the baseline was written: an image layer on the machine's own disk, one container made from
+	// it, and one revision of a snap.
+	layer := put(setuid, "su", "layers", "l1", "diff", "usr", "bin", "su")
+	wall := put(setgid, "wall", "layers", "l1", "diff", "usr", "bin", "wall")
+	first := put(setuid, "su", "c1", "merged", "usr", "bin", "su")
+	snap := put(setuid, "sudo", "snap", "core", "1974", "usr", "bin", "sudo")
+	mounts := func(extra ...string) string {
+		m := "/dev/sda1 / ext4 rw 0 0\n"
+		for i := 0; i+1 < len(extra); i += 2 {
+			m += "x " + filepath.Join(dir, extra[i]) + " " + extra[i+1] + " rw 0 0\n"
+		}
+		return m
+	}
+	list := func(paths ...string) string { return strings.Join(paths, "\x00") + "\x00" }
+	recorded := list(layer, wall, first, snap)
+	src := &suidFake{runFake: runFake{files: OS{}, out: recorded}, mounts: mounts("c1/merged", "overlay", "snap/core/1974", "squashfs")}
+	if err := WriteSUID(context.Background(), src, baseline, false); err != nil {
+		t.Fatal(err)
+	}
+	if r := run(SUID(src, baseline)); r.Status != audit.Pass || r.Checked != 4 {
+		t.Fatalf("the machine as it was recorded: %+v", r)
+	}
+	withModes, err := os.ReadFile(baseline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m Manifest
+	if err := json.Unmarshal(withModes, &m); err != nil || m.Modes[wall] == "" || !strings.HasPrefix(m.Modes[layer], "4755 ") || !strings.HasPrefix(m.Modes[wall], "2755 ") {
+		t.Fatalf("the baseline does not record modes: %v %+v", err, m.Modes)
+	}
+	m.Modes = nil
+	withoutModes, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name    string
+		make    func() string // the new file; "" for none
+		mounts  []string
+		problem string // "" if nothing is reported
+		old     bool   // against a baseline from before modes were recorded
+	}{
+		{"a second container from the same image", func() string { return put(setuid, "su", "c2", "merged", "usr", "bin", "su") },
+			[]string{"c2/merged", "overlay"}, "", false},
+		{"the next revision of the snap, its program unchanged", func() string { return put(setuid, "sudo", "snap", "core", "2015", "usr", "bin", "sudo") },
+			[]string{"snap/core/2015", "squashfs"}, "", false},
+		{"the same against an old baseline", func() string { return put(setuid, "sudo", "snap", "core", "2015", "usr", "bin", "sudo") },
+			[]string{"snap/core/2015", "squashfs"}, "", true},
+		{"a container whose program is another", func() string { return put(setuid, "su with a back door", "c2", "merged", "usr", "bin", "su") },
+			[]string{"c2/merged", "overlay"}, "c2/merged/usr/bin/su is a new setuid or setgid file", false},
+		{"the next revision with a changed program", func() string { return put(setuid, "sudo 1.9.16", "snap", "core", "2015", "usr", "bin", "sudo") },
+			[]string{"snap/core/2015", "squashfs"}, "snap/core/2015/usr/bin/sudo is a new setuid or setgid file", false},
+		{"the recorded program somewhere else in the container", func() string { return put(setuid, "su", "c2", "merged", "usr", "local", "bin", "su") },
+			[]string{"c2/merged", "overlay"}, "c2/merged/usr/local/bin/su is a new setuid or setgid file", false},
+		{"the recorded program under another name", func() string { return put(setuid, "su", "c2", "merged", "usr", "bin", "xsu") },
+			[]string{"c2/merged", "overlay"}, "c2/merged/usr/bin/xsu is a new setuid or setgid file", false},
+		{"a program that was setgid, now setuid, in a new container", func() string { return put(setuid, "wall", "c2", "merged", "usr", "bin", "wall") },
+			[]string{"c2/merged", "overlay"}, "c2/merged/usr/bin/wall is a new setuid or setgid file", false},
+		{"the same against an old baseline, which cannot tell", func() string { return put(setuid, "wall", "c2", "merged", "usr", "bin", "wall") },
+			[]string{"c2/merged", "overlay"}, "", true},
+		{"a copy on a disk of the machine's own", func() string { return put(setuid, "su", "c2", "merged", "usr", "bin", "su") },
+			[]string{"c2/merged", "ext4"}, "c2/merged/usr/bin/su is a new setuid or setgid file", false},
+		{"a copy on no mount of its own", func() string { return put(setuid, "su", "c2", "merged", "usr", "bin", "su") },
+			nil, "c2/merged/usr/bin/su is a new setuid or setgid file", false},
+		{"a copy on a disk mounted inside the container", func() string { return put(setuid, "su", "c2", "merged", "data", "usr", "bin", "su") },
+			[]string{"c2/merged", "overlay", "c2/merged/data", "ext4"}, "c2/merged/data/usr/bin/su is a new setuid or setgid file", false},
+		{"a mount that is the file itself", func() string { return put(setuid, "su", "c2", "one") },
+			[]string{"c2/one", "overlay"}, "c2/one is a new setuid or setgid file", false},
+		// The rest of the path, "erged/usr/bin/su", ends a recorded one, but c2/m is not a directory above the file.
+		{"a mount whose name only begins the same", func() string { return put(setuid, "su", "c2", "merged", "usr", "bin", "su") },
+			[]string{"c2/m", "overlay"}, "c2/merged/usr/bin/su is a new setuid or setgid file", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			content := withModes
+			if tt.old {
+				content = withoutModes
+			}
+			if err := os.WriteFile(baseline, content, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			added := tt.make()
+			defer os.RemoveAll(filepath.Join(dir, "c2"))
+			defer os.RemoveAll(filepath.Join(dir, "snap", "core", "2015"))
+			src := &suidFake{runFake: runFake{files: OS{}, out: recorded + list(added)},
+				mounts: mounts(append([]string{"c1/merged", "overlay", "snap/core/1974", "squashfs"}, tt.mounts...)...)}
+			r := run(SUID(src, baseline))
+			if tt.problem == "" {
+				if r.Status != audit.Pass || r.Checked != 5 {
+					t.Fatalf("%+v", r)
+				}
+				return
+			}
+			if r.Status != audit.Fail || len(r.Problems) != 1 || r.Problems[0] != filepath.Join(dir, filepath.FromSlash(strings.Fields(tt.problem)[0]))+strings.TrimPrefix(tt.problem, strings.Fields(tt.problem)[0]) {
+				t.Fatalf("%+v", r)
+			}
+		})
+	}
+
+	// A recorded file whose contents are the same but which is setuid where it was setgid, or belongs to someone else,
+	// has changed. A baseline from before modes were recorded cannot say so, and says nothing.
+	if err := os.WriteFile(baseline, withModes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(wall, setuid|os.ModeSetgid); err != nil {
+		t.Fatal(err)
+	}
+	r := run(SUID(src, baseline))
+	if r.Status != audit.Fail || len(r.Problems) != 1 || !strings.HasPrefix(r.Problems[0], wall+" is a setuid or setgid file whose mode or owner has changed: it was 2755 ") ||
+		!strings.Contains(r.Problems[0], " and is 6755 ") {
+		t.Fatalf("a setgid file made setuid: %+v", r)
+	}
+	if err := os.WriteFile(baseline, withoutModes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if r := run(SUID(src, baseline)); r.Status != audit.Pass {
+		t.Fatalf("the same against an old baseline: %+v", r)
+	}
+	if err := os.Chmod(wall, setgid); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(baseline, withModes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	owned := &ownedBy{Source: src, path: layer, uid: 4242}
+	r = run(SUID(owned, baseline))
+	if r.Status != audit.Fail || len(r.Problems) != 1 || !strings.HasPrefix(r.Problems[0], layer+" is a setuid or setgid file whose mode or owner has changed: it was 4755 ") ||
+		!strings.Contains(r.Problems[0], " and is 4755 4242:") {
+		t.Fatalf("a setuid file that changed hands: %+v", r)
+	}
+	gone := &ownedBy{Source: src, path: layer, uid: -1}
+	if r := run(SUID(gone, baseline)); r.Status != audit.Fail || len(r.Problems) != 1 || !strings.Contains(r.Problems[0], layer+" is a setuid or setgid file that cannot be examined") {
+		t.Fatalf("a setuid file that cannot be examined: %+v", r)
+	}
+	// A new container's copy that cannot be examined is new. Against an old baseline, which has no mode to compare,
+	// nothing else would say so.
+	if err := os.WriteFile(baseline, withoutModes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	second := put(setuid, "su", "c2", "merged", "usr", "bin", "su")
+	unseen := &ownedBy{Source: &suidFake{runFake: runFake{files: OS{}, out: recorded + list(second)},
+		mounts: mounts("c1/merged", "overlay", "snap/core/1974", "squashfs", "c2/merged", "overlay")}, path: second, uid: -1}
+	if r := run(SUID(unseen, baseline)); r.Status != audit.Fail || len(r.Problems) != 1 || r.Problems[0] != second+" is a new setuid or setgid file" {
+		t.Fatalf("a copy that cannot be examined: %+v", r)
+	}
+}
+
+// What is recorded of a setuid file besides its contents: every bit that decides whom it runs as, and its owners.
+func TestSUIDMode(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		info Info
+		want string
+	}{
+		{"setuid root", Info{Mode: 0o755 | fs.ModeSetuid}, "4755 0:0"},
+		{"setgid to a group", Info{Mode: 0o755 | fs.ModeSetgid, GID: 5}, "2755 0:5"},
+		{"both, owned by a user", Info{Mode: 0o750 | fs.ModeSetuid | fs.ModeSetgid, UID: 1000, GID: 1000}, "6750 1000:1000"},
+		{"sticky", Info{Mode: 0o755 | fs.ModeSticky}, "1755 0:0"},
+		{"every bit", Info{Mode: 0o777 | fs.ModeSetuid | fs.ModeSetgid | fs.ModeSticky, UID: 1, GID: 2}, "7777 1:2"},
+		{"no special bit", Info{Mode: 0o644, UID: 3, GID: 4}, "0644 3:4"},
+		{"no permission at all", Info{Mode: fs.ModeSetuid}, "4000 0:0"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := suidMode(&fake{stats: map[string]Info{"/f": tt.info}}, "/f")
+			if err != nil || got != tt.want {
+				t.Fatalf("%q (%v), want %q", got, err, tt.want)
+			}
+		})
+	}
+	if got, err := suidMode(&fake{}, "/f"); err == nil {
+		t.Fatalf("a file that cannot be examined has mode %q", got)
+	}
+}
+
+// ownedBy is a machine on which one file belongs to another user (uid -1: it cannot be examined at all).
+type ownedBy struct {
+	Source
+	path string
+	uid  int
+}
+
+func (o *ownedBy) Stat(p string) (Info, error) {
+	info, err := o.Source.Stat(p)
+	if p != o.path || err != nil {
+		return info, err
+	}
+	if o.uid < 0 {
+		return Info{}, &fs.PathError{Op: "stat", Path: p, Err: fs.ErrPermission}
+	}
+	info.UID = o.uid
+	return info, nil
+}
+
 // runFake reads real files and answers find from a script.
 type runFake struct {
 	files OS
