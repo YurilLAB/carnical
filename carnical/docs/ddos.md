@@ -107,11 +107,13 @@ as the client kept it up.
 
 Now, when no place is free, the response whose write has been stuck the longest, and for at least five seconds, is ended and
 its place goes to the waiting request at once, and its request to the application is cancelled at the same moment, so the
-application never has more requests than places. A slow client is left alone while there are places to spare. The ended response
-may take a few seconds more to close (a TLS connection first tries to send its `close_notify` to the client that is not
-reading), so at most an eighth of the places can be in that state at once; a request that finds none to take gets the usual
-503. Each case is logged as rule 5000052. The limits are fixed, and what they cost a legitimate client is a download cut
-short when it had stopped taking data for five seconds while the whole site was at its limit.
+application never has more requests than places. A slow client is left alone while there are places to spare. An HTTP/1
+connection is dropped at that moment, without the TLS goodbye a client that is not reading would never take and without
+what the kernel had still to send it, so the client sees a reset and nothing of the connection is left; an HTTP/2 stream
+is reset and its connection stays for the client's other requests. At most an eighth of the places can be ending at once; a
+request that finds none to take gets the usual 503. Each case is logged as rule 5000052. The limits are fixed, and what they
+cost a legitimate client is a download cut short when it had stopped taking data for five seconds while the whole site was
+at its limit.
 
 ## Who still gets through during an attack
 

@@ -98,3 +98,16 @@ The same review showed that the per-address limit follows the busiest address. I
 requests a second against the 50 a second limit, for 45 minutes on a site of 30 a second, raised the per-address limit for
 every address to 20x (control without it: 1x). This is the adjustment working as designed for shared addresses, and it is now
 listed under what the protection cannot do.
+
+## 2026-10-11: A connection that is not read is dropped, not waited for
+
+When a response over HTTP/1 with TLS was ended to free its place (rule 5000052), the place was free at once but the
+connection was not: closing it first writes a TLS `close_notify` to the same client that is not reading, which Go waits
+on for five seconds, and after the close the kernel kept the unsent part of the response and went on offering it. A
+client could so hold a socket, and the memory of what was queued for it, well past the hand-over. The connection is now
+closed underneath TLS and set to reset. The test, which goes through the shield's listener as a deployment does, finds
+the server done with the connection within two seconds of the hand-over (before: five or more), the client told of a
+reset and not of an orderly close, and the other connection untouched. An HTTP/2 stream is reset as before, since its
+connection carries the client's other requests. The test runs on Windows and Linux and under the race detector. Of
+eleven deliberate breaks of the change ten fail it; the eleventh (not cancelling the request to the application when the
+connection is dropped) makes no difference, because dropping the connection cancels the request as well.

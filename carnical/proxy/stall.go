@@ -4,6 +4,7 @@ package proxy
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -14,8 +15,7 @@ import (
 // been written to the client. A client that opens many requests and stops reading (an HTTP/2 stream window of zero, or a
 // full TCP window) would hold their places until the write timeout, and every other visitor would be told the site is busy.
 // So when no place is free, the response whose write has been stuck the longest, for at least stallGrace, is ended and its
-// place goes to the new request at once: an HTTP/1 connection over TLS can take seconds more to close, because its
-// close_notify waits on the same client. A slow client is left alone while there are places to spare.
+// place goes to the new request at once. A slow client is left alone while there are places to spare.
 const stallGrace = 5 * time.Second
 
 var clockStart = time.Now()
@@ -36,6 +36,7 @@ type writeWatch struct {
 	use    sync.Mutex
 	gone   bool
 	cancel context.CancelFunc // cancels the request to the application
+	conn   net.Conn           // the client's connection when this response is all it carries (HTTP/1), or nil
 }
 
 func (w *writeWatch) setCancel(c context.CancelFunc) {
@@ -44,9 +45,11 @@ func (w *writeWatch) setCancel(c context.CancelFunc) {
 	w.use.Unlock()
 }
 
-// cut ends the response: the request to the application is cancelled, so that it stops using the application at once, and the
-// write deadline is put in the past, so that an HTTP/2 stream is reset and an HTTP/1 connection's pending write fails. It does
-// nothing if the handler is already returning.
+// cut ends the response: the request to the application is cancelled, so that it stops using the application at once, and
+// the client is let go of. An HTTP/1 connection carries nothing else, so it is dropped (see drop). An HTTP/2 connection
+// carries other streams, so only this one is reset, by putting its write deadline in the past; the same is done for an
+// HTTP/1 response whose connection is not known (a server that was not made by Edge.Server). It does nothing if the
+// handler is already returning.
 func (w *writeWatch) cut() {
 	w.use.Lock()
 	defer w.use.Unlock()
@@ -56,7 +59,31 @@ func (w *writeWatch) cut() {
 	if w.cancel != nil {
 		w.cancel()
 	}
+	if w.conn != nil {
+		drop(w.conn)
+		return
+	}
 	_ = http.NewResponseController(w.ResponseWriter).SetWriteDeadline(time.Now())
+}
+
+type connKey struct{}
+
+// drop closes the connection of a client that is not reading, without waiting on it. Closing it the ordinary way would:
+// TLS first writes a close_notify, to that same client, for up to five seconds, and after the close the kernel goes on
+// holding the unsent part of the response and offering it for minutes. So the TCP connection under any TLS is closed
+// directly, set to send a reset and forget what was not sent.
+func drop(c net.Conn) {
+	for {
+		under, ok := c.(interface{ NetConn() net.Conn })
+		if !ok {
+			break
+		}
+		c = under.NetConn()
+	}
+	if l, ok := c.(interface{ SetLinger(int) error }); ok {
+		_ = l.SetLinger(0) // without it the close below still frees the place; the kernel only holds the data longer
+	}
+	_ = c.Close()
 }
 
 type writeWatchKey struct{}

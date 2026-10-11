@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -26,6 +27,7 @@ import (
 
 	"github.com/YurilLAB/coraza/carnical/crowdsec"
 	"github.com/YurilLAB/coraza/carnical/crs"
+	"github.com/YurilLAB/coraza/carnical/shield"
 )
 
 // Everything here that says so runs with the rule set OFF. These protections must hold without it: they are the part
@@ -887,7 +889,20 @@ func TestHTTP2LimitsAreAdvertisedToClients(t *testing.T) {
 }
 
 // stallEdge serves a large response at /big through an edge with the given number of upstream places, over TLS with HTTP/2.
-func stallEdge(t *testing.T, places int, active *atomic.Int64) (*httptest.Server, *Edge, *refusals, *x509.CertPool) {
+// connCloses records when the server was done with each client connection, by the client's address.
+type connCloses struct {
+	mu sync.Mutex
+	at map[string]time.Time
+}
+
+func (c *connCloses) when(addr string) (time.Time, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	at, ok := c.at[addr]
+	return at, ok
+}
+
+func stallEdge(t *testing.T, places int, active *atomic.Int64) (*httptest.Server, *Edge, *refusals, *x509.CertPool, *connCloses) {
 	t.Helper()
 	chunk := []byte(strings.Repeat("x", 64<<10)) // /big never ends: more than every socket buffer on the way
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -906,7 +921,15 @@ func stallEdge(t *testing.T, places int, active *atomic.Int64) (*httptest.Server
 	}))
 	t.Cleanup(up.Close)
 	rec := &refusals{}
-	cfg := Config{Upstream: mustURL(up.URL), Origin: loopback, CRS: crs.DefaultSettings(), MaxUpstreamInFlight: places, OnMatch: rec.record}
+	// Connections come in through the shield's listener, as they do in the program: the connection the edge is given is
+	// the shield's, under the TLS one.
+	sh, err := shield.New(shield.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(sh.Close)
+	cfg := Config{Upstream: mustURL(up.URL), Origin: loopback, CRS: crs.DefaultSettings(), MaxUpstreamInFlight: places, OnMatch: rec.record,
+		Shield: sh, MaxConnsPerIP: -1}
 	ruleSetOff(&cfg)
 	e, err := New(cfg)
 	if err != nil {
@@ -914,13 +937,26 @@ func stallEdge(t *testing.T, places int, active *atomic.Int64) (*httptest.Server
 	}
 	t.Cleanup(func() { e.Close() })
 	srv := httptest.NewUnstartedServer(nil)
+	srv.Listener = sh.Listener(srv.Listener)
 	srv.Config = e.Server("")
+	closes := &connCloses{at: map[string]time.Time{}}
+	state := srv.Config.ConnState
+	srv.Config.ConnState = func(c net.Conn, st http.ConnState) {
+		if state != nil {
+			state(c, st)
+		}
+		if st == http.StateClosed {
+			closes.mu.Lock()
+			closes.at[c.RemoteAddr().String()] = time.Now()
+			closes.mu.Unlock()
+		}
+	}
 	srv.EnableHTTP2 = true
 	srv.StartTLS()
 	t.Cleanup(srv.Close)
 	pool := x509.NewCertPool()
 	pool.AddCert(srv.Certificate())
-	return srv, e, rec, pool
+	return srv, e, rec, pool, closes
 }
 
 // waitActive waits until the application is sending exactly want large responses.
@@ -985,7 +1021,7 @@ func TestAClientThatStopsReadingCannotHoldTheUpstream(t *testing.T) {
 	t.Run("HTTP/2 streams with a window of zero", func(t *testing.T) {
 		t.Parallel()
 		var active atomic.Int64
-		srv, e, rec, pool := stallEdge(t, 4, &active)
+		srv, e, rec, pool, _ := stallEdge(t, 4, &active)
 		conn, err := tls.Dial("tcp", srv.Listener.Addr().String(), &tls.Config{RootCAs: pool, ServerName: "example.com", NextProtos: []string{"h2"}})
 		if err != nil {
 			t.Fatal(err)
@@ -1078,7 +1114,8 @@ func TestAClientThatStopsReadingCannotHoldTheUpstream(t *testing.T) {
 	t.Run("HTTP/1.1 connections that stop reading", func(t *testing.T) {
 		t.Parallel()
 		var active atomic.Int64
-		srv, e, rec, pool := stallEdge(t, 2, &active)
+		srv, e, rec, pool, closes := stallEdge(t, 2, &active)
+		var clients []*tls.Conn
 		for i := 0; i < 2; i++ {
 			raw, err := net.Dial("tcp", srv.Listener.Addr().String())
 			if err != nil {
@@ -1089,6 +1126,7 @@ func TestAClientThatStopsReadingCannotHoldTheUpstream(t *testing.T) {
 			}
 			c := tls.Client(raw, &tls.Config{RootCAs: pool, ServerName: "example.com", NextProtos: []string{"http/1.1"}})
 			defer c.Close()
+			clients = append(clients, c)
 			if _, err := c.Write([]byte("GET /big HTTP/1.1\r\nHost: example.com\r\n\r\n")); err != nil {
 				t.Fatal(err)
 			}
@@ -1103,11 +1141,38 @@ func TestAClientThatStopsReadingCannotHoldTheUpstream(t *testing.T) {
 		if got := fetch(t, srv, pool); got != http.StatusOK || rec.count(idUpstreamReclaimed) != 1 {
 			t.Fatalf("with both places held by connections that do not read: status %d, %d responses ended", got, rec.count(idUpstreamReclaimed))
 		}
-		// The ended response's request to the application stops at once, not after the seconds its TLS connection takes to close.
+		// The ended response's request to the application stops at once.
 		waitActive(t, &active, 1, time.Second)
-		// The ended response's handler returns within a few seconds (a TLS connection first tries to send its close_notify to
-		// the client that is not reading) without giving back the place that went to the new request: one place is still
-		// held, by the response that was not ended, which is left to go on.
+		// So does its connection: the server is done with it without waiting for the client to take a TLS close_notify
+		// (which a client that is not reading holds up for five seconds), and the client finds it reset, not closed in
+		// good order with the unsent part of the response still on its way. The other connection is left alone.
+		var ended *tls.Conn
+		for deadline := time.Now().Add(2 * time.Second); ended == nil; time.Sleep(10 * time.Millisecond) {
+			for _, c := range clients {
+				if _, ok := closes.when(c.LocalAddr().String()); ok {
+					if ended != nil {
+						t.Fatal("the server closed both connections, and only one response was ended")
+					}
+					ended = c
+				}
+			}
+			if ended == nil && time.Now().After(deadline) {
+				t.Fatal("two seconds after its response was ended, the server still holds the connection of the client that does not read")
+			}
+		}
+		if err := ended.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		// (Windows words a reset as a connection "forcibly closed by the remote host".)
+		if _, err := io.Copy(io.Discard, ended); err == nil {
+			t.Fatal("the ended connection closed in good order: it was not reset")
+		} else if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			t.Fatalf("the ended connection is still open at the client: %v", err)
+		} else if msg := err.Error(); !strings.Contains(msg, "connection reset") && !strings.Contains(msg, "forcibly closed") {
+			t.Fatalf("the ended connection was closed, not reset: %v", err)
+		}
+		// The ended response's handler has returned without giving back the place that went to the new request: one place
+		// is still held, by the response that was not ended, which is left to go on.
 		for deadline := time.Now().Add(15 * time.Second); ; time.Sleep(10 * time.Millisecond) {
 			e.places.mu.Lock()
 			ending, held, free := e.places.ending, len(e.places.held), len(e.places.free)

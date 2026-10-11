@@ -74,6 +74,15 @@ func (c *conn) Close() error {
 	return c.Conn.Close()
 }
 
+// SetLinger passes the setting to the connection underneath, so that whoever holds this one can have it reset when it
+// is closed (the proxy does, to drop a client that stopped reading).
+func (c *conn) SetLinger(sec int) error {
+	if l, ok := c.Conn.(interface{ SetLinger(int) error }); ok {
+		return l.SetLinger(sec)
+	}
+	return nil
+}
+
 func remoteAddr(c net.Conn) (netip.Addr, bool) {
 	if ta, ok := c.RemoteAddr().(*net.TCPAddr); ok {
 		ap := ta.AddrPort()

@@ -266,7 +266,9 @@ func (e *Edge) Server(addr string) *http.Server {
 		// HTTP/2 over TLS. Few concurrent streams, small frames, and a write timeout so that a client that stops
 		// reading cannot hold a connection. (Cleartext HTTP/2 is left off: it is how request smuggling past a front
 		// end that does not speak it is done.)
-		HTTP2: &http.HTTP2Config{MaxConcurrentStreams: 100, MaxReadFrameSize: 16 << 10, WriteByteTimeout: 30 * time.Second}}
+		HTTP2: &http.HTTP2Config{MaxConcurrentStreams: 100, MaxReadFrameSize: 16 << 10, WriteByteTimeout: 30 * time.Second},
+		// Each request can find the connection it came on, to drop it when its client stops reading (see stall.go).
+		ConnContext: func(ctx context.Context, c net.Conn) context.Context { return context.WithValue(ctx, connKey{}, c) }}
 	if limit := e.cfg.MaxConnsPerIP; limit >= 0 {
 		if limit == 0 {
 			limit = 128
@@ -331,6 +333,9 @@ func (e *Edge) guard(next http.Handler) http.Handler {
 		// Coraza splits RemoteAddr at its last colon, so an IPv6 address is given without brackets.
 		r.RemoteAddr = fmt.Sprintf("%s:%d", addr, port)
 		watch := &writeWatch{ResponseWriter: w}
+		if r.ProtoMajor == 1 { // an HTTP/2 connection carries other requests too
+			watch.conn, _ = r.Context().Value(connKey{}).(net.Conn)
+		}
 		w = watch
 		r = r.WithContext(context.WithValue(r.Context(), writeWatchKey{}, watch))
 		if cs := e.cfg.CrowdSec; cs != nil {
