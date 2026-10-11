@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -855,19 +857,70 @@ func TestParseNetTCP(t *testing.T) {
 	}
 }
 
+func TestParseNetUDP(t *testing.T) {
+	// A real /proc/net/udp: the stub resolver on 127.0.0.53:53 (uid 992), a DHCP client on 0.0.0.0:68 (root), and a
+	// socket connected to 192.0.2.1:53, which hears only that peer. The last line names a peer port and no peer address:
+	// it would hear every address that sends from that port, so it is not left out.
+	data := `   sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops
+  512: 3500007F:0035 00000000:0000 07 00000000:00000000 00:00000000 00000000   992        0 11111 2 0000000000000000 0
+  580: 00000000:0044 00000000:0000 07 00000000:00000000 00:00000000 00000000     0        0 22222 2 0000000000000000 0
+ 4021: 0A00000A:D2C4 010200C0:0035 01 00000000:00000000 00:00000000 00000000   990        0 33333 2 0000000000000000 0
+ 4030: 00000000:1388 00000000:0035 01 00000000:00000000 00:00000000 00000000   990        0 44444 2 0000000000000000 0
+`
+	ls, err := ParseNetUDP([]byte(data), false)
+	if err != nil || len(ls) != 3 {
+		t.Fatalf("%v %+v", err, ls)
+	}
+	if ls[0] != (Listener{Addr: netip.MustParseAddr("127.0.0.53"), Port: 53, UID: 992, UDP: true}) {
+		t.Fatalf("%+v", ls[0])
+	}
+	if ls[1] != (Listener{Addr: netip.MustParseAddr("0.0.0.0"), Port: 68, UID: 0, UDP: true}) {
+		t.Fatalf("%+v", ls[1])
+	}
+	if ls[2] != (Listener{Addr: netip.MustParseAddr("0.0.0.0"), Port: 5000, UID: 990, UDP: true}) {
+		t.Fatalf("%+v", ls[2])
+	}
+	// IPv6: a DHCPv6 client on [::]:546, a socket connected to [2001:db8::1]:53, and one connected to port 0 of a peer.
+	v6 := `   sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops
+  546: 00000000000000000000000000000000:0222 00000000000000000000000000000000:0000 07 00000000:00000000 00:00000000 00000000   998        0 1 2 0000000000000000 0
+ 4022: 00000000000000000000000001000000:D2C5 B80D0120000000000000000001000000:0035 01 00000000:00000000 00:00000000 00000000   990        0 2 2 0000000000000000 0
+ 4023: 00000000000000000000000001000000:D2C6 B80D0120000000000000000001000000:0000 01 00000000:00000000 00:00000000 00000000   990        0 3 2 0000000000000000 0
+`
+	ls, err = ParseNetUDP([]byte(v6), true)
+	if err != nil || len(ls) != 1 || ls[0] != (Listener{Addr: netip.MustParseAddr("::"), Port: 546, UID: 998, UDP: true}) {
+		t.Fatalf("%v %+v", err, ls)
+	}
+	for _, bad := range []string{
+		"h\n 1: 3500007F:0035 00000000 07 0:0 0:0 0 992 0 1 2 0 0\n",       // a peer with no port
+		"h\n 1: 3500007F:0035 00000000:0000 07 0:0 0:0 0 root 0 1 2 0 0\n", // an owner that is no number
+		"h\n 1: 3500007F 00000000:0000 07 0:0 0:0 0 992 0 1 2 0 0\n",       // an address with no port
+	} {
+		if ls, err := ParseNetUDP([]byte(bad), false); err == nil {
+			t.Fatalf("%q was read as %+v", bad, ls)
+		}
+	}
+}
+
 func TestListeners(t *testing.T) {
 	needLinux(t)
 	tcp := `  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
    0: 00000000:01BB 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 1 1 0 100 0
    1: 0100007F:20FB 00000000:0000 0A 00000000:00000000 00:00000000 00000000   991        0 2 1 0 100 0
 `
-	passwd := "root:x:0:0::/root:/bin/sh\ncarnical-edge:x:990:990::/:/bin/false\ncarnical-ctl:x:991:991::/:/bin/false\n"
-	m := &fake{files: map[string]string{"/proc/net/tcp": tcp, "/etc/passwd": passwd}}
+	// The stub resolver on 127.0.0.53:53, and the edge's own query to it, which is connected and so is nobody's way in.
+	udp := `   sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops
+  512: 3500007F:0035 00000000:0000 07 00000000:00000000 00:00000000 00000000   992        0 3 2 0000000000000000 0
+ 4021: 0100007F:D2C4 3500007F:0035 01 00000000:00000000 00:00000000 00000000   990        0 4 2 0000000000000000 0
+`
+	passwd := "root:x:0:0::/root:/bin/sh\ncarnical-edge:x:990:990::/:/bin/false\ncarnical-ctl:x:991:991::/:/bin/false\n" +
+		"systemd-resolve:x:992:992::/:/bin/false\n"
+	m := &fake{files: map[string]string{"/proc/net/tcp": tcp, "/proc/net/udp": udp, "/etc/passwd": passwd}}
 	declared := []audit.Service{
 		{Name: "edge", Addr: "0.0.0.0:443", User: "root,carnical-edge"}, // 0x01BB = 443; socket activation makes root the owner
 		{Name: "ctl", Addr: "127.0.0.1:8443", User: "carnical-ctl"},     // 0x20FB = 8443
+		{Name: "resolver", Addr: "127.0.0.53:53", Proto: "udp", User: "systemd-resolve"},
 	}
-	if r := run(Listeners(m, declared)); r.Status != audit.Pass || r.Checked != 2 {
+	if r := run(Listeners(m, declared)); r.Status != audit.Pass || r.Checked != 3 {
 		t.Fatalf("%+v", r)
 	}
 	tests := []struct {
@@ -875,11 +928,22 @@ func TestListeners(t *testing.T) {
 		declared []audit.Service
 		contains string
 	}{
-		{"an undeclared listener", declared[:1], "127.0.0.1:8443 is listening, owned by carnical-ctl, and is not in the zone map"},
-		{"owned by the wrong user", []audit.Service{declared[0], {Name: "ctl", Addr: "127.0.0.1:8443", User: "carnical-edge"}}, "owned by carnical-ctl, but ctl is declared to be run by carnical-edge"},
-		{"wider than declared", []audit.Service{declared[0], {Name: "ctl", Addr: "10.0.0.5:8443", User: "carnical-ctl"}}, "it listens on 127.0.0.1, but 10.0.0.5:8443 is declared"},
+		{"an undeclared listener", []audit.Service{declared[0], declared[2]}, "127.0.0.1:8443 is listening, owned by carnical-ctl, and is not in the zone map"},
+		{"owned by the wrong user", []audit.Service{declared[0], declared[2], {Name: "ctl", Addr: "127.0.0.1:8443", User: "carnical-edge"}}, "owned by carnical-ctl, but ctl is declared to be run by carnical-edge"},
+		{"wider than declared", []audit.Service{declared[0], declared[2], {Name: "ctl", Addr: "10.0.0.5:8443", User: "carnical-ctl"}}, "it listens on 127.0.0.1, but 10.0.0.5:8443 is declared"},
 		// A service in another zone, declared by name with no user, says nothing about which socket here is it.
-		{"declared by name with no user", []audit.Service{declared[0], {Name: "remote-ctl", Addr: "control.internal:8443"}}, "remote-ctl is declared by name with no user"},
+		{"declared by name with no user", []audit.Service{declared[0], declared[2], {Name: "remote-ctl", Addr: "control.internal:8443"}}, "remote-ctl is declared by name with no user"},
+		{"an undeclared UDP socket", declared[:2], "127.0.0.53:53 (UDP) takes packets from any sender, owned by systemd-resolve, and is not in the zone map"},
+		{"a UDP socket declared as TCP", []audit.Service{declared[0], declared[1], {Name: "resolver", Addr: "127.0.0.53:53", User: "systemd-resolve"}},
+			"127.0.0.53:53 (UDP) takes packets from any sender"},
+		{"a UDP socket said to be TCP", []audit.Service{declared[0], declared[1], {Name: "resolver", Addr: "127.0.0.53:53", Proto: "tcp", User: "systemd-resolve"}},
+			"127.0.0.53:53 (UDP) takes packets from any sender"},
+		{"a TCP listener declared as UDP", []audit.Service{declared[0], declared[2], {Name: "ctl", Addr: "127.0.0.1:8443", Proto: "udp", User: "carnical-ctl"}},
+			"127.0.0.1:8443 is listening, owned by carnical-ctl, and is not in the zone map"},
+		{"a UDP socket owned by the wrong user", []audit.Service{declared[0], declared[1], {Name: "resolver", Addr: "127.0.0.53:53", Proto: "udp", User: "root"}},
+			"127.0.0.53:53 (UDP) (systemd-resolve): it is owned by systemd-resolve, but resolver is declared to be run by root"},
+		{"a UDP socket on another address than declared", []audit.Service{declared[0], declared[1], {Name: "resolver", Addr: "127.0.0.54:53", Proto: "udp", User: "systemd-resolve"}},
+			"127.0.0.53:53 (UDP) (systemd-resolve): it listens on 127.0.0.53, but 127.0.0.54:53 is declared"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -890,13 +954,35 @@ func TestListeners(t *testing.T) {
 		})
 	}
 	// Declared by name with its user, the owner still tells it apart.
-	if r := run(Listeners(m, []audit.Service{declared[0], {Name: "ctl", Addr: "ctl.internal:8443", User: "carnical-ctl"}})); r.Status != audit.Pass {
+	if r := run(Listeners(m, []audit.Service{declared[0], declared[2], {Name: "ctl", Addr: "ctl.internal:8443", User: "carnical-ctl"}})); r.Status != audit.Pass {
 		t.Fatalf("declared by name with a user: %+v", r)
 	}
 	// Declared to listen on one address, found on every address.
-	wide := &fake{files: map[string]string{"/proc/net/tcp": strings.Replace(tcp, "0100007F:20FB", "00000000:20FB", 1), "/etc/passwd": passwd}}
+	wide := &fake{files: map[string]string{"/proc/net/tcp": strings.Replace(tcp, "0100007F:20FB", "00000000:20FB", 1), "/proc/net/udp": udp, "/etc/passwd": passwd}}
 	if r := run(Listeners(wide, declared)); r.Status != audit.Fail || !strings.Contains(strings.Join(r.Problems, "\n"), "listens on every address") {
 		t.Fatalf("%+v", r)
+	}
+	wideUDP := &fake{files: map[string]string{"/proc/net/tcp": tcp, "/proc/net/udp": strings.Replace(udp, "3500007F:0035 00000000:0000", "00000000:0035 00000000:0000", 1), "/etc/passwd": passwd}}
+	if r := run(Listeners(wideUDP, declared)); r.Status != audit.Fail || len(r.Problems) != 1 ||
+		!strings.Contains(r.Problems[0], "0.0.0.0:53 (UDP) (systemd-resolve): it listens on every address, but 127.0.0.53:53 is declared") {
+		t.Fatalf("%+v", r)
+	}
+	// IPv6 sockets are read too, and written so that the port cannot be taken for part of the address.
+	six := &fake{files: map[string]string{"/proc/net/tcp": tcp, "/proc/net/udp": udp, "/etc/passwd": passwd,
+		"/proc/net/udp6": "h\n 546: 00000000000000000000000000000000:0222 00000000000000000000000000000000:0000 07 0:0 0:0 0 0 0 1 2 0 0\n"}}
+	if r := run(Listeners(six, declared)); r.Status != audit.Fail || len(r.Problems) != 1 ||
+		r.Problems[0] != "[::]:546 (UDP) takes packets from any sender, owned by root, and is not in the zone map" {
+		t.Fatalf("%+v", r)
+	}
+	// What cannot be read is not passed over: without the UDP table the check has not looked.
+	for name, files := range map[string]map[string]string{
+		"no UDP table":         {"/proc/net/tcp": tcp, "/etc/passwd": passwd},
+		"a UDP table cut off":  {"/proc/net/tcp": tcp, "/proc/net/udp": "h\n 1: 3500007F:0035 0000 07\n 2: 3500007F:0035 00000000 07 0:0 0:0 0 992 0 1 2 0 0\n", "/etc/passwd": passwd},
+		"a UDP6 table cut off": {"/proc/net/tcp": tcp, "/proc/net/udp": udp, "/proc/net/udp6": "h\n 1: 00:0035 00:0000 07 0:0 0:0 0 0 0 1 2 0 0\n", "/etc/passwd": passwd},
+	} {
+		if r := run(Listeners(&fake{files: files}, declared)); r.Status != audit.Skip {
+			t.Fatalf("%s: %+v", name, r)
+		}
 	}
 }
 
@@ -1358,6 +1444,40 @@ func TestListenersFindsARealListenerNobodyDeclared(t *testing.T) {
 	}
 	if got := problems(declared("somebody-else")); !strings.Contains(got, "declared to be run by somebody-else") {
 		t.Fatalf("a listener owned by the wrong user was not found:\n%s", got)
+	}
+
+	// The same for UDP: a socket that is bound and takes packets from anyone is found, a declared one is not, and one
+	// that is connected to a peer is nobody's way in.
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+	open := pc.LocalAddr().(*net.UDPAddr).Port
+	conn, err := net.Dial("udp", pc.LocalAddr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	connected := conn.LocalAddr().(*net.UDPAddr).Port
+	udp := func(proto, user string) []audit.Service {
+		return []audit.Service{{Name: "test", Addr: "127.0.0.1:" + strconv.Itoa(open), Proto: proto, User: user}}
+	}
+	needle = "127.0.0.1:" + strconv.Itoa(open) + " (UDP) takes packets from any sender"
+	if got := problems(nil); !strings.Contains(got, needle) {
+		t.Fatalf("a UDP socket nobody declared was not found:\n%s", got)
+	}
+	if got := problems(nil); strings.Contains(got, "127.0.0.1:"+strconv.Itoa(connected)+" (UDP)") {
+		t.Fatalf("a connected UDP socket was reported:\n%s", got)
+	}
+	if got := problems(udp("udp", self)); strings.Contains(got, "127.0.0.1:"+strconv.Itoa(open)+" (UDP)") {
+		t.Fatalf("a declared UDP socket owned by the right user was flagged:\n%s", got)
+	}
+	if got := problems(udp("", self)); !strings.Contains(got, needle) {
+		t.Fatalf("a TCP service answered for a UDP socket:\n%s", got)
+	}
+	if got := problems(udp("udp", "somebody-else")); !strings.Contains(got, "127.0.0.1:"+strconv.Itoa(open)+" (UDP) ("+self+"): it is owned by "+self) {
+		t.Fatalf("a UDP socket owned by the wrong user was not found:\n%s", got)
 	}
 }
 

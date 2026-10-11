@@ -29,6 +29,8 @@ type Zone struct {
 	// Prefixes are the address ranges of the zone.
 	Prefixes []string `json:"prefixes"`
 	// Services are the listeners the checks probe from other zones: host:port, where host is an address or a name.
+	// A UDP service is not probed (a UDP port that does not answer says nothing); it is there for the check of this
+	// machine's own sockets.
 	Services []Service `json:"services"`
 }
 
@@ -36,10 +38,15 @@ type Zone struct {
 type Service struct {
 	Name string `json:"name"`
 	Addr string `json:"addr"`
+	// Proto is "tcp", which is also what leaving it out means, or "udp".
+	Proto string `json:"proto,omitempty"`
 	// User, if set, is who must own the listening socket on this machine: a name, or several separated by commas. A socket
 	// that systemd opened for a service (socket activation) is owned by root, so list both.
 	User string `json:"user,omitempty"`
 }
+
+// UDP reports whether the service is a UDP one.
+func (s Service) UDP() bool { return s.Proto == "udp" }
 
 // Flow allows connections from one zone to another.
 type Flow struct {
@@ -78,6 +85,9 @@ func (m Map) Validate() error {
 		for _, s := range z.Services {
 			if _, _, err := net.SplitHostPort(s.Addr); err != nil || s.Name == "" {
 				return fmt.Errorf("zone %q: service %q needs a name and a host:port address", z.Name, s.Name)
+			}
+			if s.Proto != "" && s.Proto != "tcp" && s.Proto != "udp" {
+				return fmt.Errorf("zone %q: service %q: proto must be tcp or udp, not %q", z.Name, s.Name, s.Proto)
 			}
 		}
 	}

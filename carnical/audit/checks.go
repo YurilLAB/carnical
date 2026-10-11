@@ -80,6 +80,9 @@ func ZoneReach(zm Map, dial Dialer) Check {
 					continue
 				}
 				for _, s := range z.Services {
+					if s.UDP() {
+						continue // nothing connects to a UDP port, so silence would not show a wall
+					}
 					probes = append(probes, probe{z.Name, s.Name, s.Addr})
 				}
 			}

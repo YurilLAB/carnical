@@ -113,6 +113,10 @@ func TestZoneMapIsValidated(t *testing.T) {
 		{"here is not a zone", strings.Replace(sampleMap, `"here": "edge"`, `"here": "moon"`, 1), false},
 		{"bad prefix", strings.Replace(sampleMap, `10.20.0.0/24`, `10.20.0.0/99`, 1), false},
 		{"service without a port", strings.Replace(sampleMap, `10.20.0.5:8443`, `10.20.0.5`, 1), false},
+		{"a UDP service", strings.Replace(sampleMap, `"addr": "10.20.0.5:8443"`, `"addr": "10.20.0.5:53", "proto": "udp"`, 1), true},
+		{"a service said to be TCP", strings.Replace(sampleMap, `"addr": "10.20.0.5:8443"`, `"addr": "10.20.0.5:8443", "proto": "tcp"`, 1), true},
+		{"a protocol that is neither", strings.Replace(sampleMap, `"addr": "10.20.0.5:8443"`, `"addr": "10.20.0.5:8443", "proto": "sctp"`, 1), false},
+		{"a protocol in capitals", strings.Replace(sampleMap, `"addr": "10.20.0.5:8443"`, `"addr": "10.20.0.5:53", "proto": "UDP"`, 1), false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -204,7 +208,9 @@ func TestZoneReachFindsAnOpenWallAndABrokenFlow(t *testing.T) {
 	defer stopControl()
 	zm := Map{Here: "edge",
 		Zones: []Zone{{Name: "edge"}, {Name: "control", Internal: true, Services: []Service{{Name: "config", Addr: control}}},
-			{Name: "owner", Internal: true, Services: []Service{{Name: "console", Addr: owner}}}},
+			// A UDP service is not probed: nothing connects to one. This one is written where a TCP listener answers, so
+			// a probe of it would show as a second open wall, and as a third socket checked.
+			{Name: "owner", Internal: true, Services: []Service{{Name: "console", Addr: owner}, {Name: "resolver", Addr: control, Proto: "udp"}}}},
 		Flows: []Flow{{From: "edge", To: "control"}}}
 	if err := zm.Validate(); err != nil {
 		t.Fatal(err)

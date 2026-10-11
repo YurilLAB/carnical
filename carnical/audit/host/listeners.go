@@ -15,11 +15,44 @@ import (
 	"github.com/YurilLAB/coraza/carnical/audit"
 )
 
-// Listener is a TCP socket that is waiting for connections.
+// Listener is a TCP socket that is waiting for connections, or a UDP socket that takes packets from any sender.
 type Listener struct {
 	Addr netip.Addr
 	Port uint16
 	UID  int
+	UDP  bool
+}
+
+// ParseNetUDP reads /proc/net/udp or /proc/net/udp6 and returns the sockets that are bound and name no peer address:
+// those take a packet from any address that sends one, which is what listening is for UDP. A connected socket (a
+// resolver's or a time client's own query) hears only the one peer it named, so it is no way in and is left out.
+func ParseNetUDP(data []byte, v6 bool) ([]Listener, error) {
+	var out []Listener
+	sc := bufio.NewScanner(bytes.NewReader(data))
+	sc.Scan() // the header
+	for sc.Scan() {
+		f := strings.Fields(sc.Text())
+		if len(f) < 8 {
+			continue
+		}
+		addr, port, err := parseHexAddr(f[1], v6)
+		if err != nil {
+			return nil, err
+		}
+		peer, _, err := parseHexAddr(f[2], v6)
+		if err != nil {
+			return nil, err
+		}
+		if !peer.IsUnspecified() {
+			continue
+		}
+		uid, err := strconv.Atoi(f[7])
+		if err != nil {
+			return nil, fmt.Errorf("bad uid %q", f[7])
+		}
+		out = append(out, Listener{Addr: addr, Port: port, UID: uid, UDP: true})
+	}
+	return out, sc.Err()
 }
 
 // ParseNetTCP reads /proc/net/tcp or /proc/net/tcp6 and returns the sockets in the LISTEN state. Addresses are written in
@@ -68,19 +101,21 @@ func parseHexAddr(s string, v6 bool) (netip.Addr, uint16, error) {
 
 // Listeners checks that only the sockets the zone map declares are listening, on the addresses declared and owned by the users
 // declared. Anything else (a reverse-shell listener, a debug port, a service started by hand) is an incident or a mistake.
+// UDP has no listening state, so there it is every socket that is bound and takes packets from any sender; a service
+// declared with "proto": "udp" answers for one.
 func Listeners(src Source, declared []audit.Service) audit.Check {
 	return audit.Check{
 		Name: "host-listeners", Zone: "",
-		What: "Only the TCP sockets written in the zone map are listening, no wider than declared and owned by the user declared.",
+		What: "Only the sockets written in the zone map are listening (TCP) or open to any sender (UDP), no wider than declared and owned by the user declared.",
 		Run: func(ctx context.Context) audit.Outcome {
 			if why := linux(); why != "" {
 				return audit.Outcome{SkipReason: why}
 			}
 			var all []Listener
 			for _, f := range []struct {
-				path string
-				v6   bool
-			}{{"/proc/net/tcp", false}, {"/proc/net/tcp6", true}} {
+				path    string
+				v6, udp bool
+			}{{"/proc/net/tcp", false, false}, {"/proc/net/tcp6", true, false}, {"/proc/net/udp", false, true}, {"/proc/net/udp6", true, true}} {
 				data, err := src.ReadFile(f.path)
 				if err != nil {
 					if f.v6 {
@@ -88,7 +123,11 @@ func Listeners(src Source, declared []audit.Service) audit.Check {
 					}
 					return audit.Outcome{SkipReason: "cannot read " + f.path + ": " + err.Error()}
 				}
-				ls, err := ParseNetTCP(data, f.v6)
+				parse := ParseNetTCP
+				if f.udp {
+					parse = ParseNetUDP
+				}
+				ls, err := parse(data, f.v6)
 				if err != nil {
 					return audit.Outcome{SkipReason: "cannot read " + f.path + ": " + err.Error()}
 				}
@@ -109,12 +148,21 @@ func Listeners(src Source, declared []audit.Service) audit.Check {
 				}
 				var matches []audit.Service
 				for _, d := range declared {
-					if _, p, err := net.SplitHostPort(d.Addr); err == nil && p == strconv.Itoa(int(l.Port)) {
+					// A TCP service does not answer for a UDP socket on its port, nor the other way round.
+					if _, p, err := net.SplitHostPort(d.Addr); err == nil && p == strconv.Itoa(int(l.Port)) && d.UDP() == l.UDP {
 						matches = append(matches, d)
 					}
 				}
+				where := netip.AddrPortFrom(l.Addr, l.Port).String()
+				if l.UDP {
+					where += " (UDP)"
+				}
 				if len(matches) == 0 {
-					out.Problems = append(out.Problems, fmt.Sprintf("%s:%d is listening, owned by %s, and is not in the zone map", l.Addr, l.Port, who))
+					state := "is listening"
+					if l.UDP {
+						state = "takes packets from any sender"
+					}
+					out.Problems = append(out.Problems, fmt.Sprintf("%s %s, owned by %s, and is not in the zone map", where, state, who))
 					continue
 				}
 				ok := false
@@ -126,7 +174,7 @@ func Listeners(src Source, declared []audit.Service) audit.Check {
 					}
 				}
 				if !ok {
-					out.Problems = append(out.Problems, fmt.Sprintf("%s:%d (%s): %s", l.Addr, l.Port, who, why))
+					out.Problems = append(out.Problems, fmt.Sprintf("%s (%s): %s", where, who, why))
 				}
 			}
 			sort.Strings(out.Problems)

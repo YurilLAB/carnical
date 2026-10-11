@@ -31,6 +31,16 @@ it cannot sign engine code or a release.
 Everything not in this table is closed. This is the map that `carnical-audit` is given
 (`zones.json`); a change to the network that is not in it is a finding.
 
+A zone's `services` are its listeners, each a `name`, an `addr` (`host:port`) and, for the check of
+the machine's own sockets, the `user` that must own it. A service is TCP unless it says
+`"proto": "udp"`. The host check (`carnical-audit -host`) reads the kernel's socket tables and
+reports every listening TCP socket, and every UDP socket that is bound and not connected to a peer
+(one that takes a packet from any sender), that no service of that protocol answers for, or that is
+on another address or owned by another user than declared. A UDP socket connected to its peer, such
+as a resolver's own query, is nobody's way in and is not reported. UDP services are not probed from
+other zones: a UDP port that does not answer says nothing about a wall. Raw and packet sockets,
+which take a capability to open, are in neither table and are not checked.
+
 | From | To | What | Why |
 |---|---|---|---|
 | visitors | edge | HTTPS | the product |
