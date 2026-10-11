@@ -97,10 +97,31 @@ type budgetTx struct {
 	respLimit int64 // see withEvalBudget; 0 means every response write is budgeted
 	resp      int64 // response body bytes the engine has buffered
 	respOver  bool  // the write that reached the limit has been made
+
+	refused *types.Interruption // set when a phase could not get a slot; see IsInterrupted
 }
 
 // busy is the refusal for a request that could not get a slot to be evaluated in.
 var busy = &types.Interruption{Status: 503, Action: "deny"}
+
+// refuse records that a phase was refused for want of a slot, so that the transaction counts as interrupted from then on.
+func (t *budgetTx) refuse() *types.Interruption {
+	t.refused = busy
+	return busy
+}
+
+// IsInterrupted also reports a phase refused for want of a slot. The engine never saw that refusal, and the HTTP middleware
+// asks this before it buffers and passes on the rest of a response: after a refused response header phase it would
+// otherwise send the application's body behind the 503.
+func (t *budgetTx) IsInterrupted() bool { return t.refused != nil || t.Transaction.IsInterrupted() }
+
+// Interruption is the refusal for want of a slot, if there was one, or the engine's own.
+func (t *budgetTx) Interruption() *types.Interruption {
+	if t.refused != nil {
+		return t.refused
+	}
+	return t.Transaction.Interruption()
+}
 
 // run gives one evaluation phase a slot and its budget. It reports false if no slot came free in time.
 func (t *budgetTx) run(phase func()) bool {
@@ -128,28 +149,28 @@ func (t *budgetTx) run(phase func()) bool {
 
 func (t *budgetTx) ProcessRequestHeaders() (it *types.Interruption) {
 	if !t.run(func() { it = t.Transaction.ProcessRequestHeaders() }) {
-		return busy
+		return t.refuse()
 	}
 	return it
 }
 
 func (t *budgetTx) ProcessRequestBody() (it *types.Interruption, err error) {
 	if !t.run(func() { it, err = t.Transaction.ProcessRequestBody() }) {
-		return busy, nil
+		return t.refuse(), nil
 	}
 	return it, err
 }
 
 func (t *budgetTx) ProcessResponseHeaders(code int, proto string) (it *types.Interruption) {
 	if !t.run(func() { it = t.Transaction.ProcessResponseHeaders(code, proto) }) {
-		return busy
+		return t.refuse()
 	}
 	return it
 }
 
 func (t *budgetTx) ProcessResponseBody() (it *types.Interruption, err error) {
 	if !t.run(func() { it, err = t.Transaction.ProcessResponseBody() }) {
-		return busy, nil
+		return t.refuse(), nil
 	}
 	return it, err
 }
@@ -164,10 +185,10 @@ func (t *budgetTx) WriteResponseBody(b []byte) (it *types.Interruption, n int, e
 		t.resp += int64(n)
 		return it, n, err
 	}
-	t.respOver = true
 	if !t.run(func() { it, n, err = t.Transaction.WriteResponseBody(b) }) {
-		return busy, 0, nil
+		return t.refuse(), 0, nil
 	}
+	t.respOver = true
 	t.resp += int64(n)
 	return it, n, err
 }

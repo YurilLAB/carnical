@@ -189,6 +189,10 @@ SecRule RESPONSE_BODY "@contains secret" "id:4001,phase:4,deny,status:418"
 			if got != tc.want {
 				t.Fatalf("interruption status %d, want %d", got, tc.want)
 			}
+			if tx.IsInterrupted() != (tc.want != 0) || tc.want != 0 && tx.Interruption().Status != tc.want {
+				// The HTTP middleware asks the transaction, not the write, before it passes on the rest of a response.
+				t.Fatalf("the transaction reports interrupted=%v (%+v)", tx.IsInterrupted(), tx.Interruption())
+			}
 			for _, m := range tx.MatchedRules() {
 				if m.Rule().ID() == 4001 && tc.busy {
 					t.Fatal("the response body rules ran without a slot")
@@ -196,6 +200,22 @@ SecRule RESPONSE_BODY "@contains secret" "id:4001,phase:4,deny,status:418"
 			}
 		})
 	}
+	t.Run("a response header phase refused for want of a slot ends the response", func(t *testing.T) {
+		tx := budgeted.NewTransactionWithOptions(experimental.Options{Context: t.Context()})
+		defer tx.Close()
+		tx.ProcessURI("/", "GET", "HTTP/1.1")
+		tx.ProcessRequestHeaders()
+		if _, err := tx.ProcessRequestBody(); err != nil {
+			t.Fatal(err)
+		}
+		tx.AddResponseHeader("Content-Type", "text/plain")
+		slots <- struct{}{}
+		it := tx.ProcessResponseHeaders(200, "HTTP/1.1")
+		<-slots
+		if it == nil || it.Status != 503 || !tx.IsInterrupted() || tx.Interruption() != it {
+			t.Fatalf("refusal %+v, interrupted=%v", it, tx.IsInterrupted())
+		}
+	})
 	t.Run("writes after the limit do not wait for a busy slot", func(t *testing.T) {
 		tx := budgeted.NewTransactionWithOptions(experimental.Options{Context: t.Context()})
 		defer tx.Close()
