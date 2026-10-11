@@ -211,6 +211,8 @@ var graphqlRows = register("graphql", []row{
 	{name: "number with a leading zero", path: "/graphql", ct: appJSON, body: gqlReq(`{ a(x: 01) }`), want: idGQLSyntax},
 	{name: "unterminated string", path: "/graphql", ct: appJSON, body: gqlReq(`{ a(x: "abc) }`), want: idGQLSyntax},
 	{name: "bad escape in a string", path: "/graphql", ct: appJSON, body: gqlReq(`{ a(x: "\q") }`), want: idGQLSyntax},
+	// Eight hex digits are allowed, so the value must be checked without overflowing: 0xFFFFFFFF is -1 as a rune.
+	{name: "an eight digit escape past the last code point", path: "/graphql", ct: appJSON, body: gqlReq(`{ a(x: "\u{FFFFFFFF}") }`), want: idGQLSyntax},
 	{name: "lone point", path: "/graphql", ct: appJSON, body: gqlReq(`{ a . b }`), want: idGQLSyntax},
 	{name: "a type definition", path: "/graphql", ct: appJSON, body: gqlReq(`type Query { a: Int }`), want: idGQLSyntax},
 	{name: "a schema extension", path: "/graphql", ct: appJSON, body: gqlReq(`extend schema { query: Q }`), want: idGQLSyntax},
@@ -233,6 +235,8 @@ var graphqlRows = register("graphql", []row{
 	{name: "application/graphql with a NUL", path: "/graphql", ct: "application/graphql", body: "{ a\x00 }", want: idControl},
 	{name: "application/graphql with invalid utf-8", path: "/graphql", ct: "application/graphql", body: "{ a(x: \"\xff\") }", want: idBadUTF8},
 	{name: "a control character in the query", path: "/graphql", ct: appJSON, body: `{"query":"{ a` + u("0001") + ` }"}`, want: idControl},
+	{name: "a monitored control character does not stop the graphql checks", path: "/graphql", ct: appJSON, body: gqlReq(deepQuery(13) + " #\x01"),
+		want: idGQLDepth, also: []int{idControl}, tweak: func(p *Policy) { p.Rules["body-control-char"] = Monitor }},
 
 	// The request envelope.
 	{name: "get mutation in an explicitly permitted body", method: "GET", path: "/graphql", ct: appJSON, body: gqlReq(`mutation { deleteUser }`), want: idGQLGetMutation,
@@ -355,6 +359,9 @@ var graphqlRows = register("graphql", []row{
 	{name: "get with a depth over the limit", method: "GET", path: "/graphql", query: "query=" + strings.ReplaceAll(strings.ReplaceAll(deepQuery(13), "{", "%7B"), "}", "%7D"), want: idGQLDepth},
 	{name: "a deep query found on a path that is not graphql", path: "/api/x", ct: appJSON, body: gqlReq(deepQuery(13)), want: idGQLDepth},
 	{name: "a deep query found by get on a path that is not graphql", method: "GET", path: "/api/x", query: "query=" + strings.ReplaceAll(strings.ReplaceAll(deepQuery(13), "{", "%7B"), "}", "%7D"), want: idGQLDepth},
+	// The October 2021 spec and graphql-js accept both of these, so they must not make a document "not GraphQL" off a GraphQL path.
+	{name: "an eight digit unicode escape on a path that is not graphql", path: "/api/x", ct: appJSON, body: gqlReq(`{ f(x: "\u{00000041}") ` + deepQuery(13) + ` }`), want: idGQLDepth},
+	{name: "a control character in a comment on a path that is not graphql", path: "/api/x", ct: appJSON, body: gqlReq(deepQuery(13) + " #\x01"), want: idControl},
 	{name: "a graphql path listed by the policy", path: "/internal/q", ct: appJSON, body: `{"query":"{ a"}`, want: idGQLSyntax,
 		tweak: func(p *Policy) { p.GraphQLPaths = []string{"/internal/q"} }},
 	{name: "a syntax error on a path that is not graphql", path: "/internal/q", ct: appJSON, body: `{"query":"{ a"}`},

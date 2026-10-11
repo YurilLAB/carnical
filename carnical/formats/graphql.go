@@ -201,10 +201,13 @@ func (l *gqlLexer) str() detail {
 				i++
 			case 'u':
 				if i+1 < len(src) && src[i+1] == '{' {
+					// Up to eight hex digits, as graphql-js reads them (\u{00000041} is A). A server that reads a longer escape
+					// than this lexer would otherwise see a document that this lexer refuses, and away from a GraphQL path that
+					// refusal means the document is not checked at all. The value is unsigned so eight digits cannot wrap.
 					j := i + 2
-					var r rune
-					for j < len(src) && j-i-2 < 7 && isHexDigit(src[j]) {
-						r = r<<4 | hexVal(src[j])
+					var r uint32
+					for j < len(src) && j-i-2 < 8 && isHexDigit(src[j]) {
+						r = r<<4 | uint32(hexVal(src[j]))
 						j++
 					}
 					if j == i+2 || j >= len(src) || src[j] != '}' || r > 0x10FFFF || r >= 0xD800 && r <= 0xDFFF {
@@ -802,8 +805,10 @@ func (a *gqlAnalyzer) selections(sel []gqlSel) gqlStats {
 	return st
 }
 
-// sourceProblem looks for what no GraphQL source can contain: a control character other than tab, line feed and carriage return,
-// or bytes that are not UTF-8. It returns the offset and the rule, or nil.
+// sourceProblem looks for a control character other than tab, line feed and carriage return, or bytes that are not UTF-8. YAML
+// allows neither. GraphQL allows a control character in a comment or a string since the October 2021 spec (the June 2018 spec and
+// older parsers refuse it everywhere), so for GraphQL this is a finding about the text, not a reason to stop reading it. It returns
+// the offset and the rule, or nil.
 func sourceProblem(src []byte) (*rule, int) {
 	high := false
 	for i, c := range src {

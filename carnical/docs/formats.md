@@ -104,6 +104,16 @@ A request to a GraphQL path must be a GraphQL request: its query must parse. A r
 is treated as GraphQL only if its `query` parses as a GraphQL document, so a search form with a
 `query` field, or an Elasticsearch body whose `query` is an object, is left alone.
 
+The lexer reads strings and comments as the [October 2021
+spec](https://spec.graphql.org/October2021/#SourceCharacter) and graphql-js 16 do, control
+characters and `\u{...}` escapes of up to eight hex digits included, so such a document is not
+passed over as "not GraphQL". Elsewhere, a query that starts like GraphQL and does not parse still
+gets no verdict: Loki and Prometheus label selectors (`{job="x"}`), JSON filters and searches such
+as `subscription plans` all start that way, and refusing them would make discovery unusable.
+Discovery therefore depends on this parser reading the document as the origin's server does. List
+every GraphQL endpoint whose path has no `graphql` segment in `graphql_paths`, where a document that
+does not parse is refused.
+
 The query is looked for in a JSON object, an array of them (a batch), an `application/graphql` body,
 a form, and the URL query string on every method. When URL parameters identify GraphQL, body
 envelope checks also apply to that request.
@@ -116,6 +126,7 @@ Positions in GraphQL messages are bytes of the decoded query text, not of the re
 * **Form and multipart duplicate names are recorded, not refused**, by default (`form-duplicate-param`, `multipart-duplicate-name`): a group of checkboxes is a legitimate duplicate, and so are the hidden field and the checkbox of one name that ASP.NET MVC and Rails write (`enabled=true&enabled=false`). Names ending in `[]` are never reported. A site that has no such field sets the rule to `block`. The same name in two spellings is refused whatever this rule is set to (`form-parameter-alias`).
 * **A `filename*` next to `filename` is recorded, not refused** (`multipart-filename-star`). RFC 7578 forbids it in form data and browsers never send it, but some HTTP libraries do. A `filename*` that disagrees with `filename` (the Coraza decoy) is refused, and so is one with no `filename` (`multipart-filename-mismatch`): a parser that reads it, Go's among them, makes a file of the part and one that does not makes a plain field, so the two check different things. Other extended or continued parameters (`name*`, `filename*0`) are refused as an invalid Content-Disposition for the same reason.
 * **A byte order mark is refused for every text format**, XML included. A .NET client that writes one sets `body-bom` to `monitor`.
+* **A control character in a GraphQL document is refused (`body-control-char`), even in a comment or a string** where the October 2021 spec allows it: the June 2018 spec and older parsers, graphql-js 15 among them, refuse it everywhere, so servers disagree, and no client needs one. This applies wherever the document is found, on a GraphQL path or not. Setting `body-control-char` or `body-invalid-utf8` to `monitor` or `off` does not turn off the GraphQL checks: the document is still parsed, and its limits, introspection and method rules still apply.
 * **`text/plain` is checked for a body that is a whole JSON or XML document** (it starts like one and ends like one): that is how a cross-site request carries JSON with no preflight. Plain prose that starts with a bracket is left alone. An HTML snippet posted as `text/plain` is refused as XML; a site that does this sets `mismatch-xml-body` to `monitor`.
 * **Gzip's `x-gzip` alias, a second member, and `deflate` without a zlib header are refused** (`allow_raw_deflate` accepts the last). These are differences between servers, and the proxy only passes `gzip` and `deflate` through anyway.
 * **The ratio limit does not apply under 4 KiB of output.** A few hundred bytes of repetitive JSON can compress past 100:1 and is not an attack. Above that, the limit applied is the smaller of the output cap and 100 times the compressed size.

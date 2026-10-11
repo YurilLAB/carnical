@@ -50,17 +50,23 @@ func (in *Inspector) graphQLDocument(f *finder, src []byte, mustParse bool, oper
 	if len(src) > lim.MaxQueryBytes {
 		return true, !f.hitLimit(rGQLLimit, dQueryTooLarge, lim.MaxQueryBytes, -1)
 	}
-	if r, off := sourceProblem(src); r != nil {
-		if mustParse {
-			return true, !f.hit(r, off, dInGraphQL)
-		}
-		return false, true
+	// A control character or a byte that is not UTF-8 is reported, but the document is still parsed and checked. Since the October
+	// 2021 spec a control character is legal in a comment or a string (the lexer reads both as bytes) and a syntax error anywhere
+	// else, so the parser decides whether the text is GraphQL; and a monitored encoding rule must not turn the GraphQL rules off, so
+	// only a report that refuses the request stops here. On a GraphQL path the report comes first; elsewhere it waits until the text
+	// parses.
+	srcRule, srcOff := sourceProblem(src)
+	if srcRule != nil && mustParse && f.hit(srcRule, srcOff, dInGraphQL) {
+		return true, false
 	}
 	doc, fail := parseGraphQL(src, lim)
+	if fail != nil && fail.r == rGQLSyntax && !mustParse {
+		return false, true
+	}
+	if srcRule != nil && !mustParse && f.hit(srcRule, srcOff, dInGraphQL) {
+		return true, false
+	}
 	if fail != nil {
-		if fail.r == rGQLSyntax && !mustParse {
-			return false, true
-		}
 		return true, !f.hitLimit(fail.r, fail.d, fail.limit, fail.off)
 	}
 	if doc.intro && !lim.AllowIntrospection && f.hit(rGQLIntro, -1, dNone) {
