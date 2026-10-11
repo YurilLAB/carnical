@@ -22,6 +22,7 @@ import (
 type nftChain struct {
 	typ, hook, policy string
 	priority          int
+	priorityKnown     bool // whether the priority could be read
 	rules             []string
 }
 
@@ -159,7 +160,7 @@ func parseNFTTable(text, family, name string) (*nftTable, bool) {
 			}
 			if m := nftHookRe.FindStringSubmatch(line); m != nil {
 				chain.typ, chain.hook, chain.policy = m[1], m[2], m[4]
-				chain.priority, _ = parsePriority(m[3])
+				chain.priority, chain.priorityKnown = parsePriority(m[3])
 				continue
 			}
 			chain.rules = append(chain.rules, line)
@@ -200,6 +201,145 @@ func outputRewriters(text string) []nftRewriter {
 			}
 		}
 		depth += open - closed
+	}
+	return out
+}
+
+// nftRewrite is a statement that changes where a packet goes without address translation: its destination address or
+// port, the raw bytes of a header, the frame's destination, a copy, another card, or a program that may do any of these.
+var nftRewrite = regexp.MustCompile(`(?:^| )(?:(?:ip6?|ether) daddr set|(?:tcp|udp|udplite|sctp|dccp|th) dport set|` +
+	`@(?:ll|nh|th|ih),[0-9]+,[0-9]+ set|dnat|redirect|tproxy|dup to|fwd(?: ip6?)? to|queue)(?: |$)`)
+
+// nftTableNames lists the tables of a listing, each as its family and its name.
+func nftTableNames(text string) [][2]string {
+	var out [][2]string
+	depth := 0
+	sc := bufio.NewScanner(strings.NewReader(text))
+	sc.Buffer(make([]byte, 64<<10), 4<<20)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if strings.HasPrefix(line, "#") {
+			continue
+		}
+		if w := strings.Fields(line); depth == 0 && len(w) == 4 && w[0] == "table" && w[3] == "{" {
+			out = append(out, [2]string{w[1], w[2]})
+		}
+		open, closed := braces(line)
+		depth += open - closed
+	}
+	return out
+}
+
+// afterFilter reports whether a chain sees the packets this machine sends after a filter chain on the output hook at
+// priority has passed them: a later chain on that hook (one at the same priority counts, because the order of the two is
+// not defined, and so does one whose priority could not be read), any chain on the way out, a card's egress hook, and a
+// bridge's.
+func (c *nftChain) afterFilter(family string, priority int) bool {
+	switch family {
+	case "ip", "ip6", "inet":
+		return c.hook == "postrouting" || c.hook == "output" && (!c.priorityKnown || c.priority >= priority)
+	case "netdev":
+		return c.hook == "egress"
+	case "bridge":
+		return c.hook == "output" || c.hook == "postrouting"
+	}
+	return false
+}
+
+// reach lists the chains a packet can come to from a chain. Where a verdict map or an inline chain decides, those are
+// the chains it names (mapTargets); where a map's elements are not in the listing, any chain of the table that is not
+// attached to a hook may be meant, so each of them counts.
+func (t *nftTable) reach(start string) []string {
+	seen := map[string]bool{start: true}
+	queue := []string{start}
+	for i := 0; i < len(queue); i++ {
+		c := t.chains[queue[i]]
+		if c == nil {
+			continue
+		}
+		for _, r := range c.rules {
+			switch kind, target, _ := verdict(r); kind {
+			case "jump", "goto":
+				if !seen[target] {
+					seen[target] = true
+					queue = append(queue, target)
+				}
+			case "vmap", "anon":
+				targets, listed := t.mapTargets(r)
+				if !listed {
+					targets = slices.Sorted(maps.Keys(t.chains))
+				}
+				for _, name := range targets {
+					if next := t.chains[name]; next != nil && next.hook == "" && !seen[name] {
+						seen[name] = true
+						queue = append(queue, name)
+					}
+				}
+			}
+		}
+	}
+	return queue
+}
+
+// mapTargets lists the chains that a rule which looks its verdict up in a map, or jumps to a chain written inline, can
+// send a packet to: what follows jump and goto in the rule itself and in the elements of each map it names. listed is
+// false when one of those maps is not in the table with its elements (one that is filled from outside the ruleset, or
+// as packets arrive).
+func (t *nftTable) mapTargets(rule string) (targets []string, listed bool) {
+	collect := func(words []string) {
+		for i, w := range words {
+			if (w == "jump" || w == "goto") && i+1 < len(words) {
+				targets = append(targets, strings.TrimRight(words[i+1], ","))
+			}
+		}
+	}
+	words := slices.DeleteFunc(fields(rule), func(w string) bool { return strings.HasPrefix(w, `"`) })
+	collect(words)
+	listed = true
+	for i, w := range words {
+		if w == "vmap" && i+1 < len(words) && strings.HasPrefix(words[i+1], "@") {
+			elements := t.sets[words[i+1][1:]]
+			if elements == "" {
+				listed = false
+			}
+			collect(strings.Fields(elements))
+		}
+	}
+	return targets, listed
+}
+
+// laterRewrites lists the rules, in every table of a listing, that can change where a packet from this machine goes after
+// the carnical output chain (at priority) has passed it, or inside that chain and the ones it sends packets to, where a
+// rule with no verdict of its own would otherwise go unread. Address translation is looked for by the chain's type
+// (outputRewriters); this finds what needs no such chain, like `ip daddr set`.
+func laterRewrites(text string, priority int) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, name := range nftTableNames(text) {
+		t, ok := parseNFTTable(text, name[0], name[1])
+		if !ok {
+			continue
+		}
+		for _, base := range slices.Sorted(maps.Keys(t.chains)) {
+			c := t.chains[base]
+			if !c.afterFilter(name[0], priority) {
+				continue
+			}
+			for _, chain := range t.reach(base) {
+				if t.chains[chain] == nil {
+					continue
+				}
+				for _, r := range t.chains[chain].rules {
+					// What is in quotes (a comment, a log prefix, a card's name) is not a statement.
+					words := slices.DeleteFunc(fields(r), func(w string) bool { return strings.HasPrefix(w, `"`) })
+					msg := fmt.Sprintf("connections from this machine can be changed after the filter has passed them: %q in chain %s of table %s %s", r, chain, name[0], name[1])
+					if nftRewrite.MatchString(strings.Join(words, " ")) && !seen[msg] {
+						seen[msg] = true
+						out = append(out, msg)
+					}
+				}
+			}
+		}
 	}
 	return out
 }
@@ -601,6 +741,7 @@ func nftProblems(text string, users nftUsers) (out []string, checked int) {
 				add("connections from this machine can be sent elsewhere after the filter has passed them: the NAT chain %s in table %s", r.chain, r.table)
 			}
 		}
+		out = append(out, laterRewrites(text, c.priority)...)
 	}
 
 	edge := t.chains["edge_out"]

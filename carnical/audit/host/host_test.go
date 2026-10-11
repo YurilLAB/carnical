@@ -377,6 +377,12 @@ func TestNFT(t *testing.T) {
 		}
 		return s + fmt.Sprintf("\n\tchain c%d {\n\t\taccept\n", n)
 	}
+	// other puts another table in front of the carnical one, with one chain on a hook and what else is given.
+	other := func(table, hook, rules, more string) string {
+		return "table " + table + " {\n\tchain late {\n\t\ttype " + hook + "; policy accept;\n" + rules + "\t}\n" + more + "}\ntable inet carnical {\n"
+	}
+	const rewrite = "\t\tmeta skuid 990 tcp dport 443 ip daddr set 10.0.0.5\n" // 990 is the edge
+	const carnicalTable = "table inet carnical {\n"
 	for _, tt := range []struct{ name, old, new string }{
 		{"as listed", "", ""},
 		{"the edge's user by name", edgeJump, "\t\tmeta skuid \"carnical-edge\" jump edge_out\n"},
@@ -399,6 +405,21 @@ func TestNFT(t *testing.T) {
 		{"a logged accept", "\t\tiif \"lo\" accept\n", "\t\tiif \"lo\" log prefix \"lo \" level info accept\n"},
 		{"administration from a range", "ip saddr 192.0.2.10 tcp dport 22", "ip saddr 198.51.100.0/24 tcp dport 22"},
 		{"a NAT table that runs before the filter, as Docker's does", "table inet carnical {\n", "table ip nat {\n\tchain OUTPUT {\n\t\ttype nat hook output priority dstnat; policy accept;\n\t\tfib daddr type local jump DOCKER\n\t}\n\n\tchain DOCKER {\n\t}\n}\ntable inet carnical {\n"},
+		{"a destination rewritten before the filter sees it", carnicalTable, other("ip early", "route hook output priority mangle", rewrite, "")},
+		{"sources translated on the way out", carnicalTable, other("ip nat", "nat hook postrouting priority srcnat", "\t\toifname \"eth0\" masquerade\n\t\tip saddr 10.8.0.0/24 snat to 192.0.2.1\n", "")},
+		{"a mark, a class and a source set on the way out", carnicalTable, other("inet qos", "filter hook postrouting priority filter", "\t\tmeta mark set 0x00000001 ip dscp set cs1\n\t\tip saddr set 192.0.2.1\n", "")},
+		{"a later chain that only counts and logs", carnicalTable, other("inet watch", "filter hook output priority 100", "\t\ttcp dport 443 counter packets 0 bytes 0 log prefix \"was ip daddr set \"\n\t\tcounter comment \"no ip daddr set 10.0.0.5 here\"\n", "")},
+		{"a rewrite before a filter that runs late", "\tchain output {\n\t\ttype filter hook output priority filter; policy accept;\n",
+			"\tchain early {\n\t\ttype filter hook output priority 5; policy accept;\n" + rewrite + "\t}\n\n\tchain output {\n\t\ttype filter hook output priority 10; policy accept;\n"},
+		{"incoming connections rewritten in a table whose chain on the way out picks a chain by port", carnicalTable,
+			other("ip lb", "filter hook postrouting priority filter", "\t\ttcp dport vmap { 443 : jump count, 80 : goto count }\n", "\n\tchain count {\n\t\tcounter\n\t}\n\n\tchain pre {\n\t\ttype nat hook prerouting priority dstnat; policy accept;\n\t\tjump portfwd\n\t}\n\n\tchain portfwd {\n\t\ttcp dport 8080 dnat to 10.0.0.9:80\n\t}\n")},
+		{"the same with the ports in a map of the table", carnicalTable,
+			other("ip lb", "filter hook postrouting priority filter", "\t\ttcp dport vmap @byport\n", "\n\tmap byport {\n\t\ttype inet_service : verdict\n\t\telements = { 80 : jump count,\n\t\t\t     443 : jump count }\n\t}\n\n\tchain count {\n\t\tcounter\n\t}\n\n\tchain portfwd {\n\t\ttcp dport 8080 dnat to 10.0.0.9:80\n\t}\n")},
+		{"a map filled from elsewhere, and a rewrite in a chain on the way in", carnicalTable,
+			other("ip lb", "filter hook postrouting priority filter", "\t\ttcp dport vmap @later\n", "\n\tmap later {\n\t\ttype inet_service : verdict\n\t}\n\n\tchain pre {\n\t\ttype filter hook prerouting priority raw; policy accept;\n\t\ttcp dport 8080 ip daddr set 10.0.0.9\n\t}\n")},
+		{"incoming connections rewritten in a table that also has a chain on the way out", carnicalTable,
+			other("ip lb", "filter hook postrouting priority filter", "\t\tcounter\n", "\n\tchain pre {\n\t\ttype filter hook prerouting priority raw; policy accept;\n\t\tjump inbound\n\t}\n\n\tchain inbound {\n\t\ttcp dport 8080 ip daddr set 10.0.0.9\n\t}\n")},
+		{"a card's ingress rewritten", carnicalTable, other("netdev in", "filter hook ingress device \"eth0\" priority filter", "\t\tether daddr set 02:00:00:00:00:05\n", "")},
 	} {
 		t.Run("passes: "+tt.name, func(t *testing.T) {
 			listing := good
@@ -434,6 +455,36 @@ func TestNFT(t *testing.T) {
 		{"a NAT chain here rewrites the edge's connections", "\tchain output {\n", "\tchain natout {\n\t\ttype nat hook output priority srcnat; policy accept;\n\t\tmeta skuid 990 tcp dport 443 dnat ip to 10.0.0.5\n\t}\n\n\tchain output {\n", "NAT chain natout in table inet carnical"},
 		{"a NAT chain at the filter's own priority may run after it", "table inet carnical {\n", "table ip natx {\n\tchain o {\n\t\ttype nat hook output priority filter; policy accept;\n\t}\n}\ntable inet carnical {\n", "NAT chain o in table ip natx"},
 		{"another table's NAT chain rewrites them", "table inet carnical {\n", "table ip natx {\n\tchain o {\n\t\ttype nat hook output priority 100; policy accept;\n\t\tmeta skuid 990 dnat to 10.0.0.5\n\t}\n}\ntable inet carnical {\n", "NAT chain o in table ip natx"},
+		{"another table rewrites the destination after the filter", carnicalTable, other("inet x", "filter hook output priority 100", rewrite, ""), `changed after the filter has passed them: "meta skuid 990 tcp dport 443 ip daddr set 10.0.0.5" in chain late of table inet x`},
+		{"a rewrite at the filter's own priority may run after it", carnicalTable, other("ip x", "filter hook output priority filter", rewrite, ""), "in chain late of table ip x"},
+		{"a rewrite at a priority this check cannot read", carnicalTable, other("ip x", "filter hook output priority somewhere", rewrite, ""), "in chain late of table ip x"},
+		{"a rewrite at a priority this check cannot read, with a filter that runs late", "\tchain output {\n\t\ttype filter hook output priority filter; policy accept;\n",
+			"\tchain late {\n\t\ttype filter hook output priority somewhere; policy accept;\n" + rewrite + "\t}\n\n\tchain output {\n\t\ttype filter hook output priority 10; policy accept;\n", "in chain late of table inet carnical"},
+		{"a rewrite in the carnical table when another table is listed first", carnicalTable,
+			"table ip first {\n\tchain c {\n\t\tcounter\n\t}\n}\ntable inet carnical {\n\tchain late {\n\t\ttype filter hook postrouting priority filter; policy accept;\n" + rewrite + "\t}\n\n", "in chain late of table inet carnical"},
+		{"a rewrite in a route chain after the filter", carnicalTable, other("ip x", "route hook output priority 50", rewrite, ""), "in chain late of table ip x"},
+		{"a rewrite on the way out", carnicalTable, other("ip x", "filter hook postrouting priority raw", rewrite, ""), "in chain late of table ip x"},
+		{"a rewrite in a chain the later one jumps to", carnicalTable, other("inet x", "filter hook output priority 100", "\t\tmeta skuid 990 jump away\n", "\n\tchain away {\n"+rewrite+"\t}\n"), "in chain away of table inet x"},
+		{"a rewrite in a chain the later one goes to", carnicalTable, other("inet x", "filter hook postrouting priority 100", "\t\tgoto away\n", "\n\tchain away {\n\t\tjump further\n\t}\n\n\tchain further {\n"+rewrite+"\t}\n"), "in chain further of table inet x"},
+		{"a rewrite behind a verdict map", carnicalTable, other("inet x", "filter hook output priority 100", "\t\ttcp dport vmap { 443 : jump away }\n", "\n\tchain away {\n"+rewrite+"\t}\n"), "in chain away of table inet x"},
+		{"a rewrite behind a verdict map of the table", carnicalTable, other("inet x", "filter hook output priority 100", "\t\ttcp dport vmap @byport\n", "\n\tmap byport {\n\t\ttype inet_service : verdict\n\t\telements = { 80 : jump count,\n\t\t\t     443 : goto away }\n\t}\n\n\tchain count {\n\t\tcounter\n\t}\n\n\tchain away {\n"+rewrite+"\t}\n"), "in chain away of table inet x"},
+		{"a rewrite behind a verdict map filled from elsewhere", carnicalTable, other("inet x", "filter hook output priority 100", "\t\ttcp dport vmap @later\n", "\n\tmap later {\n\t\ttype inet_service : verdict\n\t}\n\n\tchain hidden {\n"+rewrite+"\t}\n"), "in chain hidden of table inet x"},
+		{"a rewrite behind a verdict map this table does not have", carnicalTable, other("inet x", "filter hook output priority 100", "\t\ttcp dport vmap @gone\n", "\n\tchain hidden {\n"+rewrite+"\t}\n"), "in chain hidden of table inet x"},
+		{"a rewrite behind the first chain a verdict map names", carnicalTable, other("inet x", "filter hook output priority 100", "\t\ttcp dport vmap { 80 : goto away, 443 : jump count }\n", "\n\tchain count {\n\t\tcounter\n\t}\n\n\tchain away {\n"+rewrite+"\t}\n"), "in chain away of table inet x"},
+		{"a rewrite in a chain an inline chain jumps to", carnicalTable, other("inet x", "filter hook output priority 100", "\t\tmeta skuid 990 jump {\n\t\t\ttcp dport 443 jump away\n\t\t}\n", "\n\tchain away {\n"+rewrite+"\t}\n"), "in chain away of table inet x"},
+		{"a rewrite in an inline chain", carnicalTable, other("inet x", "filter hook output priority 100", "\t\tmeta skuid 990 jump {\n\t\t\tip daddr set 10.0.0.5\n\t\t}\n", ""), "in chain late of table inet x"},
+		{"the port rewritten after the filter", carnicalTable, other("inet x", "filter hook output priority 100", "\t\tmeta skuid 990 tcp dport set 5432\n", ""), "in chain late of table inet x"},
+		{"the IPv6 destination rewritten after the filter", carnicalTable, other("ip6 x", "filter hook postrouting priority filter", "\t\tip6 daddr set fd00::5\n", ""), "in chain late of table ip6 x"},
+		{"the header's bytes rewritten after the filter", carnicalTable, other("ip x", "filter hook postrouting priority filter", "\t\t@nh,128,32 set 0x0a000005\n", ""), "in chain late of table ip x"},
+		{"a copy sent to another machine", carnicalTable, other("ip x", "filter hook postrouting priority filter", "\t\tmeta skuid 990 dup to 10.0.0.5\n", ""), "in chain late of table ip x"},
+		{"packets handed to a program after the filter", carnicalTable, other("inet x", "filter hook output priority 100", "\t\tmeta skuid 990 queue flags bypass to 3\n", ""), "in chain late of table inet x"},
+		{"the frame's destination rewritten on the card", carnicalTable, other("netdev x", "filter hook egress device \"eth0\" priority filter", "\t\tether daddr set 02:00:00:00:00:05\n", ""), "in chain late of table netdev x"},
+		{"packets sent out of another card", carnicalTable, other("netdev x", "filter hook egress device \"eth0\" priority filter", "\t\tfwd to \"tap0\"\n", ""), "in chain late of table netdev x"},
+		{"packets sent to another machine from the card", carnicalTable, other("netdev x", "filter hook egress device \"eth0\" priority filter", "\t\tfwd ip to 10.0.0.5 device \"tap0\"\n", ""), "in chain late of table netdev x"},
+		{"a rewrite inside the edge's chain, after its blocks", "\t\ttcp dport { 80, 443 } accept\n", "\t\tip daddr set 10.0.0.5\n\t\ttcp dport { 80, 443 } accept\n", `"ip daddr set 10.0.0.5" in chain edge_out of table inet carnical`},
+		{"a rewrite in the output chain itself", edgeJump, "\t\tmeta skuid 990 tcp dport 443 tcp dport set 5432\n" + edgeJump, "in chain output of table inet carnical"},
+		{"a rewrite on a bridge's way out", carnicalTable, other("bridge x", "filter hook postrouting priority 0", "\t\tether daddr set 02:00:00:00:00:05\n", ""), "in chain late of table bridge x"},
+		{"a chain in the carnical table rewrites after the filter", "\tchain output {\n", "\tchain late {\n\t\ttype filter hook postrouting priority filter; policy accept;\n" + rewrite + "\t}\n\n\tchain output {\n", "in chain late of table inet carnical"},
 		{"a set's comment names the missing range", "\t\telements = { 0.0.0.0/8, 10.0.0.0/8,\n", "\t\tcomment \"elements = { 10.0.0.0/8 }\"\n\t\telements = { 0.0.0.0/8,\n", "do not include 10.0.0.0/8"},
 		{"Azure's platform address left out", "\t\t\t     168.63.129.16, 169.254.0.0/16,\n", "\t\t\t     169.254.0.0/16,\n", "do not include 168.63.129.16"},
 		{"the table is dormant", "table inet carnical {\n", "table inet carnical {\n\tflags dormant\n", "dormant"},
