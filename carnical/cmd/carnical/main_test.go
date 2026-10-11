@@ -1727,6 +1727,10 @@ func TestPrivateSettingsAreLeftOutOfErrorText(t *testing.T) {
 		{"a one-word host with no address", `origin preflight: origin has no address`, `origin preflight: [private setting] has no address`},
 		{"a one-word host at an address that is not allowed", `origin preflight: origin: 10.0.0.5 is not a public address (10.0.0.0/8)`,
 			`origin preflight: [private setting]: [address] is not a public address ([private setting])`},
+		{"a one-word host a certificate does not name", `origin preflight: tls: failed to verify certificate: x509: certificate is valid for www.example.com, not origin`,
+			`origin preflight: tls: failed to verify certificate: x509: certificate is valid for www.example.com, not [private setting]`},
+		{"a one-word host a certificate with no names does not name", `x509: certificate is not valid for any names, but wanted to match origin`,
+			`x509: certificate is not valid for any names, but wanted to match [private setting]`},
 		{"a longer name is left alone", `shop.example.testing and shop.example.test.`, `shop.example.testing and [private setting].`},
 		{"nothing private", `-listen must have a valid TCP port`, `-listen must have a valid TCP port`},
 	} {
