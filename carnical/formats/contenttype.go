@@ -171,7 +171,9 @@ func parseParams(s string, i int, allowExtended bool) ([]param, *problem) {
 }
 
 // readQuoted reads a quoted string starting at s[i] == '"' and returns its value with the quoted pairs resolved, and the index
-// after the closing quote. Control characters other than a tab are not allowed inside it.
+// after the closing quote. Control characters other than a tab are not allowed inside it. A backslash escapes only a tspecial
+// and is kept as written before anything else, as Go's mime package reads it: the proxy, the engine and Go applications all
+// take the value from there, so a boundary or a part name must be read here exactly as they read it.
 func readQuoted(s string, i int) (value string, next int, d detail, ok bool) {
 	start := i + 1
 	i = start
@@ -183,6 +185,9 @@ func readQuoted(s string, i int) (value string, next int, d detail, ok bool) {
 		case c == '\\':
 			if i+1 >= len(s) || s[i+1] < 0x20 && s[i+1] != '\t' || s[i+1] == 0x7f {
 				return "", i, dBadParamSyntax, false
+			}
+			if !strings.ContainsRune(tspecials, rune(s[i+1])) {
+				break // a literal backslash, as old browsers send in a Windows path
 			}
 			if !escaped {
 				b = append(b, s[start:i]...)
@@ -206,6 +211,9 @@ func readQuoted(s string, i int) (value string, next int, d detail, ok bool) {
 	}
 	return "", i, dUnterminatedQuote, false
 }
+
+// tspecials are the characters RFC 2045 does not allow in a token, the ones a backslash escapes in a quoted string.
+const tspecials = `()<>@,;:\\"/[]?=`
 
 // splitDisposition reads a Content-Disposition value into its type and parameters, where the extended filename* is expected.
 func splitDisposition(s string) (typ string, params []param, p *problem) {

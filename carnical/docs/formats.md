@@ -368,7 +368,7 @@ reported once per request.
 
 | File | What it is |
 |---|---|
-| `contenttype.go` | Content-Type and Content-Disposition grammar (RFC 9110): token, quoted string, duplicate and extended parameters. Not `mime.ParseMediaType`, which repairs what this refuses. |
+| `contenttype.go` | Content-Type and Content-Disposition grammar (RFC 9110): token, quoted string (a backslash escapes only a tspecial, as in `mime`, so a boundary or part name reads the same here and downstream), duplicate and extended parameters. Not `mime.ParseMediaType`, which repairs what this refuses. |
 | `jsonscan.go` | RFC 8259 tokenizing parser. Never builds a tree; its memory is the folded keys of the objects that are open. |
 | `xmlscan.go` | One-pass XML scanner: names, attributes, references, declaration, encoding, DOCTYPE classification. |
 | `graphql.go`, `graphqlreq.go` | Lexer, parser and fragment-expanding analyser; the envelope (JSON, batch, form, query string). |

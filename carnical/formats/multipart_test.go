@@ -70,6 +70,8 @@ var multipartRows = register("multipart", []row{
 	{name: "percent-encoded filename that agrees with filename*", ct: mpType, body: mp(part("x", `Content-Disposition: form-data; name="a"; filename="a%20b.txt"; filename*=UTF-8''a%20b.txt`)),
 		also: []int{idMPFileStar}},
 	{name: "repeated name is recorded", ct: mpType, body: mp(field("a", "1"), field("a", "2")), also: []int{idMPDupName}},
+	{name: "repeated name in two spellings Go reads alike is recorded", ct: mpType,
+		body: mp(part("1", `Content-Disposition: form-data; name="a\b"`), part("2", `Content-Disposition: form-data; name="a\\b"`)), also: []int{idMPDupName}},
 	{name: "repeated name refused when the rule is set to block", ct: mpType, body: mp(field("a", "1"), field("A", "2")), want: idMPDupName,
 		tweak: func(p *Policy) { p.Rules = map[string]Action{"multipart-duplicate-name": Block} }},
 	{name: "multipart/mixed when the site allows it", ct: "multipart/mixed; boundary=" + bnd, body: mp(part("x", "Content-Type: text/plain")),
@@ -79,6 +81,10 @@ var multipartRows = register("multipart", []row{
 	{name: "no boundary", ct: "multipart/form-data", body: mp(field("a", "1")), want: idMPNoBoundary},
 	{name: "empty boundary", ct: `multipart/form-data; boundary=""`, body: mp(field("a", "1")), want: idMPNoBoundary},
 	{name: "boundary with a forbidden character", ct: `multipart/form-data; boundary="a<b"`, body: "--a<b\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\n1\r\n--a<b--\r\n", want: idMPBadBound},
+	// Go's mime keeps a backslash that escapes a letter, so the proxy, the engine and the application split this body on
+	// "--a\b"; the boundary must not be read as "ab" here.
+	{name: "boundary with an escaped letter", ct: `multipart/form-data; boundary="a\b"`, body: "--ab\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\n1\r\n--ab--\r\n", want: idMPBadBound},
+	{name: "boundary with an escaped quote", ct: `multipart/form-data; boundary="a\"b"`, body: "--a\"b\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\n1\r\n--a\"b--\r\n", want: idMPBadBound},
 	{name: "boundary of 71 characters", ct: "multipart/form-data; boundary=" + strings.Repeat("b", 71), body: "--" + strings.Repeat("b", 71) + "--\r\n", want: idMPBadBound},
 	{name: "boundary ending in a space", ct: `multipart/form-data; boundary="abc "`, body: "--abc \r\nContent-Disposition: form-data; name=\"a\"\r\n\r\n1\r\n--abc --\r\n", want: idMPBadBound},
 	{name: "boundary given twice", ct: "multipart/form-data; boundary=a; boundary=b", body: "--a--\r\n", want: 5002007},
