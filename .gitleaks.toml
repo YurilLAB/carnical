@@ -48,7 +48,7 @@ condition = "AND"
 targetRules = ["generic-api-key"]
 regexTarget = "secret"
 paths = ["^carnical/proxy/proxy_test\\.go$"]
-regexes = ["^SECRETMARK\\-4711$"]
+regexes = ["^SECRETMARK\\-4711$", "^dGhlIHNhbXBsZSBub25jZQ==$"]
 
 [[allowlists]]
 description = "Verified fixture: examples/plugins/operator-jwt/jwt_test.go"
