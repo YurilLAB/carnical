@@ -119,6 +119,55 @@ retain their upstream notices and bytes, including whitespace; diff whitespace c
 The packages remain integration APIs: production stores, UI/key provisioning, guarded discovery transport and installing
 API/virtual-patch inspectors in a deployed site's proxy are separate deployment work.
 
+## Open items of the earlier reviews closed (2026-10-11)
+
+The items the last review left open were each reproduced, fixed or decided, and tested. Flood protection and the packet
+policy have their own records: [flood-validation.md](flood-validation.md) and
+[network-validation.md](network-validation.md).
+
+**Rules and parameters.** The live gate sends 10,000 requests made from the repository's corpus (2,972 attack and 347
+ordinary templates) through the built proxy. Before this work 92 attack templates reached the origin; 59 do now, and
+the same 23 ordinary templates are refused as before, none newly. The two probe paths that got through are refused
+(local rules 5006018 to 5006020: database tools, PHP information pages, debug consoles), remote script addresses in a
+URL parameter are refused (5006021; 42 templates became 27), and a parameter given twice is also read joined, as the
+frameworks that join it hand it to the application, and a name written two ways is refused (48 became 32). What still
+reaches the origin by default is a plain repeated parameter with nothing hostile in either value or in both together,
+and a script address in a form or JSON field; both are ordinary use on many sites. A site that has neither can refuse
+them: run as `-strict` does (repeated parameters refused, the stricter local rules on), the gate lets no attack
+template through and refuses 28 ordinary ones. A defect found on the way is fixed: the rules that let a link to the
+site itself through compared its host with the request's own Host header, so a request that named the attacker's host
+made the attacker's address local; they now use only the names the operator gave, and with none given nothing is local.
+
+A review of that work by a second reader found six things, each reproduced before it was fixed: a session cookie sent
+twice was read as a repeated parameter and refused; a form whose content type only the rule engine reads as a form
+was not joined; 256 long site names made a rule line longer than the engine reads, which silently ended the rule set
+(the generated rules are now split and an over-long line is refused at start-up); the two-spellings rule was wider
+than it needed to be; the nftables check followed verdict maps too broadly; and the forwarded-host rule refused an
+empty value.
+
+**Host checks.** Three gaps are closed. A private key on Windows was accepted whatever its access list said; the list
+is now read, and a key that Everyone, Users or the like can reach, or that an account other than the service's own,
+the owner, SYSTEM or Administrators can write, is refused (tested with real files whose lists were set with `icacls`,
+and by SID for every principal on the list). The listener check read TCP only; it now also reports a UDP socket that
+takes packets from any address unless the zone map declares it (tested against fixtures and against real sockets on
+Linux: a bound one is found, a declared one is not, a connected one is left out). The setuid baseline reported every
+container start and snap refresh; a program that is the same, with the same mode and owners, at the same place in
+another copy of a recorded tree is no longer new, and the baseline now records mode and owners, so a file made setuid
+where it was setgid is found, which it was not.
+
+**Deliberate breaks.** More than 400 single changes that break the new code were each run against its tests. Those
+that got through at first led to a new test row, a stronger check or simpler code; the few left change nothing a
+caller can observe (an early return that only saves work, a check the one before it already makes).
+
+**Checked on every commit:** formatting, vet, builds for Linux and macOS on both architectures and for Windows, the
+full suite on Windows and on Linux in a clean checkout of that commit alone, and a secret scan of what was staged.
+**On each batch before it was pushed:** the race detector on the packages touched, the linter (no finding on a
+changed line), gosec for both systems and govulncheck.
+
+**Not verified here:** anything that needs root on a real machine (the service-user step of the packet policy test,
+the host checks against a hardened install), nftables older than 1.1.3 other than through the hosted workflow, and a
+Windows machine joined to a domain.
+
 ## Environment and baseline limitations
 
 The [live load report](loadtest-2026-10-06.md) records a final 500,000-request run with corrected URL/framing fidelity:
