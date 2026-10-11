@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // A database error page: the Core Rule Set's response rules (951xxx) block it when response inspection is on.
@@ -20,6 +21,8 @@ func TestResponseInspectionSeesTheRealResponse(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "text/html")
 		switch {
+		case r.URL.Path == "/file": // a static file, served in ranges when asked for them
+			http.ServeContent(w, r, "page.html", time.Time{}, strings.NewReader(sqlErrorPage))
 		case r.URL.Path == "/deflate": // compressed whatever the request asked for
 			w.Header().Set("Content-Encoding", "deflate")
 			zw, _ := flate.NewWriter(w, flate.BestSpeed)
@@ -47,6 +50,9 @@ func TestResponseInspectionSeesTheRealResponse(t *testing.T) {
 		{"the response after an interim one", "/early", "", 403},
 		{"a client that accepts compression", "/plain", "Accept-Encoding: gzip, deflate, br\r\n", 403},
 		{"an application that compresses unasked", "/deflate", "", 502},
+		{"a static file", "/file", "", 403},
+		{"a static file asked for in two ranges (multipart/byteranges)", "/file", "Range: bytes=0-9,10-\r\n", 403},
+		{"a static file asked for in one range", "/file", "Range: bytes=0-40\r\n", 403},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			s := start(t, inspect)

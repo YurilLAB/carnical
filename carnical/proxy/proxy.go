@@ -639,8 +639,12 @@ func (e *Edge) forward() http.Handler {
 			if e.cfg.CRS.InspectResponses {
 				// The response rules read the body the application sends. Asked by the client, the application compresses it and
 				// the rules read gzip bytes; without the client's Accept-Encoding the transport asks for gzip itself and hands on
-				// the body decompressed, so the visitor gets it uncompressed.
+				// the body decompressed, so the visitor gets it uncompressed. Asked for ranges, it sends a slice of the body, which
+				// no rule sees whole, or several as multipart/byteranges, a type the rules do not read at all; without Range it
+				// sends the whole body, which a client that asked for a range may take (RFC 9110, 14.2).
 				out.Header.Del("Accept-Encoding")
+				out.Header.Del("Range")
+				out.Header.Del("If-Range")
 			}
 			// The proxy has the whole body before it forwards anything, so the application has nothing to wait for.
 			out.Header.Del("Expect")
