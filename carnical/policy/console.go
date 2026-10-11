@@ -699,8 +699,9 @@ func urlDecoded(field string) bool {
 }
 
 // re2Pattern rewrites what RE2 accepts in a PCRE pattern but would match in fewer places, or says what it cannot rewrite. PCRE's
-// \s matches the vertical tab (0x0b) and RE2's does not, so \s is written [\s\x0b] (\s\x0b inside a class), as the Core Rule Set
-// writes it, and SQL that MySQL reads with a vertical tab between its words still matches. Two things cannot be written so: \v,
+// \s matches the vertical tab (0x0b) and RE2's does not, so \s is written [\s\x0b] (\x0b\s inside a class, the tab first, so that
+// a '-' after it still follows a class escape and stays the literal it is in [\s-_], not the end of a range from the tab), as the
+// Core Rule Set writes it, and SQL that MySQL reads with a vertical tab between its words still matches. Two things cannot be written so: \v,
 // which is any vertical white space to PCRE and only the vertical tab to RE2, and \S in a negated class, which leaves the vertical
 // tab in the class to PCRE and takes it out to RE2. \S anywhere else also matches the vertical tab to RE2, which only makes the
 // rule match more, and is left. The rest is copied as it is; what RE2 does not accept at all is refused when the pattern is
@@ -724,7 +725,7 @@ func re2Pattern(p string) (string, string) {
 				i += 2 + end + 1
 				continue
 			case next == 's' && inClass:
-				b.WriteString(`\s\x0b`)
+				b.WriteString(`\x0b\s`)
 			case next == 's':
 				b.WriteString(`[\s\x0b]`)
 			case next == 'v':

@@ -338,6 +338,23 @@ func TestConsoleExportRows(t *testing.T) {
 					t.Fatalf("union, a vertical tab and select did not match %q", p.CustomRules[0].Value)
 				}
 			}},
+		{name: "a \\s before a hyphen in a class stays white space and a hyphen, not a range", in: wrap(`{"mode":"block","rules":[{"id":"SITE-0001","action":"block","targets":["args"],"operator":"rx","pattern":"^[\\s-_]+$"}]}`),
+			clean: true, check: func(t *testing.T, p Policy) {
+				c, err := Compile(p)
+				if err != nil {
+					t.Fatal(err)
+				}
+				waf, _, err := wafWith(t, c.CRS.Before)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if ids, _ := matched(t, waf, "GET", query("_-\v_"), nil, ""); !has(ids, idCustom+1) {
+					t.Fatalf("white space, hyphens and underscores did not match %q", p.CustomRules[0].Value)
+				}
+				if ids, _ := matched(t, waf, "GET", query("HELLO2026"), nil, ""); has(ids, idCustom+1) {
+					t.Fatalf("letters and digits matched %q", p.CustomRules[0].Value)
+				}
+			}},
 		{name: "a rule that URL-decodes a header is carried and the difference named", in: wrap(`{"mode":"block","rules":[{"id":"SITE-0001","action":"block","targets":["header:x-data"],"transforms":["urldecode"],"operator":"contains","pattern":"union select"}]}`),
 			skipped: [][]string{{"SITE-0001", "URL-decodes", "header:x-data"}}, check: func(t *testing.T, p Policy) {
 				if len(p.CustomRules) != 1 || p.CustomRules[0].Action != ActionBlock {
