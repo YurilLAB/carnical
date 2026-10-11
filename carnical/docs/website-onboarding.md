@@ -81,7 +81,8 @@ world access and group write are refused. On Windows a key's access list is read
 for Everyone, Users, Authenticated Users or any other principal that stands for everyone is refused
 whatever it allows; so is one that lets an account other than the service's own, the file's owner,
 SYSTEM or Administrators write to the key; and so is a file with no access list, or one that such a
-principal owns (an owner can always rewrite the list). A key in a folder
+principal owns. An owner can always rewrite the list, so whoever owns the key is trusted with it,
+as on other systems. A key in a folder
 that hands its own list down (most do, and many let Users read) needs one of its own:
 `icacls key.pem /inheritance:r /grant:r "<service account>:(R)" "*S-1-5-18:(F)" "*S-1-5-32-544:(F)"`
 (the last two are SYSTEM and Administrators). Keep parent directories under operator control.

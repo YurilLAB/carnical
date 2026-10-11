@@ -59,6 +59,8 @@ func TestAccountsInAKeysAccessList(t *testing.T) {
 		{"Remote Desktop Users", "S-1-5-32-555", "", principalEveryone, "Remote Desktop Users"},
 		{"Pre-Windows 2000 Compatible Access", "S-1-5-32-554", "", principalEveryone, "Pre-Windows 2000 Compatible Access"},
 		{"all application packages", "S-1-15-2-1", "", principalEveryone, "all application packages"},
+		{"all restricted application packages", "S-1-15-2-2", "", principalEveryone, "all restricted application packages"},
+		{"one application package", "S-1-15-2-1-2-3-4-5-6-7", "", principalOther, ""},
 		// Owning the file does not make everyone trusted.
 		{"Everyone, who owns the file", "S-1-1-0", "S-1-1-0", principalEveryone, "Everyone"},
 		{"Users, who own the file", "S-1-5-32-545", "S-1-5-32-545", principalEveryone, "Users"},

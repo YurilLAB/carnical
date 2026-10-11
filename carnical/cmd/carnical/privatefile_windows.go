@@ -14,7 +14,8 @@ import (
 )
 
 // everyone is the principals that stand for whoever is on the machine or the network. An entry for one of them, with
-// any access at all, is what "readable by everyone" means on Windows.
+// any access at all, is what "readable by everyone" means on Windows. It is a list of what is known to be wide, not of
+// what is allowed: a group that is not on it may read the key, as a file's group may on other systems.
 var everyone = []struct {
 	kind windows.WELL_KNOWN_SID_TYPE
 	name string
@@ -96,6 +97,9 @@ func standsForEveryone(sid *windows.SID) string {
 		if sid.IsWellKnown(w.kind) {
 			return w.name
 		}
+	}
+	if sid.String() == "S-1-15-2-2" { // the system has no well-known kind for it
+		return "all restricted application packages"
 	}
 	return ""
 }
