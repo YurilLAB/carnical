@@ -5,7 +5,7 @@ package vpatch
 import (
 	"hash/maphash"
 	"math"
-	"sort"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -190,7 +190,7 @@ func (e *Engine) run(r *inspect.Request, brute bool) matchRes {
 	if len(c.hits) > 0 {
 		e.hitsN.Add(uint64(len(c.hits)))
 		res.hits = append([]int32(nil), c.hits...)
-		sort.Slice(res.hits, func(a, b int) bool { return res.hits[a] < res.hits[b] })
+		slices.Sort(res.hits)
 	}
 	res.limited, res.overflow = c.over, c.overflow
 	if c.over {

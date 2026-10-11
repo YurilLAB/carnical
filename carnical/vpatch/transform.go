@@ -4,7 +4,6 @@ package vpatch
 
 import (
 	"encoding/base64"
-	"fmt"
 	"html"
 	"strings"
 	"unicode/utf8"
@@ -643,9 +642,10 @@ func utf8Unicode(s string) string {
 		}
 		if r > 0xFFFF {
 			v := r - 0x10000
-			b = fmt.Appendf(b, "%%u%04x%%u%04x", 0xD800+(v>>10), 0xDC00+(v&0x3FF))
+			b = appendUnicodeEscape(b, 0xD800+(v>>10))
+			b = appendUnicodeEscape(b, 0xDC00+(v&0x3FF))
 		} else {
-			b = fmt.Appendf(b, "%%u%04x", r)
+			b = appendUnicodeEscape(b, r)
 		}
 		i += size
 	}
@@ -653,6 +653,13 @@ func utf8Unicode(s string) string {
 		return s
 	}
 	return string(b)
+}
+
+// appendUnicodeEscape writes a %uXXXX escape with four lowercase hex digits for a
+// 16-bit value, the same output as fmt's "%%u%04x" but without the formatter.
+func appendUnicodeEscape(b []byte, v rune) []byte {
+	const hex = "0123456789abcdef"
+	return append(b, '%', 'u', hex[(v>>12)&0xF], hex[(v>>8)&0xF], hex[(v>>4)&0xF], hex[v&0xF])
 }
 
 func removeNulls(s string) string {
@@ -737,6 +744,10 @@ func trimSpace(s string) string {
 	return s[i:j]
 }
 
+// base64URLToStd maps the URL-safe base64 alphabet onto the standard one. It is a
+// compile-time constant and safe for concurrent use, so it is built once.
+var base64URLToStd = strings.NewReplacer("-", "+", "_", "/")
+
 // base64Decode decodes a value that is entirely valid base64 (standard or URL alphabet, padding optional, white space ignored,
 // at least eight characters) and returns anything else untouched. A value that is not base64 is not an error: most values are not.
 func base64Decode(s string) string {
@@ -757,7 +768,7 @@ func base64Decode(s string) string {
 			return s
 		}
 	}
-	core := strings.NewReplacer("-", "+", "_", "/").Replace(t[:end])
+	core := base64URLToStd.Replace(t[:end])
 	if len(core)%4 == 1 {
 		return s
 	}
