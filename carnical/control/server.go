@@ -280,6 +280,8 @@ type reqCtx struct {
 	revBefore, revAfter *uint64
 	changes             []string
 	detail              string
+	// started is set once the "started" line of a change has been written
+	started bool
 }
 
 // result is what a handler returns on success.
@@ -331,6 +333,7 @@ func (s *Server) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 	w := &countingWriter{ResponseWriter: rw}
 	setSecurityHeaders(w.Header())
 	w.Header().Set(HeaderRequestID, rid)
+	var rc *reqCtx
 	defer func() {
 		if rec := recover(); rec != nil {
 			if rec == http.ErrAbortHandler {
@@ -338,6 +341,10 @@ func (s *Server) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 			}
 			s.stats.panics.Add(1)
 			s.internal(rid, "panic", nil)
+			// A change that panicked after its "started" line may have been made, so it is closed like any other.
+			if rc != nil && rc.started {
+				s.finishAudit(rc, "error", "panic")
+			}
 			if !w.wrote {
 				writeError(w, rid, errInternal())
 			}
@@ -391,6 +398,9 @@ func (s *Server) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 		writeError(w, rid, e)
 		return
 	}
+	// The body can be held back for a while, and meanwhile other requests may make the replay cache forget this
+	// request's nonce, so the request is judged by the clock as it is once it has been read in full.
+	now = s.now()
 	tenant := params["tenant"]
 	ar := s.authenticate(r, rt, tenant, body, now, src)
 	if !ar.ok {
@@ -427,7 +437,7 @@ func (s *Server) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), s.lim.OperationTimeout)
 	defer cancel()
-	rc := &reqCtx{s: s, r: r, ctx: ctx, id: rid, now: now, route: rt, params: params, body: body, query: query, cred: ar.cred, user: ar.user,
+	rc = &reqCtx{s: s, r: r, ctx: ctx, id: rid, now: now, route: rt, params: params, body: body, query: query, cred: ar.cred, user: ar.user,
 		stepUp: ar.stepUp, hasStepUp: ar.hasStepUp, tenant: tenant, source: src}
 
 	res, aerr := s.run(rc)
@@ -490,6 +500,7 @@ func (s *Server) run(rc *reqCtx) (*result, *apiError) {
 			s.internal(rc.id, "audit", err)
 			return nil, &apiError{status: http.StatusServiceUnavailable, code: "audit_unavailable", msg: "the audit log is unavailable, so nothing was changed", retry: 5}
 		}
+		rc.started = true
 	}
 	return rt.handle(rc)
 }
@@ -511,12 +522,14 @@ func (s *Server) entry(rc *reqCtx, outcome, detail string) AuditEntry {
 }
 
 // finishAudit writes the closing line of a change, or the only line of a read that failed. A failure to write it is
-// counted and reported, not turned into an error: the change has been made.
+// counted and reported, not turned into an error: the change may have been made.
 func (s *Server) finishAudit(rc *reqCtx, outcome, detail string) {
 	if err := s.cfg.Audit.Append(s.entry(rc, outcome, detail)); err != nil {
 		s.stats.auditFailures.Add(1)
 		s.internal(rc.id, "audit", err)
-		if rc.route != nil && rc.route.mutating && outcome == "ok" { // a change was made and its record is incomplete
+		// Once its "started" line is written a change may have been made whatever its outcome, because a store can commit
+		// and then fail, so its record is incomplete.
+		if rc.started {
 			s.auditGap.Store(true)
 		}
 	}
@@ -651,6 +664,9 @@ func (s *Server) authenticate(r *http.Request, rt *route, tenant string, body []
 	switch s.replay.use(cred.ID, hdr.Nonce, hdr.Timestamp, now.Unix()) {
 	case replayRepeat:
 		res.reason = "replay"
+		return res
+	case replayStale:
+		res.reason = "skew"
 		return res
 	case replayFull:
 		res.reason, res.cacheFull = "replay_cache_full", true

@@ -1289,6 +1289,51 @@ func TestAuditIsFailClosed(t *testing.T) {
 			t.Fatalf("a read after a lost closing line: %d", w.Code)
 		}
 	})
+	t.Run("a lost closing line refuses the next change however the change ended", func(t *testing.T) {
+		// a store can commit and then fail, so a change that ended in an error or a panic may still have been made
+		verify := func(h *harness) *httptest.ResponseRecorder {
+			return h.do(reqOpts{method: "POST", target: "/v1/tenants/" + tenantA + "/hosts/shop.example.com:verify"})
+		}
+		put := func(h *harness) *httptest.ResponseRecorder {
+			return h.putPolicy("ui-a", tenantA, `{"mode":"block"}`, 0, 0)
+		}
+		rows := []struct {
+			name   string
+			tweak  func(c *Config)
+			change func(h *harness) *httptest.ResponseRecorder
+			status int
+		}{
+			{name: "the store commits and then reports an error", status: 503, change: put,
+				tweak: func(c *Config) { c.Policies = committedThenFailed{memPolicyStore: c.Policies.(*memPolicyStore)} }},
+			{name: "the store commits and then panics", status: 500, change: put,
+				tweak: func(c *Config) {
+					c.Policies = committedThenFailed{memPolicyStore: c.Policies.(*memPolicyStore), panics: true}
+				}},
+			// the verification has been recorded, so a failed read of it afterwards does not make the answer an error
+			{name: "a host is verified and reading it back fails", status: 200, change: verify,
+				tweak: func(c *Config) { c.Hosts = verifiedUnreadable{c.Hosts.(*memHosts)} }},
+		}
+		for _, row := range rows {
+			t.Run(row.name, func(t *testing.T) {
+				h := newHarness(t, row.tweak)
+				if _, err := h.hosts.Add(context.Background(), tenantA, "shop.example.com", "0123456789abcdef0123456789abcdef"); err != nil {
+					t.Fatal(err)
+				}
+				h.verify.result["shop.example.com"] = true
+				h.srv.cfg.Audit = &failAfterAudit{inner: h.audit, okLines: 1, once: true}
+				if w := row.change(h); w.Code != row.status {
+					t.Fatalf("the change: %d %s", w.Code, w.Body.String())
+				}
+				if n := h.srv.Stats().AuditFailures; n != 1 {
+					t.Fatalf("the change's closing line was not tried and lost: %d audit failures", n)
+				}
+				w := h.do(reqOpts{method: "POST", target: "/v1/tenants/" + tenantA + "/hosts", body: []byte(`{"hostname":"next.example.com"}`)})
+				if w.Code != 503 || errorOf(t, w).Code != "audit_unavailable" {
+					t.Fatalf("the change after a lost closing line: %d %s", w.Code, w.Body.String())
+				}
+			})
+		}
+	})
 	t.Run("an authentication failure that cannot be logged is still refused", func(t *testing.T) {
 		h := newHarness(t)
 		h.audit.setFailing(true)
@@ -1314,6 +1359,33 @@ func (f *failAfterAudit) Append(e AuditEntry) error {
 		return errors.New("disk full")
 	}
 	return f.inner.Append(e)
+}
+
+// committedThenFailed is a policy store that makes the change and then reports an error, or panics.
+type committedThenFailed struct {
+	*memPolicyStore
+	panics bool
+}
+
+func (c committedThenFailed) Put(ctx context.Context, tenant string, body []byte, expect uint64, meta PutMeta) (uint64, error) {
+	if _, err := c.memPolicyStore.Put(ctx, tenant, body, expect, meta); err != nil {
+		return 0, err
+	}
+	if c.panics {
+		panic("after the commit")
+	}
+	return 0, ErrUnavailable
+}
+
+// verifiedUnreadable is a host registry that cannot read a hostname once it is verified.
+type verifiedUnreadable struct{ *memHosts }
+
+func (v verifiedUnreadable) Get(ctx context.Context, tenant, hostname string) (Host, error) {
+	h, err := v.memHosts.Get(ctx, tenant, hostname)
+	if err == nil && h.State == HostVerified {
+		return Host{}, ErrUnavailable
+	}
+	return h, err
 }
 
 func TestARouteWithoutItsStoreIsNotImplemented(t *testing.T) {

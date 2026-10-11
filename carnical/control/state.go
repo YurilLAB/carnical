@@ -17,7 +17,9 @@ func isWindows() bool { return runtime.GOOS == "windows" }
 // replayCache remembers the nonces of requests that were accepted, so a captured request cannot be sent again while
 // its timestamp is still in range. It is bounded in memory and does not forget: an entry leaves only once the request
 // it came from would be refused for its age anyway. When it is full it says so and refuses new requests, because the
-// alternative, to forget a nonce, is to allow a replay.
+// alternative, to forget a nonce, is to allow a replay. Each request reads the clock a little before it reaches the
+// cache, and another request may purge with a later reading in between, so a request whose timestamp is too old for
+// the latest purge is refused as well: its nonce may already have been forgotten.
 //
 // Only requests that already carry a valid signature are put in (see Server.authenticate), so an attacker with no key
 // cannot fill it.
@@ -30,6 +32,7 @@ type replayCache struct {
 	maxPerCred int
 	skew       int64 // seconds
 	full       uint64
+	purged     int64 // the latest time purge has used
 }
 
 type replayEntry struct {
@@ -61,10 +64,14 @@ const (
 	replayFresh replayVerdict = iota
 	replayRepeat
 	replayFull
+	replayStale
 )
 
 // purge drops entries whose requests are now too old to be accepted. It holds c.mu.
 func (c *replayCache) purge(now int64) {
+	if now > c.purged {
+		c.purged = now
+	}
 	for len(c.exp) > 0 && c.exp[0].expires <= now {
 		e := heap.Pop(&c.exp).(replayEntry)
 		if set := c.seen[e.cred]; set != nil {
@@ -82,6 +89,9 @@ func (c *replayCache) use(cred, nonce string, ts, now int64) replayVerdict {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.purge(now)
+	if ts+c.skew+1 <= c.purged {
+		return replayStale
+	}
 	set := c.seen[cred]
 	if _, dup := set[nonce]; dup {
 		return replayRepeat

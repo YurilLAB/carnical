@@ -513,6 +513,8 @@ func (s *CredentialSet) Revoke(id string) (bool, error) {
 type CredentialFile struct {
 	path string
 	now  func() time.Time
+	// syncDir flushes the file's directory once the file has been replaced: syncDirectory, except in tests.
+	syncDir func(dir string) error
 
 	mu       sync.Mutex
 	set      *CredentialSet
@@ -537,7 +539,7 @@ func OpenCredentialFile(path string, now func() time.Time) (*CredentialFile, err
 	if err != nil {
 		return nil, err
 	}
-	f := &CredentialFile{path: path, now: now}
+	f := &CredentialFile{path: path, now: now, syncDir: syncDirectory}
 	if err := f.load(); err != nil {
 		return nil, err
 	}
@@ -629,7 +631,8 @@ func (f *CredentialFile) List() []Credential {
 	return set.List()
 }
 
-// Revoke implements CredentialStore. The change is written to the file before it takes effect in memory.
+// Revoke implements CredentialStore. The change is written to the file, and flushed to disk with the directory that
+// holds it, before it takes effect in memory and before it is reported as done.
 func (f *CredentialFile) Revoke(id string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -659,7 +662,7 @@ func (f *CredentialFile) Revoke(id string) (bool, error) {
 			return false, err
 		}
 	}
-	if err := writeFileAtomic(f.path, b); err != nil {
+	if err := writeFileAtomic(f.path, b, f.syncDir); err != nil {
 		return false, err
 	}
 	if err := f.load(); err != nil {
@@ -689,7 +692,7 @@ func keepUnparsed(path string, now time.Time) error {
 	return errors.Join(keep.Sync(), keep.Close())
 }
 
-func writeFileAtomic(path string, data []byte) error {
+func writeFileAtomic(path string, data []byte, syncDir func(dir string) error) error {
 	// Split keeps "link/.." for the kernel to resolve, as reads do; Dir would clean
 	// it lexically and stage the file in another directory or filesystem.
 	dir, _ := filepath.Split(path)
@@ -726,5 +729,6 @@ func writeFileAtomic(path string, data []byte) error {
 		return err
 	}
 	ok = true
-	return nil
+	// Until the directory is flushed a power cut can bring the old file back, and with it a credential just revoked.
+	return syncDir(dir)
 }

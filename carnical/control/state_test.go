@@ -74,6 +74,15 @@ func TestReplayCacheUnit(t *testing.T) {
 			t.Fatal("kept too long")
 		}
 	})
+	t.Run("a request too old for the latest purge is refused, whatever its own clock reading", func(t *testing.T) {
+		// another request can purge with a later clock reading between this one's reading and its use of the cache
+		c := newReplayCache(100, 100, skew)
+		c.use("a", nonce(1), 1000, 1000)
+		c.use("b", nonce(2), 1061, 1061) // forgets nonce 1
+		if v := c.use("a", nonce(1), 1000, 1060); v != replayStale {
+			t.Fatalf("a forgotten nonce with a clock reading from before the purge: %v", v)
+		}
+	})
 	t.Run("when full it refuses new nonces and keeps the old ones", func(t *testing.T) {
 		c := newReplayCache(3, 100, skew)
 		for i := 1; i <= 3; i++ {

@@ -676,9 +676,17 @@ func (s *Server) verifyHost(rc *reqCtx) (*result, *apiError) {
 		}
 		rc.detail = "host_verified"
 	}
-	h, err = s.cfg.Hosts.Get(rc.ctx, rc.tenant, host)
-	if err != nil {
-		return nil, s.fail(rc, "hosts.get", err)
+	// The check is recorded by now, so a failed read-back must not report it as not made: the answer is then the record
+	// as it was read before the check, with what the check wrote.
+	if got, err := s.cfg.Hosts.Get(rc.ctx, rc.tenant, host); err == nil {
+		h = got
+	} else {
+		s.internal(rc.id, "hosts.get", err)
+		at := rc.now
+		h.CheckedAt = &at
+		if ok {
+			h.State, h.VerifiedAt = HostVerified, &at
+		}
 	}
 	return &result{status: 200, body: hostOut{Host: toHostJSON(h)}}, nil
 }

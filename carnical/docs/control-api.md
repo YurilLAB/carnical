@@ -133,9 +133,12 @@ wrong, so a typo cannot remove a restriction.
 `control.OpenCredentialFile` resolves a relative path against the working directory at open, so
 later directory changes do not redirect refreshes or revocations. It re-reads the file when it
 changes (at most once a second), keeps the last
-good set if a new one does not parse, and writes a revocation back atomically with mode 0600. A file
-that changed and did not load (an edit in progress) is copied beside it as `.<name>.unparsed-<time>`
-before a revocation replaces it, so the edit is not lost.
+good set if a new one does not parse, and writes a revocation back atomically with mode 0600. The
+new file and then its directory are flushed to disk before the revocation takes effect or is
+reported, so a power cut cannot bring the revoked credential back (the directory flush is a no-op on
+Windows, where NTFS journals the rename); if a flush fails the revocation is answered as an error. A
+file that changed and did not load (an edit in progress) is copied beside it as
+`.<name>.unparsed-<time>` before a revocation replaces it, so the edit is not lost.
 
 The client certificate's fingerprint is `sha256(cert.RawSubjectPublicKeyInfo)`:
 
@@ -272,7 +275,9 @@ stop agreeing.
 A request is accepted if its `ts` is within 60 seconds of the server's clock (60 inclusive, 61
 refused). Its nonce is then remembered, per credential, until the request could no longer be
 accepted for its age (`ts + 61` seconds), and a second request with that nonce is refused whatever
-else it says.
+else it says. The time is read once the whole request, body included, has arrived, so holding a body
+back does not stretch the window, and a request whose `ts` is too old for nonces the cache has
+already let go of is refused (`skew`) even if it began in time.
 
 The cache holds at most 200,000 nonces, 50,000 for any one credential. When it is full it refuses
 new requests with `503 replay_cache_full` and a `Retry-After`, because forgetting a nonce to make
@@ -416,7 +421,9 @@ lists.
 * **Fail closed.** If the first line of a change cannot be written the change is not made (`503 audit_unavailable`). A read
   whose line cannot be written is not served. If a change's closing line cannot be written the change stands, the failure is
   counted (`Stats().AuditFailures`) and reported, and later changes are refused (`503 audit_unavailable`) until the log has
-  been checked and the server started again, even if the log works again.
+  been checked and the server started again, even if the log works again. This holds whatever the change's outcome, because
+  a store can commit a change and then report an error; a change that panics after its `started` line is closed with
+  outcome `error`, detail `panic`.
 * **Durability.** Opened for appending only, mode 0600 (a log other users can read is refused at open), every line flushed to
   disk before a successful `Append` returns. A failed write attempts rollback; a rollback failure closes the log and
   rejects subsequent appends. Windows repair uses a separate read/write handle and checks that it identifies the same
@@ -462,7 +469,8 @@ belongs to one site, and one for another site is "unknown key". Data comes from 
 (below).
 
 * **Verification** is the PHP console's: 405 for a method other than GET; 401 for a missing or malformed header, an unknown or
-  revoked key, a time more than 300 seconds off, a wrong signature (constant time), or a nonce seen in the last 600 seconds;
+  revoked key, a time more than 300 seconds off, a wrong signature (constant time), or a nonce seen in the last 601 seconds
+  (the PHP console's 600, and one more so that a nonce is remembered for as long as its `ts` can still be accepted);
   403 for a scope not allowed; 429 with `Retry-After` past 60 requests an hour for one key; 404 when the feed is off, the path
   is another, or the request did not arrive over TLS. Only correctly signed requests are remembered or counted, so nobody
   without a secret can use up a key's hour or fill the memory.

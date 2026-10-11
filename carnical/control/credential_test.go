@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -419,6 +420,37 @@ func TestCredentialFile(t *testing.T) {
 		entries, _ := os.ReadDir(dir)
 		if len(entries) != 1 {
 			t.Fatalf("%d files in the directory", len(entries))
+		}
+	})
+	t.Run("a revocation is reported only once the directory holding it has been flushed", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "credentials.json")
+		data, err := MarshalCredentials([]Credential{a, b})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		store, err := OpenCredentialFile(path, (&fakeClock{t: epoch}).now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var flushed []string
+		store.syncDir = func(d string) error {
+			// the flush is what makes the rename durable, so the file in place already holds the revocation
+			if now, err := OpenCredentialFile(path, nil); err == nil {
+				if got, _ := now.Lookup(a.ID); got.Revoked {
+					flushed = append(flushed, filepath.Clean(d))
+				}
+			}
+			return errors.New("input/output error")
+		}
+		if was, err := store.Revoke(a.ID); err == nil || was {
+			t.Fatalf("a revocation whose directory could not be flushed was reported as done: %v, %v", was, err)
+		}
+		if len(flushed) != 1 || flushed[0] != dir {
+			t.Fatalf("directories flushed after the rename: %q, want %q", flushed, dir)
 		}
 	})
 	t.Run("a revocation does not undo an edit made meanwhile", func(t *testing.T) {

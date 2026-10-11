@@ -410,6 +410,40 @@ func TestReplay(t *testing.T) {
 	if n := h.srv.replay.size(); n != 1 {
 		t.Fatalf("%d nonces remembered after the window", n)
 	}
+	// a replay that sends its headers in time and holds its body back until another request has made the cache forget
+	// its nonce is judged by the clock at the end of the body, not the start, and is refused
+	hosts := "/v1/tenants/" + tenantA + "/hosts"
+	doc := body(`{"hostname":"shop.example.com"}`)
+	orig := h.build(reqOpts{method: "POST", target: hosts, body: doc})
+	if w := h.serve(orig); w.Code != 201 {
+		t.Fatalf("first POST: %d %s", w.Code, w.Body.String())
+	}
+	h.clock.advance(59 * time.Second)
+	held := h.build(reqOpts{method: "POST", target: hosts, body: doc, nonce: nonceOf(orig), ts: tsOf(orig)})
+	held.Body = io.NopCloser(&heldBody{Reader: bytes.NewReader(doc), hold: func() {
+		h.clock.advance(3 * time.Second)
+		h.do(reqOpts{target: status}) // purges the first POST's nonce
+	}})
+	if w := h.serve(held); w.Code != 401 {
+		t.Fatalf("a replay with its body held back: %d %s", w.Code, w.Body.String())
+	}
+	if r, _ := lastFailure(h); r != "skew" {
+		t.Fatalf("reason %q", r)
+	}
+}
+
+// heldBody calls hold before it gives up any of its bytes, like a client that has sent its headers and holds its body.
+type heldBody struct {
+	io.Reader
+	hold func()
+}
+
+func (b *heldBody) Read(p []byte) (int, error) {
+	if hold := b.hold; hold != nil {
+		b.hold = nil
+		hold()
+	}
+	return b.Reader.Read(p)
 }
 
 // The Host a request was signed for is line 3 of what is signed; with an Authority set, a request signed for another server
