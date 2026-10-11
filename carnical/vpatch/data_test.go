@@ -34,11 +34,7 @@ func samplesPath(t testing.TB) string {
 }
 
 func corpusPath(t testing.TB, name string) string {
-	def := filepath.Join("..", "..", "..", "5Weeks1k", "newsletter", "content", "waf", "corpus")
-	if _, err := os.Stat("/mnt/d/Dev/5Weeks1k"); err == nil {
-		def = "/mnt/d/Dev/5Weeks1k/newsletter/content/waf/corpus"
-	}
-	return dataPath(t, "CARNICAL_VPATCH_CORPUS", def, name)
+	return dataPath(t, "CARNICAL_VPATCH_CORPUS", filepath.Join("..", "..", "..", "5Weeks1k", "newsletter", "content", "waf", "corpus"), name)
 }
 
 var (

@@ -5902,7 +5902,7 @@
   "Completed": "2026-10-06T05:58:29Z",
   "OS": "windows",
   "Go": "go1.26.6",
-  "Binary": "D:/Dev/coraza/build/carnical.exe",
+  "Binary": "build/carnical.exe",
   "CPUs": 12,
   "Count": 750000,
   "Concurrency": 16,

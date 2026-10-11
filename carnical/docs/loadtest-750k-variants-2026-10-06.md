@@ -227,7 +227,7 @@ From the repository root, supplying the owner's separately maintained corpus dir
 
 ```text
 go build -o build/carnical.exe ./carnical/cmd/carnical
-go run ./carnical/tools/loadtest -binary D:/Dev/coraza/build/carnical.exe -corpus D:/Dev/5Weeks1k/newsletter/content/waf/corpus -output D:/Dev/coraza/build/loadtest-750k-variants.json -variants -count 750000 -concurrency 16
+go run ./carnical/tools/loadtest -binary build/carnical.exe -corpus <corpus> -output build/loadtest-750k-variants.json -variants -count 750000 -concurrency 16
 ```
 
 `-variants` implies the extended categories and selects alternating class scheduling. It refuses counts too small to

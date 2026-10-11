@@ -110,8 +110,8 @@ Build from `carnical/`, then run from the repository root with the owner's separ
 go build -o ../build/carnical.exe ./cmd/carnical
 go build -o ../build/loadtest.exe ./tools/loadtest
 # From repository root:
-.\build\loadtest.exe -binary D:/Dev/coraza/build/carnical.exe -corpus D:/Dev/5Weeks1k/newsletter/content/waf/corpus -output D:/Dev/coraza/build/control.json -variants -hardening -count 750000 -concurrency 16 -ddos off -local-rules=false
-.\build\loadtest.exe -binary D:/Dev/coraza/build/carnical.exe -corpus D:/Dev/5Weeks1k/newsletter/content/waf/corpus -output D:/Dev/coraza/build/final.json -variants -hardening -count 750000 -concurrency 16 -ddos off -local-rules=true
+.\build\loadtest.exe -binary build/carnical.exe -corpus <corpus> -output build/control.json -variants -hardening -count 750000 -concurrency 16 -ddos off -local-rules=false
+.\build\loadtest.exe -binary build/carnical.exe -corpus <corpus> -output build/final.json -variants -hardening -count 750000 -concurrency 16 -ddos off -local-rules=true
 ```
 
 The binary was built from base commit `f7f65124` plus this hardening change before committing. Both JSON reports record identical binary SHA-256 `473aa0ae0e41c49b7e008ffcbd4083f18ca88885266c134b693569dea6c81176` and suite SHA-256 `93a86e48df503011bd08786a9965da9238f01799eea66c2ad34aa536206d38ec`. Compiler/runtime: go1.26.6; Windows, 12 logical CPUs, 16 clients, no pacing. Corpus hashes and exact WAF arguments are in the JSON. Raw WAF logs and executables remain ignored local build artifacts.
