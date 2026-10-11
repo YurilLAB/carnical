@@ -33,8 +33,8 @@ type Incident struct {
 	BaselineRate float64
 	PeakRate     float64
 	Requests     uint64
-	// Sources and Networks are estimates (within a few per cent) of the different addresses and the different /24 (IPv4)
-	// or /48 (IPv6) networks the attack came from.
+	// Sources and Networks are estimates (within a few per cent) of the different addresses (an IPv6 client counted by
+	// its /64) and the different /24 (IPv4) or /48 (IPv6) networks the attack came from.
 	Sources, Networks int
 	// Labels are the most common labels (country or network, from the Labeler) with their request counts, and
 	// DistinctLabels about how many different ones there were. Empty without a Labeler.
@@ -116,7 +116,7 @@ func (i *incidentAcc) addCluster(kind string, s share) {
 func (d *detector) incidentEvent(kind string, ns int64) Event {
 	inc := d.incident
 	out := Incident{
-		Start: time.Unix(0, inc.start), BaselineRate: inc.baseRate, PeakRate: inc.peak, Requests: inc.requests,
+		Start: d.wallTime(inc.start), BaselineRate: inc.baseRate, PeakRate: inc.peak, Requests: inc.requests,
 		Sources: int(inc.srcs.estimate()), Networks: int(inc.nets.estimate()),
 		Reasons: slices.Clone(inc.reasons), Clusters: slices.Clone(inc.clusters),
 		Refused: inc.refused, Challenged: inc.challenged, Solved: inc.solved, Banned: inc.banned,
@@ -133,9 +133,9 @@ func (d *detector) incidentEvent(kind string, ns int64) Event {
 		out.Labels = out.Labels[:min(len(out.Labels), 10)]
 	}
 	if kind == "attack_end" {
-		out.End = time.Unix(0, ns)
+		out.End = d.wallTime(ns)
 	}
-	return Event{Kind: kind, At: time.Unix(0, ns), State: d.state, Rate: d.last.rate, BaselineRate: inc.baseRate,
+	return Event{Kind: kind, At: d.wallTime(ns), State: d.state, Rate: d.last.rate, BaselineRate: inc.baseRate,
 		Reasons: slices.Clone(d.reasons), Incident: out}
 }
 

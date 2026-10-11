@@ -119,7 +119,8 @@ type Config struct {
 	// go unacknowledged before the kernel drops the connection (default 30 seconds; negative leaves it alone).
 	DeferAccept, UserTimeout time.Duration
 
-	// MonitorOnly detects and reports attacks without acting on them (the per-address and per-network limits still apply).
+	// MonitorOnly detects and reports attacks without acting on them (the per-address and per-network limits still apply,
+	// and an address they refuse during an attack is never banned for it).
 	MonitorOnly bool
 	// ClusterRate is the requests a second, in total, let through during an attack for requests that look like the
 	// attack (default 5). The rest are challenged or refused.
@@ -291,6 +292,9 @@ type Shield struct {
 	connAvg atomic.Uint64 // float64 bits: the moving average of the number of open connections
 	connN   atomic.Int64
 	fdLimit int64
+	// start is when the shield was made, and wall reads the wall clock (time.Now): see now.
+	start time.Time
+	wall  func() time.Time
 	// connMu makes capacity reservation atomic across listeners. Live network counts are separate from the evictable
 	// request history: address churn must not reset a network's open-connection count. Zero counts are removed.
 	connMu   sync.Mutex
@@ -331,8 +335,9 @@ func New(cfg Config) (*Shield, error) {
 	}
 	cfg.defaults()
 	cfg.Trusted = append([]netip.Prefix(nil), cfg.Trusted...)
-	s := &Shield{cfg: cfg, key: newKey(), det: newDetector(cfg.Detector), stop: make(chan struct{}), bans: make(chan banReq, 256),
+	s := &Shield{cfg: cfg, wall: time.Now, key: newKey(), det: newDetector(cfg.Detector), stop: make(chan struct{}), bans: make(chan banReq, 256),
 		connNets: make(map[netip.Prefix]int64)}
+	s.start = s.wall()
 	// A limit that an address or a network has earned is standing too: a flood of new addresses must not push it out.
 	raisedSrc := func(v *source) bool {
 		return s.raise(v.earned.at(s.det.earn.Load(), cfg.RequestRate), cfg.RequestRate) > 1
@@ -352,6 +357,9 @@ func New(cfg Config) (*Shield, error) {
 	s.det.unknownRate = func(base float64) float64 { return max(base*cfg.UnknownFactor, cfg.MinUnknownRate) }
 	s.det.knownRate = func(base float64) float64 { return max(base*cfg.KnownFactor, cfg.MinKnownRate) }
 	if cfg.Now == nil {
+		// What the shield reports (events and attack records) is in wall-clock time: an instant on its own clock is as
+		// far before the wall clock's now as it is before its own.
+		s.det.wall = func(ns int64) time.Time { return s.wall().Add(time.Duration(ns - s.now().UnixNano())).Round(0) }
 		s.wg.Add(1)
 		go s.ticker()
 	}
@@ -370,11 +378,16 @@ func (s *Shield) Close() {
 	s.wg.Wait()
 }
 
+// now is the shield's clock: Config.Now if set, and otherwise the wall clock as it read when the shield was made, moved
+// on by the monotonic clock. Every limit and the detector run on it, and the wall clock can be stepped (an NTP correction,
+// a virtual machine restored): a step back would stop every bucket refilling, and the detector, until the wall clock had
+// caught up, and a step forward would refill every bucket and end every ban at once. Challenge tokens and clearance
+// cookies are made and checked only by this process, with its own key, so they run on this clock too.
 func (s *Shield) now() time.Time {
 	if s.cfg.Now != nil {
 		return s.cfg.Now()
 	}
-	return time.Now()
+	return s.start.Add(time.Since(s.start))
 }
 
 func (s *Shield) ticker() {
@@ -385,8 +398,8 @@ func (s *Shield) ticker() {
 		select {
 		case <-s.stop:
 			return
-		case now := <-t.C:
-			s.tick(now.UnixNano())
+		case <-t.C:
+			s.tick(s.now().UnixNano())
 		}
 	}
 }
@@ -441,7 +454,7 @@ func (s *Shield) Admit(r *http.Request, client netip.Addr) Decision {
 	trusted := s.trusted(client)
 	fp, fpLabel := fingerprint(r)
 	pt, ptLabel := pathTemplate(r)
-	isNew := s.det.observe(ns, client, fp, fpLabel, pt, ptLabel)
+	isNew := s.det.observe(ns, key, fp, fpLabel, pt, ptLabel)
 	info := s.det.info.Load()
 
 	earn := s.det.earn.Load()
@@ -559,7 +572,9 @@ func (s *Shield) refuse(ns int64, d Decision, info *attackInfo, id, status, retr
 			inc.refused++
 		}
 	})
-	if info != nil && id != idBanned {
+	// A ban is the attack's mitigation, not a baseline limit: in monitor mode an address over its own limit is refused
+	// as at any other time, and never banned for it.
+	if info != nil && id != idBanned && !s.cfg.MonitorOnly {
 		s.strike(ns, d.key, info)
 	}
 	return d

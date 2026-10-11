@@ -143,13 +143,16 @@ func (s *Shield) admitConn(c net.Conn) net.Conn {
 		}
 		refused = !admitted
 	}
+	// The detector counts the addresses connections come from, as the limits count them: one address's flood of
+	// connections is that address's, and not the spread of a botnet.
+	h := hashAddr(sc.key)
 	if refused {
 		s.counters.connsRefused.Add(1)
-		s.det.count(ns, func(w *window) { w.connsIn++; w.connsRefused++ })
+		s.det.count(ns, func(w *window) { w.connsIn++; w.connsRefused++; w.connSrcs.add(h) })
 		s.reset(c)
 		return nil
 	}
-	s.det.count(ns, func(w *window) { w.connsIn++ })
+	s.det.count(ns, func(w *window) { w.connsIn++; w.connSrcs.add(h) })
 	if s.cfg.UserTimeout > 0 {
 		if err := setUserTimeout(c, s.cfg.UserTimeout); err != nil {
 			s.counters.socketOptionErrors.Add(1)

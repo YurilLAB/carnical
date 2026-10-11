@@ -47,7 +47,7 @@ func configureShield(log *slog.Logger, f shieldFlags, trusted []netip.Prefix) (*
 	if err != nil {
 		return nil, err
 	}
-	cfg.OnEvent = func(ev shield.Event) { logShieldEvent(log, ev) }
+	cfg.OnEvent = func(ev shield.Event) { logShieldEvent(log, ev, cfg.MonitorOnly) }
 	if f.ranges != "" {
 		file, err := os.Open(f.ranges)
 		if err != nil {
@@ -86,8 +86,9 @@ func shieldSettings(f shieldFlags, trusted []netip.Prefix) (shield.Config, error
 // maxLimitRaise is the highest -ddos-max-raise: beyond it the limit of an address is no limit.
 const maxLimitRaise = 100
 
-// logShieldEvent writes attack transitions and bounded IDS signals. Per-request logs would amplify a flood.
-func logShieldEvent(log *slog.Logger, ev shield.Event) {
+// logShieldEvent writes attack transitions and bounded IDS signals. Per-request logs would amplify a flood. monitor says
+// that an attack is only reported (-ddos monitor), so the log does not claim it is being mitigated.
+func logShieldEvent(log *slog.Logger, ev shield.Event, monitor bool) {
 	attrs := []any{"state", ev.State.String(), "rate", math.Round(ev.Rate), "baseline_rate", math.Round(ev.BaselineRate), "reasons", ev.Reasons}
 	if strings.HasPrefix(ev.Kind, "attack") {
 		inc := ev.Incident
@@ -111,6 +112,9 @@ func logShieldEvent(log *slog.Logger, ev shield.Event) {
 	}
 	msg := map[string]string{"elevated": "traffic is unusually high", "attack_start": "denial-of-service attack detected; mitigation on",
 		"attack_update": "denial-of-service attack continues", "attack_end": "denial-of-service attack over", "ids_signal": "network or HTTP intrusion signal detected"}[ev.Kind]
+	if monitor && ev.Kind == "attack_start" {
+		msg = "denial-of-service attack detected; monitor mode, not mitigated"
+	}
 	if ev.Kind == "elevated" {
 		log.Info(msg, attrs...)
 		return

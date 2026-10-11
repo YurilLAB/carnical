@@ -97,7 +97,8 @@ type DetectorConfig struct {
 	// ExitQuiet is how long the traffic must stay below the exit rate before the attack is over (default 30 seconds).
 	ExitQuiet time.Duration
 	// MinClusterSources is how many different addresses must share a fingerprint for it to count as a distributed
-	// cluster (default 20). Fewer is a handful of clients, which the per-address limits deal with.
+	// cluster (default 20), and how many more addresses than usual must open connections for a flood of connections
+	// to count. Fewer is a handful of clients, which the per-address limits deal with.
 	MinClusterSources int
 	// SeenPeriod is how long an address is remembered as seen (between one and two periods; default 12 hours).
 	SeenPeriod time.Duration
@@ -155,16 +156,18 @@ type window struct {
 	maxSrc, maxNet                           uint32  // the most an address's, and a network's, limit was raised in this second, in thousandths
 	lat                                      float64 // milliseconds, summed over latN
 	srcs, nets                               hll
+	connSrcs                                 hll // the addresses that opened connections, admitted or refused
 	fps, paths                               topK
 }
 
 func (w *window) reset(sec int64) {
-	srcs, nets, fps, paths := w.srcs, w.nets, w.fps, w.paths
+	srcs, nets, connSrcs, fps, paths := w.srcs, w.nets, w.connSrcs, w.fps, w.paths
 	srcs.reset()
 	nets.reset()
+	connSrcs.reset()
 	fps.reset()
 	paths.reset()
-	*w = window{sec: sec, srcs: srcs, nets: nets, fps: fps, paths: paths}
+	*w = window{sec: sec, srcs: srcs, nets: nets, connSrcs: connSrcs, fps: fps, paths: paths}
 }
 
 // share is one fingerprint or target and its part of the traffic over the last ten seconds.
@@ -180,7 +183,7 @@ type aggregate struct {
 	rate, srcs, nets, newShare, newSrcs  float64
 	engagement                           float64 // -1 when too few new sources to tell
 	errRatio, lat                        float64 // -1 when nothing completed
-	connRate, connRefused                float64
+	connRate, connRefused, connSrcs      float64
 	closed, earlyCloses, securityRejects float64
 	refused, challenged                  float64
 	scaleSrc, scaleNet                   float64 // the most an address's, and a network's, limit was raised in the ten seconds
@@ -188,10 +191,10 @@ type aggregate struct {
 }
 
 type baseline struct {
-	rate, rateVar, srcs, newShare, errRatio, lat, connRate float64
-	lastSample                                             float64
-	sampled                                                bool
-	fps, paths                                             map[uint64]float64
+	rate, rateVar, srcs, newShare, errRatio, lat, connRate, connSrcs float64
+	lastSample                                                       float64
+	sampled                                                          bool
+	fps, paths                                                       map[uint64]float64
 }
 
 // attackInfo is what the request path needs to know during an attack. It is replaced as a whole and read without a lock.
@@ -229,6 +232,7 @@ type detector struct {
 	reasons    []string
 	scratchS   hll
 	scratchN   hll
+	scratchC   hll
 	incident   *incidentAcc
 	history    []Incident
 
@@ -249,6 +253,9 @@ type detector struct {
 	earnOpen bool
 
 	// set by the Shield
+	// wall gives the wall-clock time of an instant on the shield's clock, for what events and records report; nil when
+	// the shield's clock is Config.Now.
+	wall         func(ns int64) time.Time
 	labeler      Labeler
 	onEvent      func(Event)
 	idsReasons   []string
@@ -262,9 +269,9 @@ type detector struct {
 
 func newDetector(cfg DetectorConfig) *detector {
 	cfg.defaults()
-	d := &detector{cfg: cfg, seen: newSeenFilter(), scratchS: newHLL(10), scratchN: newHLL(8)}
+	d := &detector{cfg: cfg, seen: newSeenFilter(), scratchS: newHLL(10), scratchN: newHLL(8), scratchC: newHLL(10)}
 	for i := range d.ring {
-		d.ring[i] = window{srcs: newHLL(10), nets: newHLL(8), fps: newTopK(topKeys), paths: newTopK(topKeys)}
+		d.ring[i] = window{srcs: newHLL(10), nets: newHLL(8), connSrcs: newHLL(10), fps: newTopK(topKeys), paths: newTopK(topKeys)}
 	}
 	d.base = baseline{rate: cfg.InitialRate, fps: map[uint64]float64{}, paths: map[uint64]float64{}}
 	if cfg.InitialRate > 0 {
@@ -284,16 +291,18 @@ func netOf(a netip.Addr) netip.Prefix {
 	return p
 }
 
-// observe counts one request and reports whether its source has not been seen before.
-func (d *detector) observe(ns int64, client netip.Addr, fp uint64, fpLabel string, pt uint64, ptLabel string) bool {
-	h := hashAddr(client)
+// observe counts one request and reports whether its source has not been seen before. key is the client's SourceKey: an
+// IPv6 client is counted by its /64, as the limits count it, so that one host that changes the last 64 bits of its
+// address does not look to the detector like thousands of new addresses, the spread of a botnet.
+func (d *detector) observe(ns int64, key netip.Addr, fp uint64, fpLabel string, pt uint64, ptLabel string) bool {
+	h := hashAddr(key)
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.advance(ns)
 	w := &d.ring[d.cur]
 	w.reqs++
 	w.srcs.add(h)
-	w.nets.add(maphashPrefix(netOf(client)))
+	w.nets.add(maphashPrefix(netOf(key)))
 	w.fps.add(fp, fpLabel, h, 1)
 	w.paths.add(pt, ptLabel, h, 1)
 	isNew := !d.seen.has(h)
@@ -304,9 +313,9 @@ func (d *detector) observe(ns int64, client netip.Addr, fp uint64, fpLabel strin
 	if inc := d.incident; inc != nil {
 		inc.requests++
 		inc.srcs.add(h)
-		inc.nets.add(maphashPrefix(netOf(client)))
+		inc.nets.add(maphashPrefix(netOf(key)))
 		if d.labeler != nil {
-			if l := d.labeler.Label(client); l != "" {
+			if l := d.labeler.Label(key); l != "" {
 				lh := hashString(l)
 				inc.labels.add(lh, l, h, 1)
 				inc.labelSet.add(lh)
@@ -391,6 +400,7 @@ func (d *detector) aggregate() aggregate {
 	var lat float64
 	d.scratchS.reset()
 	d.scratchN.reset()
+	d.scratchC.reset()
 	type acc struct {
 		count float64
 		label string
@@ -430,6 +440,7 @@ func (d *detector) aggregate() aggregate {
 		challenged += float64(w.challenged)
 		d.scratchS.merge(&w.srcs)
 		d.scratchN.merge(&w.nets)
+		d.scratchC.merge(&w.connSrcs)
 		merge(fps, &w.fps)
 		merge(paths, &w.paths)
 	}
@@ -437,6 +448,9 @@ func (d *detector) aggregate() aggregate {
 	a.scaleSrc, a.scaleNet = maxSrc/1000, maxNet/1000
 	a.connRate = conns / aggSeconds
 	a.connRefused = connsRef / aggSeconds
+	if conns > 0 {
+		a.connSrcs = d.scratchC.estimate()
+	}
 	a.closed, a.earlyCloses, a.securityRejects = closed/aggSeconds, earlyCloses/aggSeconds, securityRejects/aggSeconds
 	a.refused = refused / aggSeconds
 	a.challenged = challenged / aggSeconds
@@ -532,9 +546,15 @@ func (d *detector) evaluate(ns int64) {
 	if pain {
 		reasons = append(reasons, "the application is failing or slow ("+pct(math.Max(a.errRatio, 0))+" errors, "+itoa(math.Max(a.lat, 0))+" ms)")
 	}
-	connFlood := a.connRate >= math.Max(d.cfg.RateFactor*b.connRate, d.cfg.MinAttackRate) && a.connRate >= 3*math.Max(a.rate, 1)
+	// Connections opened without requests are evidence only when they come from many more addresses than usual: at least
+	// MinClusterSources more, and twice as many. One address that opens connections as fast as it can is held by its own
+	// connection limit and must not put the whole site into attack mode; its refused connections still count in the rate,
+	// because the connections of a flood that fills the connection cap are refused too.
+	connFlood := a.connRate >= math.Max(d.cfg.RateFactor*b.connRate, d.cfg.MinAttackRate) && a.connRate >= 3*math.Max(a.rate, 1) &&
+		a.connSrcs >= math.Max(2*b.connSrcs, b.connSrcs+float64(d.cfg.MinClusterSources))
 	if connFlood {
-		reasons = append(reasons, "connections are opened without requests ("+itoa(a.connRate)+" a second)")
+		reasons = append(reasons, "connections are opened without requests ("+itoa(a.connRate)+" a second from about "+itoa(a.connSrcs)+
+			" addresses, usually "+itoa(b.connSrcs)+")")
 	}
 	evidence := gate && (strongFP || pathConc && spread && lowEngage || pain && spread) || connFlood
 	evidence = evidence && trained
@@ -554,7 +574,7 @@ func (d *detector) evaluate(ns int64) {
 		} else if gate {
 			if d.state != Elevated {
 				d.state = Elevated
-				d.emit(Event{Kind: "elevated", At: time.Unix(0, ns), State: Elevated, Rate: a.rate, BaselineRate: rateBase, Reasons: reasons})
+				d.emit(Event{Kind: "elevated", At: d.wallTime(ns), State: Elevated, Rate: a.rate, BaselineRate: rateBase, Reasons: reasons})
 			}
 		} else {
 			d.state = Normal
@@ -591,22 +611,16 @@ func (d *detector) evaluate(ns int64) {
 	d.reasons = reasons
 	d.learning.Store(d.state == Normal && d.run == 0)
 	// What an address earns (see earned) it earns in the seconds the baseline is learnt in: all but an attack's. The
-	// second that has ended counts if it was one, and a second weighs what it weighs in the baseline, but never more than
-	// a thirtieth: a single second's burst must not be an average.
+	// second that has ended counts if it was one. From the first second on, a second weighs what it weighs in the
+	// warmed-up baseline and counts for at most twice the average: while the detector warms up, its baseline weighs a
+	// second far more, and an address's limit, four times its own average, would feed back into that average and reach
+	// the ceiling within a minute of every start.
 	if d.earnOpen {
 		d.earnSec++
 	}
 	d.earnOpen = d.state != Attack
-	age, warm := float64(d.age), float64(d.cfg.Warmup/time.Second)
-	e := &earning{sec: d.earnSec + 1, open: d.earnOpen, alpha: 1 / math.Max(age, earnSlowest)}
-	if age > warm {
-		e.alpha, e.capped = 1/float64(d.cfg.Tau/time.Second), true
-	}
-	d.earn.Store(e)
+	d.earn.Store(&earning{sec: d.earnSec + 1, open: d.earnOpen, alpha: 1 / float64(d.cfg.Tau/time.Second)})
 }
-
-// earnSlowest is the least number of seconds an average is taken over while the detector warms up.
-const earnSlowest = 30
 
 // detectIDS reports strong admission and rejection signals without changing mitigation.
 // A response error alone cannot classify an attack; these bounded alerts let operators
@@ -628,7 +642,7 @@ func (d *detector) detectIDS(ns int64, a aggregate) {
 		return
 	}
 	d.idsLast, d.idsReported = ns, true
-	d.emit(Event{Kind: "ids_signal", At: time.Unix(0, ns), State: d.state, Rate: a.rate, BaselineRate: d.base.rate, Reasons: append([]string(nil), reasons...)})
+	d.emit(Event{Kind: "ids_signal", At: d.wallTime(ns), State: d.state, Rate: a.rate, BaselineRate: d.base.rate, Reasons: append([]string(nil), reasons...)})
 }
 
 // learn moves the baseline towards the last ten seconds. The rate may at most double per step's worth of weight, so a
@@ -659,6 +673,7 @@ func (d *detector) learn(a aggregate) {
 	ew(&b.srcs, a.srcs)
 	ew(&b.newShare, a.newShare)
 	ew(&b.connRate, a.connRate)
+	ew(&b.connSrcs, a.connSrcs)
 	if a.errRatio >= 0 {
 		ew(&b.errRatio, a.errRatio)
 	}
@@ -700,7 +715,7 @@ func (d *detector) startAttack(ns int64, a aggregate, reasons []string, fpAttack
 	d.state, d.since, d.quiet, d.noEvidence, d.run = Attack, ns, 0, 0, 0
 	d.epoch++
 	d.frozen = baseline{rate: d.base.rate, rateVar: d.base.rateVar, srcs: d.base.srcs, newShare: d.base.newShare, errRatio: d.base.errRatio, lat: d.base.lat,
-		connRate: d.base.connRate, fps: cloneMap(d.base.fps), paths: cloneMap(d.base.paths)}
+		connRate: d.base.connRate, connSrcs: d.base.connSrcs, fps: cloneMap(d.base.fps), paths: cloneMap(d.base.paths)}
 	d.incident = &incidentAcc{start: ns, peak: a.rate, baseRate: d.base.rate, srcs: newHLL(14), nets: newHLL(12),
 		labels: newTopK(32), labelSet: newHLL(10)}
 	d.incident.addReasons(reasons)
@@ -765,6 +780,14 @@ func (d *detector) endAttack(ns int64) {
 	d.state, d.incident, d.quiet = Normal, nil, 0
 	d.info.Store(nil)
 	d.emit(ev)
+}
+
+// wallTime is the time an instant on the shield's clock is reported as.
+func (d *detector) wallTime(ns int64) time.Time {
+	if d.wall != nil {
+		return d.wall(ns)
+	}
+	return time.Unix(0, ns)
 }
 
 func (d *detector) emit(ev Event) {

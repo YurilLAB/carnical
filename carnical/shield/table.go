@@ -143,16 +143,16 @@ func subnetLast(s *subnet) int64 { return s.last }
 // earning is what the request path needs to keep each address's and network's own average (see earned). The detector
 // publishes one every second.
 type earning struct {
-	sec    uint32  // the count of seconds so far that were not an attack's: the clock the averages run on
-	open   bool    // whether the current second is such a second
-	alpha  float64 // the weight of one second in an average
-	capped bool    // whether a second may count for no more than twice the average (not while the detector warms up)
+	sec   uint32  // the count of seconds so far that were not an attack's: the clock the averages run on
+	open  bool    // whether the current second is such a second
+	alpha float64 // the weight of one second in an average
 }
 
 // earned is the requests a second that one address, or one network, has had answered well by the application, as a
 // moving average. Its own limits are raised by it (Shield.raise), so what one address earns no other address has. Its
-// clock leaves out the seconds of an attack, in which it neither grows nor fades, and a second weighs what it weighs in
-// the detector's baseline, with the same slow start for a sudden rise.
+// clock leaves out the seconds of an attack, in which it neither grows nor fades, a second weighs what it weighs in the
+// detector's warmed-up baseline, and a second counts for at most twice the average, so that a sudden rise is learnt
+// slowly.
 type earned struct {
 	sec uint32  // the second n counts; 0 before the first
 	n   uint32  // requests answered well in that second
@@ -166,10 +166,7 @@ func (e *earned) at(now *earning, ref float64) float64 {
 	if now == nil || e.sec == 0 || e.sec >= now.sec {
 		return avg
 	}
-	n := float64(e.n)
-	if now.capped { // a sudden rise is not learnt at once
-		n = math.Min(n, math.Max(2*avg, ref/2))
-	}
+	n := math.Min(float64(e.n), math.Max(2*avg, ref/2)) // a sudden rise is not learnt at once
 	avg += now.alpha * (n - avg)
 	if idle := now.sec - e.sec - 1; idle > 0 {
 		avg *= math.Pow(1-now.alpha, float64(idle))

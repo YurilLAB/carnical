@@ -6,7 +6,7 @@ processing. It is enabled by default in the standalone proxy.
 | Mode | Behavior |
 | --- | --- |
 | `-ddos on` | Detect floods and apply mitigation, alongside baseline connection/request limits. |
-| `-ddos monitor` | Detect and log floods; baseline limits still enforce, but attack-specific mitigation does not. |
+| `-ddos monitor` | Detect and log floods; baseline limits still enforce (429), but attack-specific mitigation does not: no attack budgets, challenges or bans. |
 | `-ddos off` | Remove Shield. Use this for isolated payload benchmarks, then test flood behavior separately. |
 
 Source: [Shield](../shield/shield.go), [listener](../shield/listener.go),
@@ -72,6 +72,14 @@ An attack needs elevated volume plus supporting evidence held for three seconds:
 - A concentrated target from new addresses without normal browser engagement.
 - An unhealthy application with traffic from new places.
 
+A flood of connections that carry no requests is enough on its own, held for three seconds likewise
+and without a rise in requests: connections arrive at four times their usual rate (and at least 20 a
+second) and at three times the request rate, from at least 20 more addresses than usually open
+connections and at least twice as many. Connections the per-address limits refuse count towards the rate but add only their one
+address, so a single host that opens connections as fast as it can is held by its own connection
+limits and never puts the whole site into attack mode. An attack does not end while such a flood
+goes on.
+
 An attack lasts at least one minute and ends after 30 quiet seconds. It can also end after five
 minutes without the evidence that triggered it. The first 60 seconds are a history period; during
 the remaining five-minute learning period, only a tenfold rise qualifies. Set `-ddos-baseline-rate`
@@ -83,22 +91,29 @@ The limits of an address, and of a network, grow to follow that address's or net
 so that many visitors behind one company or carrier address are not limited as if they were one
 person. Each has a moving average of the requests a second that the application answered well for
 it (a status under 400, from the application and not from the proxy), kept in every second that is
-not an attack's and with the weight the baseline gives a second; its request limit is four times
-that average when that is more than the configured floor, up to the ceiling, and its connection
-limits rise by the same factor. What one address has earned raises no other address's limit, and an
-address that is refused, or answered with errors, earns nothing. The average neither grows nor fades
-during an attack, fades when the address stops sending, and is taken away by a ban. After the first
-five minutes a sudden rise counts for at most twice the average, so a higher limit takes minutes of
-ordinary use to earn. Nonfinite rates/scaling settings are rejected during configuration.
+not an attack's and with the weight the warmed-up baseline gives a second; its request limit is
+four times that average when that is more than the configured floor, up to the ceiling, and its
+connection limits rise by the same factor. What one address has earned raises no other address's
+limit, and an address that is refused, or answered with errors, earns nothing. The average neither
+grows nor fades during an attack, fades when the address stops sending, and is taken away by a ban.
+A sudden rise counts for at most twice the average, from the first second after every start, so a
+higher limit takes minutes of ordinary use to earn, whether or not `-ddos-baseline-rate` is set.
+After a restart an address with many visitors behind it is therefore held to its configured limit
+for a while: in the busy-site simulation, shared addresses that need 2.4 times the floor take about
+20 minutes to earn it. Nonfinite rates/scaling settings are rejected during configuration.
 
 An address raises its own limit by using it, so the ceiling is the real limit of an address that is
-patient. Measured with one address that takes everything it is given on a site the detector knows:
-it is still at its configured limit after 5 minutes, at twice it after about 15, at ten times after
-30, and at the default ceiling of 20 times after 40. `-ddos-max-raise` sets the ceiling, from 1 to
-100; with 1 every address and network stays at its configured limit, which suits a site whose
-visitors do not come in numbers from behind one address.
+patient. Measured with one address that takes everything it is given, on a site the detector knows
+and right after a start without a baseline alike: it is still at its configured limit after 5
+minutes, at twice it after about 15, at ten times after 30, and at the default ceiling of 20 times
+after 40. `-ddos-max-raise` sets the ceiling, from 1 to 100; with 1 every address and network stays
+at its configured limit, which suits a site whose visitors do not come in numbers from behind one
+address.
 
-IPv6 clients are counted by /64 and their networks by /48, as IPv4 clients are by address and /24. A
+IPv6 clients are counted by /64 and their networks by /48, as IPv4 clients are by address and /24,
+in the limits and in the detector alike: new addresses, the number of different addresses, the
+addresses behind a fingerprint or opening connections, and an attack's record all count one /64
+once, so one host cannot look like a botnet by changing the last 64 bits of its address. A
 /48 is the largest block one site is given and what a provider divides among some hundreds of home
 lines, which is what a /24 is to IPv4; a network tier at /56 would hand the holder of one /48 256
 network budgets, and at /64 as many as it has clients.
@@ -147,9 +162,10 @@ at its limit.
   `Retry-After` rather than a challenge page.
 
 An address refused 30 times during an attack is banned for ten minutes, and again after another 30
-refusals if it carries on once the ban runs out. When the address table is full, an entry without
-standing is forgotten first; a ban or a known client's standing goes only when every entry in the
-sample of 32 has one. Rule IDs are 5004001
+refusals if it carries on once the ban runs out. In monitor mode nothing is banned: an address over
+its own limit is refused with 429 as at any other time. When the address table is full, an entry
+without standing is forgotten first; a ban or a known client's standing goes only when every entry
+in the sample of 32 has one. Rule IDs are 5004001
 (address rate), 5004002 (network rate), 5004003 (attack cluster), 5004004 (unknown-client budget),
 5004005 (challenge shown), 5004006/5004007 (failed/passed) and 5004008 (ban).
 

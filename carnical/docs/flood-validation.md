@@ -5,10 +5,12 @@ behavior and previous fixes; they are not production capacity guarantees.
 For current settings, see [flood protection and IDS](ddos.md).
 
 Measured (`TestASiteWithMuchTrafficIsNotLimitedAsIfItWereSmall`): a site serving 1,200 requests a second, half of its returning
-visitors behind four shared addresses of about 120 requests a second each. The per-address limit rose 11.3x and the per-network
-limit 3.8x, and 99.9% of returning visitors were served. With the limits fixed (control) 71% were. An attack of 8,000 requests a
-second from 25,000 addresses on that site was detected after 8 s, 0.30% of it reached the application, and 100% of returning and
-new visitors were served. A sudden tripling of real traffic was not flagged.
+visitors behind four shared addresses of about 120 requests a second each. After 25 minutes of ordinary traffic from a start (the
+time the shared addresses need to earn their limits, since a second counts for at most twice an address's average from the first
+second on) the per-address limit had risen 5.7x and the per-network limit 3.1x, and in the following minute 100% of returning
+visitors were served (86% over the 25 minutes). With the limits fixed (control) 71% were. An attack of 8,000 requests a second
+from 25,000 addresses on that site was detected after 8 s, 0.31% of it reached the application, and 100% of returning and new
+visitors were served. A sudden tripling of real traffic was not flagged.
 
 The adjustment is bounded: one address that sends a lot for a long time raises the per-address limit by at most 20x, a rise is
 learnt at most twice per step, and nothing is learnt during an attack. The raised limit applies to every address, not only to
@@ -31,8 +33,8 @@ second, 32 requests a second of ordinary traffic from 400 returning and many new
 | Same, `-ddos monitor` (control) | 4 s | — (not mitigated) | 3.1% | 3.1% |
 | 30,000 addresses copying a real Chrome browser exactly, 3,000 req/s to `/search` | 4 s | 0.17% | 100% | 100% |
 | Low and slow: 10,000 addresses, one request each every 20 s | 5 s | 1.0% | 100% | 100% |
-| Busy site (1,200 req/s, half its returning visitors behind 4 shared addresses): 8,000 req/s from 25,000 addresses | 8 s | 0.30% | 100% | 100% |
-| Busy site, real traffic suddenly 3x (negative control) | never flagged | — | 100% | 100% |
+| Busy site (1,200 req/s, half its returning visitors behind 4 shared addresses): 8,000 req/s from 25,000 addresses | 8 s | 0.31% | 100% | 100% |
+| Busy site, real traffic suddenly 3x (negative control), 8 minutes after a start | never flagged | — | 59% (the shared addresses have not yet earned their limits) | 100% |
 | Flash crowd of real people, 10x the visits (negative control) | never (stays "elevated") | — | — | 100% |
 | A crowd to one article whose assets are on another host | treated as an attack | — | 100% | 100% (through the check) |
 

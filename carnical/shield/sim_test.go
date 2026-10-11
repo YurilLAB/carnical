@@ -5,9 +5,11 @@ package shield
 import (
 	"fmt"
 	"math/rand/v2"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
@@ -111,8 +113,7 @@ func (m *sim) do(class string, v *simVisitor, path string, nav bool, headers []s
 	tl := m.tally(class)
 	tl.sent++
 	for attempt := 0; attempt < 2; attempt++ {
-		r := httptest.NewRequest(http.MethodGet, path, nil)
-		r.Header = http.Header{}
+		r := simRequest(path)
 		for i := 0; i+1 < len(headers); i += 2 {
 			r.Header.Set(headers[i], headers[i+1])
 		}
@@ -156,6 +157,18 @@ func (m *sim) do(class string, v *simVisitor, path string, nav bool, headers []s
 		}
 	}
 	return false
+}
+
+// simRequest is the request httptest.NewRequest makes for a GET of target, without parsing it from text through a new
+// buffered reader each time, which was the largest part of what a simulation cost; the shield reads its method,
+// protocol, target, headers and cookies.
+func simRequest(target string) *http.Request {
+	u, err := url.ParseRequestURI(target)
+	if err != nil {
+		panic(err)
+	}
+	return &http.Request{Method: http.MethodGet, URL: u, RequestURI: target, Proto: "HTTP/1.1", ProtoMajor: 1, ProtoMinor: 1,
+		Header: http.Header{}, Body: http.NoBody, Host: "example.com", RemoteAddr: "192.0.2.1:1234"}
 }
 
 // visit is a person loading a page and its assets.
@@ -402,6 +415,81 @@ func TestSimulatedAttacks(t *testing.T) {
 			t.Fatalf("a crowd of people was taken for an attack: %q", m.s.Snapshot().Reasons)
 		}
 	})
+
+	t.Run("one IPv6 host flooding from addresses all over its /64 (negative control: one client, which its own limit holds)", func(t *testing.T) {
+		v6 := func(net, host int) netip.Addr { // 2001:db8:1:<net>::<host>
+			return netip.AddrFrom16([16]byte{0x20, 0x01, 0x0d, 0xb8, 0, 1, byte(net >> 8), byte(net), 12: byte(host >> 24), byte(host >> 16), byte(host >> 8), byte(host)})
+		}
+		// flood is ten seconds of 300 requests a second from one program, each from the address from gives it; it returns
+		// the highest state the site was in and the reasons then.
+		flood := func(from func(i int) netip.Addr) (State, []string) {
+			m := newSim(t, func(c *Config) { c.Labeler = nil }) // the simulation's labeller knows IPv4 only
+			m.warm(10)
+			worst, reasons := Normal, []string(nil)
+			for sec := 0; sec < 10; sec++ {
+				m.second(m.kv, m.nv, 300, func(i int) {
+					m.do("attack", &simVisitor{addr: from(sec*300 + i)}, "/?r="+strconv.Itoa(m.r.IntN(1e9)), false, python)
+				})
+				if st := m.s.State(); st > worst {
+					worst, reasons = st, m.s.Snapshot().Reasons
+				}
+			}
+			return worst, reasons
+		}
+		if st, reasons := flood(func(i int) netip.Addr { return v6(2, i) }); st == Attack {
+			t.Fatalf("one host that changes the last 64 bits of its address was taken for an attack from many addresses: %q", reasons)
+		}
+		if st, _ := flood(func(i int) netip.Addr { return v6(i%40, 1) }); st != Attack {
+			t.Fatalf("control: the same flood from 40 different /64s was not taken for an attack (state %v), so the test proves nothing", st)
+		}
+	})
+
+	t.Run("one address opening connections as fast as it can, while visitors open their own (negative control: its own limit holds it)", func(t *testing.T) {
+		// flood is ten minutes of ordinary traffic in which visitors open twenty connections a second, then a minute in
+		// which 300 connections a second more, each sending nothing, come from the addresses given; it returns the highest
+		// state the site was in and the reasons then.
+		flood := func(from []netip.Addr) (State, []string) {
+			m := newSim(t, nil)
+			open := func(a netip.Addr) {
+				mine, theirs := net.Pipe()
+				defer theirs.Close()
+				if c := m.s.admitConn(addrConn{mine, net.TCPAddrFromAddrPort(netip.AddrPortFrom(a, 40000))}); c != nil {
+					c.Close()
+				}
+			}
+			visitors := func(int) { open(m.known[m.r.IntN(len(m.known))].addr) }
+			for i := 0; i < 10*60; i++ {
+				m.second(m.kv, m.nv, 20, visitors)
+			}
+			if st := m.s.State(); st != Normal {
+				t.Fatalf("after warm-up the state is %v", st)
+			}
+			worst, reasons := Normal, []string(nil)
+			for i := 0; i < 60; i++ {
+				m.second(m.kv, m.nv, 20+300, func(n int) {
+					if n < 20 {
+						visitors(n)
+					} else {
+						open(from[n%len(from)])
+					}
+				})
+				if st := m.s.State(); st > worst {
+					worst, reasons = st, m.s.Snapshot().Reasons
+				}
+			}
+			return worst, reasons
+		}
+		if st, reasons := flood([]netip.Addr{netip.MustParseAddr("203.0.113.5")}); st == Attack {
+			t.Fatalf("one address opening connections put the whole site into attack mode: %q", reasons)
+		}
+		var many []netip.Addr
+		for _, b := range botnet(400, rand.New(rand.NewPCG(3, 5))) {
+			many = append(many, b.addr)
+		}
+		if st, _ := flood(many); st != Attack {
+			t.Fatalf("control: the same connections from 400 addresses were not taken for an attack (state %v), so the test proves nothing", st)
+		}
+	})
 }
 
 // busy builds a site with ten times the traffic of the one above, a share of whose returning visitors come through a few
@@ -420,6 +508,11 @@ func busy(t *testing.T, mod func(*Config)) *sim {
 	return m
 }
 
+// busyWarm is how many seconds of ordinary traffic the shared addresses of busy need to earn the limits their visitors
+// need: a second counts for at most twice an address's average and weighs a six-hundredth, so it takes about 25 minutes
+// from a start.
+const busyWarm = 25 * 60
+
 func TestASiteWithMuchTrafficIsNotLimitedAsIfItWereSmall(t *testing.T) {
 	if testing.Short() {
 		t.Skip("simulation")
@@ -428,7 +521,7 @@ func TestASiteWithMuchTrafficIsNotLimitedAsIfItWereSmall(t *testing.T) {
 
 	t.Run("visitors behind shared addresses are served, because each address's limit follows its own traffic", func(t *testing.T) {
 		m := busy(t, nil)
-		for i := 0; i < 8*60; i++ {
+		for i := 0; i < busyWarm; i++ {
 			m.second(m.kv, m.nv, 0, nil)
 		}
 		snap := m.s.Snapshot()
@@ -448,7 +541,7 @@ func TestASiteWithMuchTrafficIsNotLimitedAsIfItWereSmall(t *testing.T) {
 
 	t.Run("an address that has sent nothing has only the limit it was given, however busy the others are", func(t *testing.T) {
 		m := busy(t, nil)
-		for i := 0; i < 8*60; i++ {
+		for i := 0; i < busyWarm; i++ {
 			m.second(m.kv, m.nv, 0, nil)
 		}
 		if snap := m.s.Snapshot(); snap.RequestScale < 2 {
@@ -484,7 +577,7 @@ func TestASiteWithMuchTrafficIsNotLimitedAsIfItWereSmall(t *testing.T) {
 
 	t.Run("an attack of 8,000 requests a second from 25,000 addresses on a site that serves 1,200", func(t *testing.T) {
 		m := busy(t, nil)
-		for i := 0; i < 8*60; i++ {
+		for i := 0; i < busyWarm; i++ {
 			m.second(m.kv, m.nv, 0, nil)
 		}
 		m.stats = map[string]*tally{}

@@ -508,6 +508,21 @@ func TestABanIsRenewedWithinOneAttack(t *testing.T) {
 	if got := s.counters.banned.Load(); got != 2 {
 		t.Fatalf("%d bans, want 2", got)
 	}
+	// Monitor mode only reports an attack: an address over its own limit during one is refused as at any other time, and
+	// never banned for it.
+	t.Run("monitor mode never bans", func(t *testing.T) {
+		now := now
+		s := newTestShield(t, &now, func(c *Config) { c.BanAfter, c.BanFor, c.MonitorOnly = 5, time.Minute, true })
+		s.det.info.Store(&attackInfo{epoch: 1, since: now.UnixNano(), fps: map[uint64]bool{}, paths: map[uint64]bool{}})
+		ids := map[int]int{}
+		for i := 0; i < 260; i++ { // all at once: its burst of 200 and then sixty refusals
+			ids[s.Admit(req("GET", "/"), key).ID]++
+		}
+		now = now.Add(10 * time.Second)
+		if d := s.Admit(req("GET", "/"), key); d.Action != Allow || ids[idRate] != 60 || ids[idBanned] != 0 || s.Snapshot().Banned != 0 {
+			t.Fatalf("decisions %v, then %+v; %d bans", ids, d, s.Snapshot().Banned)
+		}
+	})
 }
 
 // A known client gets past the attack's budgets only within a budget of its own. A botnet that earned standing before it
@@ -811,6 +826,21 @@ func TestPerAddressAndPerNetworkLimitsApplyOutsideAnAttack(t *testing.T) {
 			t.Fatal("a trusted address was limited")
 		}
 	}
+	// The shield's own clock (no Config.Now) is not the wall clock: when that is set back an hour (an NTP correction, a
+	// virtual machine restored), an address that has spent its burst gets its limit back as time passes, not an hour later.
+	t.Run("a step back of the wall clock does not stop the limits", func(t *testing.T) {
+		sh := newTestShield(t, &now, func(c *Config) { c.Now, c.RequestRate, c.RequestBurst = nil, 100, 10 })
+		sh.Close() // no ticker alongside the test
+		a := netip.MustParseAddr("203.0.113.50")
+		for i := 0; i < 10; i++ {
+			sh.Admit(req("GET", "/"), a)
+		}
+		sh.wall = func() time.Time { return time.Now().Add(-time.Hour) }
+		time.Sleep(50 * time.Millisecond) // five requests at 100 a second
+		if d := sh.Admit(req("GET", "/"), a); d.Action != Allow {
+			t.Fatalf("after the wall clock was set back the address was refused (%d): its limit stopped refilling", d.ID)
+		}
+	})
 }
 
 // failedResponseWriter models a disconnected client after the response status was committed.
@@ -905,7 +935,9 @@ func TestEachAddressEarnsItsOwnLimits(t *testing.T) {
 			if snap := s.Snapshot(); snap.RequestScale != 1 || snap.NetworkScale != 1 {
 				t.Fatalf("before anything was earned the limits are raised %vx and %vx", snap.RequestScale, snap.NetworkScale)
 			}
-			ordinary(10*60, busy, trusted)
+			// Forty minutes: a second weighs a six-hundredth and counts for at most twice the average, so that is how long
+			// an average takes to settle.
+			ordinary(40*60, busy, trusted)
 			// The dashboard shows how far each limit was raised, the address's and the network's apart. Four requests a
 			// second earn a limit of four times that: 3.2 times an address's 5 a second, 1.6 times a network's 10.
 			wantSrc, wantNet := 1.0, 1.0
@@ -936,8 +968,8 @@ func TestEachAddressEarnsItsOwnLimits(t *testing.T) {
 			if s.subnets.peek(netOf(trusted), func(*subnet) {}) {
 				t.Error("a trusted address's network is remembered")
 			}
-			// Once the detector has warmed up, a sudden rise counts for little at first: an address that arrives now and
-			// sends as much has earned nothing five minutes later.
+			// A sudden rise counts for little at first: an address that arrives now and sends as much has earned nothing
+			// five minutes later.
 			ordinary(5*60, busy, late)
 			if requests, conns := atOnce(late); requests != burst || conns != connBurst {
 				t.Errorf("an address that arrived five minutes ago got %d requests and %d connections at once, want %d and %d", requests, conns, burst, connBurst)
@@ -961,7 +993,7 @@ func TestWhatAnAddressEarnedIsStanding(t *testing.T) {
 	})
 	busy := netip.MustParseAddr("198.51.100.7")
 	hdr := []string{"User-Agent", "probe-client/1.0", "Accept", "*/*"}
-	for sec := 0; sec < 10*60; sec++ {
+	for sec := 0; sec < 40*60; sec++ {
 		start := now
 		for i := 0; i < 20; i++ {
 			now = start.Add(time.Duration(i+1) * 20 * time.Millisecond)
@@ -980,7 +1012,7 @@ func TestWhatAnAddressEarnedIsStanding(t *testing.T) {
 		return address, network
 	}
 	if a, n := earned(); a < 3 || n < 3 {
-		t.Fatalf("after ten minutes at four requests a second the address has earned %.1f and its network %.1f", a, n)
+		t.Fatalf("after forty minutes at four requests a second the address has earned %.1f and its network %.1f", a, n)
 	}
 	// Two quiet minutes, then more new addresses, each in a network of its own, than the tables hold.
 	for i := 0; i < 120; i++ {
@@ -1012,8 +1044,8 @@ func TestWhatAnAddressEarnedIsStanding(t *testing.T) {
 }
 
 // An attack neither adds to what an address has earned nor wears it down: the average's clock stops while it lasts. The
-// attack here comes two minutes after the start, while a second still counts in full, so that what is added in the
-// attack's seconds would show.
+// attack here comes two minutes after the start; its fifty seconds would wear an average down by 8%, or add a fifth of a
+// request a second to one, if they counted.
 func TestNothingIsEarnedOrLostDuringAnAttack(t *testing.T) {
 	now := time.Date(2026, 10, 6, 9, 0, 0, 0, time.UTC)
 	// Monitoring only, so that the attack is declared and nothing is refused or banned for it.
@@ -1044,7 +1076,7 @@ func TestNothingIsEarnedOrLostDuringAnAttack(t *testing.T) {
 		second(before)
 	}
 	had := earned(before)
-	if had < 2 {
+	if had < 0.4 {
 		t.Fatalf("after two minutes at four requests a second the address has earned %.2f", had)
 	}
 	s.det.mu.Lock()
@@ -1069,14 +1101,15 @@ func TestNothingIsEarnedOrLostDuringAnAttack(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		second()
 	}
-	if got := earned(during); got > 0.2 {
+	if got := earned(during); got > 0.05 {
 		t.Errorf("an address that sent only during the attack has earned %.2f requests a second", got)
 	}
 }
 
-// While the detector warms up a second weighs as much as every second before it, and in its first seconds that would be
-// most of the average: an address that used its whole burst then would have a limit several times its own a second
-// later. A second never weighs more than a thirtieth.
+// While the detector warms up a second weighs as much as every second before it in its baseline, and in its first seconds
+// that would be most of an address's average: an address that used its whole burst then would have a limit several times
+// its own a second later. A second weighs what it weighs in the warmed-up baseline, and counts for at most twice the
+// average, from the first second.
 func TestOneSecondsBurstIsNotAnAverage(t *testing.T) {
 	now := time.Date(2026, 10, 6, 9, 0, 0, 0, time.UTC)
 	s := newTestShield(t, &now, func(c *Config) {
@@ -1109,24 +1142,27 @@ func TestOneSecondsBurstIsNotAnAverage(t *testing.T) {
 }
 
 // An address raises its own limit by using it, so how fast, and how far, is what an address that takes everything it is
-// given can do. On a site the detector knows, five minutes of that earn nothing; the limit then doubles about every seven
-// minutes, and stops at the ceiling the operator set. With a ceiling of 1 the limit never moves.
+// given can do. Five minutes of that earn nothing, on a site the detector knows and right after a start without a
+// baseline alike; the limit then doubles about every seven minutes, and stops at the ceiling the operator set. With a
+// ceiling of 1 the limit never moves.
 func TestALimitIsEarnedSlowlyAndStopsAtTheCeiling(t *testing.T) {
 	const rate, burst = 5, 10
 	for _, tc := range []struct {
-		name    string
-		ceiling float64 // 0: the default of 20
-		most    float64 // times the configured limit
+		name     string
+		ceiling  float64 // 0: the default of 20
+		most     float64 // times the configured limit
+		baseline float64 // the site's usual rate as the detector knows it at the start; 0: learnt from nothing
 	}{
-		{"the default ceiling", 0, 20},
-		{"a ceiling of four", 4, 4},
-		{"limits kept fixed", 1, 1},
+		{"the default ceiling", 0, 20, 60},
+		{"a ceiling of four", 4, 4, 60},
+		{"limits kept fixed", 1, 1, 60},
+		{"the default ceiling, right after a start without a baseline", 0, 20, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			now := time.Date(2026, 10, 6, 9, 0, 0, 0, time.UTC)
 			s := newTestShield(t, &now, func(c *Config) {
 				c.RequestRate, c.RequestBurst, c.SubnetRate, c.SubnetBurst = rate, burst, 500, 1000
-				c.Detector.InitialRate = 60 // the site's usual rate is known from the start
+				c.Detector.InitialRate = tc.baseline
 				c.Detector.MaxScale = tc.ceiling
 			})
 			greedy := netip.MustParseAddr("198.51.100.7")
