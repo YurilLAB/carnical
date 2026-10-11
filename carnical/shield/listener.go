@@ -116,16 +116,23 @@ func (s *Shield) admitConn(c net.Conn) net.Conn {
 	sc := &conn{Conn: c, s: s, key: SourceKey(a), subnet: netOf(a), trusted: s.trusted(a)}
 	attack := s.det.info.Load() != nil && !s.cfg.MonitorOnly
 	refused := false
-	scaleSrc, scaleNet := s.det.scales()
+	scaleNet := 1.0
 	if !sc.trusted {
+		// An address that has earned a higher request limit may open connections as much faster, and its network hold
+		// as many more.
+		earn := s.det.earn.Load()
 		s.sources.do(sc.key, ns, func(src *source) {
 			src.last = ns
 			sc.known = s.isKnown(src, ns, s.det.info.Load())
+			scaleSrc := s.raise(src.earned.roll(earn, s.cfg.RequestRate), s.cfg.RequestRate)
 			rate, burst := s.cfg.ConnRate*scaleSrc, s.cfg.ConnBurst*scaleSrc
 			if attack && !sc.known {
 				rate, burst = rate/4, max(burst/4, 1) // strangers open connections more slowly during an attack
 			}
 			refused = src.bannedUntil > ns || !src.conn.take(ns, rate, burst)
+		})
+		s.subnets.peek(sc.subnet, func(n *subnet) {
+			scaleNet = s.raise(n.earned.roll(earn, s.cfg.SubnetRate), s.cfg.SubnetRate)
 		})
 	}
 	if !refused {

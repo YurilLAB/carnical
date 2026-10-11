@@ -426,7 +426,7 @@ func TestASiteWithMuchTrafficIsNotLimitedAsIfItWereSmall(t *testing.T) {
 	}
 	python := []string{"User-Agent", "python-requests/2.32.3", "Accept", "*/*", "Accept-Encoding", "gzip, deflate", "Connection", "keep-alive"}
 
-	t.Run("visitors behind shared addresses are served, because the limits follow the site's own busiest addresses", func(t *testing.T) {
+	t.Run("visitors behind shared addresses are served, because each address's limit follows its own traffic", func(t *testing.T) {
 		m := busy(t, nil)
 		for i := 0; i < 8*60; i++ {
 			m.second(m.kv, m.nv, 0, nil)
@@ -443,6 +443,30 @@ func TestASiteWithMuchTrafficIsNotLimitedAsIfItWereSmall(t *testing.T) {
 		}
 		if got := m.tally("legit known").rate(); got < 0.995 {
 			t.Fatalf("only %.2f%% of returning visitors (half of them behind shared addresses) were served", 100*got)
+		}
+	})
+
+	t.Run("an address that has sent nothing has only the limit it was given, however busy the others are", func(t *testing.T) {
+		m := busy(t, nil)
+		for i := 0; i < 8*60; i++ {
+			m.second(m.kv, m.nv, 0, nil)
+		}
+		if snap := m.s.Snapshot(); snap.RequestScale < 2 {
+			t.Fatalf("the busiest address's limit is raised %.1fx: no address has earned anything, so this proves nothing", snap.RequestScale)
+		}
+		m.stats = map[string]*tally{}
+		stranger := &simVisitor{addr: netip.MustParseAddr("203.0.113.9")}
+		const seconds = 5
+		for i := 0; i < seconds; i++ {
+			m.second(m.kv, m.nv, 600, func(int) { m.do("stranger", stranger, "/search?q="+strconv.Itoa(m.r.IntN(1e6)), false, python) })
+		}
+		got := m.tally("stranger")
+		// The configured limit: bursts of 200, and 50 a second.
+		if limit := 200 + 50*seconds; got.ok > limit {
+			t.Fatalf("%d of the stranger's %d requests were served: its own limit allows %d", got.ok, got.sent, limit)
+		}
+		if served := m.tally("legit known").rate(); served < 0.995 {
+			t.Fatalf("only %.2f%% of returning visitors were served meanwhile", 100*served)
 		}
 	})
 
@@ -464,10 +488,19 @@ func TestASiteWithMuchTrafficIsNotLimitedAsIfItWereSmall(t *testing.T) {
 			m.second(m.kv, m.nv, 0, nil)
 		}
 		m.stats = map[string]*tally{}
+		// What the shared addresses earned neither grows nor fades while the attack lasts.
+		earnedBy := func() (avg float32) {
+			m.s.sources.peek(m.shared[0], func(src *source) { avg = src.earned.avg })
+			return avg
+		}
+		before := earnedBy()
 		bots := botnet(25_000, m.r)
 		res := m.run(60, 8000, func(i int) {
 			m.do("attack", bots[m.r.IntN(len(bots))], "/?r="+strconv.Itoa(m.r.IntN(1e9)), false, python)
 		})
+		if after := earnedBy(); before < 50 || after < 0.95*before || after > 1.05*before {
+			t.Fatalf("a shared address had earned %.1f requests a second before the attack and %.1f after a minute of it", before, after)
+		}
 		t.Log(res)
 		if res.detectedAfter < 0 || res.detectedAfter > 12 || res.attackAdmitted > 0.02 || res.known < 0.98 || res.new < 0.9 {
 			t.Fatal("protection below the bar")

@@ -79,9 +79,22 @@ when restarting into a flood; learned baseline state is not persisted.
 
 ## Limits that follow your traffic
 
-Limits grow during ordinary traffic to follow busy sites and shared addresses. Address/network
-request floors can rise to four times the busiest address/network's average, bounded by the ceiling.
-Nonfinite rates/scaling settings are rejected during configuration.
+The limits of an address, and of a network, grow to follow that address's or network's own traffic,
+so that many visitors behind one company or carrier address are not limited as if they were one
+person. Each has a moving average of the requests a second that the application answered well for
+it (a status under 400, from the application and not from the proxy), kept in every second that is
+not an attack's and with the weight the baseline gives a second; its request limit is four times
+that average when that is more than the configured floor, up to the ceiling, and its connection
+limits rise by the same factor. What one address has earned raises no other address's limit, and an
+address that is refused, or answered with errors, earns nothing. The average neither grows nor fades
+during an attack, fades when the address stops sending, and is taken away by a ban. After the first
+five minutes a sudden rise counts for at most twice the average, so a higher limit takes minutes of
+ordinary use to earn. Nonfinite rates/scaling settings are rejected during configuration.
+
+IPv6 clients are counted by /64 and their networks by /48, as IPv4 clients are by address and /24. A
+/48 is the largest block one site is given and what a provider divides among some hundreds of home
+lines, which is what a /24 is to IPv4; a network tier at /56 would hand the holder of one /48 256
+network budgets, and at /64 as many as it has clients.
 
 | Limit | Default floor | Growth ceiling |
 | --- | --- | --- |
@@ -148,9 +161,11 @@ previous defects. Those results measure their recorded workload, not production 
   strangers, and an address banned for repeated refusals loses its standing. Known clients share one budget, so a botnet with
   standing can use it up; returning visitors are then challenged like anyone else, and an API client that cannot answer a challenge
   is refused.
-- Limits follow the busiest address and network, not each address's own history: one address that
-  sends heavily for tens of minutes without an attack being declared raises the per-address limit
-  for every address, up to 20 times the floor.
+- Standing and a higher limit go to an address, not to a person, and patience earns both: an
+  address that is answered well for tens of minutes earns up to 20 times the floor for itself (not
+  for any other address), and one that asks for a few pages over a minute is known. Nothing told
+  by an address can tell a patient bot from a visitor; what either earns is bounded by the ceiling
+  and the known-client budget, and is lost with a ban.
 - A single-page crowd with assets on another host may resemble a targeted flood and trigger challenges.
 - A crowd of returning visitors taken for an attack shares the known-client budget (twice the usual rate, at least 50 requests a second):
   beyond it they are challenged like anyone else. A browser that answers the challenge is served; a client that cannot (an API

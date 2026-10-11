@@ -114,7 +114,7 @@ func runFlags(args []string, private map[string]string) error {
 	keepBanners := flags.Bool("keep-banners", false, "keep X-Powered-By and Server headers from the application")
 	keepCaching := flags.Bool("keep-caching", false, "do not add Cache-Control: private, no-store to responses that set a cookie or look like a stylesheet but are HTML")
 	ddosMode := flags.String("ddos", "on", "flood protection: on (detect attacks, including ones spread over many addresses, and mitigate them), monitor (detect and log; baseline connection/request limits still apply), or off")
-	ddosRate := flags.Float64("ddos-rate", 50, "the least requests a second one address may make, at all times; raised automatically to follow the busiest addresses on a busy site")
+	ddosRate := flags.Float64("ddos-rate", 50, "the least requests a second one address may make, at all times; raised for an address that is answered well at a higher pace, as one with many visitors behind it is")
 	ddosBurst := flags.Float64("ddos-burst", 200, "burst of requests one address may make at once")
 	ddosConns := flags.Int("ddos-max-conns", 20000, "the least connections held open at once, raised with the site's average; a fifth are kept for clients that used the site before")
 	ddosKnownFactor := flags.Float64("ddos-known-factor", 2, "during an attack, returning visitors who earned standing share this many times the site's usual requests a second before they are treated like strangers")

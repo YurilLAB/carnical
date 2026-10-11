@@ -75,6 +75,7 @@ type Decision struct {
 	key        netip.Addr
 	start      int64
 	counted    bool
+	trusted    bool
 }
 
 type response struct {
@@ -105,10 +106,10 @@ type Config struct {
 	MaxConnsCeiling int
 	// ClusterShare makes the budget for look-alike requests during an attack at least this share of the site's usual
 	ClusterShare float64
-	// The limits above and below are floors for a site with little traffic. Each one is raised, while traffic is ordinary,
-	// to follow the site's own busiest addresses, networks and connection count (see DetectorConfig.LimitMargin and
-	// MaxScale, and MaxConnsCeiling), so a busy site with many visitors behind one company or carrier address is not
-	// limited as if every address were one person.
+	// The limits above and below are floors. An address's and a network's are raised to follow what that address or
+	// network has itself had answered well (see DetectorConfig.LimitMargin and MaxScale), so many visitors behind one
+	// company or carrier address are not limited as if they were one person; the number of connections follows the
+	// site's own (MaxConnsCeiling).
 	// SubnetConns is the most connections one /24 or /48 may hold (default 1,024).
 	SubnetConns int
 	// ConnRate and ConnBurst limit new connections from each address (default 20 a second, bursts of 60).
@@ -332,11 +333,21 @@ func New(cfg Config) (*Shield, error) {
 	cfg.Trusted = append([]netip.Prefix(nil), cfg.Trusted...)
 	s := &Shield{cfg: cfg, key: newKey(), det: newDetector(cfg.Detector), stop: make(chan struct{}), bans: make(chan banReq, 256),
 		connNets: make(map[netip.Prefix]int64)}
-	s.sources = newTable[netip.Addr, source](cfg.MaxSources, sourceIdle, sourceLast, sourceKeep)
-	s.subnets = newTable[netip.Prefix, subnet](cfg.MaxSources/4, subnetIdle, subnetLast, nil)
+	// A limit that an address or a network has earned is standing too: a flood of new addresses must not push it out.
+	raisedSrc := func(v *source) bool {
+		return s.raise(v.earned.at(s.det.earn.Load(), cfg.RequestRate), cfg.RequestRate) > 1
+	}
+	raisedNet := func(v *subnet) bool {
+		return s.raise(v.earned.at(s.det.earn.Load(), cfg.SubnetRate), cfg.SubnetRate) > 1
+	}
+	s.sources = newTable[netip.Addr, source](cfg.MaxSources,
+		func(v *source, now int64) bool { return sourceIdle(v, now) && !raisedSrc(v) }, sourceLast,
+		func(v *source, now int64) bool { return sourceKeep(v, now) || raisedSrc(v) })
+	s.subnets = newTable[netip.Prefix, subnet](cfg.MaxSources/4,
+		func(v *subnet, now int64) bool { return subnetIdle(v, now) && !raisedNet(v) }, subnetLast,
+		func(v *subnet, _ int64) bool { return raisedNet(v) })
 	s.det.labeler, s.det.onEvent = cfg.Labeler, cfg.OnEvent
 	s.det.clusterRate, s.det.clusterShare = cfg.ClusterRate, cfg.ClusterShare
-	s.det.refSrc, s.det.refNet = cfg.RequestRate, cfg.SubnetRate
 	s.fdLimit = fdLimit()
 	s.det.unknownRate = func(base float64) float64 { return max(base*cfg.UnknownFactor, cfg.MinUnknownRate) }
 	s.det.knownRate = func(base float64) float64 { return max(base*cfg.KnownFactor, cfg.MinKnownRate) }
@@ -433,16 +444,11 @@ func (s *Shield) Admit(r *http.Request, client netip.Addr) Decision {
 	isNew := s.det.observe(ns, client, fp, fpLabel, pt, ptLabel)
 	info := s.det.info.Load()
 
-	scaleSrc, scaleNet := s.det.scales()
+	earn := s.det.earn.Load()
+	scaleSrc, scaleNet := 1.0, 1.0
 	var banned, known, rateOK, engaged bool
-	var srcN, netN uint32
 	s.sources.do(key, ns, func(src *source) {
 		src.last = ns
-		if sec := ns / 1e9; src.winSec != sec {
-			src.winSec, src.winN = sec, 0
-		}
-		src.winN++
-		srcN = src.winN
 		switch {
 		case isNew:
 			src.newAt, src.lastTpl, src.distinct = ns, pt, 1
@@ -451,12 +457,13 @@ func (s *Shield) Admit(r *http.Request, client netip.Addr) Decision {
 		}
 		banned = src.bannedUntil > ns
 		known = s.isKnown(src, ns, info)
+		scaleSrc = s.raise(src.earned.roll(earn, s.cfg.RequestRate), s.cfg.RequestRate)
 		rateOK = trusted || src.req.take(ns, s.cfg.RequestRate*scaleSrc, s.cfg.RequestBurst*scaleSrc)
 	})
 	if engaged {
 		s.det.count(ns, func(w *window) { w.engaged++ })
 	}
-	d := Decision{key: key, start: ns, counted: true}
+	d := Decision{key: key, start: ns, counted: true, trusted: trusted}
 	switch {
 	case banned:
 		return s.refuse(ns, d, info, idBanned, http.StatusForbidden, 0)
@@ -467,18 +474,14 @@ func (s *Shield) Admit(r *http.Request, client netip.Addr) Decision {
 		subOK := true
 		s.subnets.do(netOf(client), ns, func(n *subnet) {
 			n.last = ns
-			if sec := ns / 1e9; n.winSec != sec {
-				n.winSec, n.winN = sec, 0
-			}
-			n.winN++
-			netN = n.winN
+			scaleNet = s.raise(n.earned.roll(earn, s.cfg.SubnetRate), s.cfg.SubnetRate)
 			subOK = n.req.take(ns, s.cfg.SubnetRate*scaleNet, s.cfg.SubnetBurst*scaleNet)
 		})
 		if !subOK {
 			return s.refuse(ns, d, info, idSubnetRate, http.StatusTooManyRequests, 1)
 		}
+		s.det.noteScales(scaleSrc, scaleNet)
 	}
-	s.det.notePeaks(srcN, netN)
 	if r.URL.Path == VerifyPath {
 		return s.verify(r, key, now)
 	}
@@ -528,6 +531,15 @@ func (s *Shield) Admit(r *http.Request, client netip.Addr) Decision {
 	return s.refuse(ns, d, info, id, http.StatusServiceUnavailable, 5)
 }
 
+// raise is the factor that a limit configured as ref is multiplied by for an address, or a network, whose own average
+// is avg requests a second: LimitMargin times that average over the configured limit, at most MaxScale, never below 1.
+func (s *Shield) raise(avg, ref float64) float64 {
+	if ref <= 0 {
+		return 1
+	}
+	return math.Min(math.Max(s.det.cfg.LimitMargin*avg/ref, 1), s.det.cfg.MaxScale)
+}
+
 // isKnown says whether a client counts as one the site knows. During an attack, only a standing earned well before the
 // attack began counts: bots that used the site normally in the seconds before the detector was sure (or that ramp up
 // slowly to earn it) are strangers like any other.
@@ -563,9 +575,11 @@ func (s *Shield) strike(ns int64, key netip.Addr, info *attackInfo) {
 		if src.strikes < 65535 {
 			src.strikes++
 		}
-		// Counting starts again, so an address that goes on after its ban runs out is banned again.
+		// Counting starts again, so an address that goes on after its ban runs out is banned again. Its standing goes
+		// with the ban: being known, and the higher limit it had earned.
 		if int(src.strikes) >= s.cfg.BanAfter {
 			src.bannedUntil, src.knownUntil, src.strikes, ban = ns+int64(s.cfg.BanFor), 0, 0, true
+			src.earned = earned{}
 		}
 	})
 	if !ban {
@@ -669,10 +683,32 @@ func (s *Shield) Done(d Decision, status int, fromOrigin bool) {
 		s.counters.securityRejections.Add(1)
 		s.det.count(now, func(w *window) { w.securityRejects++ })
 	}
-	if status >= 400 || !s.det.learning.Load() {
-		return // nothing is learnt from errors, nor while traffic is out of the ordinary
+	if status >= 400 {
+		return // nothing is learnt from errors
+	}
+	// A higher limit is earned by what the application itself answered well, in any second that is not an attack's.
+	earn := s.det.earn.Load()
+	if earn != nil && (!earn.open || !fromOrigin || d.trusted) {
+		earn = nil
+	}
+	if earn != nil {
+		s.subnets.do(netOf(d.key), now, func(n *subnet) {
+			n.earned.roll(earn, s.cfg.SubnetRate)
+			n.earned.n++
+		})
+	}
+	learning := s.det.learning.Load() // standing is earned only while traffic is ordinary
+	if earn == nil && !learning {
+		return
 	}
 	s.sources.do(d.key, now, func(src *source) {
+		if earn != nil {
+			src.earned.roll(earn, s.cfg.RequestRate)
+			src.earned.n++
+		}
+		if !learning {
+			return
+		}
 		if src.good == 0 {
 			src.goodFirst = now
 		}
@@ -708,7 +744,7 @@ type Snapshot struct {
 	// SecurityRejections counts 4xx responses from checks after shield admission, excluding origin responses.
 	EarlyCloses, SecurityRejections      uint64
 	Connections, MaxConnections          int64
-	RequestScale, NetworkScale           float64 // how far the per-address and per-network limits are raised above their configured values
+	RequestScale, NetworkScale           float64 // the most an address's, and a network's, limit was raised above its configured value in the last ten seconds
 	Remembered                           int
 	Allowed, Refused, Challenged, Solved uint64
 	Banned, ConnsRefused, Evicted        uint64

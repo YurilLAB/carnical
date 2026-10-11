@@ -111,3 +111,26 @@ reset and not of an orderly close, and the other connection untouched. An HTTP/2
 connection carries the client's other requests. The test runs on Windows and Linux and under the race detector. Of
 eleven deliberate breaks of the change ten fail it; the eleventh (not cancelling the request to the application when the
 connection is dropped) makes no difference, because dropping the connection cancels the request as well.
+
+## 2026-10-11: Each address earns its own limit
+
+The per-address and per-network limits followed the busiest address of the site, so one heavy address raised the limit
+of every address (see above). Each address and each network now has its own moving average of the requests a second
+that the application answered well for it, and only its own limits are raised by it: to four times that average, at
+most 20 times what is configured. On the simulated site of about 1,200 requests a second with visitors behind shared
+addresses, 99.4% of returning visitors are served (71.0% with the limits fixed), with the busiest address's limit at 9.4
+times and the busiest network's at 3.7 times the configured ones. An address that had sent nothing, and then sent 600
+requests a second for five seconds on that site, was served no more than the 450 its configured limit allows, of 3,000.
+In an attack of 8,000 requests a second from 25,000 addresses on the same site, detected after 8 seconds, 0.3% of the
+attack was admitted and returning and new visitors were served in full; what a shared address had earned was the same
+after the minute of the attack as before it (within 5%).
+
+The tests also cover answers that earn nothing (a 404, a 500, and an answer from the proxy itself), trusted addresses,
+one second's burst while the detector warms up, a sudden rise after it, fading within an hour of the last request, an
+average kept when a flood of new addresses fills the tables, a ban taking it away, connection limits rising with the
+request limit, and the two figures on the dashboard. Each of 35 deliberate breaks of the change fails a test.
+
+Two limits are stated in [ddos.md](ddos.md) and not changed. An address that is answered well for tens of minutes earns
+a higher limit for itself, whoever is behind it, and an address that asks for a few pages over a minute is still known:
+nothing an address tells can separate a patient bot from a visitor. Both are bounded by the ceiling and the known-client
+budget and are lost with a ban. IPv6 networks stay grouped by /48, the block one site is given.

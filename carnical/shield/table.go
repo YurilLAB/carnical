@@ -4,6 +4,7 @@ package shield
 
 import (
 	"hash/maphash"
+	"math"
 	"net/netip"
 	"sync"
 )
@@ -116,8 +117,7 @@ type source struct {
 	strikes     uint16
 	strikeEpoch uint32
 	bannedUntil int64
-	winSec      int64 // the second winN counts requests in
-	winN        uint32
+	earned      earned
 }
 
 func sourceIdle(s *source, now int64) bool {
@@ -133,13 +133,58 @@ func sourceKeep(s *source, now int64) bool { return s.bannedUntil > now || s.kno
 type subnet struct {
 	req    bucket
 	last   int64
-	winSec int64
-	winN   uint32
+	earned earned
 }
 
 func subnetIdle(s *subnet, now int64) bool { return now-s.last > 60e9 }
 
 func subnetLast(s *subnet) int64 { return s.last }
+
+// earning is what the request path needs to keep each address's and network's own average (see earned). The detector
+// publishes one every second.
+type earning struct {
+	sec    uint32  // the count of seconds so far that were not an attack's: the clock the averages run on
+	open   bool    // whether the current second is such a second
+	alpha  float64 // the weight of one second in an average
+	capped bool    // whether a second may count for no more than twice the average (not while the detector warms up)
+}
+
+// earned is the requests a second that one address, or one network, has had answered well by the application, as a
+// moving average. Its own limits are raised by it (Shield.raise), so what one address earns no other address has. Its
+// clock leaves out the seconds of an attack, in which it neither grows nor fades, and a second weighs what it weighs in
+// the detector's baseline, with the same slow start for a sudden rise.
+type earned struct {
+	sec uint32  // the second n counts; 0 before the first
+	n   uint32  // requests answered well in that second
+	avg float32 // requests a second, up to the second before sec
+}
+
+// at is the average as it stands at now: the second that has ended is averaged in, and each second since, in which
+// nothing was answered, wears it down. ref is the configured limit the average is measured against.
+func (e *earned) at(now *earning, ref float64) float64 {
+	avg := float64(e.avg)
+	if now == nil || e.sec == 0 || e.sec >= now.sec {
+		return avg
+	}
+	n := float64(e.n)
+	if now.capped { // a sudden rise is not learnt at once
+		n = math.Min(n, math.Max(2*avg, ref/2))
+	}
+	avg += now.alpha * (n - avg)
+	if idle := now.sec - e.sec - 1; idle > 0 {
+		avg *= math.Pow(1-now.alpha, float64(idle))
+	}
+	return avg
+}
+
+// roll moves the average on to now and returns it.
+func (e *earned) roll(now *earning, ref float64) float64 {
+	avg := e.at(now, ref)
+	if now != nil && e.sec != now.sec {
+		e.sec, e.n, e.avg = now.sec, 0, float32(avg)
+	}
+	return avg
+}
 
 // SourceKey is the unit the per-client limits apply to: an IPv4 address, or an IPv6 /64, the smallest block one
 // customer of an internet provider is given (anything finer and one machine is a million clients).

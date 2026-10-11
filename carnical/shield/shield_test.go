@@ -817,3 +817,293 @@ func TestPerAddressAndPerNetworkLimitsApplyOutsideAnAttack(t *testing.T) {
 type failedResponseWriter struct{ *httptest.ResponseRecorder }
 
 func (failedResponseWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
+
+// addrConn is a connection that says it comes from the address given.
+type addrConn struct {
+	net.Conn
+	remote net.Addr
+}
+
+func (c addrConn) RemoteAddr() net.Addr { return c.remote }
+
+// An address's limits are raised by what that address itself has had answered well by the application in seconds that
+// were not an attack's. What one address earns no other address has, and a request that was answered with an error, or
+// by the proxy itself, earns nothing: the limit of an address that only probes stays where the operator put it.
+func TestEachAddressEarnsItsOwnLimits(t *testing.T) {
+	const burst, connBurst, netConns = 10, 2, 4
+	busy, other := netip.MustParseAddr("198.51.100.7"), netip.MustParseAddr("203.0.113.7")
+	late, trusted := netip.MustParseAddr("198.18.0.7"), netip.MustParseAddr("192.0.2.7")
+	html := []string{"User-Agent", "Mozilla/5.0", "Accept", "text/html"}
+	for _, tc := range []struct {
+		name       string
+		status     int
+		fromOrigin bool
+		earns      bool
+	}{
+		{"answered well by the application", 200, true, true},
+		{"redirected by the application", 302, true, true},
+		{"not found", 404, true, false},
+		{"an error from the application", 500, true, false},
+		{"answered by the proxy itself", 200, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Date(2026, 10, 6, 9, 0, 0, 0, time.UTC)
+			s := newTestShield(t, &now, func(c *Config) {
+				c.RequestRate, c.RequestBurst, c.SubnetRate, c.SubnetBurst = 5, burst, 10, 2*burst
+				c.ConnRate, c.ConnBurst, c.SubnetConns = 1, connBurst, netConns
+				c.MaxSources = 1024
+				c.Trusted = []netip.Prefix{netip.PrefixFrom(trusted, 24)}
+			})
+			// ordinary runs seconds of ordinary traffic: twenty people a second, and four requests a second from each of
+			// the addresses given, which is within the limit of five.
+			ordinary := func(seconds int, from ...netip.Addr) {
+				t.Helper()
+				for sec := 0; sec < seconds; sec++ {
+					start := now
+					for i := 0; i < 20; i++ {
+						now = start.Add(time.Duration(i+1) * 20 * time.Millisecond)
+						s.Done(s.Admit(req("GET", "/", html...), netip.AddrFrom4([4]byte{10, 1, byte(i), 1})), 200, true)
+					}
+					for i := 0; i < 4*len(from); i++ {
+						now = start.Add(500*time.Millisecond + time.Duration(i+1)*5*time.Millisecond)
+						d := s.Admit(req("GET", "/feed", html...), from[i%len(from)])
+						if d.Action != Allow {
+							t.Fatalf("a request within the limit was refused (%d)", d.ID)
+						}
+						s.Done(d, tc.status, tc.fromOrigin)
+					}
+					now = start.Add(time.Second)
+					s.Tick()
+				}
+				if st := s.State(); st != Normal {
+					t.Fatalf("the state is %v: %q", st, s.Snapshot().Reasons)
+				}
+			}
+			// atOnce is how many requests, and then how many connections, an address gets at one moment, after ten quiet
+			// seconds in which every bucket has filled.
+			atOnce := func(a netip.Addr) (requests, conns int) {
+				for i := 0; i < 10; i++ {
+					now = now.Add(time.Second)
+					s.Tick()
+				}
+				for i := 0; i < 40*burst; i++ {
+					if s.Admit(req("GET", "/"), a).Action == Allow {
+						requests++
+					}
+				}
+				for i := 0; i < 40*connBurst; i++ {
+					mine, theirs := net.Pipe()
+					defer theirs.Close()
+					defer mine.Close()
+					if c := s.admitConn(addrConn{mine, net.TCPAddrFromAddrPort(netip.AddrPortFrom(a, 40000))}); c != nil {
+						conns++
+						defer c.Close() // gives its place back
+					}
+				}
+				return requests, conns
+			}
+			if snap := s.Snapshot(); snap.RequestScale != 1 || snap.NetworkScale != 1 {
+				t.Fatalf("before anything was earned the limits are raised %vx and %vx", snap.RequestScale, snap.NetworkScale)
+			}
+			ordinary(10*60, busy, trusted)
+			// The dashboard shows how far each limit was raised, the address's and the network's apart. Four requests a
+			// second earn a limit of four times that: 3.2 times an address's 5 a second, 1.6 times a network's 10.
+			wantSrc, wantNet := 1.0, 1.0
+			if tc.earns {
+				wantSrc, wantNet = 3.2, 1.6
+			}
+			if snap := s.Snapshot(); math.Abs(snap.RequestScale-wantSrc) > 0.1*wantSrc || math.Abs(snap.NetworkScale-wantNet) > 0.1*wantNet {
+				t.Errorf("the dashboard says the limits were raised %.2fx and %.2fx, want about %.1fx and %.1fx", snap.RequestScale, snap.NetworkScale, wantSrc, wantNet)
+			}
+			if requests, conns := atOnce(other); requests != burst || conns != connBurst {
+				t.Errorf("an address that had sent nothing got %d requests and %d connections at once, want its own limits of %d and %d", requests, conns, burst, connBurst)
+			}
+			requests, conns := atOnce(busy)
+			if !tc.earns {
+				if requests != burst || conns != connBurst {
+					t.Errorf("the address got %d requests and %d connections at once, want the limits of %d and %d: it earned by answers that were not good ones", requests, conns, burst, connBurst)
+				}
+				return
+			}
+			// More than the address's own limits, and more connections than its network's: both were raised.
+			if requests <= 2*burst || conns <= netConns {
+				t.Errorf("the address got %d requests and %d connections at once: it has not earned more than the limits of %d and %d", requests, conns, burst, netConns)
+			}
+			if requests > 20*burst || conns > 20*connBurst {
+				t.Errorf("the address got %d requests and %d connections at once: more than 20 times the limits", requests, conns)
+			}
+			// An address the limits do not apply to earns nothing and is not remembered as a network.
+			if s.subnets.peek(netOf(trusted), func(*subnet) {}) {
+				t.Error("a trusted address's network is remembered")
+			}
+			// Once the detector has warmed up, a sudden rise counts for little at first: an address that arrives now and
+			// sends as much has earned nothing five minutes later.
+			ordinary(5*60, busy, late)
+			if requests, conns := atOnce(late); requests != burst || conns != connBurst {
+				t.Errorf("an address that arrived five minutes ago got %d requests and %d connections at once, want %d and %d", requests, conns, burst, connBurst)
+			}
+			// And what was earned fades when the address stops sending.
+			ordinary(60 * 60)
+			if requests, conns := atOnce(busy); requests != burst || conns != connBurst {
+				t.Errorf("an hour after its last request the address got %d requests and %d connections at once, want %d and %d", requests, conns, burst, connBurst)
+			}
+		})
+	}
+}
+
+// What an address and its network have earned is standing, like being known: a flood of new addresses that fills the
+// tables does not push it out, and a ban takes it away.
+func TestWhatAnAddressEarnedIsStanding(t *testing.T) {
+	now := time.Date(2026, 10, 6, 9, 0, 0, 0, time.UTC)
+	s := newTestShield(t, &now, func(c *Config) {
+		c.RequestRate, c.RequestBurst, c.SubnetRate, c.SubnetBurst, c.MaxSources = 5, 10, 5, 10, 1024
+		c.KnownAfter = 60000 // nobody becomes known here: only what was earned can keep an entry
+	})
+	busy := netip.MustParseAddr("198.51.100.7")
+	hdr := []string{"User-Agent", "probe-client/1.0", "Accept", "*/*"}
+	for sec := 0; sec < 10*60; sec++ {
+		start := now
+		for i := 0; i < 20; i++ {
+			now = start.Add(time.Duration(i+1) * 20 * time.Millisecond)
+			s.Done(s.Admit(req("GET", "/", "User-Agent", "Mozilla/5.0", "Accept", "text/html"), netip.AddrFrom4([4]byte{10, 1, byte(i), 1})), 200, true)
+		}
+		for i := 0; i < 4; i++ {
+			now = start.Add(500*time.Millisecond + time.Duration(i+1)*5*time.Millisecond)
+			s.Done(s.Admit(req("GET", "/feed", hdr...), busy), 200, true)
+		}
+		now = start.Add(time.Second)
+		s.Tick()
+	}
+	earned := func() (address, network float32) {
+		s.sources.peek(SourceKey(busy), func(src *source) { address = src.earned.avg })
+		s.subnets.peek(netOf(busy), func(n *subnet) { network = n.earned.avg })
+		return address, network
+	}
+	if a, n := earned(); a < 3 || n < 3 {
+		t.Fatalf("after ten minutes at four requests a second the address has earned %.1f and its network %.1f", a, n)
+	}
+	// Two quiet minutes, then more new addresses, each in a network of its own, than the tables hold.
+	for i := 0; i < 120; i++ {
+		now = now.Add(time.Second)
+		s.Tick()
+	}
+	for i := 0; i < 20000; i++ {
+		now = now.Add(time.Microsecond)
+		s.Admit(req("GET", "/"), netip.AddrFrom4([4]byte{byte(11 + i>>16), byte(i >> 8), byte(i), 1}))
+	}
+	if n := s.sources.len(); n > 1100 {
+		t.Fatalf("%d addresses are remembered: the flood did not fill the table, so this proves nothing", n)
+	}
+	if a, n := earned(); a < 3 || n < 3 {
+		t.Fatalf("after a flood of new addresses the address has %.1f and its network %.1f left of what they earned", a, n)
+	}
+	// The address then takes part in an attack and is banned for it.
+	fp, _ := fingerprint(req("GET", "/feed", hdr...))
+	s.det.info.Store(&attackInfo{epoch: 1, since: now.UnixNano(), fps: map[uint64]bool{fp: true}, paths: map[uint64]bool{}})
+	for i := 0; i < 200; i++ {
+		now = now.Add(time.Millisecond)
+		s.Admit(req("GET", "/feed", hdr...), busy)
+	}
+	banned := false
+	s.sources.peek(SourceKey(busy), func(src *source) { banned = src.bannedUntil > now.UnixNano() })
+	if a, _ := earned(); !banned || a != 0 {
+		t.Fatalf("banned: %v; the address still has %.1f of what it earned", banned, a)
+	}
+}
+
+// An attack neither adds to what an address has earned nor wears it down: the average's clock stops while it lasts. The
+// attack here comes two minutes after the start, while a second still counts in full, so that what is added in the
+// attack's seconds would show.
+func TestNothingIsEarnedOrLostDuringAnAttack(t *testing.T) {
+	now := time.Date(2026, 10, 6, 9, 0, 0, 0, time.UTC)
+	// Monitoring only, so that the attack is declared and nothing is refused or banned for it.
+	s := newTestShield(t, &now, func(c *Config) { c.RequestRate, c.RequestBurst, c.MonitorOnly = 5, 10, true })
+	before, during := netip.MustParseAddr("198.51.100.7"), netip.MustParseAddr("203.0.113.7")
+	second := func(from ...netip.Addr) {
+		start := now
+		for i := 0; i < 20; i++ {
+			now = start.Add(time.Duration(i+1) * 20 * time.Millisecond)
+			s.Done(s.Admit(req("GET", "/", "User-Agent", "Mozilla/5.0", "Accept", "text/html"), netip.AddrFrom4([4]byte{10, 1, byte(i), 1})), 200, true)
+		}
+		for i := 0; i < 4*len(from); i++ {
+			now = start.Add(500*time.Millisecond + time.Duration(i+1)*5*time.Millisecond)
+			d := s.Admit(req("GET", "/feed", "User-Agent", "Mozilla/5.0", "Accept", "text/html"), from[i%len(from)])
+			if d.Action != Allow {
+				t.Fatalf("a request was refused (%d)", d.ID)
+			}
+			s.Done(d, 200, true)
+		}
+		now = start.Add(time.Second)
+		s.Tick()
+	}
+	earned := func(a netip.Addr) (avg float64) {
+		s.sources.peek(SourceKey(a), func(src *source) { avg = src.earned.at(s.det.earn.Load(), 5) })
+		return avg
+	}
+	for i := 0; i < 120; i++ {
+		second(before)
+	}
+	had := earned(before)
+	if had < 2 {
+		t.Fatalf("after two minutes at four requests a second the address has earned %.2f", had)
+	}
+	s.det.mu.Lock()
+	s.det.startAttack(now.UnixNano(), aggregate{}, nil, false, false)
+	s.det.mu.Unlock()
+	for i := 0; i < 50; i++ {
+		second(during)
+		if st := s.State(); st != Attack {
+			t.Fatalf("second %d of the attack: the state is %v", i, st)
+		}
+	}
+	if got := earned(before); got < 0.99*had || got > 1.01*had {
+		t.Errorf("an address that had earned %.2f has %.2f after 50 seconds of an attack it took no part in", had, got)
+	}
+	// The attack ends; what the other address sent while it lasted counts for nothing.
+	for i := 0; i < 180 && s.State() != Normal; i++ {
+		second()
+	}
+	if st := s.State(); st != Normal {
+		t.Fatalf("three minutes later the state is %v", st)
+	}
+	for i := 0; i < 5; i++ {
+		second()
+	}
+	if got := earned(during); got > 0.2 {
+		t.Errorf("an address that sent only during the attack has earned %.2f requests a second", got)
+	}
+}
+
+// While the detector warms up a second weighs as much as every second before it, and in its first seconds that would be
+// most of the average: an address that used its whole burst then would have a limit several times its own a second
+// later. A second never weighs more than a thirtieth.
+func TestOneSecondsBurstIsNotAnAverage(t *testing.T) {
+	now := time.Date(2026, 10, 6, 9, 0, 0, 0, time.UTC)
+	s := newTestShield(t, &now, func(c *Config) {
+		c.RequestRate, c.RequestBurst, c.SubnetRate, c.SubnetBurst = 5, 30, 50, 300
+	})
+	a := netip.MustParseAddr("198.51.100.7")
+	atOnce := func() (allowed int) {
+		for i := 0; i < 40; i++ {
+			if d := s.Admit(req("GET", "/"), a); d.Action == Allow {
+				allowed++
+				s.Done(d, 200, true)
+			}
+		}
+		return allowed
+	}
+	second := func() {
+		now = now.Add(time.Second)
+		s.Tick()
+	}
+	for i := 0; i < 3; i++ { // the detector's clock is running: what is answered well from here on is earned
+		second()
+	}
+	if got := atOnce(); got != 30 {
+		t.Fatalf("the address got %d requests at once, want its burst of 30", got)
+	}
+	second()
+	if got := atOnce(); got != 5 {
+		t.Fatalf("a second after its burst the address got %d requests, want the 5 its limit gives back in a second", got)
+	}
+}
