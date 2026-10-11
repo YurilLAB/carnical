@@ -37,6 +37,8 @@ const (
 	idRateStateFull       = 5000041
 	idMethodNotCanon      = 5000043
 	idMethodOverride      = 5000044
+	idEvalBudget          = 5000045
+	idEvalBusy            = 5000046
 	idUpstreamFailed      = 5000050
 	idUpstreamBindRetry   = 5000051
 	idUpstreamReclaimed   = 5000052

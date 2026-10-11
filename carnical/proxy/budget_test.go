@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -44,7 +45,8 @@ func TestEvaluationBudgetRefusesARequestThatCostsTooMuch(t *testing.T) {
 		t.Skipf("this machine inspects the body in %v, too fast to show a budget working", baseline)
 	}
 
-	limited := start(t, func(c *Config) { big(c); c.EvalBudget = 5 * time.Millisecond })
+	var seen refusals
+	limited := start(t, func(c *Config) { big(c); c.EvalBudget = 5 * time.Millisecond; c.OnMatch = seen.record })
 	began = time.Now()
 	status, _ = limited.rawFor(t, 2*time.Minute, post(body))
 	took := time.Since(began)
@@ -57,7 +59,24 @@ func TestEvaluationBudgetRefusesARequestThatCostsTooMuch(t *testing.T) {
 	if took > baseline/2 {
 		t.Fatalf("refused after %v, but inspecting it in full takes %v: the work was not cut short", took, baseline)
 	}
+	if seen.count(idEvalBudget) == 0 {
+		t.Fatal("the refusal was not reported")
+	}
 	t.Logf("inspecting in full: %v; refused at a 5 ms budget after %v", baseline, took)
+
+	t.Run("in detection mode the request goes on and the overrun is reported", func(t *testing.T) {
+		var seen refusals
+		detect := start(t, func(c *Config) {
+			big(c)
+			c.EvalBudget, c.CRS.Mode, c.OnMatch = 5*time.Millisecond, crs.ModeDetect, seen.record
+		})
+		if status, _ := detect.rawFor(t, 2*time.Minute, post(body)); status != http.StatusOK {
+			t.Fatalf("status %d, want 200", status)
+		}
+		if seen.count(idEvalBudget) == 0 {
+			t.Fatal("rules left unread for want of time were not reported")
+		}
+	})
 }
 
 func TestEvaluationBudgetDoesNotTouchNormalRequestsOrSlowUploads(t *testing.T) {
@@ -151,7 +170,7 @@ SecRule RESPONSE_BODY "@contains secret" "id:4001,phase:4,deny,status:418"
 		t.Fatal(err)
 	}
 	slots := make(chan struct{}, 1)
-	budgeted := withEvalBudget(waf, 80*time.Millisecond, slots, 16).(experimental.WAFWithOptions)
+	budgeted := withEvalBudget(waf, 80*time.Millisecond, slots, 16, nil).(experimental.WAFWithOptions)
 	for _, tc := range []struct {
 		name string
 		body string
@@ -245,7 +264,13 @@ func TestANegativeEvaluationBudgetIsRefused(t *testing.T) {
 }
 
 func TestOnlyAsManyEvaluationsRunAtOnceAsThereAreSlots(t *testing.T) {
-	tx := &budgetTx{ctx: &budgetCtx{Context: t.Context()}, d: 80 * time.Millisecond, slots: make(chan struct{}, 1)}
+	var busyReports atomic.Int32
+	tx := &budgetTx{ctx: &budgetCtx{Context: t.Context()}, d: 80 * time.Millisecond, slots: make(chan struct{}, 1),
+		report: func(timedOut bool) {
+			if !timedOut {
+				busyReports.Add(1)
+			}
+		}}
 	release, running := make(chan struct{}), make(chan struct{})
 	done := make(chan bool)
 	go func() { done <- tx.run(func() { close(running); <-release }) }()
@@ -257,6 +282,9 @@ func TestOnlyAsManyEvaluationsRunAtOnceAsThereAreSlots(t *testing.T) {
 	}
 	if waited := time.Since(began); waited < 60*time.Millisecond || waited > 2*time.Second {
 		t.Fatalf("it waited %v for a slot, want about the budget (80 ms)", waited)
+	}
+	if n := busyReports.Load(); n != 1 {
+		t.Fatalf("%d refusals for want of a slot reported, want 1", n)
 	}
 	close(release)
 	if !<-done {

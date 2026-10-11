@@ -21,13 +21,15 @@ import (
 // more than cap(slots) phases run at once. The second limit is what keeps a flood of expensive requests from using up
 // every core: the rest wait for a slot for at most the budget, and are refused if none comes free. respLimit is the
 // response body limit the rules were given (0 if it is not known), so that only the response write that reaches it, which
-// runs the response body rules, waits for a slot.
-func withEvalBudget(waf coraza.WAF, d time.Duration, slots chan struct{}, respLimit int64) coraza.WAF {
+// runs the response body rules, waits for a slot. report, if set, is told of every phase that found no slot (timedOut false)
+// or ran out of its budget (timedOut true): neither is a matched rule, and in detection mode a phase that ran out lets the
+// request go on with the rest of its rules unread, which an operator tuning the site needs to know.
+func withEvalBudget(waf coraza.WAF, d time.Duration, slots chan struct{}, respLimit int64, report func(timedOut bool)) coraza.WAF {
 	inner, ok := waf.(experimental.WAFWithOptions)
 	if !ok || d <= 0 {
 		return waf
 	}
-	return &budgetWAF{WAF: waf, inner: inner, d: d, slots: slots, respLimit: respLimit}
+	return &budgetWAF{WAF: waf, inner: inner, d: d, slots: slots, respLimit: respLimit, report: report}
 }
 
 type budgetWAF struct {
@@ -36,6 +38,7 @@ type budgetWAF struct {
 	d         time.Duration
 	slots     chan struct{}
 	respLimit int64
+	report    func(timedOut bool)
 }
 
 // NewTransactionWithOptions is the one the HTTP middleware uses.
@@ -52,7 +55,7 @@ func (w *budgetWAF) NewTransactionWithOptions(o experimental.Options) types.Tran
 	for _, j := range joined {
 		tx.AddPathRequestArgument(j.name, j.value)
 	}
-	return &budgetTx{Transaction: tx, ctx: ctx, d: w.d, slots: w.slots, respLimit: w.respLimit}
+	return &budgetTx{Transaction: tx, ctx: ctx, d: w.d, slots: w.slots, respLimit: w.respLimit, report: w.report}
 }
 
 // Close releases the compiled rules of the wrapped WAF.
@@ -89,10 +92,11 @@ func (c *budgetCtx) Err() error {
 
 type budgetTx struct {
 	types.Transaction
-	ctx   *budgetCtx
-	d     time.Duration
-	slots chan struct{}
-	after func(time.Duration, func()) *time.Timer // time.AfterFunc unless a test orders the callbacks
+	ctx    *budgetCtx
+	d      time.Duration
+	slots  chan struct{}
+	after  func(time.Duration, func()) *time.Timer // time.AfterFunc unless a test orders the callbacks
+	report func(timedOut bool)                     // see withEvalBudget
 
 	respLimit int64 // see withEvalBudget; 0 means every response write is budgeted
 	resp      int64 // response body bytes the engine has buffered
@@ -132,6 +136,9 @@ func (t *budgetTx) run(phase func()) bool {
 			wait.Stop()
 			defer func() { <-t.slots }()
 		case <-wait.C:
+			if t.report != nil {
+				t.report(false)
+			}
 			return false
 		}
 	}
@@ -144,6 +151,9 @@ func (t *budgetTx) run(phase func()) bool {
 	timer := after(t.d, func() { t.ctx.expire(gen) })
 	defer func() { timer.Stop(); t.ctx.current.Add(1) }()
 	phase()
+	if t.report != nil && t.ctx.expired.Load() == gen {
+		t.report(true)
+	}
 	return true
 }
 

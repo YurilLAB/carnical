@@ -142,6 +142,7 @@ type Match struct {
 // Edge is the proxy. It is an http.Handler.
 type Edge struct {
 	crowdSecLogSecond atomic.Int64
+	evalLogSecond     [2]atomic.Int64 // the last second a budget refusal of each kind was reported (see reportEval)
 	cfg               Config
 	originTLS         *tls.Config
 	waf               coraza.WAF
@@ -244,7 +245,7 @@ func New(cfg Config) (*Edge, error) {
 	if e.cfg.MaxFormBody == 0 {
 		e.cfg.MaxFormBody = 128 << 10
 	}
-	e.handler = e.guard(txhttp.WrapHandler(withEvalBudget(waf, budget, evalSlots, cfg.CRS.ResponseLimit()), e.forward()))
+	e.handler = e.guard(txhttp.WrapHandler(withEvalBudget(waf, budget, evalSlots, cfg.CRS.ResponseLimit(), e.reportEval), e.forward()))
 	return e, nil
 }
 
@@ -291,6 +292,25 @@ func (e *Edge) Server(addr string) *http.Server {
 		}
 	}
 	return srv
+}
+
+// reportEval reports a phase of rule evaluation that found no slot or ran out of its budget. Under a flood of expensive
+// requests every one of them can, so each kind is reported at most once a second.
+func (e *Edge) reportEval(timedOut bool) {
+	if e.cfg.OnMatch == nil {
+		return
+	}
+	kind, m := 0, Match{RuleID: idEvalBusy, Severity: "WARNING", Disruptive: true,
+		Message: "no rule evaluation slot came free within the budget (at most one report a second)"}
+	if timedOut {
+		kind, m = 1, Match{RuleID: idEvalBudget, Severity: "WARNING", Disruptive: e.cfg.CRS.Mode == crs.ModeBlock,
+			Message: "rule evaluation ran out of its budget (at most one report a second)"}
+	}
+	second := time.Now().Unix()
+	if previous := e.evalLogSecond[kind].Load(); second == previous || !e.evalLogSecond[kind].CompareAndSwap(previous, second) {
+		return
+	}
+	e.cfg.OnMatch(m)
 }
 
 func (e *Edge) onMatch(m types.MatchedRule) {

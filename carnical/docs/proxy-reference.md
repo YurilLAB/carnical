@@ -29,8 +29,8 @@ that pool. A prematurely ended or malformed body returns 400/413 rather than an 
 
 | Setting | Default/behavior |
 | --- | --- |
-| `-eval-budget` | 2s per evaluation phase; exceeding it refuses with 503. Slow body reads do not consume this budget. Negative values are refused. |
-| `-max-evaluations` | Bounds simultaneous evaluations, including response body rules run when an inspected response reaches its body limit. |
+| `-eval-budget` | 2s per evaluation phase. Exceeding it refuses with 503 in block mode; in detect mode the request goes on with that phase's remaining rules unread. Either is logged as rule 5000045, at most once a second. Slow body reads do not consume this budget. Negative values are refused. |
+| `-max-evaluations` | Bounds simultaneous evaluations, including response body rules run when an inspected response reaches its body limit. A phase that finds no slot within the budget is refused with 503 and logged as rule 5000046, at most once a second. |
 | `-max-form-body` | 128 KiB for non-upload bodies; the proxy enforces this independently of the engine. |
 | `-join-repeated-params` | On. A name given more than once in the URL or in a form or multipart body is also read by the rules as one value joined with commas, the cookies of that name last, so an injection split over the values is seen whole ([input hardening](input-hardening.md#repeated-parameters)). |
 | Request compression | Refused unless bounded format decoding is explicitly enabled, and refused if no inspector decoded it. Final decoded bytes and uploads are checked again. |
