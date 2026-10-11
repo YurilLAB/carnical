@@ -273,6 +273,13 @@ func (c *Client) Sync(ctx context.Context) (err error) {
 			continue
 		}
 		e, err := parseBan(d, started)
+		if errors.Is(err, errBanTarget) {
+			// One target this client cannot enforce must not stop every other ban from loading: the whole pull would fail
+			// on every refresh until the decision expired, and the site would go stale.
+			delete(next, d.ID)
+			skipped++
+			continue
+		}
 		if err != nil {
 			return err
 		}
@@ -318,28 +325,13 @@ func (c *Client) Sync(ctx context.Context) (err error) {
 	return nil
 }
 
+// errBanTarget is a ban whose address or range cannot be enforced; Sync skips it.
+var errBanTarget = errors.New("crowdsec: invalid ban target")
+
 func parseBan(d decision, now time.Time) (entry, error) {
-	var p netip.Prefix
-	if strings.EqualFold(d.Scope, "ip") {
-		a, err := netip.ParseAddr(d.Value)
-		if err != nil || a.Zone() != "" {
-			return entry{}, errors.New("crowdsec: invalid ban address")
-		}
-		a = a.Unmap()
-		p = netip.PrefixFrom(a, a.BitLen())
-	} else {
-		var err error
-		p, err = netip.ParsePrefix(d.Value)
-		if err != nil {
-			return entry{}, errors.New("crowdsec: invalid ban range")
-		}
-		if p.Addr().Is4In6() {
-			if p.Bits() < 96 {
-				return entry{}, errors.New("crowdsec: ambiguous mapped ban range")
-			}
-			p = netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96)
-		}
-		p = p.Masked()
+	p, ok := banPrefix(d.Value)
+	if !ok {
+		return entry{}, errBanTarget
 	}
 	ttl, err := time.ParseDuration(d.Duration)
 	if err != nil {
@@ -356,6 +348,40 @@ func parseBan(d decision, now time.Time) (entry, error) {
 		}
 	}
 	return entry{p, expires}, nil
+}
+
+// banPrefix reads a ban target in the forms CrowdSec itself accepts, whatever the decision's scope: CrowdSec checks a value
+// with net.ParseCIDR when it holds a '/' and with net.ParseIP otherwise, so an Ip decision can name a range, a Range
+// decision a single address, and a mask can have leading zeros ("/024"), which netip refuses.
+func banPrefix(value string) (netip.Prefix, bool) {
+	if !strings.Contains(value, "/") {
+		a, err := netip.ParseAddr(value)
+		if err != nil || a.Zone() != "" {
+			return netip.Prefix{}, false
+		}
+		a = a.Unmap()
+		return netip.PrefixFrom(a, a.BitLen()), true
+	}
+	p, err := netip.ParsePrefix(value)
+	if err != nil {
+		_, n, cerr := net.ParseCIDR(value)
+		if cerr != nil {
+			return netip.Prefix{}, false
+		}
+		a, ok := netip.AddrFromSlice(n.IP)
+		ones, bits := n.Mask.Size()
+		if !ok || bits != a.BitLen() {
+			return netip.Prefix{}, false
+		}
+		p = netip.PrefixFrom(a, ones)
+	}
+	if p.Addr().Is4In6() {
+		if p.Bits() < 96 {
+			return netip.Prefix{}, false // no IPv4 range means the same
+		}
+		p = netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96)
+	}
+	return p.Masked(), true
 }
 
 // readStream decodes entries individually, capping both their count and encoded

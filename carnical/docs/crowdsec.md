@@ -8,7 +8,9 @@ evaluation. The integration is independent of the CRS, format and flood modes.
 This is an optional LAPI v1 **ban** integration, validated against CrowdSec 1.8.1. It does not
 implement CrowdSec captcha, custom remediation, AppSec forwarding, usage-metrics submission or
 CrowdSec hub certification. Simulated decisions and unsupported actions/scopes are skipped and
-counted in the latest refresh log. The existing AppSec YAML importer in `vpatch/importers/crowdsec/`
+counted in the latest refresh log, as is a ban whose target cannot be read; one such ban does not
+stop the others from loading. Targets are read as CrowdSec reads them: an `Ip` decision may name a
+range, a `Range` decision a single address, and a mask may have leading zeros. The existing AppSec YAML importer in `vpatch/importers/crowdsec/`
 is separate.
 
 Start with [connection setup](#connect), then review [outage
