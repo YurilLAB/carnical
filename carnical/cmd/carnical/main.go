@@ -119,6 +119,7 @@ func runFlags(args []string, private map[string]string) error {
 	ddosConns := flags.Int("ddos-max-conns", 20000, "the least connections held open at once, raised with the site's average; a fifth are kept for clients that used the site before")
 	ddosKnownFactor := flags.Float64("ddos-known-factor", 2, "during an attack, returning visitors who earned standing share this many times the site's usual requests a second before they are treated like strangers")
 	ddosKnownRate := flags.Float64("ddos-known-rate", 50, "the least requests a second that returning visitors with standing share during an attack")
+	ddosMaxRaise := flags.Float64("ddos-max-raise", 20, "the most times -ddos-rate an address, or a network, may earn by its own well-answered requests; 1 keeps every address at -ddos-rate")
 	ddosChallenge := flags.Bool("ddos-challenge", true, "during an attack, ask unknown browsers to pass a short JavaScript check instead of refusing them")
 	ddosBaseline := flags.Float64("ddos-baseline-rate", 0, "the site's usual requests a second, to start from instead of learning it (so a restart during an attack is not fooled)")
 	ddosRanges := flags.String("ddos-ranges", "", "address-range table (ip2asn TSV) naming the countries and networks an attack comes from, in the attack logs")
@@ -284,7 +285,7 @@ func runFlags(args []string, private map[string]string) error {
 			"warnings", apiReport.Warnings, "warnings_dropped", apiReport.WarningsDropped)
 	}
 	guard, err := configureShield(log, shieldFlags{mode: *ddosMode, rate: *ddosRate, burst: *ddosBurst, maxConns: *ddosConns,
-		challenge: *ddosChallenge, baseline: *ddosBaseline, ranges: *ddosRanges, knownFactor: *ddosKnownFactor, knownRate: *ddosKnownRate}, trusted)
+		challenge: *ddosChallenge, baseline: *ddosBaseline, ranges: *ddosRanges, knownFactor: *ddosKnownFactor, knownRate: *ddosKnownRate, maxRaise: *ddosMaxRaise}, trusted)
 	if err != nil {
 		return err
 	}

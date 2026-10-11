@@ -1107,3 +1107,79 @@ func TestOneSecondsBurstIsNotAnAverage(t *testing.T) {
 		t.Fatalf("a second after its burst the address got %d requests, want the 5 its limit gives back in a second", got)
 	}
 }
+
+// An address raises its own limit by using it, so how fast, and how far, is what an address that takes everything it is
+// given can do. On a site the detector knows, five minutes of that earn nothing; the limit then doubles about every seven
+// minutes, and stops at the ceiling the operator set. With a ceiling of 1 the limit never moves.
+func TestALimitIsEarnedSlowlyAndStopsAtTheCeiling(t *testing.T) {
+	const rate, burst = 5, 10
+	for _, tc := range []struct {
+		name    string
+		ceiling float64 // 0: the default of 20
+		most    float64 // times the configured limit
+	}{
+		{"the default ceiling", 0, 20},
+		{"a ceiling of four", 4, 4},
+		{"limits kept fixed", 1, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Date(2026, 10, 6, 9, 0, 0, 0, time.UTC)
+			s := newTestShield(t, &now, func(c *Config) {
+				c.RequestRate, c.RequestBurst, c.SubnetRate, c.SubnetBurst = rate, burst, 500, 1000
+				c.Detector.InitialRate = 60 // the site's usual rate is known from the start
+				c.Detector.MaxScale = tc.ceiling
+			})
+			greedy := netip.MustParseAddr("198.51.100.7")
+			html := []string{"User-Agent", "Mozilla/5.0", "Accept", "text/html"}
+			// second is a second of the site's usual traffic in which the greedy address asks for a quarter more than it
+			// was last given (so that it finds its limit without making the site look attacked) and is answered well each
+			// time it is let through; it returns how often that was.
+			last := rate
+			second := func() (allowed int) {
+				start := now
+				for i := 0; i < 60; i++ {
+					now = start.Add(time.Duration(i+1) * 5 * time.Millisecond)
+					s.Done(s.Admit(req("GET", "/", html...), netip.AddrFrom4([4]byte{10, 1, byte(i), 1})), 200, true)
+				}
+				now = start.Add(500 * time.Millisecond)
+				for i := 0; i < last+last/4+2; i++ {
+					if d := s.Admit(req("GET", "/feed", html...), greedy); d.Action == Allow {
+						allowed++
+						s.Done(d, 200, true)
+					}
+				}
+				now = start.Add(time.Second)
+				s.Tick()
+				if st := s.State(); st != Normal {
+					t.Fatalf("the state is %v: %q", st, s.Snapshot().Reasons)
+				}
+				last = allowed
+				return allowed
+			}
+			after := func(minutes int, seconds *int) (allowed int) {
+				for ; *seconds < 60*minutes; *seconds++ {
+					if allowed = second(); float64(allowed) > tc.most*burst {
+						t.Fatalf("second %d: the address was served %d requests, more than %.0f times its burst", *seconds, allowed, tc.most)
+					}
+				}
+				return allowed
+			}
+			seconds := 0
+			if got := after(5, &seconds); got != rate {
+				t.Errorf("after 5 minutes the address is served %d requests a second, want its configured %d", got, rate)
+			}
+			lo, hi := 2.0, 6.0 // about 3.7 times by then
+			if tc.most < lo {
+				lo, hi = 1, 1
+			} else if tc.most < hi {
+				hi = tc.most
+			}
+			if got := float64(after(20, &seconds)) / rate; got < lo || got > hi+0.21 {
+				t.Errorf("after 20 minutes the address is served %.1f times its configured limit, want %.0f to %.0f times", got, lo, hi)
+			}
+			if got := float64(after(60, &seconds)) / rate; math.Abs(got-tc.most) > 0.21 {
+				t.Errorf("after an hour the address is served %.1f times its configured limit, want the ceiling of %.0f", got, tc.most)
+			}
+		})
+	}
+}

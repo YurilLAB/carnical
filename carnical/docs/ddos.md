@@ -91,6 +91,13 @@ during an attack, fades when the address stops sending, and is taken away by a b
 five minutes a sudden rise counts for at most twice the average, so a higher limit takes minutes of
 ordinary use to earn. Nonfinite rates/scaling settings are rejected during configuration.
 
+An address raises its own limit by using it, so the ceiling is the real limit of an address that is
+patient. Measured with one address that takes everything it is given on a site the detector knows:
+it is still at its configured limit after 5 minutes, at twice it after about 15, at ten times after
+30, and at the default ceiling of 20 times after 40. `-ddos-max-raise` sets the ceiling, from 1 to
+100; with 1 every address and network stays at its configured limit, which suits a site whose
+visitors do not come in numbers from behind one address.
+
 IPv6 clients are counted by /64 and their networks by /48, as IPv4 clients are by address and /24. A
 /48 is the largest block one site is given and what a provider divides among some hundreds of home
 lines, which is what a /24 is to IPv4; a network tier at /56 would hand the holder of one /48 256
@@ -165,7 +172,7 @@ previous defects. Those results measure their recorded workload, not production 
   address that is answered well for tens of minutes earns up to 20 times the floor for itself (not
   for any other address), and one that asks for a few pages over a minute is known. Nothing told
   by an address can tell a patient bot from a visitor; what either earns is bounded by the ceiling
-  and the known-client budget, and is lost with a ban.
+  (`-ddos-max-raise`, which can be 1) and the known-client budget, and is lost with a ban.
 - A single-page crowd with assets on another host may resemble a targeted flood and trigger challenges.
 - A crowd of returning visitors taken for an attack shares the known-client budget (twice the usual rate, at least 50 requests a second):
   beyond it they are challenged like anyone else. A browser that answers the challenge is served; a client that cannot (an API
@@ -179,6 +186,7 @@ previous defects. Those results measure their recorded workload, not production 
 | --- | --- | --- |
 | `-ddos` | `on` | `on`, `monitor` or `off`. |
 | `-ddos-rate`, `-ddos-burst` | 50, 200 | Per-address request floors, with bounded automatic growth. |
+| `-ddos-max-raise` | 20 | The most times its configured limit an address, or a network, may earn by its own well-answered requests (1 to 100). 1 keeps the limits fixed. |
 | `-ddos-max-conns` | 20000 | Global connection floor, with bounded automatic growth and reserved capacity. |
 | `-ddos-known-factor`, `-ddos-known-rate` | 2, 50 | During an attack, the budget returning visitors with standing share: this many times the usual request rate, and at least this many a second. Raise them on a site whose regulars come in crowds. |
 | `-ddos-challenge` | true | Enable browser challenges during an attack. |

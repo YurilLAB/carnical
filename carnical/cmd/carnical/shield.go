@@ -26,6 +26,8 @@ type shieldFlags struct {
 	ranges      string
 	// knownFactor and knownRate are the budget returning visitors with standing share during an attack (0 means the default).
 	knownFactor, knownRate float64
+	// maxRaise is the most times its configured limit an address, or a network, may earn; 1 keeps the limits fixed.
+	maxRaise float64
 }
 
 // configureShield builds the flood protection from the command line. It returns nil for -ddos off. The address-range
@@ -41,15 +43,11 @@ func configureShield(log *slog.Logger, f shieldFlags, trusted []netip.Prefix) (*
 	default:
 		return nil, fmt.Errorf("-ddos must be on, monitor or off, not %q", f.mode)
 	}
-	cfg := shield.Config{
-		RequestRate: f.rate, RequestBurst: f.burst, MaxConns: f.maxConns, NoChallenge: !f.challenge,
-		MonitorOnly: f.mode == "monitor", Trusted: trusted, KnownFactor: f.knownFactor, MinKnownRate: f.knownRate,
-		Detector: shield.DetectorConfig{InitialRate: f.baseline},
-		OnEvent:  func(ev shield.Event) { logShieldEvent(log, ev) },
+	cfg, err := shieldSettings(f, trusted)
+	if err != nil {
+		return nil, err
 	}
-	if cfg.SubnetRate == 0 && f.rate > 0 {
-		cfg.SubnetRate = math.Max(500, 10*f.rate)
-	}
+	cfg.OnEvent = func(ev shield.Event) { logShieldEvent(log, ev) }
 	if f.ranges != "" {
 		file, err := os.Open(f.ranges)
 		if err != nil {
@@ -67,6 +65,26 @@ func configureShield(log *slog.Logger, f shieldFlags, trusted []netip.Prefix) (*
 	}
 	return shield.New(cfg)
 }
+
+// shieldSettings is the flood protection's settings as the command line gives them.
+func shieldSettings(f shieldFlags, trusted []netip.Prefix) (shield.Config, error) {
+	// Zero would be taken for "not set" and become the default, and a number that is not one compares as neither.
+	if !(f.maxRaise >= 1 && f.maxRaise <= maxLimitRaise) {
+		return shield.Config{}, fmt.Errorf("-ddos-max-raise must be between 1 and %d", maxLimitRaise)
+	}
+	cfg := shield.Config{
+		RequestRate: f.rate, RequestBurst: f.burst, MaxConns: f.maxConns, NoChallenge: !f.challenge,
+		MonitorOnly: f.mode == "monitor", Trusted: trusted, KnownFactor: f.knownFactor, MinKnownRate: f.knownRate,
+		Detector: shield.DetectorConfig{InitialRate: f.baseline, MaxScale: f.maxRaise},
+	}
+	if cfg.SubnetRate == 0 && f.rate > 0 {
+		cfg.SubnetRate = math.Max(500, 10*f.rate)
+	}
+	return cfg, nil
+}
+
+// maxLimitRaise is the highest -ddos-max-raise: beyond it the limit of an address is no limit.
+const maxLimitRaise = 100
 
 // logShieldEvent writes attack transitions and bounded IDS signals. Per-request logs would amplify a flood.
 func logShieldEvent(log *slog.Logger, ev shield.Event) {

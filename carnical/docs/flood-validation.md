@@ -134,3 +134,11 @@ Two limits are stated in [ddos.md](ddos.md) and not changed. An address that is 
 a higher limit for itself, whoever is behind it, and an address that asks for a few pages over a minute is still known:
 nothing an address tells can separate a patient bot from a visitor. Both are bounded by the ceiling and the known-client
 budget and are lost with a ban. IPv6 networks stay grouped by /48, the block one site is given.
+
+Because an address raises its own limit by using it, how fast and how far was measured and the ceiling made a setting
+(`-ddos-max-raise`, 20 by default, 1 for fixed limits). One address that asks for a quarter more than it was last given,
+on a site of 60 requests a second that the detector knows, is served its configured limit after 5 minutes, 1.4 times it
+after 10, 2.2 after 15, 3.8 after 20, 10 after 30 and the ceiling of 20 after 40, and no more after an hour; with a
+ceiling of 4 it stops at 4 and with 1 it never moves. The site stays in its normal state throughout: an address that
+asked for 300 requests a second instead made the detector report a rise within ten seconds. Eleven deliberate breaks of the
+ceiling, of the limit on a sudden rise and of the flag each fail a test.

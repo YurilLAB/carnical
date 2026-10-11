@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"math/big"
 	"math/rand"
 	"net"
@@ -39,6 +40,7 @@ import (
 	"github.com/YurilLAB/coraza/carnical/formats"
 	"github.com/YurilLAB/coraza/carnical/inspect"
 	"github.com/YurilLAB/coraza/carnical/proxy"
+	"github.com/YurilLAB/coraza/carnical/shield"
 )
 
 type setupOutputFault struct{ io.Writer }
@@ -1048,6 +1050,11 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 		{name: "known visitor budget flags", mode: "block", extraArgs: []string{"-ddos", "on", "-ddos-known-factor", "4", "-ddos-known-rate", "100"}, method: "GET", target: "/page", status: 200},
 		{name: "negative known visitor budget", mode: "block", extraArgs: []string{"-ddos", "on", "-ddos-known-rate", "-1"}, fails: true},
 		{name: "negative known visitor factor", mode: "block", extraArgs: []string{"-ddos", "on", "-ddos-known-factor", "-1"}, fails: true},
+		{name: "address limits kept fixed", mode: "block", extraArgs: []string{"-ddos", "on", "-ddos-max-raise", "1"}, method: "GET", target: "/page", status: 200},
+		{name: "address limit raise below one", mode: "block", extraArgs: []string{"-ddos", "on", "-ddos-max-raise", "0.5"}, fails: true},
+		{name: "address limit raise of zero", mode: "block", extraArgs: []string{"-ddos", "on", "-ddos-max-raise", "0"}, fails: true},
+		{name: "address limit raise too high", mode: "block", extraArgs: []string{"-ddos", "on", "-ddos-max-raise", "101"}, fails: true},
+		{name: "address limit raise not a number", mode: "block", extraArgs: []string{"-ddos", "on", "-ddos-max-raise", "NaN"}, fails: true},
 		{name: "local rules off names a CRS rule", mode: "block", extraArgs: []string{"-local-rules-off", "942100"}, fails: true},
 		{name: "local rules off names no rule", mode: "block", extraArgs: []string{"-local-rules-off", "actuator"}, fails: true},
 		{name: "live stricter rule is off by default", mode: "block", extraArgs: []string{"-mode", "block"}, method: "GET", target: "/console", status: 200},
@@ -2079,4 +2086,47 @@ func (b *syncBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.buf.String()
+}
+
+// The flood protection's settings are what the flags say: the ceiling on how far an address's limit may rise reaches the
+// detector as given, and a value that is no ceiling is refused. (Not rows of the table above: those start the program
+// and see one request through, which cannot show a limit that takes minutes of traffic to move.)
+func TestFloodFlagsBecomeShieldSettings(t *testing.T) {
+	flags := shieldFlags{mode: "on", rate: 50, burst: 200, maxConns: 20000, challenge: true, knownFactor: 2, knownRate: 50}
+	for _, tt := range []struct {
+		name  string
+		raise float64
+		want  float64 // 0: refused
+	}{
+		{"the default", 20, 20},
+		{"fixed limits", 1, 1},
+		{"the highest", 100, 100},
+		{"between whole numbers", 2.5, 2.5},
+		{"below one", 0.99, 0},
+		{"zero, which the shield would take for the default", 0, 0},
+		{"negative", -3, 0},
+		{"above the highest", 100.5, 0},
+		{"not a number", math.NaN(), 0},
+		{"infinite", math.Inf(1), 0},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := flags
+			f.maxRaise = tt.raise
+			cfg, err := shieldSettings(f, nil)
+			if tt.want == 0 {
+				if err == nil || !strings.Contains(err.Error(), "-ddos-max-raise") {
+					t.Fatalf("a ceiling of %v was taken: %v", tt.raise, err)
+				}
+				return
+			}
+			if err != nil || cfg.Detector.MaxScale != tt.want {
+				t.Fatalf("the detector's ceiling is %v (%v), want %v", cfg.Detector.MaxScale, err, tt.want)
+			}
+			s, err := shield.New(cfg)
+			if err != nil {
+				t.Fatalf("the shield refuses these settings: %v", err)
+			}
+			s.Close()
+		})
+	}
 }
