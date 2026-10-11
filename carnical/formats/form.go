@@ -56,18 +56,18 @@ type formScanner struct {
 	capture *gqlParams
 	name    []byte
 	val     []byte
-	seen    map[string]struct{}
+	seen    map[string][]byte // a name in lower case, and how it was first spelt in the body
 	fold    []byte
-	dup     bool
+	dup     bool // plain duplicates or aliases are looked for
 	semi    bool
 	rules   parameterRules
 	shapes  map[string]*parameterNode
 }
 
-type parameterRules struct{ escape, control, duplicate, limit, bracket, semicolon, prototype, utf8, shape *rule }
+type parameterRules struct{ escape, control, duplicate, limit, bracket, semicolon, prototype, utf8, shape, alias *rule }
 
-var formParameterRules = parameterRules{rFormEscape, rFormCtl, rFormDup, rFormLimit, rFormBrkt, rFormSemi, rFormProto, rInvalidUTF8, rFormShape}
-var queryParameterRules = parameterRules{rQueryEscape, rQueryCtl, rQueryDup, rQueryLimit, rQueryBrkt, rQuerySemi, rQueryProto, rQueryUTF8, rQueryShape}
+var formParameterRules = parameterRules{rFormEscape, rFormCtl, rFormDup, rFormLimit, rFormBrkt, rFormSemi, rFormProto, rInvalidUTF8, rFormShape, rFormAlias}
+var queryParameterRules = parameterRules{rQueryEscape, rQueryCtl, rQueryDup, rQueryLimit, rQueryBrkt, rQuerySemi, rQueryProto, rQueryUTF8, rQueryShape, rQueryAlias}
 
 // checkForm checks a urlencoded body. utf8 says whether decoded names and values must be UTF-8 (they need not be when the
 // Content-Type names a single-byte charset). It returns false when the caller should stop.
@@ -76,9 +76,9 @@ func (in *Inspector) checkForm(f *finder, body []byte, utf8 bool, capture *gqlPa
 }
 
 func checkParameters(f *finder, body []byte, lim *FormLimits, utf8 bool, capture *gqlParams, rules parameterRules) bool {
-	fs := &formScanner{f: f, lim: lim, utf8: utf8, capture: capture, dup: f.active(rules.duplicate), rules: rules}
+	fs := &formScanner{f: f, lim: lim, utf8: utf8, capture: capture, dup: f.active(rules.duplicate) || f.active(rules.alias), rules: rules}
 	if fs.dup {
-		fs.seen = make(map[string]struct{})
+		fs.seen = make(map[string][]byte)
 	}
 	if f.active(rules.shape) {
 		fs.shapes = make(map[string]*parameterNode)
@@ -160,12 +160,18 @@ func (fs *formScanner) pair(pair []byte, at int) bool {
 			}
 			fs.fold = append(fs.fold, c)
 		}
-		if _, seen := fs.seen[string(fs.fold)]; seen {
-			if f.hit(fs.rules.duplicate, at, dNone) {
+		if first, seen := fs.seen[string(fs.fold)]; seen {
+			// A second value under the same spelling is a duplicate, which a group of checkboxes also sends. Under another
+			// spelling (%72ole beside role, Role beside role) it is a value hidden from whatever matches the text of a name.
+			found := fs.rules.duplicate
+			if !sameSpelling(first, nameRaw) && f.active(fs.rules.alias) {
+				found = fs.rules.alias
+			}
+			if f.hit(found, at, dNone) {
 				return false
 			}
 		} else {
-			fs.seen[string(fs.fold)] = struct{}{}
+			fs.seen[string(fs.fold)] = nameRaw
 		}
 	}
 	if fs.capture != nil && (graphQLParamName(string(fs.name)) != "" || methodOverrideParam(string(fs.name))) {
@@ -220,6 +226,40 @@ func (fs *formScanner) decode(dst, src []byte, at int, isName bool) ([]byte, boo
 		}
 	}
 	return dst, true
+}
+
+// sameSpelling reports whether two names are written the same way on the wire, as far as a client decides it: which
+// letters are capitals, and whether a letter, a digit or one of "-._~" is escaped, which no client does. A character
+// that some clients escape and others leave ("[" and "%5B", a space as "+" or "%20") is one spelling either way: two
+// parts of one page may well differ in that. So are the two hex digits of an escape in either case.
+func sameSpelling(a, b []byte) bool {
+	i, j := 0, 0
+	for i < len(a) && j < len(b) {
+		var x, y rune
+		x, i = spelt(a, i)
+		y, j = spelt(b, j)
+		if x != y {
+			return false
+		}
+	}
+	return i == len(a) && j == len(b)
+}
+
+// spelt reads the character of a name at i, for sameSpelling, and returns the place after it. An escaped letter, digit
+// or one of "-._~" is told apart from the character itself (256 is added to it); any other escape is the character.
+func spelt(s []byte, i int) (rune, int) {
+	switch c := s[i]; {
+	case c == '+':
+		return ' ', i + 1
+	case c == '%' && i+2 < len(s) && isHexDigit(s[i+1]) && isHexDigit(s[i+2]):
+		d := hexVal(s[i+1])<<4 | hexVal(s[i+2])
+		if d >= 'a' && d <= 'z' || d >= 'A' && d <= 'Z' || d >= '0' && d <= '9' || d == '-' || d == '.' || d == '_' || d == '~' {
+			d += 256
+		}
+		return d, i + 3
+	default:
+		return rune(c), i + 1
+	}
 }
 
 // isFormControl reports whether a decoded byte is one a form may not carry.

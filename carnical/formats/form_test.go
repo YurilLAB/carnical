@@ -16,6 +16,7 @@ const (
 	idFormBracket = 5002604
 	idFormSemi    = 5002605
 	idFormProto   = 5002606
+	idFormAlias   = 5002609
 	form          = "application/x-www-form-urlencoded"
 )
 
@@ -82,8 +83,26 @@ var formRows = register("form", []row{
 	{name: "semicolon separator", ct: form, body: "a=1;b=2", want: idFormSemi},
 	{name: "semicolon in a name", ct: form, body: "a;b=1", want: idFormSemi},
 	{name: "duplicate name is recorded", ct: form, body: "id=1&id=2", also: []int{idFormDup}},
-	{name: "duplicate name differing in case is recorded", ct: form, body: "Id=1&id=2", also: []int{idFormDup}},
-	{name: "duplicate name by escape is recorded", ct: form, body: "id=1&%69d=2", also: []int{idFormDup}},
+	{name: "duplicate name in other capitals is an alias", ct: form, body: "Id=1&id=2", want: idFormAlias},
+	{name: "duplicate name by escape is an alias", ct: form, body: "id=1&%69d=2", want: idFormAlias},
+	{name: "duplicate name with one letter escaped", ct: form, body: "role=user&%72ole=admin", want: idFormAlias},
+	{name: "a space spelt two ways is one spelling", ct: form, body: "a+b=1&a%20b=2", also: []int{idFormDup}},
+	{name: "a bracket spelt two ways is one spelling", ct: form, body: "ids%5B0%5D=1&ids[0]=2", also: []int{idFormDup}},
+	{name: "a letter escaped beside brackets spelt two ways", ct: form, body: "ids%5B0%5D=1&%69ds[0]=2", want: idFormAlias},
+	{name: "an escaped digit", ct: form, body: "ids%5B0%5D=1&ids%5B%30%5D=2", want: idFormAlias},
+	{name: "an escaped hyphen", ct: form, body: "x-id=1&x%2Did=2", want: idFormAlias},
+	{name: "an alias after two plain duplicates", ct: form, body: "id=1&id=2&%69d=3", want: idFormAlias, also: []int{idFormDup}},
+	{name: "the same escape in other capitals is one spelling", ct: form, body: "ids%5B0%5D=1&ids%5b0%5d=2", also: []int{idFormDup}},
+	{name: "a longer name that starts the same is another name", ct: form, body: "id=1&id2=2&%69d3=3"},
+	{name: "array names are not compared", ct: form, body: "Tags[]=a&tags%5B%5D=b"},
+	{name: "alias monitored", ct: form, body: "Id=1&id=2", also: []int{idFormAlias},
+		tweak: func(p *Policy) { p.Rules["form-parameter-alias"] = Monitor }},
+	{name: "alias off leaves the duplicate rule", ct: form, body: "Id=1&id=2", also: []int{idFormDup},
+		tweak: func(p *Policy) { p.Rules["form-parameter-alias"] = Off }},
+	{name: "alias refused with the duplicate rule off", ct: form, body: "Id=1&id=2", want: idFormAlias,
+		tweak: func(p *Policy) { p.Rules["form-duplicate-param"] = Off }},
+	{name: "plain duplicate with the duplicate rule off", ct: form, body: "id=1&id=2",
+		tweak: func(p *Policy) { p.Rules["form-duplicate-param"] = Off }},
 	{name: "duplicate name refused when the rule is set to block", ct: form, body: "id=1&id=2", want: idFormDup,
 		tweak: func(p *Policy) { p.Rules = map[string]Action{"form-duplicate-param": Block} }},
 
@@ -134,7 +153,14 @@ var queryRows = register("query", []row{
 	{name: "semicolon query separator", method: "GET", query: "a=1;b=2", want: 5002805},
 	{name: "query prototype", method: "GET", query: "user%5B__proto__%5D%5Badmin%5D=1", want: 5002806},
 	{name: "nested constructor prototype", method: "GET", query: "constructor%5Bprototype%5D%5Badmin%5D=1", want: 5002806},
-	{name: "query duplicates monitored", method: "GET", query: "id=1&%69D=2", also: []int{5002802}},
+	{name: "query duplicates monitored", method: "GET", query: "id=1&id=2", also: []int{5002802}},
+	{name: "query alias by escape", method: "GET", query: "role=user&%72ole=admin", want: 5002810},
+	{name: "query alias by escape and capitals", method: "GET", query: "id=1&%69D=2", want: 5002810},
+	{name: "query alias by capitals", method: "GET", query: "Role=user&role=admin", want: 5002810},
+	{name: "query brackets spelt two ways are one spelling", method: "GET", query: "cat%5B0%5D=1&cat[0]=2", also: []int{5002802}},
+	{name: "query alias monitored", method: "GET", query: "Role=user&role=admin", also: []int{5002810}, tweak: func(p *Policy) { p.Rules["query-parameter-alias"] = Monitor }},
+	{name: "query alias is not the form rule", method: "GET", query: "Role=user&role=admin", want: 5002810, tweak: func(p *Policy) { p.Rules["form-parameter-alias"] = Off }},
+	{name: "a name in the query and the same in the form", query: "id=1", ct: form, body: "%69d=2"},
 	{name: "query duplicates blocked", method: "GET", query: "id=1&id=2", want: 5002802, tweak: func(p *Policy) { p.Rules["query-duplicate-param"] = Block }},
 	{name: "query parameter count", method: "GET", query: manyParams(1001), want: 5002803},
 	{name: "query name length", method: "GET", query: strings.Repeat("a", 257) + "=1", want: 5002803},

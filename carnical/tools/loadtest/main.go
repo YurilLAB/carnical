@@ -314,6 +314,7 @@ func run() error {
 	ddos := flag.String("ddos", "on", "child WAF flood protection: on, monitor or off; recorded in the report")
 	localRules := flag.Bool("local-rules", true, "enable the child WAF's supplemental rules")
 	hardening := flag.Bool("hardening", false, "add held-out bypass syntax and benign controls; requires -variants")
+	strict := flag.Bool("strict", false, "run the child WAF as a site with singular parameters can: repeated parameters refused and the stricter local rules on")
 	flag.Parse()
 	if *ddos != "on" && *ddos != "monitor" && *ddos != "off" {
 		return fmt.Errorf("ddos must be on, monitor or off")
@@ -395,6 +396,16 @@ func run() error {
 	defer logFile.Close()
 	args := []string{"-listen", addr, "-upstream", origin.URL, "-origin-allow", "127.0.0.1/32", "-mode", "block", "-formats-mode", "block", "-inspect-responses", "-formats-stats-interval", "5s"}
 	args = append(args, "-ddos", *ddos, fmt.Sprintf("-local-rules=%t", *localRules))
+	if *strict {
+		// What the defaults leave to the site: a name given twice, the address of a script in a form or JSON field, and a
+		// forwarded host other than the one asked for.
+		policy := *output + ".policy.json"
+		rules := `{"rules":{"query-duplicate-param":"block","form-duplicate-param":"block","multipart-duplicate-name":"block"}}`
+		if err = os.WriteFile(policy, []byte(rules), 0o600); err != nil {
+			return err
+		}
+		args = append(args, "-formats-policy", policy, "-local-rules-on", "5006101,5006102,5006103")
+	}
 	cmd := exec.Command(*binary, args...) // #nosec G204 -- CLI -binary intentionally selects the compiled WAF executable; corpus data never supplies executable/arguments and no shell is used.
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile

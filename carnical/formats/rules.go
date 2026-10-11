@@ -136,6 +136,7 @@ var (
 	rFormSemi   = reg(5002605, "form-semicolon", 400, "high", Block, "a semicolon used as a separator")
 	rFormProto  = reg(5002606, "form-proto-key", 400, "high", Block, "a parameter name that pollutes an object prototype")
 	rFormShape  = reg(5002608, "form-parameter-shape", 400, "high", Block, "parameter names with conflicting scalar, container or normalized interpretations")
+	rFormAlias  = reg(5002609, "form-parameter-alias", 400, "high", Block, "one parameter name given twice in different spellings (a percent escape, or other capitals)")
 
 	// multipart/form-data.
 	rMPNoBoundary = reg(5002700, "multipart-no-boundary", 400, "high", Block, "a multipart type with no boundary")
@@ -167,6 +168,7 @@ var (
 	rQueryUTF8   = reg(5002807, "query-invalid-utf8", 400, "high", Block, "URL query parameters that are not valid UTF-8")
 	rQuerySize   = reg(5002808, "query-too-large", 414, "high", Block, "a raw URL query larger than the site allows")
 	rQueryShape  = reg(5002809, "query-parameter-shape", 400, "high", Block, "URL parameter names with conflicting scalar, container or normalized interpretations")
+	rQueryAlias  = reg(5002810, "query-parameter-alias", 400, "high", Block, "one URL parameter name given twice in different spellings (a percent escape, or other capitals)")
 
 	// The inspector itself.
 	rPolicyInvalid = reg(5002990, "policy-invalid", 503, "critical", Block, "the formats policy is invalid, so bodies are refused")

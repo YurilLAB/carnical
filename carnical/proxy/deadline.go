@@ -45,7 +45,14 @@ func (w *budgetWAF) NewTransactionWithOptions(o experimental.Options) types.Tran
 	}
 	ctx := &budgetCtx{Context: o.Context}
 	o.Context = ctx
-	return &budgetTx{Transaction: w.inner.NewTransactionWithOptions(o), ctx: ctx, d: w.d, slots: w.slots, respLimit: w.respLimit}
+	tx := w.inner.NewTransactionWithOptions(o)
+	// The joined values of repeated parameters (see joined.go) are arguments in a collection of their own, which the
+	// request's own arguments never use, so the rules read them and nothing of the request is replaced.
+	joined, _ := ctx.Value(joinedKey{}).([]joinedArg)
+	for _, j := range joined {
+		tx.AddPathRequestArgument(j.name, j.value)
+	}
+	return &budgetTx{Transaction: tx, ctx: ctx, d: w.d, slots: w.slots, respLimit: w.respLimit}
 }
 
 // Close releases the compiled rules of the wrapped WAF.

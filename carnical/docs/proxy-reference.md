@@ -32,6 +32,7 @@ that pool. A prematurely ended or malformed body returns 400/413 rather than an 
 | `-eval-budget` | 2s per evaluation phase; exceeding it refuses with 503. Slow body reads do not consume this budget. Negative values are refused. |
 | `-max-evaluations` | Bounds simultaneous evaluations, including response body rules run when an inspected response reaches its body limit. |
 | `-max-form-body` | 128 KiB for non-upload bodies; the proxy enforces this independently of the engine. |
+| `-join-repeated-params` | On. A name given more than once in the URL or in a form or multipart body is also read by the rules as one value joined with commas, the cookies of that name last, so an injection split over the values is seen whole ([input hardening](input-hardening.md#repeated-parameters)). |
 | Request compression | Refused unless bounded format decoding is explicitly enabled, and refused if no inspector decoded it. Final decoded bytes and uploads are checked again. |
 | Uploads | Refuse script extensions anywhere in filenames and PHP/ASP/JSP markers. This is not a malware scanner. |
 | Dangerous rule features | `@inspectFile`, `exec`, `setenv`, `@rbl` and `@geoLookup` are replaced by compile-time refusals in `crs/refuse.go`. |

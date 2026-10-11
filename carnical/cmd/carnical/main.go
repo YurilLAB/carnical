@@ -94,6 +94,7 @@ func runFlags(args []string, private map[string]string) error {
 	localRules := flags.Bool("local-rules", true, "run Carnical supplemental injection rules at PL1, with the selected CRS mode and threshold")
 	localRulesOff := flags.String("local-rules-off", "", "comma-separated ids of single local rules to switch off (5006001 to 5006022; at most 32)")
 	localRulesOn := flags.String("local-rules-on", "", "comma-separated ids of stricter local rules to switch on (5006101: the path /console; 5006102: a script on another host in a form or JSON field; 5006103: a forwarded host that is not the host asked for)")
+	joinRepeated := flags.Bool("join-repeated-params", true, "also inspect the values of a parameter given more than once joined with commas, as ASP.NET and others hand them to the application")
 	apiSpec := flags.String("api-spec", "", "local OpenAPI JSON/YAML contract; scalar/array parameters and JSON bodies (no fetching or learning)")
 	apiSpecMode := flags.String("api-spec-mode", "block", "OpenAPI contract action: block or monitor (block requires formats block)")
 	methods := flags.String("allowed-methods", "", "comma-separated HTTP methods to allow (default: the CRS list GET HEAD POST OPTIONS)")
@@ -302,7 +303,7 @@ func runFlags(args []string, private map[string]string) error {
 		APIRate:   proxy.APIRatePolicy{PerMinute: *apiRate, Paths: splitList(*apiPaths)},
 		Uploads:   proxy.UploadPolicy{AllowExecutableNames: *scriptNames, AllowScriptContent: *scriptContent},
 		Responses: proxy.ResponsePolicy{KeepBanners: *keepBanners, KeepCaching: *keepCaching}, MaxConnsPerIP: *maxConns,
-		Inspectors: inspectors, AllowRequestEncoding: *requestEncoding, Shield: guard, CrowdSec: cs,
+		Inspectors: inspectors, AllowRequestEncoding: *requestEncoding, NoJoinedParams: !*joinRepeated, Shield: guard, CrowdSec: cs,
 		ErrorLog: stdlog.New(originErrors, "", 0),
 		OnMatch: func(m proxy.Match) {
 			attrs := []any{"rule", m.RuleID, "severity", m.Severity, "rule_msg", m.Message, "tx", m.TransactionID, "disruptive", m.Disruptive}

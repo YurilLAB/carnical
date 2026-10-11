@@ -84,7 +84,14 @@ cost of a request is bounded by its size.
 Query names and values are percent-decoded once for validation and must be UTF-8. Valid encoded
 separators remain values; raw semicolons are refused because parsers disagree about them. Duplicate
 query names are compared after escape decoding and case folding; the default is monitoring, with
-`query-duplicate-param: block` available for APIs that require singular parameters.
+`query-duplicate-param: block` available for APIs that require singular parameters. A name given
+twice in two spellings (`role` and `%72ole`, `Role` and `role`) is refused (`query-parameter-alias`,
+and `form-parameter-alias` in a form body): no browser or client writes one name two ways, and the
+second spelling is how a value is hidden from whatever matches the text of the name. What counts
+as another spelling is other capitals, or an escaped letter, digit or one of `-._~`, which no
+client escapes. A character that some clients escape and others leave (`[` and `%5B`, a space as
+`+` or `%20`) is one spelling either way, and so are the hex digits of an escape in either case
+(`%5B` and `%5b`); such a pair is a plain duplicate.
 
 All four GraphQL protocol parameters still reject repetition independently. The query is never
 rewritten. A query beyond its scan budget is refused in block mode; monitoring or disabling that
@@ -106,7 +113,7 @@ Positions in GraphQL messages are bytes of the decoded query text, not of the re
 ## Compatibility choices
 
 * **Duplicate keys are compared after decoding escapes and with case folded** (a Unicode simple fold, so the Kelvin sign and the long s match `k` and `s`, as they do in Go's own decoder). Frameworks keep the first, the last, or merge, and some match keys without regard to case. This comparison catches those duplicate-key ambiguities; it does not establish equivalence with every backend parser.
-* **Form and multipart duplicate names are recorded, not refused**, by default (`form-duplicate-param`, `multipart-duplicate-name`): a group of checkboxes is a legitimate duplicate. Names ending in `[]` are never reported. A site that has no such field sets the rule to `block`.
+* **Form and multipart duplicate names are recorded, not refused**, by default (`form-duplicate-param`, `multipart-duplicate-name`): a group of checkboxes is a legitimate duplicate, and so are the hidden field and the checkbox of one name that ASP.NET MVC and Rails write (`enabled=true&enabled=false`). Names ending in `[]` are never reported. A site that has no such field sets the rule to `block`. The same name in two spellings is refused whatever this rule is set to (`form-parameter-alias`).
 * **A `filename*` next to `filename` is recorded, not refused** (`multipart-filename-star`). RFC 7578 forbids it in form data and browsers never send it, but some HTTP libraries do. A `filename*` that disagrees with `filename` (the Coraza decoy) is refused, and so is one with no `filename` (`multipart-filename-mismatch`): a parser that reads it, Go's among them, makes a file of the part and one that does not makes a plain field, so the two check different things. Other extended or continued parameters (`name*`, `filename*0`) are refused as an invalid Content-Disposition for the same reason.
 * **A byte order mark is refused for every text format**, XML included. A .NET client that writes one sets `body-bom` to `monitor`.
 * **`text/plain` is checked for a body that is a whole JSON or XML document** (it starts like one and ends like one): that is how a cross-site request carries JSON with no preflight. Plain prose that starts with a bracket is left alone. An HTML snippet posted as `text/plain` is refused as XML; a site that does this sets `mismatch-xml-body` to `monitor`.
@@ -291,6 +298,7 @@ Default is what happens when the policy does not say. Status is what the visitor
 | 5002605 | `form-semicolon` | block | 400 | high | a semicolon used as a separator |
 | 5002606 | `form-proto-key` | block | 400 | high | a parameter name that pollutes an object prototype |
 | 5002608 | `form-parameter-shape` | block | 400 | high | parameter names with conflicting scalar, container or normalized interpretations |
+| 5002609 | `form-parameter-alias` | block | 400 | high | one parameter name given twice in different spellings (a percent escape, or other capitals) |
 | 5002700 | `multipart-no-boundary` | block | 400 | high | a multipart type with no boundary |
 | 5002701 | `multipart-bad-boundary` | block | 400 | high | a boundary that RFC 2046 does not allow |
 | 5002702 | `multipart-limit` | block | 400 | high | a multipart body over a part or header limit |
@@ -318,6 +326,7 @@ Default is what happens when the policy does not say. Status is what the visitor
 | 5002807 | `query-invalid-utf8` | block | 400 | high | URL query parameters that are not valid UTF-8 |
 | 5002808 | `query-too-large` | block | 414 | high | a raw URL query larger than the site allows |
 | 5002809 | `query-parameter-shape` | block | 400 | high | URL parameter names with conflicting scalar, container or normalized interpretations |
+| 5002810 | `query-parameter-alias` | block | 400 | high | one URL parameter name given twice in different spellings (a percent escape, or other capitals) |
 | 5002990 | `policy-invalid` | block | 503 | critical | the formats policy is invalid, so bodies are refused |
 | 5002991 | `internal-error` | block | 503 | critical | the body could not be checked |
 

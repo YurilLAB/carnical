@@ -101,6 +101,10 @@ type Config struct {
 	// Inspectors look at every request, in this order, after the proxy's own checks and before the rule set: the virtual-patch
 	// signatures, the body-format checks, the API guard. See package inspect.
 	Inspectors []inspect.Inspector
+	// NoJoinedParams leaves out the second reading of a parameter given more than once: by default the rules are also
+	// given its values joined with commas, as ASP.NET hands them to an application, so that an injection split over
+	// them is seen whole (see joined.go). The values come from the URL, a form or multipart body and the cookies.
+	NoJoinedParams bool
 	// MaxFormBody is the largest request body that is not a file upload (default 128 KiB). Evaluating a body costs
 	// time in proportion to its size, and the engine does not apply its own limit for bodies without files, so the
 	// proxy does. A multipart/form-data body may be as large as CRS.RequestBodyLimit.
@@ -381,7 +385,10 @@ func (e *Edge) guard(next http.Handler) http.Handler {
 		mt, _, mtErr := mime.ParseMediaType(r.Header.Get("Content-Type"))
 		hasBody := r.Body != nil && r.Body != http.NoBody
 		isUpload := mtErr == nil && mt == "multipart/form-data"
-		if hasBody && (isUpload || len(e.cfg.Inspectors) > 0) {
+		isForm := hasBody && readAsForm(r.Header)
+		var formBody []byte    // a form body, for the joined reading of repeated parameters
+		var fields []joinParam // and the fields of a multipart one
+		if hasBody && (isUpload || len(e.cfg.Inspectors) > 0 || isForm && !e.cfg.NoJoinedParams) {
 			// Read the whole body (it is already capped) so that it can be looked at, then hand the same bytes on, or the
 			// replacement an inspector made of them.
 			body, err := io.ReadAll(r.Body)
@@ -412,6 +419,12 @@ func (e *Edge) guard(next http.Handler) http.Handler {
 					e.refuse(w, r, http.StatusForbidden, id, why)
 					return
 				}
+				if !e.cfg.NoJoinedParams {
+					fields = multipartFields(body, params["boundary"])
+				}
+			}
+			if isForm {
+				formBody = body
 			}
 			if replaced != nil {
 				// The body the application gets is not the one that was sent, so its framing is rewritten to match.
@@ -436,6 +449,11 @@ func (e *Edge) guard(next http.Handler) http.Handler {
 		ctx := context.WithValue(r.Context(), contextKey{}, addr)
 		if seen != nil {
 			ctx = context.WithValue(ctx, observedKey{}, seen)
+		}
+		if !e.cfg.NoJoinedParams {
+			if joined := joinRepeated(rawQuery, formBody, fields, r.Header["Cookie"]); len(joined) > 0 {
+				ctx = context.WithValue(ctx, joinedKey{}, joined)
+			}
 		}
 		next.ServeHTTP(tw, r.WithContext(ctx))
 		if !tw.wrote {

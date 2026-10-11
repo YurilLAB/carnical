@@ -87,11 +87,39 @@ meaning](https://learn.microsoft.com/en-us/windows/win32/winsock/windows-sockets
 
 ## Repeated parameters
 
-Plain repeated parameters remain monitored by default because legitimate multi-valued APIs use them.
+A parameter given more than once reaches applications in different ways: PHP keeps the last value, Go and a Java
+servlet the first, and ASP.NET hands over all of them joined with commas. So does a Node application that uses the
+array it was given as text, and PHP code that implodes a list. An injection cut in two (`q=UNION&q=SELECT ...`) is
+then harmless in each piece and whole in the application.
+
+So the rules read each value on its own and also, for a name given more than once, the values joined with commas in
+the order ASP.NET's `Request.Params` joins them: the URL's, then those of a form or of the plain fields of a multipart
+body, then the cookies of that name. Names are compared after decoding and without regard to case, and the items of
+one list count as one name (`ids`, `ids[]`, `ids[0]`, `ids[1]`). Nothing is rewritten: the application gets the request
+as it was sent. The joined value is one more argument to the rule set, under the name as it was first spelt, and it is
+refused when it reads as an attack (`403`, by whichever rule it trips). A body is taken for a form by the same test the
+rule set uses (how its first `Content-Type` begins), so there is no type that the rules read as a form and the join
+does not.
+
+A name that only cookies have is not joined, however often it is sent: the joined value is an argument, and a session
+cookie that a browser sends twice (after a site moved it to another domain or path) would then be an argument named
+like a session id, which the rule set refuses as session fixation.
+
+The rule set reads 1000 parameters from the URL and 1000 from the body, and refuses a request with more in either
+(`400`, rules 200004 and 200005); the join looks at as many, so no parameter of a request that is let through goes
+unjoined. `-join-repeated-params=false` (library: `proxy.Config.NoJoinedParams`) switches the joined reading off, for a
+site where the joined values of ordinary repeated fields trip a rule.
+
+What this does not cover: JSON (a repeated key is refused, see [request formats](formats.md)), values an application
+joins with something other than a comma, the members of a record (`user[name]`, `user[mail]`), and an injection split
+over two cookies of one name that is no parameter.
+
+Plain repeated parameters themselves remain monitored by default because legitimate multi-valued APIs use them.
 Enable `form-duplicate-param`/`query-duplicate-param` blocking for a scalar-only application, or use
-an explicit API contract so arrays remain usable. Repeated explicit `tags[]` and distinct nested
-fields are structurally valid; the application must decide whether it accepts them. Structural
-validity does not establish safe concatenation in an application sink.
+an explicit API contract so arrays remain usable. One name in two spellings (`role` and `%72ole`, `Role` and `role`)
+is refused whatever those rules are set to (`form-parameter-alias`, `query-parameter-alias`); `[` beside `%5B`, or a
+space as `+` and as `%20`, is not another spelling. Repeated explicit
+`tags[]` and distinct nested fields are structurally valid; the application must decide whether it accepts them.
 
 ## Executable API contracts
 

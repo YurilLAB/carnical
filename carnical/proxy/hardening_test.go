@@ -1491,6 +1491,93 @@ func TestOnlyTheSitesOwnNamesMakeAnAddressLocal(t *testing.T) {
 	}
 }
 
+// An injection split over the values of one name is whole only to an application whose framework joins them. The rules
+// are given the joined value as well, and the application still gets exactly what was sent.
+func TestAnInjectionSplitOverARepeatedParameterIsRefused(t *testing.T) {
+	post := func(target, ct, body string) string {
+		return "POST " + target + " HTTP/1.1\r\nHost: shop.example.test\r\nUser-Agent: Mozilla/5.0 Chrome/120\r\nAccept: text/html\r\n" +
+			"Content-Type: " + ct + "\r\nContent-Length: " + strconv.Itoa(len(body)) + "\r\nConnection: close\r\n\r\n" + body
+	}
+	const form = "application/x-www-form-urlencoded"
+	field := func(name, value string) string {
+		return "--b\r\nContent-Disposition: form-data; name=\"" + name + "\"\r\n\r\n" + value + "\r\n"
+	}
+	cookie := func(request, value string) string {
+		return strings.Replace(request, "\r\nAccept: ", "\r\nCookie: "+value+"\r\nAccept: ", 1)
+	}
+	// As many parameters in the URL as the rule set reads from one place: one more and it refuses the request itself.
+	names := make([]string, 1000)
+	for i := range names {
+		names[i] = "p" + strconv.Itoa(i) + "="
+	}
+	filler := strings.Join(names, "&")
+	formFiller := strings.Join(names[:998], "&")
+	apart := func(c *Config) { c.NoJoinedParams = true }
+	// Two thousand parameters take the rules a while; a slow machine must not turn that into a 503.
+	patient := func(c *Config) { c.EvalBudget = time.Minute }
+	for _, tt := range []struct {
+		name    string
+		request string
+		change  func(*Config)
+		want    int
+	}{
+		{"split over the query", get("/api/update?q=UNION&q=SELECT+password+FROM+users"), nil, 403},
+		{"split over a form", post("/api/update", form, "q=UNION&q=SELECT+password+FROM+users"), nil, 403},
+		{"split over multipart fields", post("/api/update", "multipart/form-data; boundary=b", field("q", "UNION")+field("q", "SELECT password FROM users")+"--b--\r\n"), nil, 403},
+		{"split between the query and a form", post("/api/update?q=UNION", form, "x=1&q=SELECT+password+FROM+users"), nil, 403},
+		{"split over two spellings of the name", get("/api/update?Q=UNION&q=SELECT+password+FROM+users"), nil, 403},
+		{"split with the name escaped", get("/api/update?%71=UNION&q=SELECT+password+FROM+users"), nil, 403},
+		{"split into three", get("/api/update?q=1+UNION&q=SELECT+password&q=FROM+users"), nil, 403},
+		{"each half alone", get("/api/update?q=UNION&p=SELECT+password+FROM+users"), nil, 200},
+		{"split over the items of a list", get("/api/update?" + url.QueryEscape("q[]") + "=UNION&" + url.QueryEscape("q[]") + "=SELECT+password+FROM+users"), nil, 403},
+		{"split over numbered items", get("/api/update?" + url.QueryEscape("q[0]") + "=UNION&" + url.QueryEscape("q[1]") + "=SELECT+password+FROM+users"), nil, 403},
+		{"split between the query and a cookie", cookie(get("/api/update?q=UNION"), "sid=abc; q=SELECT password FROM users"), nil, 403},
+		{"split at the end of as many parameters as the rules read", post("/api/update?"+filler, form, formFiller+"&q=UNION&q=SELECT+password+FROM+users"), patient, 403},
+		{"as many parameters as the rules read", post("/api/update?"+filler, form, formFiller+"&q=UNION&r=SELECT+password+FROM+users"), patient, 200},
+		{"one parameter more than the rules read", get("/api/update?" + filler + "&q=1"), nil, 400},
+		{"one form field more than the rules read", post("/api/update", form, filler+"&q=1"), nil, 400},
+		{"as many repeated names as the rules take", cookie(post("/api/update?"+filler, form, filler), "p0=x; q=1"), patient, 200},
+		{"more repeated names than the rules take", cookie(post("/api/update?"+filler, form, formFiller+"&p998=&q=1"), "p999=x; q=2"), nil, 400},
+		{"split over a form whose type only the rules read as one", post("/api/update", form+`; charset="utf-8`, "q=UNION&q=SELECT+password+FROM+users"), nil, 403},
+		{"split over a form whose type goes on", post("/api/update", form+"x", "q=UNION&q=SELECT+password+FROM+users"), nil, 403},
+		{"split over a form whose type is in capitals", post("/api/update", "Application/X-WWW-Form-Urlencoded; Charset=UTF-8", "q=UNION&q=SELECT+password+FROM+users"), nil, 403},
+		{"split over multipart fields under a type that cannot be read", post("/api/update", `multipart/form-data; boundary="b`, field("q", "UNION")+field("q", "SELECT password FROM users")+"--b--\r\n"), nil, 400},
+		{"a session cookie sent twice", cookie(get("/account"), "PHPSESSID=0123456789abcdef0123456789abcdef; lang=en; PHPSESSID=fedcba9876543210fedcba9876543210"), nil, 200},
+		{"a session cookie sent twice beside parameters", cookie(get("/account?tab=orders&page=2"), "JSESSIONID=0123456789ABCDEF0123456789ABCDEF; JSESSIONID=FEDCBA9876543210FEDCBA9876543210"), nil, 200},
+		{"a list of choices", get("/shop?" + url.QueryEscape("tag[]") + "=red&" + url.QueryEscape("tag[]") + "=blue&" + url.QueryEscape("id[0]") + "=4&" + url.QueryEscape("id[1]") + "=9"), nil, 200},
+		{"a list of names", post("/guests", form, "name%5B%5D=Mary+O%27Brien&name%5B%5D=Se%C3%A1n+O%27Neill&name%5B%5D=Anne-Marie"), nil, 200},
+		{"a token in a form and in a cookie", cookie(post("/settings", form, "csrf_token=Zm9vYmFy_0123-abc&name=Alice"), "csrf_token=Zm9vYmFy_0123-abc; lang=en"), nil, 200},
+		{"a parameter and a cookie of one name", cookie(get("/shop?lang=en&currency=EUR"), "lang=en-GB; currency=EUR; sid=0123456789abcdef"), nil, 200},
+		{"ordinary repeated choices", get("/shop?color=red&color=blue&size=m&size=l"), nil, 200},
+		{"a checkbox and its hidden field", post("/settings", form, "enabled=true&enabled=false&name=Alice"), nil, 200},
+		{"split over the query, joining switched off", get("/api/update?q=UNION&q=SELECT+password+FROM+users"), apart, 200},
+		{"split over a form, joining switched off", post("/api/update", form, "q=UNION&q=SELECT+password+FROM+users"), apart, 200},
+		{"split into a cookie, joining switched off", cookie(get("/api/update?q=UNION"), "q=SELECT password FROM users"), apart, 200},
+		{"split over multipart fields, joining switched off", post("/api/update", "multipart/form-data; boundary=b", field("q", "UNION")+field("q", "SELECT password FROM users")+"--b--\r\n"), apart, 200},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s := start(t, tt.change)
+			status, _ := s.rawFor(t, time.Minute, tt.request)
+			if status != tt.want {
+				t.Fatalf("status %d, want %d", status, tt.want)
+			}
+			got := s.up.requests()
+			if (len(got) > 0) != (tt.want == 200) {
+				t.Fatalf("reached the application: %v", len(got) > 0)
+			}
+			if tt.want != 200 {
+				return
+			}
+			// What the application gets is the request as it was sent, with nothing joined into it.
+			line, _, _ := strings.Cut(tt.request, "\r\n")
+			_, body, _ := strings.Cut(tt.request, "\r\n\r\n")
+			if target := strings.Fields(line)[1]; got[0].RequestURI != target || string(got[0].Body) != body {
+				t.Fatalf("the application got %q with body %q, sent %q with body %q", got[0].RequestURI, got[0].Body, target, body)
+			}
+		})
+	}
+}
+
 func mustURL(s string) *url.URL {
 	u, err := url.Parse(s)
 	if err != nil {
