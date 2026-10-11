@@ -126,15 +126,15 @@ policy have their own records: [flood-validation.md](flood-validation.md) and
 [network-validation.md](network-validation.md).
 
 **Rules and parameters.** The live gate sends 10,000 requests made from the repository's corpus (2,972 attack and 347
-ordinary templates) through the built proxy. Before this work 92 attack templates reached the origin; 59 do now, and
+ordinary templates, 343 of them distinct) through the built proxy. Before this work 92 attack templates reached the origin; 59 do now, and
 the same 23 ordinary templates are refused as before, none newly. The two probe paths that got through are refused
 (local rules 5006018 to 5006020: database tools, PHP information pages, debug consoles), remote script addresses in a
 URL parameter are refused (5006021; 42 templates became 27), and a parameter given twice is also read joined, as the
 frameworks that join it hand it to the application, and a name written two ways is refused (48 became 32). What still
 reaches the origin by default is a plain repeated parameter with nothing hostile in either value or in both together,
 and a script address in a form or JSON field; both are ordinary use on many sites. A site that has neither can refuse
-them: run as `-strict` does (repeated parameters refused, the stricter local rules on), the gate lets no attack
-template through and refuses 28 ordinary ones. A defect found on the way is fixed: the rules that let a link to the
+them: run as the load test's `-strict` does (a formats policy that refuses repeated parameters, and
+`-local-rules-on 5006101,5006102,5006103`), the gate lets no attack template through and refuses 28 ordinary ones. A defect found on the way is fixed: the rules that let a link to the
 site itself through compared its host with the request's own Host header, so a request that named the attacker's host
 made the attacker's address local; they now use only the names the operator gave, and with none given nothing is local.
 
@@ -146,14 +146,30 @@ than it needed to be; the nftables check followed verdict maps too broadly; and 
 empty value.
 
 **Host checks.** Three gaps are closed. A private key on Windows was accepted whatever its access list said; the list
-is now read, and a key that Everyone, Users or the like can reach, or that an account other than the service's own,
-the owner, SYSTEM or Administrators can write, is refused (tested with real files whose lists were set with `icacls`,
-and by SID for every principal on the list). The listener check read TCP only; it now also reports a UDP socket that
-takes packets from any address unless the zone map declares it (tested against fixtures and against real sockets on
-Linux: a bound one is found, a declared one is not, a connected one is left out). The setuid baseline reported every
-container start and snap refresh; a program that is the same, with the same mode and owners, at the same place in
-another copy of a recorded tree is no longer new, and the baseline now records mode and owners, so a file made setuid
-where it was setgid is found, which it was not.
+is now read, and a key that Everyone, Users or the like can reach or owns, or that an account other than the service's
+own, the owner, SYSTEM or Administrators can write, is refused (tested with real files whose lists were set with
+`icacls`, and by SID for every principal on the list). The listener check read TCP only; it now also reports a UDP
+socket that takes packets from any address unless the zone map declares it, and a UDP-Lite or listening SCTP socket
+whatever is declared (tested against fixtures and against real sockets of each kind on Linux: a bound one is found, a
+declared UDP one is not, a connected one is left out). A socket table that is there and cannot be read is a finding
+beside the rest, where it ended the check. The setuid baseline reported every container start and snap refresh; a
+program that is the same, with the same mode and owners, at the same place in another copy of a recorded tree is no
+longer new, and the baseline now records mode and owners, so a file made setuid where it was setgid is found, which it
+was not. A baseline written before that still passes, treats every copy as new, and says beside its result what it
+cannot see.
+
+A second reader went through the host checks as an attacker would and reported eight things. Four are fixed: UDP-Lite
+and SCTP sockets, which any user may open, were not read; a baseline with no modes accepted a copy whatever its mode
+and said nothing of what it could not check; one catch-all principal (all restricted application packages) was not on
+the Windows list; and a table line cut short was passed over. Four are kept, with the reason written where the
+operator reads it: a key's owner is trusted with it, as on other systems; a copy of a program is known as it was
+recorded, so the baseline is recorded again after an update; a service declared by name with its user answers for
+that user's socket on any address; and only overlay and squashfs mounts hold known copies, so a copy on another kind
+of image is reported.
+
+The full Linux suite failed once in these runs, in two packages at the same moment: a test started the proxy on a
+port it had found free and then let go, another package's test server took that port, and each test saw the other's
+traffic. The proxy under test now picks its own port and the test reads which from its log.
 
 **Deliberate breaks.** More than 400 single changes that break the new code were each run against its tests. Those
 that got through at first led to a new test row, a stronger check or simpler code; the few left change nothing a
@@ -164,9 +180,9 @@ full suite on Windows and on Linux in a clean checkout of that commit alone, and
 **On each batch before it was pushed:** the race detector on the packages touched, the linter (no finding on a
 changed line), gosec for both systems and govulncheck.
 
-**Not verified here:** anything that needs root on a real machine (the service-user step of the packet policy test,
-the host checks against a hardened install), nftables older than 1.1.3 other than through the hosted workflow, and a
-Windows machine joined to a domain.
+**Not verified on this machine:** anything that needs root. The hosted workflow ran the packet policy test with root on
+nftables 1.0.9, the service-user step included; the host checks have not been run against a hardened install. Nor was
+a Windows machine joined to a domain tried.
 
 ## Environment and baseline limitations
 
