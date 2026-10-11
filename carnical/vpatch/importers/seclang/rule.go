@@ -81,6 +81,8 @@ func (c *converter) ruleExpr(r secRule) (importers.Expr, error) {
 			if !importers.ValidTarget(target) {
 				return importers.Expr{}, skip("selector-invalid")
 			}
+			// A named argument, header or cookie has many values too when the request repeats it.
+			negatedMany = true
 		} else if spec.many {
 			negatedMany = true
 		}
@@ -91,8 +93,8 @@ func (c *converter) ruleExpr(r secRule) (importers.Expr, error) {
 		}
 	}
 	if r.op.negated && negatedMany {
-		// "!@rx" on a variable with many values: SecLang fires when some value fails to match; the model's Negate holds when no
-		// value matches. They are not the same, so the rule is refused.
+		// "!@rx" on a variable with many values, or a named one a request can repeat: SecLang fires when some value fails to
+		// match; the model's Negate holds when no value matches. They are not the same, so the rule is refused.
 		return importers.Expr{}, skip("negated-on-many-values")
 	}
 

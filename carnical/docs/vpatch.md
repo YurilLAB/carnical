@@ -123,9 +123,12 @@ notices when distributing rule data; the small checked-in test fixtures retain t
 Converted conditions keep the source engine's meaning: CrowdSec `regex` and SecLang `@rx` patterns
 carry the `sm` flags Coraza compiles them with, and length, size and position checks (CrowdSec
 `length`, Suricata `bsize`, `urilen`, `depth`, `offset`, `distance`, `within`) count bytes. A
-CrowdSec `not` is converted only where the negation means the same as in Coraza; otherwise the rule
-is skipped and reported. YAML rule files that nest flow collections more than 24 deep, counted
-across lines, are refused as `yaml-unsafe` before they are parsed.
+CrowdSec `not`, and a SecLang `!@` operator, is converted only where the negation means the same as
+in Coraza: on the path, the URI, the method or the body, which have one value. A named argument,
+header or cookie can be repeated, and one copy that matched would switch the negation off for the
+copy that does not, so such a rule is skipped and reported (`negated-on-many-values`). YAML rule
+files that nest flow collections more than 24 deep, counted across lines, are refused as
+`yaml-unsafe` before they are parsed.
 
 From the `carnical` module:
 

@@ -374,9 +374,10 @@ const regexFlags = "sm"
 // negated writes cond under "not". Coraza, which CrowdSec runs the rule on, fires a negated test when a value it looks at does not
 // match, and never for a value the request does not have; the model's Negate holds when no value matches, a missing one included.
 // The two agree on one value, so the condition is split into one for each target, joined by "or". The path, the URI, the method
-// and the body have one value in Coraza (the body an empty one when there is none), so a plain negation says the same. A named
-// value is paired with importers.ExistsGuard, as the SecLang importer does, because it can be missing. A target with many values
-// (every argument, every header) cannot be said either way, so a rule that negates a test of one is refused.
+// and the body have one value in Coraza (the body an empty one when there is none), so a plain negation says the same. Any other
+// target can have many values: every argument or header, and a named one too, since a request may repeat a parameter, a header
+// or a cookie, and one copy that matches would switch the negation off for the copy that does not. A rule that negates a test of
+// one cannot be said either way and is refused.
 func negated(cond vpatch.Condition) (importers.Expr, error) {
 	var alts []importers.Expr
 	for _, t := range cond.Targets {
@@ -385,13 +386,9 @@ func negated(cond vpatch.Condition) (importers.Expr, error) {
 		switch t {
 		case vpatch.TargetPath, vpatch.TargetURI, vpatch.TargetMethod, vpatch.TargetBody:
 			alts = append(alts, importers.Leaf(one))
-			continue
-		}
-		guard, ok := importers.ExistsGuard(one.Targets)
-		if !ok {
+		default:
 			return importers.Expr{}, skip("negated-on-many-values")
 		}
-		alts = append(alts, importers.And(importers.Leaf(guard), importers.Leaf(one)))
 	}
 	if len(alts) == 1 {
 		return alts[0], nil

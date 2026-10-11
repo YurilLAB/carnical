@@ -47,15 +47,24 @@ func TestRuleMapping(t *testing.T) {
 		name string
 		rule string
 		want []vpatch.Condition // the main condition, then Also
+		skip string             // or why the rule is refused
 	}{
 		{name: "@rx keeps Coraza's dot-all and multi-line flags", rule: `SecRule ARGS:q "@rx union.*select" "id:1,phase:2,deny,t:lowercase"`,
 			want: []vpatch.Condition{{Operator: "rx", Pattern: "union.*select", Flags: "sm", Targets: []string{"arg:q"}, Transforms: []string{"lowercase"}}}},
 		{name: "@within is a word list for the whole value, not an @rx", rule: `SecRule REQUEST_METHOD "!@within GET POST" "id:2,phase:1,deny"`,
 			want: []vpatch.Condition{{Operator: "rx", Pattern: "^(?:GET|POST)$", Targets: []string{"method"}, Negate: true}}},
+		{name: "a negated test of a named argument is refused, as a request may repeat it", rule: `SecRule ARGS:role "!@streq user" "id:3,phase:2,deny"`,
+			skip: "negated-on-many-values"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			res := ConvertBytes("t.conf", []byte(tt.rule+"\n"), importers.Options{Revision: "t1"})
+			if tt.skip != "" {
+				if len(res.Signatures) != 0 || res.Report.Skipped[tt.skip] != 1 {
+					t.Fatalf("signatures %d, skipped %v, want it skipped as %s", len(res.Signatures), res.Report.Skipped, tt.skip)
+				}
+				return
+			}
 			if len(res.Signatures) != 1 {
 				t.Fatalf("signatures %d, skipped %v, errors %v", len(res.Signatures), res.Report.Skipped, res.Report.Errors)
 			}
