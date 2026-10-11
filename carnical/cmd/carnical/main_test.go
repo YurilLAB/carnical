@@ -175,14 +175,7 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 			w.WriteHeader(200)
 		}))
 		defer origin.Close()
-		listener, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatal(err)
-		}
-		listen := listener.Addr().String()
-		if err := listener.Close(); err != nil {
-			t.Fatal(err)
-		}
+		listen := "127.0.0.1:" + quietPort(t, "tcp", "127.0.0.1")
 		for _, tc := range []struct {
 			name, prefix                                                               string
 			save, bad, exists, defaultKey, sameKey, noProfile, missingKey, outputError bool
@@ -1189,14 +1182,7 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 			for len(requests) > 0 {
 				<-requests // a failing previous subtest must not contaminate this one's origin evidence
 			}
-			ln, err := net.Listen("tcp", "127.0.0.1:0")
-			if err != nil {
-				t.Fatal(err)
-			}
-			addr := ln.Addr().String()
-			if err := ln.Close(); err != nil {
-				t.Fatal(err)
-			}
+			addr := "127.0.0.1:" + quietPort(t, "tcp", "127.0.0.1")
 			args := []string{"-listen", addr, "-upstream", app.URL, "-origin-allow", "127.0.0.0/8", "-mode", "off"}
 			if tc.site == "local-example" {
 				data, err := os.ReadFile("../../docs/examples/site-local.json")
@@ -1271,6 +1257,7 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 			if tc.apiSpec != "" {
 				data := []byte(tc.apiSpec)
 				if tc.apiSpec == "example" {
+					var err error
 					data, err = os.ReadFile("../../docs/examples/api-contract.json")
 					if err != nil {
 						t.Fatal(err)
@@ -1306,27 +1293,18 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 			}
 			healthAddress := ""
 			if tc.health {
-				network, binding := "tcp", "127.0.0.1:0"
+				// The health listener must be given a port (it refuses port 0), so the test names one.
+				network, host := "tcp", "127.0.0.1"
 				if tc.healthAlias == "ipv6-expanded" {
-					network, binding = "tcp6", "[::1]:0"
+					network, host = "tcp6", "::1"
 				}
-				ln, err := net.Listen(network, binding)
-				if err != nil {
-					t.Fatal(err)
-				}
-				healthAddress = ln.Addr().String()
-				_, port, err := net.SplitHostPort(healthAddress)
-				if err != nil {
-					t.Fatal(err)
-				}
+				port := quietPort(t, network, host)
+				healthAddress = net.JoinHostPort(host, port)
 				switch tc.healthAlias {
 				case "ipv6-expanded":
 					healthAddress = "[0:0:0:0:0:0:0:1]:" + port
 				case "ipv4-mapped":
 					healthAddress = "[::ffff:127.0.0.1]:" + port
-				}
-				if err := ln.Close(); err != nil {
-					t.Fatal(err)
 				}
 				args = append(args, "-health-listen", healthAddress)
 			}
@@ -2169,6 +2147,27 @@ func TestFloodFlagsBecomeShieldSettings(t *testing.T) {
 			s.Close()
 		})
 	}
+}
+
+// quietPort finds a port on a loopback address that is free now and that the system gives to nobody who asks for "any
+// port": it lies below the range such ports are drawn from on Linux, Windows and macOS. A port found free by asking
+// for any port can go to another test's server, or to a connection another test opens, the moment it is let go, and
+// the proxy under test then fails to take it or is not what answers there.
+func quietPort(t *testing.T, network, host string) string {
+	t.Helper()
+	for range 200 {
+		port := fmt.Sprint(20000 + rand.Intn(12000))
+		ln, err := net.Listen(network, net.JoinHostPort(host, port))
+		if err != nil {
+			continue
+		}
+		if err := ln.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return port
+	}
+	t.Fatal("found no free port below the range the system gives out")
+	return ""
 }
 
 // listeningAddress waits for a proxy that was started on port 0 to say in its log which address it took.

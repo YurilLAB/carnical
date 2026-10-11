@@ -51,9 +51,7 @@ func TestTheConfinedProxyStillDoesItsJob(t *testing.T) {
 			name = "control, not confined"
 		}
 		t.Run(name, func(t *testing.T) {
-			free, _ := net.Listen("tcp", "127.0.0.1:0")
-			addr := free.Addr().String()
-			free.Close()
+			addr := "127.0.0.1:" + quietPort(t, "tcp", "127.0.0.1")
 			uploads, err := os.MkdirTemp("", "uploads") // a plain name: the setting only accepts a plain path
 			if err != nil {
 				t.Fatal(err)

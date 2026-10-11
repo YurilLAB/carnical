@@ -5,7 +5,6 @@ package main
 import (
 	"bytes"
 	"errors"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os/exec"
@@ -28,12 +27,7 @@ func TestSignalsDrainAndASecondOneEndsTheProxyAtOnce(t *testing.T) {
 	defer app.Close()
 
 	start := func(t *testing.T, extra ...string) (*exec.Cmd, *lockedLog, chan error) {
-		ln, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatal(err)
-		}
-		addr := ln.Addr().String()
-		ln.Close()
+		addr := "127.0.0.1:" + quietPort(t, "tcp", "127.0.0.1")
 		logs := &lockedLog{}
 		cmd := exec.Command(bin, append([]string{"-listen", addr, "-upstream", app.URL, "-origin-allow", "127.0.0.0/8"}, extra...)...)
 		cmd.Stdout, cmd.Stderr = logs, logs

@@ -167,9 +167,11 @@ recorded, so the baseline is recorded again after an update; a service declared 
 that user's socket on any address; and only overlay and squashfs mounts hold known copies, so a copy on another kind
 of image is reported.
 
-The full Linux suite failed once in these runs, in two packages at the same moment: a test started the proxy on a
-port it had found free and then let go, another package's test server took that port, and each test saw the other's
-traffic. The proxy under test now picks its own port and the test reads which from its log.
+The full Linux suite failed twice in these runs for one reason: a test found a port free, let it go and started the
+proxy on it, and in between something else was given that port. Once it was another package's test server, and each
+test saw the other's traffic; once the proxy's health listener could not bind. The proxy under test now picks its own
+port and the test reads which from its log; where a test must name a port, it takes one below the range the system
+gives out; and the load test tool starts the proxy the same way.
 
 **Deliberate breaks.** More than 400 single changes that break the new code were each run against its tests. Those
 that got through at first led to a new test row, a stronger check or simpler code; the few left change nothing a
