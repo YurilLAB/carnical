@@ -8,6 +8,7 @@ import (
 	"io"
 	"mime"
 	"mime/multipart"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -20,16 +21,31 @@ const (
 	maxValue = 64 << 10
 	// maxArgs is the most arguments (query, form, JSON and multipart together) that are kept.
 	maxArgs = 1024
-	// maxJSONDepth and maxJSONNodes bound the flattening of a JSON body.
-	maxJSONDepth = 24
-	maxJSONNodes = 16384
+	// maxJSONDepth is how many levels of a JSON body make up an argument's name, and maxJSONKey how much of each key, so that a
+	// name does not grow with the document; a value deeper than that is still an argument. maxJSONNest is how deep a JSON body
+	// is followed at all (by default PHP reads 512 levels, Python and Jackson about 1,000, .NET 64), and maxJSONTokens how many
+	// of its tokens are read: every token takes a byte, so no body the proxy lets through has more. Past either, the rest is
+	// read for its strings.
+	maxJSONDepth  = 24
+	maxJSONKey    = 64
+	maxJSONNest   = 1000
+	maxJSONTokens = 2 * maxValue
 	// maxMultipartBody is how much of a multipart body is walked, maxMultipartParts how many parts are read, and maxPartRead how
 	// much of one part's content is kept.
 	maxMultipartBody  = 8 << 20
 	maxMultipartParts = 64
 	maxPartRead       = 2 * maxValue
-	maxCookies        = 256
-	maxHeaderItems    = 1024
+	// maxCookies and maxHeaderItems are how many cookies and header values are read. A request with more is reported
+	// (matchCtx.overflow) rather than read in part without a word: browsers keep at most 180 cookies for a site, and PHP reads at
+	// most 1,000.
+	maxCookies     = 1024
+	maxHeaderItems = 1024
+)
+
+// What a request has more of than is read, in matchCtx.overflow.
+const (
+	overflowCookies uint8 = 1 << iota
+	overflowHeaders
 )
 
 // A view is one kind of value of the request, parsed once. vals are the values; for kinds that can be picked by name (arguments,
@@ -139,7 +155,8 @@ func (c *matchCtx) buildMethod(v *view) {
 // multipartBody reports whether the request's body is a multipart form that was read into its parts. Then the raw body is not
 // offered as the body target: its fields are arguments, its file names are file names and its files are uploads, and matching
 // the generic body signatures against the bytes of an uploaded photograph is how they come to block ordinary uploads. A
-// multipart body that cannot be read (no boundary, no parts) is offered raw, so nothing hides behind a broken one.
+// multipart body that cannot be read (no boundary, no parts), or not all of it (a part Go's reader refuses, more parts than are
+// read), is offered raw, so nothing hides behind a broken one.
 func (c *matchCtx) multipartBody() bool {
 	if len(c.req.Body) == 0 || c.contentType() != "multipart/form-data" {
 		return false
@@ -194,23 +211,45 @@ func (c *matchCtx) bodyString() string {
 func (c *matchCtx) buildHeaders(v *view) {
 	v.names = v.names[:0]
 	v.hdr = true
+	hdr := c.req.Header
 	hostSeen := false
 	n := 0
-	for name, vals := range c.req.Header {
+	for name, vals := range hdr {
 		if len(name) == 4 && strings.EqualFold(name, "host") {
 			hostSeen = true
 		}
-		for _, val := range vals {
+		n += len(vals)
+	}
+	if !hostSeen {
+		// Go keeps Host out of the header map. It comes first, so that no number of other headers can leave it out. A request
+		// with no Host has an empty one as far as the signatures are concerned: "Host is empty" is something they test.
+		c.addCapped(v, "Host", c.req.Host)
+	}
+	if n <= maxHeaderItems {
+		for name, vals := range hdr {
+			for _, val := range vals {
+				c.addCapped(v, name, val)
+			}
+		}
+		return
+	}
+	// More values than are read: the request is reported, and the ones that are read do not depend on the map's order, so that
+	// the same request is always matched the same way.
+	c.truncated = true
+	c.overflow |= overflowHeaders
+	names := make([]string, 0, len(hdr))
+	for name := range hdr {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	n = 0
+	for _, name := range names {
+		for _, val := range hdr[name] {
 			if n++; n > maxHeaderItems {
-				c.truncated = true
 				return
 			}
 			c.addCapped(v, name, val)
 		}
-	}
-	if !hostSeen {
-		// A request with no Host has an empty one as far as the signatures are concerned: "Host is empty" is something they test.
-		c.addCapped(v, "Host", c.req.Host)
 	}
 }
 
@@ -235,6 +274,7 @@ func (c *matchCtx) buildCookies() {
 			}
 			if n++; n > maxCookies {
 				c.truncated = true
+				c.overflow |= overflowCookies
 				return
 			}
 			name, val := part, ""
@@ -487,55 +527,61 @@ func (c *matchCtx) formBody() {
 // jsonArgs flattens a JSON document into arguments, with the names ModSecurity and Coraza give them (and the signature feeds
 // are written for): "json" and then the object keys and array indices leading to the value, joined by dots, so that
 // {"a":{"b":[7]}} is the argument json.a.b.0 with the value 7. Strings, numbers and booleans are the values; null is an empty
-// string. Each argument's name is also an argument name. It does not recurse: the document is read as a stream of tokens, and a
-// document that is malformed, too deep or too big (maxJSONNodes, maxArgs) is read as far as it is good. The whole body is read, so
-// a key after a long first value is still an argument.
+// string. Each argument's name is also an argument name. It does not recurse: the document is read as a stream of tokens, to
+// its end, so that no padding (a long first value, deep nesting, thousands of empty arrays) puts a later key out of reach, and
+// maxArgs bounds what is kept. A name is built only for a value that is kept (jsonName), so a level that holds none costs no
+// string. A document that is malformed, or past maxJSONNest or maxJSONTokens, is read as far as it is good and the rest for its
+// strings.
 func (c *matchCtx) jsonArgs(body []byte) {
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber()
-	type frame struct {
-		obj     bool
-		wantKey bool
-		path    string
-		leaf    string
-		idx     int
-	}
-	var stack [maxJSONDepth]frame
-	sp := 0
+	var first [maxJSONDepth]jsonLevel
+	levels := first[:0]
 	curKey := ""
-	// pathOf names the value that has just been read, and counts it if it is an array element.
-	pathOf := func() (path, leaf string) {
-		if sp == 0 {
-			return "json", ""
+	// place says where the value that has just been read is, and counts it if it is an array element.
+	place := func() (at jsonLevel) {
+		if n := len(levels); n > 0 {
+			if f := &levels[n-1]; f.obj {
+				at.keyed, at.key, at.leaf = true, curKey, curKey
+			} else {
+				at.index, at.leaf = f.next, f.leaf
+				f.next++
+			}
 		}
-		f := &stack[sp-1]
-		if f.obj {
-			return f.path + "." + curKey, curKey
-		}
-		n := f.idx
-		f.idx++
-		return f.path + "." + strconv.Itoa(n), f.leaf
+		return at
 	}
 	valueDone := func() {
-		if sp > 0 && stack[sp-1].obj {
-			stack[sp-1].wantKey = true
+		if n := len(levels); n > 0 && levels[n-1].obj {
+			levels[n-1].wantKey = true
 		}
 	}
-	for nodes := 0; ; nodes++ {
-		if nodes > maxJSONNodes {
+	// rest reads what follows the decoder's position for its strings, under the key the reading stopped at.
+	rest := func() {
+		leaf := ""
+		if n := len(levels); n > 0 {
+			leaf = levels[n-1].leaf
+			if levels[n-1].obj {
+				leaf = curKey
+			}
+		}
+		c.looseStrings(body[min(int(dec.InputOffset()), len(body)):], leaf)
+	}
+	for tokens := 0; ; tokens++ {
+		if tokens == maxJSONTokens {
 			c.truncated = true
+			rest()
 			return
 		}
 		tok, err := dec.Token()
 		if err != nil {
 			if err != io.EOF {
-				c.looseStrings(body[min(int(dec.InputOffset()), len(body)):])
+				rest()
 			}
 			return
 		}
-		if sp > 0 && stack[sp-1].obj && stack[sp-1].wantKey {
+		if n := len(levels); n > 0 && levels[n-1].obj && levels[n-1].wantKey {
 			if d, ok := tok.(json.Delim); ok && d == '}' {
-				sp--
+				levels = levels[:n-1]
 				valueDone()
 				continue
 			}
@@ -544,7 +590,7 @@ func (c *matchCtx) jsonArgs(body []byte) {
 				return
 			}
 			curKey = key
-			stack[sp-1].wantKey = false
+			levels[n-1].wantKey = false
 			continue
 		}
 		var leafVal string
@@ -552,15 +598,16 @@ func (c *matchCtx) jsonArgs(body []byte) {
 		case json.Delim:
 			switch t {
 			case '{', '[':
-				if sp >= maxJSONDepth {
+				if len(levels) >= maxJSONNest {
 					c.truncated = true
+					rest()
 					return
 				}
-				path, leaf := pathOf()
-				stack[sp] = frame{obj: t == '{', wantKey: t == '{', path: path, leaf: leaf}
-				sp++
+				at := place()
+				at.obj, at.wantKey = t == '{', t == '{'
+				levels = append(levels, at)
 			default:
-				sp--
+				levels = levels[:len(levels)-1]
 				valueDone()
 			}
 			continue
@@ -574,19 +621,66 @@ func (c *matchCtx) jsonArgs(body []byte) {
 				leafVal = "true"
 			}
 		}
-		path, leaf := pathOf()
-		if !c.addJSONArg(path, leafVal, leaf) {
+		at := place()
+		path, cut := jsonName(levels, &at)
+		c.truncated = c.truncated || cut
+		if !c.addJSONArg(path, leafVal, at.leaf) {
 			return
 		}
 		valueDone()
 	}
 }
 
+// jsonLevel is where a JSON value is, and for an object or array being read what it holds: it is under key in an object (keyed)
+// or at index in an array, leaf is the last key on the way to it, and next is an array's next index.
+type jsonLevel struct {
+	obj, wantKey, keyed bool
+	index, next         int
+	key, leaf           string
+}
+
+// jsonName is the name of the value at in the innermost of levels: "json", the place of each of the levels below the document
+// itself, and the value's own. Only the first maxJSONDepth levels are named, and a key only by its first maxJSONKey bytes, so
+// that a name stays short however long the document's keys are; cut reports that something was left out. The value is still
+// picked by its own key (its leaf), which is never cut.
+func jsonName(levels []jsonLevel, at *jsonLevel) (name string, cut bool) {
+	if len(levels) == 0 {
+		return "json", false
+	}
+	var b strings.Builder
+	b.WriteString("json")
+	cut = len(levels) > maxJSONDepth
+	for i := 1; i < len(levels) && i < maxJSONDepth; i++ {
+		cut = writeJSONPlace(&b, &levels[i]) || cut
+	}
+	cut = writeJSONPlace(&b, at) || cut
+	return b.String(), cut
+}
+
+func writeJSONPlace(b *strings.Builder, l *jsonLevel) (cut bool) {
+	b.WriteByte('.')
+	if !l.keyed {
+		var digits [20]byte
+		b.Write(strconv.AppendInt(digits[:0], int64(l.index), 10))
+		return false
+	}
+	if len(l.key) > maxJSONKey {
+		b.WriteString(l.key[:maxJSONKey])
+		return true
+	}
+	b.WriteString(l.key)
+	return false
+}
+
 // looseStrings reads what is left of a JSON document that stopped parsing: every string literal in it, as an argument named
-// "json" (or, if a colon follows it, as an argument name). A request that is not valid JSON may still be read by an application
-// with a more forgiving parser, so a payload after the first mistake is not left unexamined.
-func (c *matchCtx) looseStrings(b []byte) {
-	for i, n := 0, 0; i < len(b) && n < maxJSONNodes; i++ {
+// "json" and picked also by the key before it (leaf, to begin with), or, if a colon follows it, as an argument name. A request
+// that is not valid JSON may still be read by an application with a more forgiving parser, so a payload after the first mistake
+// is not left unexamined. It reads to the end, each byte about once, and decodes a literal only when it is kept.
+func (c *matchCtx) looseStrings(b []byte, leaf string) {
+	names := &c.views[kArgNames]
+	keyAt, keyEnd := 0, 0 // the last key's literal, decoded when a value is kept under it
+	pending := false
+	for i := 0; i < len(b); i++ {
 		if b[i] != '"' {
 			continue
 		}
@@ -597,26 +691,36 @@ func (c *matchCtx) looseStrings(b []byte) {
 			}
 			j++
 		}
-		end := min(j, len(b))
-		val := string(b[i+1 : end])
-		var un string
-		if json.Unmarshal(b[i:min(j+1, len(b))], &un) == nil {
-			val = un
-		}
 		k := j + 1
 		for k < len(b) && (b[k] == ' ' || b[k] == '\t' || b[k] == '\r' || b[k] == '\n') {
 			k++
 		}
 		if k < len(b) && b[k] == ':' {
-			if names := &c.views[kArgNames]; len(names.vals) < maxArgs {
-				names.vals = append(names.vals, val)
+			keyAt, keyEnd, pending = i, j, true
+			if len(names.vals) < maxArgs {
+				leaf, pending = looseString(b, i, j), false
+				names.vals = append(names.vals, leaf)
 			}
-		} else if !c.addJSONArg("json", val, "") {
-			return
+		} else {
+			if pending {
+				leaf, pending = looseString(b, keyAt, keyEnd), false
+			}
+			if !c.addJSONArg("json", looseString(b, i, j), leaf) {
+				return
+			}
 		}
 		i = j
-		n++
 	}
+}
+
+// looseString is the text of the string literal that starts at b[i] and ends at b[j] (or runs off the end): decoded if it is
+// valid JSON, and otherwise as it stands, without its quotes.
+func looseString(b []byte, i, j int) string {
+	var s string
+	if json.Unmarshal(b[i:min(j+1, len(b))], &s) == nil {
+		return s
+	}
+	return string(b[i+1 : min(j, len(b))])
 }
 
 // addJSONArg adds a flattened JSON value as an argument, and its name as an argument name.
@@ -638,7 +742,8 @@ func (c *matchCtx) addJSONArg(path, val, leaf string) bool {
 }
 
 // multipartArgs reads a multipart/form-data body: ordinary fields are arguments, every part's field name is an argument name,
-// and a part with a file name contributes the file name and, if some signature looks at uploads, its content.
+// and a part with a file name contributes the file name and, if some signature looks at uploads, its content. A part that only
+// some parsers take for a file (filename* alone) is also a field.
 func (c *matchCtx) multipartArgs() {
 	req := c.req
 	_, params, err := mime.ParseMediaType(req.Header.Get("Content-Type"))
@@ -657,17 +762,25 @@ func (c *matchCtx) multipartArgs() {
 	for n := 0; n < maxMultipartParts; n++ {
 		part, err := mr.NextPart()
 		if err != nil {
+			// io.EOF is the closing boundary. Any other error after a part that was read is a part Go's reader cannot read (a
+			// header line with no colon, a body that ends before its boundary), which a more forgiving parser still reads, as
+			// it reads the parts after it: the raw body is offered too.
+			if err != io.EOF && c.multipartOK {
+				c.truncated, c.multipartPartial = true, true
+			}
 			return
 		}
 		c.multipartOK = true
 		name := ""
-		filename, hasFile := "", false
+		filename, hasFile, alsoField := "", false, false
 		if cd := part.Header.Get("Content-Disposition"); cd != "" {
 			if _, p, err := mime.ParseMediaType(cd); err == nil {
-				// The filename parameter (or filename*, which mime decodes into it), not the word anywhere in the header: a
-				// part with note="filename" is a field to PHP and Go, and its content is an argument.
+				// The filename parameter, not the word anywhere in the header: a part with note="filename" is a field to PHP and
+				// Go, and its content is an argument. Go's mime also decodes filename* into it, which makes a file of a part
+				// that PHP, reading filename alone, takes for a field: such a part is read as both.
 				name = p["name"]
 				filename, hasFile = p["filename"], p["filename"] != ""
+				alsoField = hasFile && !plainParam(cd, "filename")
 			}
 		}
 		if len(names.vals) < maxArgs {
@@ -675,10 +788,15 @@ func (c *matchCtx) multipartArgs() {
 		}
 		if hasFile {
 			files.vals = append(files.vals, filename)
-			if c.snap.needUploads {
-				if content := c.readEnds(part); len(content) > 0 {
-					c.addCapped(uploads, "", content)
-				}
+			if !c.snap.needUploads && !alsoField {
+				continue
+			}
+			content := c.readEnds(part)
+			if c.snap.needUploads && len(content) > 0 {
+				c.addCapped(uploads, "", content)
+			}
+			if alsoField && !c.addArgOnly(name, content) {
+				return
 			}
 			continue
 		}
@@ -686,10 +804,39 @@ func (c *matchCtx) multipartArgs() {
 			return
 		}
 	}
-	// As many parts as are read: if there is another, the rest reach the application unread unless the raw body is offered too.
-	if _, err := mr.NextPart(); err == nil {
+	// As many parts as are read: if there is another, or one that cannot be read, the rest reach the application unread unless
+	// the raw body is offered too.
+	if _, err := mr.NextPart(); err != io.EOF {
 		c.truncated, c.multipartPartial = true, true
 	}
+}
+
+// plainParam reports whether a header value has the parameter key written plainly, outside quotes: the key right after a ';'
+// (and any spaces) and the '=' right after the key. That is the one form every parser reads as that parameter; PHP, for one,
+// reads filename and not filename*, wants nothing between the key and the '=', and takes ' as a quote as well as ".
+func plainParam(h, key string) bool {
+	var quote byte
+	for i := 0; i < len(h); i++ {
+		switch ch := h[i]; {
+		case quote != 0:
+			if ch == '\\' {
+				i++
+			} else if ch == quote {
+				quote = 0
+			}
+		case ch == '"' || ch == '\'':
+			quote = ch
+		case ch == ';':
+			j := i + 1
+			for j < len(h) && (h[j] == ' ' || h[j] == '\t') {
+				j++
+			}
+			if j+len(key) < len(h) && h[j+len(key)] == '=' && strings.EqualFold(h[j:j+len(key)], key) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // readEnds reads a part to its end and keeps its first and last maxValue bytes, so a payload after a long run of padding is

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"mime/multipart"
 	"net/http"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -98,11 +99,22 @@ func TestRequestBounds(t *testing.T) {
 			t.Fatalf("%d arguments kept, want %d", got, maxArgs)
 		}
 	})
-	t.Run("json depth is capped", func(t *testing.T) {
-		deep := strings.Repeat(`{"a":`, 200) + `"x"` + strings.Repeat("}", 200)
-		r := &inspect.Request{Method: "POST", Path: "/", Header: http.Header{"Content-Type": {"application/json"}}, Body: []byte(deep)}
-		if got := viewOf(t, r, kArgs); len(got) != 0 {
-			t.Fatalf("a document nested 200 deep gave %q", got)
+	t.Run("json names are capped, and so is what they cost", func(t *testing.T) {
+		// A long key above thousands of containers and a value nested 60 deep: a name is built only for a value that is kept,
+		// from maxJSONDepth levels of keys cut to maxJSONKey bytes. Naming every container as it was opened made 126 KiB cost
+		// 500 MiB.
+		key := strings.Repeat("k", 5000)
+		body := `{"` + key + `":[` + strings.Repeat("[],", 20000) + `{"` + key + `":` + strings.Repeat(`{"a":`, 60) + `"x"` + strings.Repeat("}", 61) + `]}`
+		r := &inspect.Request{Method: "POST", Path: "/", Header: http.Header{"Content-Type": {"application/json"}}, Body: []byte(body)}
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		got := viewOf(t, r, kArgNames)
+		runtime.ReadMemStats(&after)
+		if longest := 4 + maxJSONDepth*(maxJSONKey+1); len(got) != 1 || len(got[0]) > longest {
+			t.Fatalf("%d names, want one of at most %d bytes: %.80q", len(got), longest, got)
+		}
+		if spent := after.TotalAlloc - before.TotalAlloc; spent > 64*uint64(len(body)) {
+			t.Fatalf("a %d byte document cost %d bytes", len(body), spent)
 		}
 	})
 	t.Run("json nodes are capped", func(t *testing.T) {
@@ -160,21 +172,48 @@ func TestRequestBounds(t *testing.T) {
 		return &inspect.Request{Method: "POST", Path: "/", Header: http.Header{"Content-Type": {ct}}, Body: []byte(body)}
 	}
 	straddle := "pad=" + strings.Repeat("p", maxValue-len("pad=")-len("&target=")-len(marker)/2) + "&target=" + marker + "&z=1"
+	cookies := func(fillers int) map[string]string {
+		var b strings.Builder
+		for i := 0; i < fillers; i++ {
+			fmt.Fprintf(&b, "c%d=v; ", i)
+		}
+		return map[string]string{"cookie": b.String() + "target=" + marker}
+	}
+	headers := map[string]string{"host": marker}
+	for i := 0; i < maxHeaderItems+100; i++ {
+		headers[fmt.Sprintf("x-pad-%d", i)] = "v"
+	}
 	for _, tc := range []struct {
 		name    string
 		targets []string
 		req     *inspect.Request
+		// past is set when the marker is past a count the engine reads, and limited when the request has more of something
+		// than is read: it is then reported, and refused with BlockOnWorkLimit, as a request that was not checked in full.
+		past, limited bool
 	}{
-		{"a part after the parts that are read", tg("args", "body"), multipartOf(200, `form-data; name="target"`, marker)},
-		{"a field whose header merely mentions filename", tg("args"), multipartOf(0, `form-data; name="target"; note="filename"`, marker)},
-		{"the end of a long multipart field", tg("args"), multipartOf(0, `form-data; name="target"`, strings.Repeat("p", 3*maxValue)+marker)},
-		{"a form value across the 64 KiB mark", tg("arg:target"), withType("application/x-www-form-urlencoded", straddle)},
-		{"a JSON argument after the first 64 KiB", tg("arg:target"), withType("application/json", `{"pad":"`+strings.Repeat("p", maxValue)+`","target":"`+marker+`"}`)},
+		{"a part after the parts that are read", tg("args", "body"), multipartOf(200, `form-data; name="target"`, marker), false, false},
+		{"a part after one Go's reader cannot read", tg("args", "body"), multipartOf(1, "form-data; name=\"target\"\r\nno colon", marker), false, false},
+		{"a field whose header merely mentions filename", tg("args"), multipartOf(0, `form-data; name="target"; note="filename"`, marker), false, false},
+		{"a field with filename* and no filename", tg("args"), multipartOf(0, `form-data; name="target"; filename*=UTF-8''a.txt`, marker), false, false},
+		{"the end of a long multipart field", tg("args"), multipartOf(0, `form-data; name="target"`, strings.Repeat("p", 3*maxValue)+marker), false, false},
+		{"a form value across the 64 KiB mark", tg("arg:target"), withType("application/x-www-form-urlencoded", straddle), false, false},
+		{"a JSON argument after the first 64 KiB", tg("arg:target"), withType("application/json", `{"pad":"`+strings.Repeat("p", maxValue)+`","target":"`+marker+`"}`), false, false},
+		{"a JSON argument after a value nested past the depth that names it", tg("arg:target"), withType("application/json", `{"pad":`+strings.Repeat("[", 30)+strings.Repeat("]", 30)+`,"target":"`+marker+`"}`), false, false},
+		{"a JSON argument after thousands of empty arrays", tg("arg:target"), withType("application/json", `{"pad":[`+strings.Repeat("[],", 9000)+`[]],"target":"`+marker+`"}`), false, false},
+		{"a cookie after the cookies that are read", tg("cookie:target"), mkReq("GET", "/", cookies(maxCookies+100), ""), true, true},
+		{"the Host after more header values than are read", tg("header:host"), mkReq("GET", "/", headers, ""), false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			e := loadOne(t, Options{Mode: ModeBlock}, sig("CAP", cond("contains", marker, tc.targets)))
-			if len(e.Match(tc.req)) != 1 {
-				t.Fatal("a signature did not see the marker")
+			e := loadOne(t, Options{Mode: ModeBlock, BlockOnWorkLimit: true}, sig("CAP", cond("contains", marker, tc.targets)))
+			if seen := len(e.Match(tc.req)) == 1; seen == tc.past {
+				t.Fatalf("the signature saw the marker: %v", seen)
+			}
+			limited := false
+			for _, v := range e.Inspect(tc.req).Verdicts {
+				limited = limited || (v.ID == IDInputLimit && v.Block)
+			}
+			if limited != tc.limited {
+				t.Fatalf("reported as not checked in full: %v, want %v", limited, tc.limited)
 			}
 		})
 	}

@@ -11,7 +11,7 @@ import (
 	"testing"
 )
 
-// matchRx compiles with compileRx and reports whether every program matches the input, as the engine does (including the byte
+// matchRx compiles with compileRx and reports whether the expression matches the input, as the engine does (including the byte
 // view for patterns that need it).
 func matchRx(t *testing.T, pattern, flags, input string) bool {
 	t.Helper()
@@ -19,16 +19,7 @@ func matchRx(t *testing.T, pattern, flags, input string) bool {
 	if err != nil {
 		t.Fatalf("compileRx(%q): %v", pattern, err)
 	}
-	in := input
-	if p.byteMode {
-		in = latin1ToUTF8(input)
-	}
-	for _, re := range p.res {
-		if !re.MatchString(in) {
-			return false
-		}
-	}
-	return true
+	return p.matchString(input)
 }
 
 func TestRegexTranslation(t *testing.T) {
@@ -84,6 +75,11 @@ func TestRegexTranslation(t *testing.T) {
 		{"high byte escape is not a code point", `\xc0\xaf`, "", "À¯", false},
 		{"high byte range", `[\x80-\xff]{2}`, "", "a\x90\xa0", true},
 		{"bytes in a pattern with a high byte escape", "é\\xc0", "", "\xc3\xa9\xc0", true},
+		{"a counted repeat counts bytes, as PCRE does", `^[^\n]{8,}`, "", "\U0001F600\U0001F600", true},
+		{"a counted repeat still counts characters, as RE2 does", `^\p{L}{3}$`, "", "日本語", true},
+		{"white space includes the vertical tab, as in PCRE", `union\s+select`, "", "union\x0bselect", true},
+		{"white space in a class includes the vertical tab", `a[\s,]b`, "", "a\x0bb", true},
+		{"non-white space excludes the vertical tab", `a\Sb`, "", "a\x0bb", false},
 		{"class with a leading bracket", `[]a]+`, "", "]a", true},
 		{"posix class", `[[:digit:]]+`, "", "12", true},
 		{"unicode property", `\p{L}+`, "", "ab", true},

@@ -32,6 +32,9 @@ type matchCtx struct {
 	multipartOK bool
 	// multipartPartial is set when some of a multipart body was not read into parts, so its raw form is offered too.
 	multipartPartial bool
+	// overflow says what the request has more of than is read (overflowCookies, overflowHeaders): a value that was not read
+	// may be the one a signature is about, so the request is reported as not checked in full.
+	overflow uint8
 
 	seenCond []uint32 // epoch at which a condition's required literal was found
 	candMark []uint32 // epoch at which a signature was nominated
@@ -60,9 +63,10 @@ type tcEntry struct {
 }
 
 type matchRes struct {
-	snap    *snapshot
-	hits    []int32
-	limited bool
+	snap     *snapshot
+	hits     []int32
+	limited  bool
+	overflow uint8
 }
 
 func (e *Engine) getCtx(snap *snapshot) *matchCtx {
@@ -145,7 +149,7 @@ func (e *Engine) run(r *inspect.Request, brute bool) matchRes {
 	}
 	c := e.getCtx(snap)
 	c.req = r
-	c.truncated, c.over, c.work = false, false, 0
+	c.truncated, c.over, c.work, c.overflow = false, false, 0, 0
 	c.cands, c.hits = c.cands[:0], c.hits[:0]
 	c.maxWork = e.opts.MaxWork
 	c.deadline = time.Time{}
@@ -188,7 +192,7 @@ func (e *Engine) run(r *inspect.Request, brute bool) matchRes {
 		res.hits = append([]int32(nil), c.hits...)
 		sort.Slice(res.hits, func(a, b int) bool { return res.hits[a] < res.hits[b] })
 	}
-	res.limited = c.over
+	res.limited, res.overflow = c.over, c.overflow
 	if c.over {
 		e.limited.Add(1)
 	}
@@ -414,6 +418,16 @@ func containsFold(s, lower string) bool {
 	return false
 }
 
+// hasHighByte reports whether s has a byte above 0x7F, the only kind of value an expression's byte reading can tell apart.
+func hasHighByte(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= utf8.RuneSelf {
+			return true
+		}
+	}
+	return false
+}
+
 // latin1ToUTF8 gives each byte its own code point, which is how a byte-oriented PCRE pattern sees a value. A value with no byte
 // above 0x7F is returned as it is.
 func latin1ToUTF8(s string) string {
@@ -454,24 +468,17 @@ func (c *matchCtx) rxMatch(cd *condC, ci int32, s string) bool {
 		return false
 	}
 	// Charged before it runs, by what the expression costs, so neither a long value nor a large program can take more than the
-	// allowance that is left.
+	// allowance that is left. An expression with a byte reading may run twice on a value with a byte above 0x7F.
 	cost := int64(len(s)) * int64(max(cd.prog.weight, 1))
+	if cd.prog.bytes != nil && hasHighByte(s) {
+		cost *= 2
+	}
 	if int64(c.work)+cost > int64(c.maxWork) {
 		c.over = true
 		return false
 	}
 	c.work += int(cost)
-	in := s
-	if cd.prog.byteMode {
-		in = latin1ToUTF8(s)
-	}
-	ok := true
-	for _, re := range cd.prog.res {
-		if !re.MatchString(in) {
-			ok = false
-			break
-		}
-	}
+	ok := cd.prog.matchString(s)
 	if slot != nil {
 		v := key
 		if ok {

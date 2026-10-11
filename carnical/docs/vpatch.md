@@ -81,10 +81,22 @@ match, refusal and limit totals. Callers must still provide bounded request bodi
 proxy's inspected/forwarded request contract.
 
 Form and JSON bodies are read whole into arguments (at most 1,024); a value longer than 64 KiB, in
-any target, is matched as its first and last 64 KiB. Multipart parts are read to their end on the
-same terms. A multipart body with more than 64 parts, or longer than 8 MiB, is also offered raw to
-`body` signatures, since the parts that were not read still reach the application. A part is a file
-only when its `filename` parameter is set.
+any target, is matched as its first and last 64 KiB. A JSON argument is named by the keys of its
+first 24 levels, each cut to 64 bytes, and is also picked by its own key at any depth; past 1,000
+levels of nesting the rest of the document is read for its string literals, as a malformed document
+is. Multipart parts are read to their end on the same terms. A multipart body with more than 64
+parts, longer than 8 MiB, or with a part that Go's reader rejects after one it read, is also offered
+raw to `body` signatures, since the parts that were not read still reach the application. A part is
+a file only when its plain `filename` parameter is set; one with `filename*` alone, a file to some
+parsers and a field to others, is read as both.
+
+At most 1,024 cookies and 1,024 header values are read, the Host first. A request with more reports
+rule 5100003, which `BlockOnWorkLimit` also makes refuse requests in block mode.
+
+Signatures written for PCRE are translated so that RE2 matches at least what PCRE would: `\s`
+includes the vertical tab, and an expression that counts characters that may be above 0x7F
+(`[^\n]{256,}`, `..`) is also run on the value's bytes, which is what PCRE counts, and matches if
+either reading does. A pattern with an `\xHH` escape above 0x7F is matched on bytes only.
 
 ## Result cache
 

@@ -37,6 +37,9 @@ const (
 	IDWorkLimit = 5100001
 	// IDMoreMatches is the verdict that says further signatures matched than are listed.
 	IDMoreMatches = 5100002
+	// IDInputLimit is the verdict for a request with more cookies or header values than the engine reads, so that not every
+	// value was checked.
+	IDInputLimit = 5100003
 
 	idBase  = 5100000
 	idFirst = idBase + 1000
@@ -84,7 +87,9 @@ type Options struct {
 	// what no static count sees, an alternation whose branches a hostile value keeps alive together. When it runs out the
 	// remaining signatures are not checked and the work-limit verdict says so.
 	MaxEvalTime time.Duration
-	// BlockOnWorkLimit makes a request that used up its allowance a blocking verdict (in ModeBlock), instead of a recorded one.
+	// BlockOnWorkLimit makes a request that could not be checked in full a blocking verdict (in ModeBlock), instead of a
+	// recorded one: one that used up its allowance (IDWorkLimit), or one with more cookies or header values than are read
+	// (IDInputLimit).
 	BlockOnWorkLimit bool
 	// MaxVerdicts bounds the verdicts one request produces. Zero means DefaultMaxVerdicts.
 	MaxVerdicts int
@@ -792,7 +797,7 @@ func (e *Engine) Stats() Stats {
 func (e *Engine) Inspect(r *inspect.Request) inspect.Result {
 	m := e.run(r, false)
 	var res inspect.Result
-	if len(m.hits) == 0 && !m.limited {
+	if len(m.hits) == 0 && !m.limited && m.overflow == 0 {
 		return res
 	}
 	type vd struct {
@@ -835,6 +840,21 @@ func (e *Engine) Inspect(r *inspect.Request) inspect.Result {
 		res.Verdicts = append(res.Verdicts, inspect.Verdict{
 			ID: IDWorkLimit, Severity: "medium", Block: block, Status: 403,
 			Message: "virtual patch: the request used up its work allowance, so not every signature was checked",
+		})
+		blocked = blocked || block
+	}
+	if m.overflow != 0 {
+		what := "cookies and header values"
+		switch m.overflow {
+		case overflowCookies:
+			what = "cookies"
+		case overflowHeaders:
+			what = "header values"
+		}
+		block := e.opts.Mode == ModeBlock && e.opts.BlockOnWorkLimit
+		res.Verdicts = append(res.Verdicts, inspect.Verdict{
+			ID: IDInputLimit, Severity: "medium", Block: block, Status: 403,
+			Message: "virtual patch: the request has more " + what + " than are read, so not every value was checked",
 		})
 		blocked = blocked || block
 	}

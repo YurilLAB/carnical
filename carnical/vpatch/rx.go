@@ -52,6 +52,9 @@ func repeatThreads(re *syntax.Regexp) int {
 type rxProg struct {
 	res      []*regexp.Regexp
 	byteMode bool
+	// bytes, if set, is a second reading of the expression, on the value read as bytes, that is tried when the first does not
+	// match a value with a byte above 0x7F (see compileRx).
+	bytes []*regexp.Regexp
 	// weight is what one byte of input costs against a request's work allowance: repeatThreads in units of rxWeightUnit, at
 	// least 1. RE2's time per byte grows with the threads that can be live at once.
 	weight int
@@ -83,6 +86,10 @@ type rxProg struct {
 //     parsed expression. Exact.
 //   - \xHH above 0x7F means a byte in PCRE and a code point in RE2. A pattern that uses one is matched against a copy of the
 //     value in which each byte is its own code point, which is exactly PCRE's view.
+//   - PCRE counts bytes where RE2 counts characters, so [^\n]{256,} needs up to four times as many bytes of a value written in
+//     multi-byte characters in RE2. An expression that counts two or more characters that may be above 0x7F (a counted repeat,
+//     or two in a row) is also run on that byte view of a value that has such a byte, and matches if either reading does.
+//   - \s and \S: PCRE's white space has had the vertical tab since 8.34 (and in PCRE2), RE2's has not; it is added.
 //
 // Everything else that has no RE2 equivalent is refused with its name: lookahead and lookbehind not covered above, back-references,
 // recursion, conditionals, backtracking verbs, \G, \K, \R, \X, \h, \v and the extended (?x) mode.
@@ -134,36 +141,161 @@ func compileRx(pattern, flags string) (*rxProg, error) {
 		byteMode = true
 	}
 
-	prog := &rxProg{byteMode: byteMode, notes: tr.notes()}
-	threads := 0
-	var clauses [][]string
+	prog := &rxProg{byteMode: byteMode}
+	res, threads, clauses, counts, err := tr.compileParts(prefix, parts)
+	if err != nil {
+		return nil, err
+	}
+	prog.res = res
+	prog.anchors = bestClause(clauses)
+	prog.weight = max(1, threads/rxWeightUnit)
+	if counts && !byteMode {
+		// The byte reading is an addition: if it cannot be had (a \x{100} says the pattern is about characters), the
+		// expression is still the one RE2 reads.
+		var trb translator
+		if bparts, err := trb.translateAll(pattern, multiline, true); err == nil {
+			if bres, bthreads, bclauses, _, err := trb.compileParts(prefix, bparts); err == nil {
+				prog.bytes = bres
+				// A value matches if either reading does, so it must hold one of the literals of either.
+				prog.anchors = eitherClause(prog.anchors, bestClause(bclauses))
+				prog.weight = max(prog.weight, bthreads/rxWeightUnit)
+				tr.note("character counts also read as byte counts")
+			}
+		}
+	}
+	prog.notes = tr.notes()
+	return prog, nil
+}
+
+// compileParts compiles the translated parts of one pattern, all of which must match a value, and returns the programs, the
+// NFA threads their counted repeats can keep alive, the literals they require, and whether they count characters that may be
+// above 0x7F (countsWideChars).
+func (t *translator) compileParts(prefix string, parts []string) (res []*regexp.Regexp, threads int, clauses [][]string, counts bool, err error) {
 	for _, part := range parts {
 		src := prefix + part
 		ast, err := syntax.Parse(src, syntax.Perl)
 		if err != nil {
-			return nil, fmt.Errorf("not valid for RE2: %s", cleanReErr(err))
+			return nil, 0, nil, false, fmt.Errorf("not valid for RE2: %s", cleanReErr(err))
 		}
-		if err := tr.verifyMarkers(ast); err != nil {
-			return nil, err
+		if err := t.verifyMarkers(ast); err != nil {
+			return nil, 0, nil, false, err
 		}
 		threads += repeatThreads(ast)
+		counts = counts || countsWideChars(ast)
 		p, err := syntax.Compile(ast.Simplify())
 		if err != nil {
-			return nil, fmt.Errorf("not valid for RE2: %s", cleanReErr(err))
+			return nil, 0, nil, false, fmt.Errorf("not valid for RE2: %s", cleanReErr(err))
 		}
 		if len(p.Inst) > maxProgInsts {
-			return nil, fmt.Errorf("regular expression compiles to %d instructions, over the limit of %d", len(p.Inst), maxProgInsts)
+			return nil, 0, nil, false, fmt.Errorf("regular expression compiles to %d instructions, over the limit of %d", len(p.Inst), maxProgInsts)
 		}
 		re, err := regexp.Compile(src)
 		if err != nil {
-			return nil, fmt.Errorf("not valid for RE2: %s", cleanReErr(err))
+			return nil, 0, nil, false, fmt.Errorf("not valid for RE2: %s", cleanReErr(err))
 		}
-		prog.res = append(prog.res, re)
+		res = append(res, re)
 		clauses = append(clauses, extractClauses(ast)...)
 	}
-	prog.anchors = bestClause(clauses)
-	prog.weight = max(1, threads/rxWeightUnit)
-	return prog, nil
+	return res, threads, clauses, counts, nil
+}
+
+// countsWideChars reports whether an expression counts two or more characters that may be above 0x7F: a counted repeat of at
+// least two (x{2,}, [^\n]{256,}) or two in a row (.., [^a].+). PCRE counts those as bytes, RE2 as characters, so a value in
+// multi-byte characters can match the expression in PCRE and not in RE2. A star or a single + cannot tell the two apart: one
+// character is one byte or more.
+func countsWideChars(re *syntax.Regexp) bool {
+	switch re.Op {
+	case syntax.OpRepeat:
+		if re.Min >= 2 && mayMatchWide(re.Sub[0]) {
+			return true
+		}
+	case syntax.OpConcat:
+		for i := 1; i < len(re.Sub); i++ {
+			if wideChar(re.Sub[i-1]) && wideChar(re.Sub[i]) {
+				return true
+			}
+		}
+	}
+	for _, sub := range re.Sub {
+		if countsWideChars(sub) {
+			return true
+		}
+	}
+	return false
+}
+
+// wideChar reports whether re matches at least one character, each of which may be above 0x7F: ., a class with such a
+// character, or a repeat of one.
+func wideChar(re *syntax.Regexp) bool {
+	switch re.Op {
+	case syntax.OpAnyChar, syntax.OpAnyCharNotNL:
+		return true
+	case syntax.OpCharClass:
+		return len(re.Rune) > 0 && re.Rune[len(re.Rune)-1] >= utf8.RuneSelf
+	case syntax.OpCapture, syntax.OpPlus:
+		return wideChar(re.Sub[0])
+	case syntax.OpRepeat:
+		return re.Min >= 1 && wideChar(re.Sub[0])
+	}
+	return false
+}
+
+// mayMatchWide reports whether anything in re can match a character above 0x7F.
+func mayMatchWide(re *syntax.Regexp) bool {
+	switch re.Op {
+	case syntax.OpAnyChar, syntax.OpAnyCharNotNL:
+		return true
+	case syntax.OpCharClass:
+		return len(re.Rune) > 0 && re.Rune[len(re.Rune)-1] >= utf8.RuneSelf
+	case syntax.OpLiteral:
+		for _, r := range re.Rune {
+			if r >= utf8.RuneSelf {
+				return true
+			}
+		}
+	}
+	for _, sub := range re.Sub {
+		if mayMatchWide(sub) {
+			return true
+		}
+	}
+	return false
+}
+
+// eitherClause is what a value that matches one of two expressions must contain: a literal of a's clause or of b's. It is nil
+// (nothing usable) if either is.
+func eitherClause(a, b []string) []string {
+	if a == nil || b == nil {
+		return nil
+	}
+	return dropSuperstrings(dedupe(append(append([]string(nil), a...), b...)))
+}
+
+// matchString reports whether the expression matches a value: every program, on the value or on its byte view, and failing
+// that, for an expression with a byte reading and a value with a byte above 0x7F, every program of the byte reading.
+func (p *rxProg) matchString(s string) bool {
+	in := s
+	if p.byteMode {
+		in = latin1ToUTF8(s)
+	}
+	if allMatch(p.res, in) {
+		return true
+	}
+	if p.bytes == nil {
+		return false
+	}
+	// A value with no byte above 0x7F reads the same either way.
+	b := latin1ToUTF8(s)
+	return len(b) != len(s) && allMatch(p.bytes, b)
+}
+
+func allMatch(res []*regexp.Regexp, s string) bool {
+	for _, re := range res {
+		if !re.MatchString(s) {
+			return false
+		}
+	}
+	return true
 }
 
 func cleanReErr(err error) string {
@@ -547,6 +679,22 @@ func (t *translator) escape(b *strings.Builder, p string, i int, inClass bool) (
 	case d == 'b' && inClass:
 		b.WriteString(`\x08`)
 		return 2, nil
+	case d == 's' || d == 'S':
+		// PCRE's white space has had the vertical tab since 8.34, RE2's has not. The tab is written before \s, so that a '-'
+		// after the escape is still the literal it is in PCRE; \S in a class is spelled out, as RE2 cannot take one character
+		// out of a class inside another.
+		t.note(`\s made to include the vertical tab`)
+		switch {
+		case d == 's' && inClass:
+			b.WriteString(`\x0b\s`)
+		case inClass:
+			b.WriteString(`\x00-\x08\x0e-\x1f\x21-\x{10ffff}`)
+		case d == 's':
+			b.WriteString(`[\x0b\s]`)
+		default:
+			b.WriteString(`[^\x0b\s]`)
+		}
+		return 2, nil
 	case d >= '1' && d <= '9' && !inClass:
 		if i+2 < len(p) && p[i+2] >= '0' && p[i+2] <= '9' {
 			b.WriteString(p[i : i+3]) // two digits: an octal escape if RE2 reads it as one
@@ -696,7 +844,14 @@ func (t *translator) group(b *strings.Builder, p string, i int) (int, error) {
 		if end < 0 {
 			return 0, fmt.Errorf("unbalanced parenthesis")
 		}
-		ranges, ok := lookaheadClass(p[i+3 : end])
+		// The class is read as the rest of the pattern is translated (\s with the vertical tab, bytes in a byte-oriented
+		// pattern), so that it is compared with what follows it on the same terms.
+		body := p[i+3 : end]
+		lt := translator{byteMode: t.byteMode, multiline: t.multiline}
+		if tb, err := lt.run(body); err == nil {
+			body = tb
+		}
+		ranges, ok := lookaheadClass(body)
 		if !ok {
 			return 0, fmt.Errorf("lookahead has no RE2 equivalent")
 		}

@@ -90,13 +90,7 @@ func FuzzCompileRx(f *testing.F) {
 			}
 		}
 		for _, in := range []string{"", "a", "ab\n", strings.Repeat("a", 2000), "\xc0\xaf\xff"} {
-			for _, re := range p.res {
-				s := in
-				if p.byteMode {
-					s = latin1ToUTF8(in)
-				}
-				_ = re.MatchString(s)
-			}
+			_ = p.matchString(in)
 		}
 	})
 }
