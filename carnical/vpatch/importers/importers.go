@@ -45,7 +45,8 @@ type Limits struct {
 	MaxFiles int
 	// MaxAlternatives is the most signatures one rule may expand to (an "or" of many branches). A rule that would exceed it is skipped.
 	MaxAlternatives int
-	// MaxConditions is the most conditions (main plus Also) in one signature.
+	// MaxConditions is the most conditions (main plus Also) in one signature, at most vpatch.MaxConditions, the most the
+	// engine loads.
 	MaxConditions int
 	// MaxPatternBytes is the longest regular expression, literal or word list that is kept.
 	MaxPatternBytes int
@@ -60,7 +61,7 @@ func DefaultLimits() Limits {
 		MaxDocBytes:     256 << 10,
 		MaxFiles:        200000,
 		MaxAlternatives: 64,
-		MaxConditions:   24,
+		MaxConditions:   vpatch.MaxConditions,
 		MaxPatternBytes: 8 << 10,
 		MaxNesting:      16,
 	}
@@ -81,7 +82,7 @@ func (l Limits) Normalize() Limits {
 	if l.MaxAlternatives <= 0 {
 		l.MaxAlternatives = d.MaxAlternatives
 	}
-	if l.MaxConditions <= 0 {
+	if l.MaxConditions <= 0 || l.MaxConditions > vpatch.MaxConditions {
 		l.MaxConditions = d.MaxConditions
 	}
 	if l.MaxPatternBytes <= 0 {

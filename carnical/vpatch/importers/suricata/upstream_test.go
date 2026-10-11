@@ -10,7 +10,7 @@ import (
 	"github.com/YurilLAB/coraza/carnical/vpatch/importers"
 )
 
-// upstreamDir is where the Emerging Threats Open rules the numbers in docs/signature-formats.md were measured on live (outside the
+// upstreamDir is where the Emerging Threats Open rules this test converts live (outside the
 // carnical tree). The test is skipped when it is absent.
 const upstreamDir = "../../../../.attack/upstream/et-open"
 

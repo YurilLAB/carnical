@@ -54,9 +54,11 @@ var opByName = map[string]uint8{
 	OpRegex: opRx, OpContains: opContains, OpPM: opPM, OpEquals: opEquals, OpPrefix: opPrefix, OpSuffix: opSuffix,
 }
 
+// MaxConditions is the most conditions (the main one and Also) a signature may have; the loader refuses one with more.
+const MaxConditions = 16
+
 // Limits on the shape of one signature, so that a malformed feed cannot make the loader allocate without bound.
 const (
-	maxConditions  = 16
 	maxTargets     = 16
 	maxTransforms  = 16
 	maxIDLen       = 128
@@ -209,8 +211,8 @@ func validateSignature(sig *Signature) (*prepared, error) {
 			return nil, rejectf("expires must be a date such as 2026-12-31")
 		}
 	}
-	if 1+len(sig.Also) > maxConditions {
-		return nil, rejectf("more than %d conditions", maxConditions)
+	if 1+len(sig.Also) > MaxConditions {
+		return nil, rejectf("more than %d conditions", MaxConditions)
 	}
 	p := &prepared{sig: *sig, tier: tier}
 	all := make([]*Condition, 0, 1+len(sig.Also))

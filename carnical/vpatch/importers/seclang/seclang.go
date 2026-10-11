@@ -6,7 +6,7 @@
 // REQUEST_HEADERS (with a header name), REQUEST_COOKIES, REQUEST_BODY, REQUEST_METHOD and FILES (and a few more that map the same
 // way), the operators @rx, @contains, @pm, @beginsWith, @endsWith, @streq and @within, the transformations the model has, and the
 // actions id, phase, msg, severity, tag, rev and the disruptive ones. A chain becomes the main condition and Also. Anything else is
-// skipped with a reason: it is never approximated without the report counting it. docs/signature-formats.md has the whole table.
+// skipped with a reason: it is never approximated without the report counting it. docs/vpatch.md describes the conversion.
 package seclang
 
 import (

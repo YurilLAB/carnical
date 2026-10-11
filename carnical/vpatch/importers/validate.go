@@ -38,7 +38,7 @@ func Validate(s vpatch.Signature, maxPattern, maxConds int) error {
 	if maxPattern <= 0 {
 		maxPattern = DefaultLimits().MaxPatternBytes
 	}
-	if maxConds <= 0 {
+	if maxConds <= 0 || maxConds > vpatch.MaxConditions {
 		maxConds = DefaultLimits().MaxConditions
 	}
 	if !idRe.MatchString(s.ID) {

@@ -8,7 +8,7 @@
 // them. Contents that follow one another with distance or within become one regular expression that keeps their order; what cannot
 // be said (a pcre relative to the match before it, a rate limit) is dropped, counted in the report, and the signature goes one tier
 // down. Rules about responses, files, other protocols, binary data or state kept between requests are skipped with a reason.
-// docs/signature-formats.md has the whole table.
+// docs/vpatch.md describes the conversion.
 package suricata
 
 import (

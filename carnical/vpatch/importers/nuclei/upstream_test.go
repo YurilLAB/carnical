@@ -13,7 +13,7 @@ import (
 	"github.com/YurilLAB/coraza/carnical/vpatch/importers"
 )
 
-// upstreamDir is where the nuclei-templates checkout the numbers in docs/signature-formats.md were measured on lives (outside the
+// upstreamDir is where the nuclei-templates checkout this test converts lives (outside the
 // carnical tree). The test is skipped when it is absent.
 const upstreamDir = "../../../../.attack/upstream/nuclei-templates/http"
 
@@ -48,20 +48,23 @@ func TestConvertMultipart(t *testing.T) {
 	rows := []struct {
 		name, contentType, disposition string
 		upload                         bool
+		// again, if set, is a second content-type header, spelt in lower case.
+		again string
 	}{
-		{"lowercase boundary", "multipart/form-data; boundary=abc123", "Content-Disposition: form-data; name=\"file\"; filename=\"probe.php\"", true},
-		{"mixed case boundary", "multipart/form-data; boundary=AbC123", "Content-Disposition: form-data; name=\"file\"; filename=\"probe.php\"", true},
-		{"quoted boundary", "multipart/form-data; boundary=\"AbC123\"", "Content-Disposition: form-data; name=\"file\"; filename=\"probe.php\"", true},
-		{"parameter whitespace", "Multipart/Form-Data; BOUNDARY = \"AbC123\"", "Content-Disposition: form-data; name=\"file\"; filename=\"probe.php\"", true},
-		{"unquoted filename", "multipart/form-data; boundary=abc123", "Content-Disposition: form-data; name=file; filename=probe.php", true},
-		{"ordinary file", "multipart/form-data; boundary=abc123", "Content-Disposition: form-data; name=file; filename=photo.jpg", false},
-		{"different header", "multipart/form-data; boundary=abc123", "Content-Disposition-Other: form-data; name=\"file\"; filename=\"probe.php\"", false},
-		{"different disposition", "multipart/form-data; boundary=abc123", "Content-Disposition: inline; name=\"file\"; filename=\"probe.php\"", false},
-		{"conflicting boundaries", "multipart/form-data; boundary=abc123; boundary=different", "Content-Disposition: form-data; name=\"file\"; filename=\"probe.php\"", false},
-		{"template variable boundary", "multipart/form-data; boundary={{boundary}}", "Content-Disposition: form-data; name=file; filename=probe.php", true},
-		{"missing boundary inference", "multipart/form-data", "Content-Disposition: form-data; name=file; filename=probe.php", true},
-		{"mismatched boundary", "multipart/form-data; boundary=different", "Content-Disposition: form-data; name=file; filename=probe.php", false},
-		{"conflicting filenames", "multipart/form-data; boundary=abc123", "Content-Disposition: form-data; name=file; filename=probe.php; filename=photo.jpg", false},
+		{"lowercase boundary", "multipart/form-data; boundary=abc123", "Content-Disposition: form-data; name=\"file\"; filename=\"probe.php\"", true, ""},
+		{"mixed case boundary", "multipart/form-data; boundary=AbC123", "Content-Disposition: form-data; name=\"file\"; filename=\"probe.php\"", true, ""},
+		{"quoted boundary", "multipart/form-data; boundary=\"AbC123\"", "Content-Disposition: form-data; name=\"file\"; filename=\"probe.php\"", true, ""},
+		{"parameter whitespace", "Multipart/Form-Data; BOUNDARY = \"AbC123\"", "Content-Disposition: form-data; name=\"file\"; filename=\"probe.php\"", true, ""},
+		{"unquoted filename", "multipart/form-data; boundary=abc123", "Content-Disposition: form-data; name=file; filename=probe.php", true, ""},
+		{"ordinary file", "multipart/form-data; boundary=abc123", "Content-Disposition: form-data; name=file; filename=photo.jpg", false, ""},
+		{"different header", "multipart/form-data; boundary=abc123", "Content-Disposition-Other: form-data; name=\"file\"; filename=\"probe.php\"", false, ""},
+		{"different disposition", "multipart/form-data; boundary=abc123", "Content-Disposition: inline; name=\"file\"; filename=\"probe.php\"", false, ""},
+		{"conflicting boundaries", "multipart/form-data; boundary=abc123; boundary=different", "Content-Disposition: form-data; name=\"file\"; filename=\"probe.php\"", false, ""},
+		{"template variable boundary", "multipart/form-data; boundary={{boundary}}", "Content-Disposition: form-data; name=file; filename=probe.php", true, ""},
+		{"missing boundary inference", "multipart/form-data", "Content-Disposition: form-data; name=file; filename=probe.php", true, ""},
+		{"mismatched boundary", "multipart/form-data; boundary=different", "Content-Disposition: form-data; name=file; filename=probe.php", false, ""},
+		{"conflicting filenames", "multipart/form-data; boundary=abc123", "Content-Disposition: form-data; name=file; filename=probe.php; filename=photo.jpg", false, ""},
+		{"content type given again in lower case", "multipart/form-data; boundary=abc123", "Content-Disposition: form-data; name=file; filename=probe.php", true, "text/plain"},
 	}
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
@@ -75,9 +78,13 @@ func TestConvertMultipart(t *testing.T) {
 			body := "--" + boundary + "\r\n" + row.disposition + "\r\n\r\nfixture\r\n--" + boundary + "--\r\n"
 			for _, raw := range []bool{false, true} {
 				t.Run(fmt.Sprintf("raw=%v", raw), func(t *testing.T) {
-					block := map[string]any{"method": "POST", "path": []string{"{{BaseURL}}/upload"}, "headers": map[string]string{"Content-Type": row.contentType}, "body": body}
+					headers, again := map[string]string{"Content-Type": row.contentType}, ""
+					if row.again != "" {
+						headers["content-type"], again = row.again, "content-type: "+row.again+"\r\n"
+					}
+					block := map[string]any{"method": "POST", "path": []string{"{{BaseURL}}/upload"}, "headers": headers, "body": body}
 					if raw {
-						block = map[string]any{"raw": []string{"POST /upload HTTP/1.1\r\nHost: {{Hostname}}\r\nContent-Type: " + row.contentType + "\r\n\r\n" + body}}
+						block = map[string]any{"raw": []string{"POST /upload HTTP/1.1\r\nHost: {{Hostname}}\r\nContent-Type: " + row.contentType + "\r\n" + again + "\r\n" + body}}
 					}
 					data, err := json.Marshal(map[string]any{"id": "multipart-regression", "info": map[string]string{"name": "Multipart upload", "severity": "high"}, "http": []any{block}})
 					if err != nil {

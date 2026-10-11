@@ -9,8 +9,8 @@
 //
 // The mapping, in short: an "or" becomes several signatures (at most importers.Limits.MaxAlternatives), an "and" becomes the main
 // condition plus Also, with the condition that names the path as the main one. Zones become targets, transforms become transforms,
-// match types become operators. What the model cannot say is skipped with a reason, never approximated silently. docs/signature-formats.md
-// has the whole table.
+// match types become operators. What the model cannot say is skipped with a reason, never approximated silently. docs/vpatch.md
+// describes the conversion.
 package crowdsec
 
 import (

@@ -10,7 +10,7 @@ import (
 	"github.com/YurilLAB/coraza/carnical/vpatch/importers"
 )
 
-// upstreamDir is where the CrowdSec hub checkout the numbers in docs/signature-formats.md were measured on lives (outside the
+// upstreamDir is where the CrowdSec hub checkout this test converts lives (outside the
 // carnical tree). The test is skipped when it is absent.
 const upstreamDir = "../../../../.attack/upstream/crowdsec-hub/appsec-rules"
 

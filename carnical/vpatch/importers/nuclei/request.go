@@ -4,6 +4,7 @@ package nuclei
 
 import (
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/YurilLAB/coraza/carnical/vpatch/importers"
@@ -100,7 +101,14 @@ func (x *extractor) fromBlock(block map[string]any) (reqs []request, unsupported
 	}
 	var hdrs []header
 	if hm, ok := importers.AsMap(block["headers"]); ok {
-		for k, v := range hm {
+		// In the order of their names, so that the same template always converts to the same signature (a map has no order).
+		keys := make([]string, 0, len(hm))
+		for k := range hm {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			v := hm[k]
 			s, ok := importers.AsString(v)
 			if !ok {
 				continue

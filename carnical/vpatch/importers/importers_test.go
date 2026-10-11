@@ -234,6 +234,16 @@ func TestValidate(t *testing.T) {
 			s.Also[0] = vpatch.Condition{Operator: "pm", Targets: []string{"headers"}}
 		}, bad: true},
 		{name: "invalid utf8 pattern", mutate: func(s *vpatch.Signature) { s.Pattern = "a\xff" }, bad: true},
+		{name: "as many conditions as the engine loads", mutate: func(s *vpatch.Signature) {
+			for len(s.Also) < vpatch.MaxConditions-1 {
+				s.Also = append(s.Also, s.Also[0])
+			}
+		}},
+		{name: "more conditions than the engine loads", mutate: func(s *vpatch.Signature) {
+			for len(s.Also) < vpatch.MaxConditions {
+				s.Also = append(s.Also, s.Also[0])
+			}
+		}, bad: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

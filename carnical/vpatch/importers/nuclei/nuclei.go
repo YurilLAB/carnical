@@ -13,7 +13,7 @@
 //
 // It is deliberately conservative. Templates that only detect software, panels, exposures or default logins, that need a sequence of
 // requests (a "flow"), or whose only request is an ordinary fetch of a static file are skipped. A template that is only a request to
-// an exploit endpoint, with no payload, becomes a signature with low confidence. docs/signature-formats.md has the whole table.
+// an exploit endpoint, with no payload, becomes a signature with low confidence. docs/vpatch.md describes the conversion.
 package nuclei
 
 import (
