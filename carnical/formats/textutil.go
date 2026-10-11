@@ -102,6 +102,17 @@ func hexVal(c byte) rune {
 	return rune(c - '0')
 }
 
+// hexDigit is the value of a hex digit c, as a byte so that widening it is never a conversion that can change its value.
+func hexDigit(c byte) byte {
+	switch {
+	case c >= 'a':
+		return c - 'a' + 10
+	case c >= 'A':
+		return c - 'A' + 10
+	}
+	return c - '0'
+}
+
 // hex4 reads four hex digits at b[i:].
 func hex4(b []byte, i int) (rune, bool) {
 	if i < 0 || i+4 > len(b) {

@@ -258,8 +258,7 @@ func privilegedName(k string) (string, bool) {
 		case r >= 'A' && r <= 'Z':
 			r += 'a' - 'A'
 		}
-		buf[n] = byte(r)
-		n++
+		n += utf8.EncodeRune(buf[n:], r) // one byte: r is ASCII here, and at most 24 runes are read
 	}
 	name, ok := privileged[string(buf[:n])]
 	return name, ok

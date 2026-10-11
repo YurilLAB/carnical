@@ -207,7 +207,7 @@ func (l *gqlLexer) str() detail {
 					j := i + 2
 					var r uint32
 					for j < len(src) && j-i-2 < 8 && isHexDigit(src[j]) {
-						r = r<<4 | uint32(hexVal(src[j]))
+						r = r<<4 | uint32(hexDigit(src[j]))
 						j++
 					}
 					if j == i+2 || j >= len(src) || src[j] != '}' || r > 0x10FFFF || r >= 0xD800 && r <= 0xDFFF {
