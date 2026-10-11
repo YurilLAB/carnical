@@ -231,8 +231,11 @@ func redactPrivate(err error, private map[string]string) error {
 		quoted := strconv.Quote(s)
 		if !strings.ContainsAny(s, `.:/\@`) {
 			// A single word, such as a one-label host, is replaced only where it can be nothing else, so that a host
-			// named "origin" leaves "origin preflight" readable.
-			swaps = append(swaps, swap{quoted, `"[private setting]"`}, swap{"lookup " + s, "lookup [private setting]"})
+			// named "origin" leaves "origin preflight" readable: quoted, after "lookup", and where the origin check
+			// (proxy.OriginPolicy.CheckHost) names the host.
+			swaps = append(swaps, swap{quoted, `"[private setting]"`}, swap{"lookup " + s, "lookup [private setting]"},
+				swap{"resolving " + s + ":", "resolving [private setting]:"}, swap{s + " has no address", "[private setting] has no address"},
+				swap{"preflight: " + s + ":", "preflight: [private setting]:"})
 			return
 		}
 		swaps = append(swaps, swap{s, "[private setting]"}, swap{quoted[1 : len(quoted)-1], "[private setting]"})

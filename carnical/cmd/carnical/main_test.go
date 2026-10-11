@@ -1722,6 +1722,11 @@ func TestPrivateSettingsAreLeftOutOfErrorText(t *testing.T) {
 		{"an address the origin resolved to", `dial tcp 10.1.2.3:8080: refused`, `dial tcp [address]: refused`},
 		{"a one-word host is replaced only where it can be nothing else", `origin preflight: lookup origin: no such host`,
 			`origin preflight: lookup [private setting]: no such host`},
+		{"a one-word host the origin check could not resolve", `origin preflight: resolving origin: lookup origin on 10.0.0.53:53: no such host`,
+			`origin preflight: resolving [private setting]: lookup [private setting] on [address]: no such host`},
+		{"a one-word host with no address", `origin preflight: origin has no address`, `origin preflight: [private setting] has no address`},
+		{"a one-word host at an address that is not allowed", `origin preflight: origin: 10.0.0.5 is not a public address (10.0.0.0/8)`,
+			`origin preflight: [private setting]: [address] is not a public address ([private setting])`},
 		{"a longer name is left alone", `shop.example.testing and shop.example.test.`, `shop.example.testing and [private setting].`},
 		{"nothing private", `-listen must have a valid TCP port`, `-listen must have a valid TCP port`},
 	} {
