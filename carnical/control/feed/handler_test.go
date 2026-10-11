@@ -313,6 +313,17 @@ func TestReplayIsRefusedWhateverTheTimeUntilTheNonceExpires(t *testing.T) {
 	if c := send(r.now.Unix()); c != 200 {
 		t.Fatalf("601 seconds later the nonce may be used again: %d", c)
 	}
+	// A request whose ts is 300 seconds ahead is accepted until 300 seconds after that ts, 600 seconds after it
+	// arrived, so its nonce must still be remembered then.
+	n = freshNonce()
+	ahead := r.now.Unix() + 300
+	if c := send(ahead); c != 200 {
+		t.Fatalf("300 seconds fast: %d", c)
+	}
+	r.setNow(r.now.Add(600 * time.Second))
+	if c := send(ahead); c != 401 {
+		t.Fatalf("identical replay 600 seconds later, while its ts is still accepted: %d", c)
+	}
 }
 
 func TestSixtyAnHourThenRetryAfter(t *testing.T) {

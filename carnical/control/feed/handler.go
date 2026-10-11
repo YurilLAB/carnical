@@ -21,8 +21,10 @@ import (
 const (
 	// Skew is how far a request's time may be from the server's clock.
 	Skew = 300 * time.Second
-	// NonceTTL is how long a nonce is remembered. A request that repeats one is refused.
-	NonceTTL = 600 * time.Second
+	// NonceTTL is how long a nonce is remembered. A request that repeats one is refused. It is twice Skew and one
+	// second more because a request can arrive Skew before its ts and is accepted until the end of the second Skew after
+	// it, and its nonce must not be forgotten while the same request would still be accepted.
+	NonceTTL = 2*Skew + time.Second
 	// PerHour is the most correctly signed requests one key may make in an hour.
 	PerHour = 60
 
