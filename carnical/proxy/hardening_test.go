@@ -92,6 +92,13 @@ func TestPathPolicy(t *testing.T) {
 		{"an encoded NUL stays refused when slashes are allowed", "/a%00b", PathPolicy{AllowEncodedSlash: true}, false},
 		{"a path parameter, allowed", "/a;x=1", PathPolicy{AllowPathParams: true}, true},
 		{"dot segments stay refused when parameters are allowed", "/a/../b", PathPolicy{AllowPathParams: true}, false},
+		{"a parent segment with a path parameter", "/public/..;/admin", PathPolicy{AllowPathParams: true}, false},
+		{"a parent segment with a parameter value", "/public/..;x=1/admin", PathPolicy{AllowPathParams: true}, false},
+		{"a current segment with a path parameter", "/public/.;/admin", PathPolicy{AllowPathParams: true}, false},
+		{"a parameter on a name with dots", "/a/b..c;x=1", PathPolicy{AllowPathParams: true}, true},
+		{"a parent segment between encoded slashes", "/public%2F..%2Fadmin", PathPolicy{AllowEncodedSlash: true}, false},
+		{"a parent segment before an encoded slash", "/public/..%2Fadmin", PathPolicy{AllowEncodedSlash: true}, false},
+		{"a parent segment before an encoded backslash", "/public/..%5Cadmin", PathPolicy{AllowEncodedSlash: true}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

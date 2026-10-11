@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"path"
 	"regexp"
 	"strings"
@@ -106,8 +107,15 @@ func (p PathPolicy) check(path string) error {
 			i += 2
 		}
 	}
-	for _, seg := range strings.Split(path, "/") {
-		if seg == "." || seg == ".." {
+	// A dot segment is judged on the path the application resolves: decoded, a backslash taken as a slash, and each segment
+	// without its ;parameters, as a Java server reads it. "/public/..;/admin" and "/public%2F..%2Fadmin" are "/admin" to such
+	// an application, while a rule that matches the start of the path (an allowed path, an exclusion) sees "/public/".
+	decoded, err := url.PathUnescape(path)
+	if err != nil {
+		return errors.New("a malformed percent escape")
+	}
+	for _, seg := range strings.Split(strings.ReplaceAll(decoded, "\\", "/"), "/") {
+		if seg, _, _ = strings.Cut(seg, ";"); seg == "." || seg == ".." {
 			return errors.New("a dot segment in the path")
 		}
 	}
