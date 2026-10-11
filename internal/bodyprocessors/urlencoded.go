@@ -26,10 +26,14 @@ func (*urlencodedBodyProcessor) ProcessRequest(reader io.Reader, v plugintypes.T
 	// ParseQuery itself stops once options.ArgumentLimit total pairs have
 	// been parsed (see GHSA-3ww9-vw83-9w5x): the copy below never needs to
 	// re-enforce the cap, since values can never hold more than the limit.
-	values, truncated := urlutil.ParseQuery(b, '&', options.ArgumentLimit)
+	// ARGS_POST matches keys case-insensitively by default, so two keys that
+	// differ only in case share one entry. Add each pair in the order it was
+	// sent, as the JSON and multipart processors already do, so every value is
+	// kept instead of a later write for a folded key replacing the earlier one.
+	pairs, truncated := urlutil.ParseQueryOrdered(b, '&', options.ArgumentLimit)
 	argsCol := v.ArgsPost()
-	for k, vs := range values {
-		argsCol.Set(k, vs)
+	for _, kv := range pairs {
+		argsCol.Add(kv.Key, kv.Value)
 	}
 	if truncated {
 		v.ArgumentsLimitReached().(*collections.Single).Set("1")

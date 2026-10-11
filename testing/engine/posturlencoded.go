@@ -78,6 +78,24 @@ var _ = profile.RegisterProfile(profile.Profile{
 					},
 				},
 				{
+					// Two keys that differ only in case must both be kept in
+					// ARGS_POST; the processor appends rather than overwriting.
+					Stage: profile.SubStage{
+						Input: profile.StageInput{
+							URI:    "/",
+							Method: "POST",
+							Headers: map[string]string{
+								"content-type": "application/x-www-form-urlencoded",
+							},
+							Data: "foo=1&Foo=2",
+						},
+						Output: profile.ExpectedOutput{
+							TriggeredRules:    []int{4447},
+							NonTriggeredRules: []int{200002},
+						},
+					},
+				},
+				{
 					Stage: profile.SubStage{
 						Input: profile.StageInput{
 							URI:    "/case2",
@@ -98,6 +116,7 @@ var _ = profile.RegisterProfile(profile.Profile{
 	Rules: `
 SecRequestBodyAccess On
 SecRule ARGS:test "123" "phase:2, id:4445,block,log"
+SecRule &ARGS_POST "@eq 2" "phase:2, id:4447, pass, log"
 SecRule REQUEST_BODY "test=" "phase:2, id:456, log"
 
 SecRule REQBODY_ERROR "!@eq 0" \
