@@ -16,6 +16,19 @@ type parameterNode struct {
 // Fold ASCII only. Forms may explicitly use a single-byte charset, so UTF-8
 // replacement or Unicode folding would merge distinct valid byte names.
 func parameterSegment(s string, mangle bool) string {
+	// Most names need no change, so avoid the []byte+string copy when the result
+	// would be identical to the input.
+	change := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'A' && c <= 'Z' || mangle && (c == '.' || c == ' ') {
+			change = true
+			break
+		}
+	}
+	if !change {
+		return s
+	}
 	b := []byte(s)
 	for i, c := range b {
 		if c >= 'A' && c <= 'Z' {
