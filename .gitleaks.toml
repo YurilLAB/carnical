@@ -43,11 +43,11 @@ paths = ["^carnical/deploy/honeytokens\\.sh$"]
 regexes = ["^\\-\\-\\-\\-\\-BEGIN\\ PRIVATE\\ KEY\\-\\-\\-\\-\\-\\\\n'\\\n\\\thead\\ \\-c\\ 96\\ /dev/urandom\\ \\|\\ base64\\\n\\\tprintf\\ \\-\\-\\ '\\-\\-\\-\\-\\-END\\ PRIVATE\\ KEY\\-\\-\\-\\-\\-$"]
 
 [[allowlists]]
-description = "Verified fixture: edge/proxy/proxy_test.go"
+description = "Verified fixture: carnical/proxy/proxy_test.go"
 condition = "AND"
 targetRules = ["generic-api-key"]
 regexTarget = "secret"
-paths = ["^edge/proxy/proxy_test\\.go$"]
+paths = ["^carnical/proxy/proxy_test\\.go$"]
 regexes = ["^SECRETMARK\\-4711$"]
 
 [[allowlists]]
