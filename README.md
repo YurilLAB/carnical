@@ -127,6 +127,20 @@ The [security tooling guide](docs/security-tooling.md) explains automated checks
 Report vulnerabilities privately. See [SECURITY.md](SECURITY.md) for reporting instructions and
 [current findings](docs/security-findings.md) for reviewed issues and validation limits.
 
+## License
+
+Carnical is free and open source software under the [Apache License 2.0](LICENSE). You can use,
+copy, modify and distribute it at no cost, including in commercial and closed-source products.
+When you redistribute it, keep the copyright and license notices and the [LICENSE](LICENSE) file,
+and mark the files you changed. It is provided without warranty.
+
+This covers the Coraza engine the repository is built on and the Carnical code in `carnical/`. The
+bundled OWASP Core Rule Set is also Apache 2.0 and keeps its own
+[license file](carnical/crs/owasp_crs/LICENSE). Two sets of test fixtures are unmodified third-party
+rules under their own permissive licenses: CrowdSec hub rules under MIT
+([notice](carnical/vpatch/importers/crowdsec/testdata/LICENSE-NOTICE.txt)) and Emerging Threats
+Open rules under BSD ([notice](carnical/vpatch/importers/suricata/testdata/LICENSE-NOTICE.txt)).
+
 ## Contributors and attribution
 
 Carnical builds on Coraza and the CRS. Thanks to Juan Pablo Tosso and the Coraza contributors,

@@ -114,5 +114,8 @@ See [engine changes](../docs/engine-integration.md#changes-in-this-fork) and
 
 ## Licence
 
-Coraza and CRS use Apache-2.0; the CRS licence is retained in `crs/owasp_crs/LICENSE`.
-The licence for additions in `carnical/` has not yet been decided.
+Carnical's code in `carnical/` is under the [Apache License 2.0](../LICENSE): free to use, modify
+and distribute, including commercially, keeping the licence and notices. Coraza and CRS use
+Apache-2.0 too; the CRS licence is retained in `crs/owasp_crs/LICENSE`. The importer test fixtures
+in `vpatch/importers/crowdsec/testdata` (MIT, CrowdSec hub) and `vpatch/importers/suricata/testdata`
+(BSD, Emerging Threats Open) keep their own licences; see the `LICENSE-NOTICE.txt` in each.
