@@ -63,7 +63,7 @@ func (g *Guard) shadow(c *candidate, rv *reqView, client uint32, cfg *Config) {
 	fits := false
 	if node := c.model.idx.lookup(r.Path, &caps); node != nil {
 		if rt := node.route(r.Method); rt != nil {
-			fits = len(g.checkRoute(rt, rv, &caps, &declaredIDs, c.model)) == 0
+			fits = len(g.checkRoute(rt, rv, &caps, &declaredIDs, c.model, false)) == 0
 		}
 	}
 	// #nosec G115 -- Observe supplies Guard's validated private config: agreement 1..1,000,000 and share 1..100 after defaults.

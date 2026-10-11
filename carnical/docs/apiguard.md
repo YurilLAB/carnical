@@ -53,9 +53,11 @@ What the owner's control plane has to do to integrate it is in section 11. `guar
 | **2, learning** | Observed traffic, HAR or Postman input | Routes, parameters, content types and body shapes with sufficient client evidence. | Learns from observed accepted traffic; monitor until promoted. |
 
 A request is an API request if its path starts `/api`, `/v1` to `/v99`, `/rest`, `/graphql`,
-`/wp-json`, `/_api`, `/services`, `/odata` (or `/api-` or `/api_`); or its Content-Type is JSON, XML
-or newline-delimited JSON; or its `Accept` asks for one of those and does not also ask for HTML (a
-browser's `Accept` lists `application/xml` among the page types); or the model knows the route.
+`/wp-json`, `/_api`, `/services`, `/odata` (or `/api-` or `/api_`), path parameters aside
+(`/api;jsessionid=1/users` starts `/api`); or its Content-Type is JSON, XML or newline-delimited
+JSON; or its `Accept` asks for one of those and does not also ask for HTML (a browser's `Accept`
+lists `application/xml` among the page types); or the model knows the route, in any spelling
+(section 5).
 Anything else is left to the rule set and to the proxy's own checks.
 
 ## 3. Modes and the defaults
@@ -125,7 +127,9 @@ at any depth, is found: `role`, `roles`, `is_admin`, `admin`, `is_staff`, `super
 `is_superuser`, `permission(s)`, `scope(s)`, `group(s)`, `verified`, `email_verified`, `balance`,
 `credit`, `price`, `owner`, `owner_id`, `user_id`, `tenant_id`, `org_id`, `status`, `approved`. The
 comparison ignores case, `_`, `-` and spaces, so `isAdmin`, `is_admin` and `IS-ADMIN` are one name.
-What happens next depends on what is known:
+Letters are folded as Go's `encoding/json` folds them when it binds a key to a field, so the Kelvin
+sign `K` is a `k` and the long s `ſ` an `s`: `iſ_admin` is `is_admin`. What happens next depends on
+what is known:
 
 * The description or the learned model lists the property for that object: a client may set it; nothing is reported (a read-only property is a level 1 finding of its own).
 * The description or the learned model describes that object's properties and this one is not among them: this API's clients do not send it. **Refused** (403, `5003021`) if `MassAssign` is enforce.
@@ -167,6 +171,13 @@ The validator is the guard's own, bounded: types, `required`, `properties`, `add
 says), `oneOf`, `anyOf`, `allOf`, `not`, `nullable` and read-only properties (a client must not send
 one, and a required read-only property is not required in a request).
 
+Property names are matched exactly, as JSON Schema says. Go's `encoding/json` (and so gin and echo)
+and ASP.NET Core do not: they bind a key to the property whose name it matches with letter case
+folded, Go's also folding the Kelvin sign and the long s. So in a request a key that is a declared
+property in another spelling (`Role` for `role`) is held to that property's schema as well,
+read-only included, and then to what the schema says about properties it does not list. A required
+property must still be sent in the spelling the description gives it.
+
 A validation does at most 400,000 steps (a value visited, an alternative tried); past that it stops
 and reports `5003115` rather than spending more. A pattern is charged before it runs for its
 subject's length times the threads its counted repeats can keep alive (`[a-z]{0,300}` some 300), so
@@ -197,12 +208,26 @@ Route matching is a trie keyed by path segment. A literal is tried before a segm
 suffix (`{name}.json`), and that before a plain `{parameter}`; when a branch has no route the search
 backs up, so `/users/me/orders` finds `/users/{id}/orders` if `/users/me` has no `orders`.
 
+Applications are more forgiving about a path than this: Express and ASP.NET Core match routes
+without regard to letter case, servlet containers cut `;` parameters (`;jsessionid=`) off each
+segment, and many servers merge empty segments. A path that names a described route only when it is
+read that way (letter case, `;` parameters, empty and dot segments, and an encoded slash or backslash
+disregarded, as the proxy's own routing checks read a path), or that names a different described
+route that way than it does as written (`/users/ME` beside `/users/me` and `/users/{id}`), is served by
+an operation it would not be held to. It is refused as an unknown route (`5003100`), whether or not
+it looks like an API. Clients have to use the spelling the description has.
+
 Two templates that differ only in parameter names are one route; the first is kept and the import
 report says so. `HEAD` is served by the `GET` route. A CORS preflight (`OPTIONS` with no body and an
 `Access-Control-Request-Method` header naming a method the route takes) is not refused for its
-method; a preflight to an undescribed route, and any other `OPTIONS` request, are held to the
-description, since they reach a handler that may not check the method. The learned model treats
-`OPTIONS` the same way.
+method, and is held to that method's route as far as a preflight goes. A browser sends it to the
+URL of the request it asks about, so its path and query parameters are checked in full, unknown
+query parameters included; header and cookie parameters are checked where it carries them; the
+credential, the required headers and cookies and the body the route asks for are not required of
+it. A preflight to an undescribed route, and any other `OPTIONS` request, are held to the
+description, since they reach a handler that may not check the method. The learned model holds a
+preflight to the learned route of the method it asks about in the same way; it does not refuse one
+that asks about a route or a method it has not learned.
 
 The import report warns where the guard would check less than the description says: a type name it
 does not know, a count keyword that is not a whole number, keywords beside a `$ref` in OpenAPI 3.1,

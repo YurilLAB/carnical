@@ -211,21 +211,45 @@ func (in *inspection) run() {
 	view.init(r)
 	rv := &view
 
+	// A CORS preflight (no body, and the method it asks about) is the one request a route need not list a method for, and only
+	// for a method the route does take. It is held to that method's route as far as it goes: a browser sends it to the URL of the
+	// request it asks about, with none of that request's credentials, header values, cookies or body. Any other OPTIONS request
+	// reaches a handler that may not check the method.
+	acrm := strings.ToUpper(strings.TrimSpace(r.Header.Get("Access-Control-Request-Method")))
+	preflight := method == "OPTIONS" && len(r.Body) == 0 && acrm != ""
+	var asked, learnedAsked bool // the route found is the one a preflight asks about, not the request's own
+
 	decl := g.active.Load()
 	var caps captures
 	var dnode *trieNode
 	var drt *Route
+	respelled := false
 	if decl != nil {
 		if dnode = decl.idx.lookup(r.Path, &caps); dnode != nil {
 			drt = dnode.route(method)
+			if drt == nil && preflight {
+				drt = dnode.route(acrm)
+				asked = drt != nil
+			}
+		}
+		// A path that names a described route only in another spelling (letter case, ';' parameters, empty segments), or names
+		// another route that way than it does as written, is served by an operation that it would not be held to. It is not a
+		// route the description has, so it is refused as an unknown one, whether or not it looks like an API.
+		if decl.idx.respelled(r.Path, dnode) {
+			respelled, dnode, drt, asked = true, nil, nil, false
 		}
 	}
 	learnedOn := effective(cfg.Mode, cfg.Modes.Learned) >= ModeMonitor
 	var lk learnedLookup
 	if learnedOn {
 		lk = g.learn.lookup(method, r.Path)
+		if lk.view == nil && preflight {
+			if pk := g.learn.lookup(acrm, r.Path); pk.view != nil {
+				lk, learnedAsked = pk, true
+			}
+		}
 	}
-	api := dnode != nil || lk.view != nil || lk.otherMethod || isAPIPath(r.Path) || isAPIContentType(rv.ct) || acceptsAPI(r.Header.Get("Accept"))
+	api := dnode != nil || respelled || lk.view != nil || lk.otherMethod || isAPIPath(r.Path) || isAPIContentType(rv.ct) || acceptsAPI(r.Header.Get("Accept"))
 	if !api {
 		return
 	}
@@ -300,23 +324,23 @@ func (in *inspection) run() {
 		}
 	}
 
-	// Level 1: the API's own description. A CORS preflight (no body, and the method it asks about) is the one request a
-	// described route need not list a method for, and only for a method the route does take. Any other OPTIONS request
-	// reaches a handler that may not check the method.
-	acrm := strings.ToUpper(strings.TrimSpace(r.Header.Get("Access-Control-Request-Method")))
-	preflight := method == "OPTIONS" && !hasBody && acrm != ""
+	// Level 1: the API's own description.
 	if decl != nil {
 		switch {
+		case respelled:
+			if in.emit(IDSpecUnknownRoute, "the path spells a described route differently (letter case, ; parameters or empty segments)", cfg.Modes.Spec) {
+				return
+			}
 		case dnode == nil:
 			if lk.view == nil && in.emit(IDSpecUnknownRoute, "", cfg.Modes.Spec) {
 				return
 			}
 		case drt == nil:
-			if (!preflight || !slices.Contains(dnode.methods, acrm)) && lk.view == nil && in.emit(IDSpecMethodNotAllowed, "the route takes "+strings.Join(dnode.methods, ", "), cfg.Modes.Spec) {
+			if lk.view == nil && in.emit(IDSpecMethodNotAllowed, "the route takes "+strings.Join(dnode.methods, ", "), cfg.Modes.Spec) {
 				return
 			}
 		default:
-			for _, f := range g.checkRoute(drt, rv, &caps, &declaredIDs, decl) {
+			for _, f := range g.checkRoute(drt, rv, &caps, &declaredIDs, decl, asked) {
 				if in.emitF(f, cfg.Modes.Spec) {
 					return
 				}
@@ -329,7 +353,7 @@ func (in *inspection) run() {
 		switch {
 		case lk.view != nil:
 			var none captures
-			for _, f := range g.checkRoute(lk.view, rv, &none, &learnedIDs, nil) {
+			for _, f := range g.checkRoute(lk.view, rv, &none, &learnedIDs, nil, learnedAsked) {
 				if in.emitF(f, cfg.Modes.Learned) {
 					return
 				}

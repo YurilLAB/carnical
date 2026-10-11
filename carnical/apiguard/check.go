@@ -192,8 +192,10 @@ func cookieValues(h http.Header, name string, buf []string) []string {
 const maxFindings = 6
 
 // checkRoute checks a request against a route, described or learned, and returns what does not fit. Nothing it returns holds
-// anything the visitor sent.
-func (g *Guard) checkRoute(rt *Route, rv *reqView, caps *captures, ids *idSet, credNames *Model) []finding {
+// anything the visitor sent. preflight says the request is a CORS preflight for the route: it has the route's path and query,
+// which are checked in full, and none of the credential, header values, cookies or body the route asks for, which are not
+// required of it. What it does carry is checked all the same.
+func (g *Guard) checkRoute(rt *Route, rv *reqView, caps *captures, ids *idSet, credNames *Model, preflight bool) []finding {
 	var out []finding
 	add := func(id int, detail string) bool {
 		if id == 0 || len(out) >= maxFindings {
@@ -207,7 +209,7 @@ func (g *Guard) checkRoute(rt *Route, rv *reqView, caps *captures, ids *idSet, c
 		return nil
 	}
 	r := rv.r
-	if rt.Secured && !hasCredential(r.Header, r.RawQuery, credNames) {
+	if rt.Secured && !preflight && !hasCredential(r.Header, r.RawQuery, credNames) {
 		add(ids.noCredential, "")
 	}
 	// Path parameters (a learned route's are its template).
@@ -260,7 +262,7 @@ func (g *Guard) checkRoute(rt *Route, rv *reqView, caps *captures, ids *idSet, c
 	for _, p := range c.headers {
 		vals := r.Header.Values(p.Name)
 		if len(vals) == 0 {
-			if p.Required {
+			if p.Required && !preflight {
 				add(ids.missingParam, paramDetail(ids, p.Name, vkRequired))
 			}
 			continue
@@ -272,7 +274,7 @@ func (g *Guard) checkRoute(rt *Route, rv *reqView, caps *captures, ids *idSet, c
 	for _, p := range c.cookies {
 		vals := cookieValues(r.Header, p.Name, vbuf[:0])
 		if len(vals) == 0 {
-			if p.Required {
+			if p.Required && !preflight {
 				add(ids.missingParam, paramDetail(ids, p.Name, vkRequired))
 			}
 			continue
@@ -291,7 +293,7 @@ func (g *Guard) checkRoute(rt *Route, rv *reqView, caps *captures, ids *idSet, c
 		add(ids.unexpectedBody, "")
 	case hasBody && rv.ct != "" && !rt.acceptsContentType(rv.ct):
 		add(ids.contentType, "")
-	case !hasBody && rt.BodyRequired:
+	case !hasBody && rt.BodyRequired && !preflight:
 		add(ids.bodyMissing, "")
 	}
 	if hasBody && rt.Body != nil && rv.isJSON && !(rt.c.hasCTypes && !rt.acceptsContentType(rv.ct)) {

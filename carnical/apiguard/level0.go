@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"unicode/utf8"
 )
 
 // ---- is this an API request? ----
@@ -14,7 +15,7 @@ import (
 var apiNames = map[string]bool{"api": true, "rest": true, "graphql": true, "wp-json": true, "_api": true, "services": true, "odata": true}
 
 // isAPIPath reports whether a path starts like an API: /api, /rest, /graphql, /wp-json, /_api, /services, /odata, /api-... or
-// /v1 to /v99.
+// /v1 to /v99. Path parameters are not part of the name: a servlet container serves /api;jsessionid=1/users as /api/users.
 func isAPIPath(p string) bool {
 	if len(p) < 2 || p[0] != '/' {
 		return false
@@ -23,6 +24,7 @@ func isAPIPath(p string) bool {
 	if i := strings.IndexByte(seg, '/'); i >= 0 {
 		seg = seg[:i]
 	}
+	seg, _, _ = strings.Cut(seg, ";")
 	if len(seg) > 16 {
 		return false
 	}
@@ -233,24 +235,30 @@ var privileged = map[string]string{
 }
 
 // privilegedName reports whether a property name is on the list, and the list's own spelling of it, which is what a message may
-// repeat: the name in the request is the visitor's, and the spelling here is ours.
+// repeat: the name in the request is the visitor's, and the spelling here is ours. Letters are folded as Go's encoding/json folds
+// them when it binds a key to a field, so a Kelvin sign is a k and a long s is an s: "iſ_admin" sets IsAdmin as "is_admin" does.
 func privilegedName(k string) (string, bool) {
-	if len(k) < 4 || len(k) > 24 {
+	if len(k) < 4 || len(k) > 24*utf8.UTFMax {
 		return "", false
 	}
 	var buf [24]byte
-	n := 0
-	for i := 0; i < len(k); i++ {
-		c := k[i]
-		switch {
-		case c == '_' || c == '-' || c == ' ':
-			continue
-		case c >= 'A' && c <= 'Z':
-			c += 'a' - 'A'
-		case c >= 0x80:
+	n, runes := 0, 0
+	for _, r := range k {
+		if runes++; runes > 24 {
 			return "", false
 		}
-		buf[n] = c
+		switch {
+		case r == '_' || r == '-' || r == ' ':
+			continue
+		case r >= utf8.RuneSelf:
+			// None of the names on the list has a letter that is not ASCII, so a rune that does not fold to one rules it out.
+			if r = foldRune(r); r >= utf8.RuneSelf {
+				return "", false
+			}
+		case r >= 'A' && r <= 'Z':
+			r += 'a' - 'A'
+		}
+		buf[n] = byte(r)
 		n++
 	}
 	name, ok := privileged[string(buf[:n])]

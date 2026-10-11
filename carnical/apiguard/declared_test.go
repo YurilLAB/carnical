@@ -35,7 +35,8 @@ func TestRequestsAreHeldToTheApiDescription(t *testing.T) {
 	}{
 		{"a read that fits", mk("GET", "/api/v1/products?limit=10&page=2&sort=-price&q=shoes&tags=a,b"), 0, 0},
 		{"HEAD is served by the GET route", mk("HEAD", "/api/v1/products?limit=10"), 0, 0},
-		{"a preflight is not held to the description", mk("OPTIONS", "/api/v1/products", withHeader("Access-Control-Request-Method", "POST")), 0, 0},
+		{"a preflight is not held to its request's credential or body", mk("OPTIONS", "/api/v1/products", withHeader("Access-Control-Request-Method", "POST")), 0, 0},
+		{"a preflight's URL is held to the route it asks about", mk("OPTIONS", "/api/v1/products?limit=101", withHeader("Access-Control-Request-Method", "GET")), IDSpecQueryParam, 400},
 		{"an OPTIONS request that is not a preflight", mk("OPTIONS", "/api/v1/products"), IDSpecMethodNotAllowed, 405},
 		{"an OPTIONS request with a body", mk("OPTIONS", "/api/v1/products", withHeader("Access-Control-Request-Method", "POST"), withJSON(`{"name":"n"}`)), IDSpecMethodNotAllowed, 405},
 		{"an OPTIONS request to an undescribed route", mk("OPTIONS", "/api/v1/admin/purge"), IDSpecUnknownRoute, 404},
@@ -64,6 +65,7 @@ func TestRequestsAreHeldToTheApiDescription(t *testing.T) {
 		{"a uuid path parameter that is one", mk("GET", "/api/v1/users/123e4567-e89b-12d3-a456-426614174000", auth), 0, 0},
 		{"an unknown route", mk("GET", "/api/v1/secret"), IDSpecUnknownRoute, 404},
 		{"an unknown route in a deeper place", mk("GET", "/api/v1/products/42/secret"), IDSpecUnknownRoute, 404},
+		{"a described route spelled with ; parameters and other capitals", mk("GET", "/api;jsessionid=1/v1/Products?limit=101"), IDSpecUnknownRoute, 404},
 		{"a method the route does not have", mk("PATCH", "/api/v1/products"), IDSpecMethodNotAllowed, 405},
 		{"a route that needs a credential and has none", mk("POST", "/api/v1/products", withJSON(`{"name":"n","price":9.99}`)), IDSpecNoCredential, 401},
 		{"a create that fits", mk("POST", "/api/v1/products", auth, withJSON(`{"name":"n","price":9.99,"category":"toys","note":null}`)), 0, 0},

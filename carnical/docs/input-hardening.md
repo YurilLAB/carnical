@@ -134,7 +134,11 @@ go run ./cmd/carnical -upstream http://127.0.0.1:8081 -origin-allow 127.0.0.1/32
 `-api-spec-mode block` is the default and requires `-formats-mode block`. It independently checks
 JSON validity and duplicate keys, even if the corresponding format rule is disabled. It enforces
 supported scalar/array parameters, required values, exact query names, JSON body schemas,
-unknown/read-only properties and declared content types.
+unknown/read-only properties and declared content types. A JSON key that is a declared property in
+another letter case is held to that property too, since Go and ASP.NET Core bind it to it. A
+described route requested in another spelling (letter case, `;` path parameters, empty segments) is
+refused as an unknown route, and a CORS preflight is held to the path and query of the request it
+asks about. See [route matching](apiguard.md#5-level-1-in-detail).
 
 Numeric checks use exact decimal values, including enums, integer formats, bounds, `multipleOf` and
 array uniqueness. A numeric bound or multiple that cannot be preserved by the SDK's float64

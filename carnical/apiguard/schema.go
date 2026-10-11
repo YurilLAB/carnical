@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -75,6 +76,7 @@ type Schema struct {
 	enumV     []any
 	constV    any
 	propNames []string
+	foldProps map[string][]string // the declared property names by foldName, for keys a request spells in another case
 	prepared  bool
 }
 
@@ -210,6 +212,14 @@ func (s *Schema) prepare(seen map[*Schema]bool, patterns map[string]*regexp.Rege
 		s.propNames = append(s.propNames, k)
 	}
 	slices.Sort(s.propNames)
+	s.foldProps = nil
+	for _, k := range s.propNames {
+		if s.foldProps == nil {
+			s.foldProps = make(map[string][]string, len(s.propNames))
+		}
+		f := foldName(k)
+		s.foldProps[f] = append(s.foldProps[f], k)
+	}
 	s.prepared = true
 	for _, p := range s.Properties {
 		p.prepare(seen, patterns, dropped)
@@ -558,17 +568,35 @@ func (s *Schema) validObject(o map[string]any, c *vctx, depth int) bool {
 		if !present {
 			continue
 		}
-		ps := s.Properties[name]
-		c.path = append(c.path, name)
-		if c.request && ps.ReadOnly {
-			ok := c.fail(vkReadOnly)
-			c.path = c.path[:len(c.path)-1]
-			return ok
-		}
-		ok := ps.validate(val, c, depth+1)
-		c.path = c.path[:len(c.path)-1]
-		if !ok {
+		if !s.validProp(name, val, c, depth) {
 			return false
+		}
+	}
+	// JSON Schema matches property names exactly, but Go's encoding/json (and so gin and echo) and ASP.NET Core bind a key to the
+	// field whose name it matches with letter case folded, Go's also folding the Kelvin sign to k and the long s to s. To them a key
+	// that is a declared property in another spelling is that property, so in a request it is held to the property's schema,
+	// read-only included, before it is held to what the schema says about the properties it does not list.
+	if c.request && len(s.foldProps) > 0 {
+		var respelled []string
+		for k := range o {
+			if _, known := s.Properties[k]; known {
+				continue
+			}
+			if c.steps -= len(k)/32 + 1; c.steps < 0 {
+				c.over = true
+				return true
+			}
+			if _, ok := s.foldProps[foldName(k)]; ok {
+				respelled = append(respelled, k)
+			}
+		}
+		slices.Sort(respelled) // so that the same body always gives the same finding
+		for _, k := range respelled {
+			for _, name := range s.foldProps[foldName(k)] {
+				if !s.validProp(name, o[k], c, depth) {
+					return false
+				}
+			}
 		}
 	}
 	closed := s.AdditionalProperties != nil && !*s.AdditionalProperties
@@ -589,6 +617,54 @@ func (s *Schema) validObject(o map[string]any, c *vctx, depth int) bool {
 		}
 	}
 	return true
+}
+
+// validProp checks the value a request or a response gives a declared property. A read-only property must not be in a request at
+// all. The path names the property as the schema spells it, never as the value's key does.
+func (s *Schema) validProp(name string, val any, c *vctx, depth int) bool {
+	ps := s.Properties[name]
+	c.path = append(c.path, name)
+	if c.request && ps != nil && ps.ReadOnly {
+		ok := c.fail(vkReadOnly)
+		c.path = c.path[:len(c.path)-1]
+		return ok
+	}
+	ok := ps.validate(val, c, depth+1)
+	c.path = c.path[:len(c.path)-1]
+	return ok
+}
+
+// foldName folds a name the way a case-insensitive match does: two names that Go's strings.EqualFold (and so encoding/json)
+// finds equal fold to the same string. A name with nothing to fold is returned as it is.
+func foldName(s string) string {
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; c >= utf8.RuneSelf || 'A' <= c && c <= 'Z' {
+			return strings.Map(foldRune, s)
+		}
+	}
+	return s
+}
+
+// foldRune maps every rune of a simple case-folding orbit to one of them: the lower-case ASCII letter when the orbit has one (the
+// Kelvin sign is k, the long s is s), else the smallest.
+func foldRune(r rune) rune {
+	if r < utf8.RuneSelf {
+		if 'A' <= r && r <= 'Z' {
+			r += 'a' - 'A'
+		}
+		return r
+	}
+	least := r
+	for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+		if f < utf8.RuneSelf {
+			if 'A' <= f && f <= 'Z' {
+				f += 'a' - 'A'
+			}
+			return f
+		}
+		least = min(least, f)
+	}
+	return least
 }
 
 func (s *Schema) combinators(v any, c *vctx, depth int) bool {

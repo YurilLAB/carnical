@@ -44,6 +44,8 @@ func TestSchemaValidation(t *testing.T) {
 		{"unknown property when additionalProperties is false", user, `{"name":"alice","admin":true}`, true, vkUnknownProp},
 		{"read-only property sent in a request", user, `{"name":"alice","id":7}`, true, vkReadOnly},
 		{"read-only property in a response is fine", user, `{"name":"alice","id":7}`, false, vkNone},
+		// Go's encoding/json binds the key to the status field: case and the long s fold.
+		{"read-only property in another spelling", `{"type":"object","properties":{"status":{"type":"string","readOnly":true}}}`, `{"ſTATUS":"approved"}`, true, vkReadOnly},
 		{"string too short", user, `{"name":"a"}`, true, vkLength},
 		{"string too long", user, `{"name":"abcdefghi"}`, true, vkLength},
 		{"number below minimum", user, `{"name":"alice","age":-1}`, true, vkBounds},

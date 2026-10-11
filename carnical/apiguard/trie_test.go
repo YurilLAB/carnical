@@ -33,34 +33,43 @@ func TestRouteMatching(t *testing.T) {
 		want   string // the template, or "" for no route at the path
 		caps   []string
 		allow  []string // when the path matches but not the method
+		// respelled: read as a forgiving application routes it, the path names a route it does not name as written
+		respelled bool
 	}{
-		{"a literal path", "GET", "/users", "GET /users", nil, nil},
-		{"a path with a parameter", "GET", "/users/42", "GET /users/{id}", []string{"42"}, nil},
-		{"a literal wins over a parameter", "GET", "/users/me", "GET /users/me", nil, nil},
-		{"a parameter is used when the literal branch has no route below it", "GET", "/users/me/orders", "GET /users/{id}/orders", []string{"me"}, nil},
-		{"a literal below a literal", "GET", "/users/me/settings", "GET /users/me/settings", nil, nil},
-		{"a trailing slash is ignored", "GET", "/users/42/", "GET /users/{id}", []string{"42"}, nil},
-		{"HEAD is served by the GET route", "HEAD", "/users", "GET /users", nil, nil},
-		{"a method the path does not have", "PATCH", "/users", "", nil, []string{"GET", "POST"}},
-		{"a path that is not a route", "GET", "/nothing", "", nil, nil},
-		{"too deep", "GET", "/users/42/orders/7", "", nil, nil},
-		{"a suffix after the parameter", "GET", "/files/report.json", "GET /files/{name}.json", []string{"report"}, nil},
-		{"the plain parameter when the suffix does not match", "GET", "/files/report.txt", "GET /files/{name}", []string{"report.txt"}, nil},
-		{"a prefix before the parameter", "GET", "/v2/ping", "GET /v{version}/ping", []string{"2"}, nil},
-		{"two parameters", "GET", "/a/1/b/2", "GET /a/{x}/b/{y}", []string{"1", "2"}, nil},
-		{"two parameters, another method", "DELETE", "/a/1/b/2", "DELETE /a/{x}/b/{y}", []string{"1", "2"}, nil},
-		{"the root", "GET", "/", "GET /", nil, nil},
-		{"an empty segment is not a parameter", "GET", "/users//orders", "", nil, nil},
-		{"a percent-encoded segment is decoded before it is compared", "GET", "/static/%72eadme", "GET /static/readme", nil, nil},
-		{"an encoded value is captured decoded", "GET", "/users/a%20b", "GET /users/{id}", []string{"a b"}, nil},
-		{"a bad escape matches nothing", "GET", "/users/%zz", "", nil, nil},
-		{"more segments than the limit", "GET", "/a" + strings.Repeat("/x", MaxPathSegments), "", nil, nil},
-		{"a path that does not start with a slash", "GET", "users", "", nil, nil},
+		{"a literal path", "GET", "/users", "GET /users", nil, nil, false},
+		{"a path with a parameter", "GET", "/users/42", "GET /users/{id}", []string{"42"}, nil, false},
+		{"a literal wins over a parameter", "GET", "/users/me", "GET /users/me", nil, nil, false},
+		{"a parameter is used when the literal branch has no route below it", "GET", "/users/me/orders", "GET /users/{id}/orders", []string{"me"}, nil, false},
+		{"a literal below a literal", "GET", "/users/me/settings", "GET /users/me/settings", nil, nil, false},
+		{"a trailing slash is ignored", "GET", "/users/42/", "GET /users/{id}", []string{"42"}, nil, false},
+		{"HEAD is served by the GET route", "HEAD", "/users", "GET /users", nil, nil, false},
+		{"a method the path does not have", "PATCH", "/users", "", nil, []string{"GET", "POST"}, false},
+		{"a path that is not a route", "GET", "/nothing", "", nil, nil, false},
+		{"too deep", "GET", "/users/42/orders/7", "", nil, nil, false},
+		{"a suffix after the parameter", "GET", "/files/report.json", "GET /files/{name}.json", []string{"report"}, nil, false},
+		{"the plain parameter when the suffix does not match", "GET", "/files/report.txt", "GET /files/{name}", []string{"report.txt"}, nil, false},
+		{"a prefix before the parameter", "GET", "/v2/ping", "GET /v{version}/ping", []string{"2"}, nil, false},
+		{"two parameters", "GET", "/a/1/b/2", "GET /a/{x}/b/{y}", []string{"1", "2"}, nil, false},
+		{"two parameters, another method", "DELETE", "/a/1/b/2", "DELETE /a/{x}/b/{y}", []string{"1", "2"}, nil, false},
+		{"the root", "GET", "/", "GET /", nil, nil, false},
+		{"an empty segment is not a parameter", "GET", "/users//orders", "", nil, nil, true},
+		{"a percent-encoded segment is decoded before it is compared", "GET", "/static/%72eadme", "GET /static/readme", nil, nil, false},
+		{"an encoded value is captured decoded", "GET", "/users/a%20b", "GET /users/{id}", []string{"a b"}, nil, false},
+		{"a bad escape matches nothing", "GET", "/users/%zz", "", nil, nil, false},
+		{"more segments than the limit", "GET", "/a" + strings.Repeat("/x", MaxPathSegments), "", nil, nil, false},
+		{"a path that does not start with a slash", "GET", "users", "", nil, nil, false},
+		{"a literal in another letter case", "GET", "/USERS/42", "", nil, nil, true},
+		{"a literal with a ; parameter", "GET", "/users;jsessionid=1/42", "", nil, nil, true},
+		{"a value that is a literal in another letter case", "GET", "/users/ME", "GET /users/{id}", []string{"ME"}, nil, true},
+		{"a value in capitals that is no literal", "GET", "/users/BOB", "GET /users/{id}", []string{"BOB"}, nil, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var caps captures
 			node := m.idx.lookup(tt.path, &caps)
+			if got := m.idx.respelled(tt.path, node); got != tt.respelled {
+				t.Fatalf("respelled %v, want %v", got, tt.respelled)
+			}
 			if tt.want == "" && tt.allow == nil {
 				if node != nil {
 					t.Fatalf("matched %v", node.methods)

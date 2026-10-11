@@ -84,6 +84,7 @@ func TestLearnedRoutesRefuseWhatWasNeverSeen(t *testing.T) {
 		{"an unknown route", mk("GET", "/api/admin/dump"), IDLearnedUnknownRoute},
 		{"a method that was never seen on a known route", mk("DELETE", "/api/items/4242"), IDLearnedMethodNotSeen},
 		{"a preflight on a known route", mk("OPTIONS", "/api/items/4242", withHeader("Access-Control-Request-Method", "GET")), 0},
+		{"a preflight's URL is held to the route it asks about", mk("OPTIONS", "/api/items?limit=abc&sort=name", withHeader("Access-Control-Request-Method", "GET")), IDLearnedQueryParam},
 		{"an OPTIONS request with a body on a route never seen", mk("OPTIONS", "/api/admin/dump", withJSON(`{"all":true}`)), IDLearnedUnknownRoute},
 		{"a path that is not an integer where one was always an integer", mk("GET", "/api/items/abc"), IDLearnedUnknownRoute},
 		{"an injection where an id was", mk("GET", "/api/items/1%27%20OR%201%3D1"), IDLearnedUnknownRoute},

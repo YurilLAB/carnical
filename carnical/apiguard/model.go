@@ -8,10 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"path"
 	"regexp"
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // State says how a route came to be known and how far it is trusted.
@@ -598,7 +600,11 @@ func unescapeSegment(s string) string {
 // template that matches is always the one found, and one that is the only match is found whichever way it is written.
 type index struct {
 	root *trieNode
-	n    int
+	// loose holds the same templates read the way a forgiving application routes a path (see looseSegments): literals with
+	// letter case folded and ';' parameters cut off. Where a route ends in it, same lists the nodes of root that the routes
+	// ending there end at.
+	loose *trieNode
+	n     int
 }
 
 type trieNode struct {
@@ -606,7 +612,8 @@ type trieNode struct {
 	affix    []affixEdge
 	param    *trieNode
 	byMethod map[string]*Route
-	methods  []string // sorted, for the Allow list
+	methods  []string    // sorted, for the Allow list
+	same     []*trieNode // in the loose trie only
 }
 
 type affixEdge struct {
@@ -615,41 +622,30 @@ type affixEdge struct {
 }
 
 func buildIndex(routes []Route, warn func(string)) *index {
-	ix := &index{root: &trieNode{}}
+	ix := &index{root: &trieNode{}, loose: &trieNode{}}
 	dups := 0
 	for i := range routes {
 		r := &routes[i]
+		segs := splitTemplate(r.Path)
 		n := ix.root
-		for _, seg := range splitTemplate(r.Path) {
+		for _, seg := range segs {
+			n = n.child(seg)
+		}
+		ln := ix.loose
+		for _, seg := range segs {
 			switch seg.kind {
 			case segLiteral:
-				if n.lit == nil {
-					n.lit = map[string]*trieNode{}
+				if seg.lit, _, _ = strings.Cut(seg.lit, ";"); seg.lit == "" {
+					continue
 				}
-				next := n.lit[seg.lit]
-				if next == nil {
-					next = &trieNode{}
-					n.lit[seg.lit] = next
-				}
-				n = next
+				seg.lit = foldName(seg.lit)
 			case segAffix:
-				var next *trieNode
-				for _, e := range n.affix {
-					if e.prefix == seg.lit && e.suffix == seg.suffix {
-						next = e.to
-					}
-				}
-				if next == nil {
-					next = &trieNode{}
-					n.affix = append(n.affix, affixEdge{seg.lit, seg.suffix, next})
-				}
-				n = next
-			default:
-				if n.param == nil {
-					n.param = &trieNode{}
-				}
-				n = n.param
+				seg.lit, seg.suffix = foldName(seg.lit), foldName(seg.suffix)
 			}
+			ln = ln.child(seg)
+		}
+		if !slices.Contains(ln.same, n) {
+			ln.same = append(ln.same, n)
 		}
 		if n.byMethod == nil {
 			n.byMethod = map[string]*Route{}
@@ -667,6 +663,36 @@ func buildIndex(routes []Route, warn func(string)) *index {
 		warn(fmt.Sprintf("%d route(s) repeat a method and path that differ only in parameter names; the first is used", dups))
 	}
 	return ix
+}
+
+// child returns the node a template segment leads to from n, making it if there is none.
+func (n *trieNode) child(seg tmplSeg) *trieNode {
+	switch seg.kind {
+	case segLiteral:
+		if n.lit == nil {
+			n.lit = map[string]*trieNode{}
+		}
+		next := n.lit[seg.lit]
+		if next == nil {
+			next = &trieNode{}
+			n.lit[seg.lit] = next
+		}
+		return next
+	case segAffix:
+		for _, e := range n.affix {
+			if e.prefix == seg.lit && e.suffix == seg.suffix {
+				return e.to
+			}
+		}
+		next := &trieNode{}
+		n.affix = append(n.affix, affixEdge{seg.lit, seg.suffix, next})
+		return next
+	default:
+		if n.param == nil {
+			n.param = &trieNode{}
+		}
+		return n.param
+	}
 }
 
 // captures are the values of the parameters of a matched path, in template order.
@@ -737,7 +763,7 @@ func splitPath(path string, out []string) (n int, ok bool) {
 
 func (n *trieNode) walk(segs []string, c *captures) *trieNode {
 	if len(segs) == 0 {
-		if len(n.byMethod) > 0 {
+		if len(n.byMethod) > 0 || len(n.same) > 0 {
 			return n
 		}
 		return nil
@@ -769,6 +795,64 @@ func (n *trieNode) walk(segs []string, c *captures) *trieNode {
 		}
 	}
 	return nil
+}
+
+// respelled reports whether a path, read the way a forgiving application routes it, reaches a described route other than exact,
+// the node the path reaches as it is written (nil if none). Express and ASP.NET Core match routes without regard to letter case,
+// servlet containers cut ';' parameters off each segment before they match, and many servers and proxies merge empty segments, so
+// such a path is served by an operation the guard would not otherwise hold it to.
+func (ix *index) respelled(path string, exact *trieNode) bool {
+	if ix == nil || ix.loose == nil || !mayBeRespelled(path) {
+		return false
+	}
+	var segs [MaxPathSegments]string
+	n, ok := looseSegments(path, segs[:])
+	if !ok {
+		return false
+	}
+	var c captures
+	ln := ix.loose.walk(segs[:n], &c)
+	return ln != nil && !slices.Contains(ln.same, exact)
+}
+
+// mayBeRespelled reports whether a forgiving reading of a path can differ from its plain one.
+func mayBeRespelled(path string) bool {
+	for i := 0; i < len(path); i++ {
+		if c := path[i]; c >= 'A' && c <= 'Z' || c == '%' || c == ';' || c == '\\' || c >= utf8.RuneSelf {
+			return true
+		}
+	}
+	return strings.Contains(path, "//") || strings.Contains(path, "/.")
+}
+
+// looseSegments splits a path the way the proxy's own routing check reads it, as an application is likely to route it: decoded,
+// a backslash as a slash, with ';' parameters cut off, dot and empty segments resolved, and letter case folded. ok is false if it
+// is not a path or has more segments than fit.
+func looseSegments(p string, out []string) (n int, ok bool) {
+	if p == "" || p[0] != '/' {
+		return 0, false
+	}
+	if strings.IndexByte(p, '%') >= 0 {
+		u, err := url.PathUnescape(p)
+		if err != nil {
+			return 0, false
+		}
+		p = u
+	}
+	parts := strings.Split(strings.ReplaceAll(p, "\\", "/"), "/")
+	for i := range parts {
+		parts[i], _, _ = strings.Cut(parts[i], ";")
+	}
+	for rest := strings.TrimPrefix(path.Clean("/"+strings.Join(parts, "/")), "/"); rest != ""; {
+		var seg string
+		seg, rest, _ = strings.Cut(rest, "/")
+		if n >= len(out) {
+			return 0, false
+		}
+		out[n] = foldName(seg)
+		n++
+	}
+	return n, true
 }
 
 // route returns the route for a method at a node: HEAD is served by a GET route if there is no HEAD one.

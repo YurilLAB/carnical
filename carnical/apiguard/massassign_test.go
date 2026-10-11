@@ -51,6 +51,7 @@ func TestMassAssignment(t *testing.T) {
 		{"a property the description lets a client set is left alone", withDoc, nil, mk("POST", "/api/users", withJSON(`{"name":"a","status":"active"}`)), 0, false, ""},
 		{"a property the description does not list is one clients never send", withDoc, nil, mk("POST", "/api/users", withJSON(`{"name":"a","role":"admin"}`)), IDMassAssignRefused, true, "role"},
 		{"the same at a nested object the description lists", withDoc, nil, mk("POST", "/api/users", withJSON(`{"address":{"city":"x","is_admin":true}}`)), IDMassAssignRefused, true, "is_admin"},
+		{"a long s that Go's decoder reads as an s", withDoc, nil, mk("POST", "/api/users", withJSON(`{"name":"a","iſ_admin":true}`)), IDMassAssignRefused, true, "is_admin"},
 		{"a free-form body says nothing about what clients send", withDoc, nil, mk("POST", "/api/free", withJSON(`{"role":"admin"}`)), IDMassAssignFlagged, false, "role"},
 		{"items of an array are checked against the item schema", withDoc, nil, mk("POST", "/api/items", withJSON(`[{"title":"a","price":1}]`)), IDMassAssignRefused, true, "price"},
 		{"refusal in monitor mode does not block", withDoc, func(c *Config) { c.Modes.MassAssign = ModeMonitor }, mk("POST", "/api/users", withJSON(`{"role":"admin"}`)), IDMassAssignRefused, false, "role"},
