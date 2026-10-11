@@ -37,9 +37,15 @@ the machine's own sockets, the `user` that must own it. A service is TCP unless 
 reports every listening TCP socket, and every UDP socket that is bound and not connected to a peer
 (one that takes a packet from any sender), that no service of that protocol answers for, or that is
 on another address or owned by another user than declared. A UDP socket connected to its peer, such
-as a resolver's own query, is nobody's way in and is not reported. UDP services are not probed from
-other zones: a UDP port that does not answer says nothing about a wall. Raw and packet sockets,
-which take a capability to open, are in neither table and are not checked.
+as a resolver's own query, hears only packets that carry that peer's address and is not reported
+(every query in flight would be a finding; a packet with a forged address is for the packet policy
+to stop). A UDP-Lite socket, or a listening SCTP one, is reported whatever is declared: any user
+may open either, and no service is one. A socket table that is there and cannot be read is a
+finding too, beside whatever the other tables show. A service declared by name and not by address
+is told apart by its user alone, so it answers for that user's socket on its port whatever address
+the socket is on; declare an address to hold it to one. UDP services are not probed from other
+zones: a UDP port that does not answer says nothing about a wall. Raw and packet sockets, which
+take a capability to open, are in none of these tables and are not checked.
 
 | From | To | What | Why |
 |---|---|---|---|

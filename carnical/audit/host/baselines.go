@@ -433,10 +433,11 @@ func mountOf(path string, table map[string]mount) (dir string, m mount) {
 }
 
 // knownCopy reports whether a setuid file that the baseline does not have at its path is one the baseline has all the
-// same: it is on a mount of a kind that comes and goes, and the baseline holds a file with the same contents (and,
-// where it records them, the same mode and owners) at the same place below wherever its own copy of the tree was. A
-// container started from a recorded image, or the next revision of a snap whose setuid programs did not change, then
-// adds nothing new; a program that is not in the recorded image, or was changed, still does.
+// same: it is on a mount of a kind that comes and goes, and the baseline holds a file with the same contents, mode and
+// owners at the same place below wherever its own copy of the tree was. A container started from a recorded image, or
+// the next revision of a snap whose setuid programs did not change, then adds nothing new; a program that is not in
+// the recorded image, or was changed, still does. A baseline from before modes were recorded cannot say whom a copy
+// runs as, so against one every copy is new, as it was. The caller has read the file's mode: it is never empty.
 func knownCopy(path, hash, mode string, table map[string]mount, base Manifest, byHash map[string][]string) bool {
 	dir, m := mountOf(path, table)
 	if !comesAndGoes[m.fstype] {
@@ -447,7 +448,7 @@ func knownCopy(path, hash, mode string, table map[string]mount, base Manifest, b
 		return false // the mount is the file itself: it has no place in a tree to be the same as
 	}
 	for _, p := range byHash[hash] {
-		if recorded := base.Modes[p]; strings.HasSuffix(p, below) && (recorded == "" || recorded == mode) {
+		if base.Modes[p] == mode && strings.HasSuffix(p, below) {
 			return true
 		}
 	}
@@ -492,6 +493,9 @@ func SUID(src Source, manifestPath string) audit.Check {
 			byHash := map[string][]string{}
 			for p, h := range m.Files {
 				byHash[h] = append(byHash[h], p)
+				if m.Modes[p] == "" {
+					out.Note = "the baseline was written before modes and owners were recorded: a setuid file that changed hands is not found, and every copy is new, until it is recorded again"
+				}
 			}
 			seen := map[string]bool{}
 			for _, f := range now {

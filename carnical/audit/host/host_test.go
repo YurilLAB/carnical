@@ -855,6 +855,19 @@ func TestParseNetTCP(t *testing.T) {
 	if err != nil || len(ls) != 2 || ls[0].Addr.String() != "::1" || ls[0].Port != 8080 || ls[1].Addr.String() != "::" || ls[1].Port != 443 {
 		t.Fatalf("%v %+v", err, ls)
 	}
+	// A line that is cut short is not passed over: it could be the listener.
+	for _, bad := range []string{
+		"h\n 0: 0100007F:1F90 00000000:0000 0A\n",
+		"h\n 0: 0100007F:1F90 00000000:0000 0A 0:0 0:0 0 root 0 1 1 0 100 0\n", // an owner that is no number
+		"h\n 0: 0100007F 00000000:0000 0A 0:0 0:0 0 1000 0 1 1 0 100 0\n",      // an address with no port
+	} {
+		if ls, err := ParseNetTCP([]byte(bad), false); err == nil {
+			t.Fatalf("%q was read as %+v", bad, ls)
+		}
+	}
+	if ls, err := ParseNetTCP([]byte("h\n\n"), false); err != nil || len(ls) != 0 {
+		t.Fatalf("an empty line: %v %+v", err, ls)
+	}
 }
 
 func TestParseNetUDP(t *testing.T) {
@@ -871,13 +884,13 @@ func TestParseNetUDP(t *testing.T) {
 	if err != nil || len(ls) != 3 {
 		t.Fatalf("%v %+v", err, ls)
 	}
-	if ls[0] != (Listener{Addr: netip.MustParseAddr("127.0.0.53"), Port: 53, UID: 992, UDP: true}) {
+	if ls[0] != (Listener{Addr: netip.MustParseAddr("127.0.0.53"), Port: 53, UID: 992}) {
 		t.Fatalf("%+v", ls[0])
 	}
-	if ls[1] != (Listener{Addr: netip.MustParseAddr("0.0.0.0"), Port: 68, UID: 0, UDP: true}) {
+	if ls[1] != (Listener{Addr: netip.MustParseAddr("0.0.0.0"), Port: 68, UID: 0}) {
 		t.Fatalf("%+v", ls[1])
 	}
-	if ls[2] != (Listener{Addr: netip.MustParseAddr("0.0.0.0"), Port: 5000, UID: 990, UDP: true}) {
+	if ls[2] != (Listener{Addr: netip.MustParseAddr("0.0.0.0"), Port: 5000, UID: 990}) {
 		t.Fatalf("%+v", ls[2])
 	}
 	// IPv6: a DHCPv6 client on [::]:546, a socket connected to [2001:db8::1]:53, and one connected to port 0 of a peer.
@@ -887,17 +900,62 @@ func TestParseNetUDP(t *testing.T) {
  4023: 00000000000000000000000001000000:D2C6 B80D0120000000000000000001000000:0000 01 00000000:00000000 00:00000000 00000000   990        0 3 2 0000000000000000 0
 `
 	ls, err = ParseNetUDP([]byte(v6), true)
-	if err != nil || len(ls) != 1 || ls[0] != (Listener{Addr: netip.MustParseAddr("::"), Port: 546, UID: 998, UDP: true}) {
+	if err != nil || len(ls) != 1 || ls[0] != (Listener{Addr: netip.MustParseAddr("::"), Port: 546, UID: 998}) {
 		t.Fatalf("%v %+v", err, ls)
 	}
 	for _, bad := range []string{
 		"h\n 1: 3500007F:0035 00000000 07 0:0 0:0 0 992 0 1 2 0 0\n",       // a peer with no port
 		"h\n 1: 3500007F:0035 00000000:0000 07 0:0 0:0 0 root 0 1 2 0 0\n", // an owner that is no number
 		"h\n 1: 3500007F 00000000:0000 07 0:0 0:0 0 992 0 1 2 0 0\n",       // an address with no port
+		"h\n 1: 3500007F:0035 00000000:0000 07 0:0\n",                      // a line cut short
 	} {
 		if ls, err := ParseNetUDP([]byte(bad), false); err == nil {
 			t.Fatalf("%q was read as %+v", bad, ls)
 		}
+	}
+}
+
+func TestParseSCTPEndpoints(t *testing.T) {
+	// A real /proc/net/sctp/eps: a listening socket on 127.0.0.1:9000 (uid 1000), one bound to two addresses, one that
+	// is bound and not listening, and one in the middle of an association of its own.
+	data := ` ENDPT     SOCK   STY SST HBKT LPORT   UID INODE LADDRS
+       0        0 2   10  29   9000   1000 5854707 127.0.0.1
+       0        0 2   10  30   9001      0 5854708 10.0.0.5 2001:db8::5
+       0        0 2   7   31   9002   1000 5854709 127.0.0.1
+       0        0 0   1   32   9003   1000 5854710 127.0.0.1
+`
+	ls, err := ParseSCTPEndpoints([]byte(data))
+	want := []Listener{
+		{Addr: netip.MustParseAddr("127.0.0.1"), Port: 9000, UID: 1000},
+		{Addr: netip.MustParseAddr("10.0.0.5"), Port: 9001, UID: 0},
+		{Addr: netip.MustParseAddr("2001:db8::5"), Port: 9001, UID: 0},
+	}
+	if err != nil || len(ls) != len(want) {
+		t.Fatalf("%v %+v", err, ls)
+	}
+	for i := range want {
+		if ls[i] != want[i] {
+			t.Fatalf("%d: %+v, want %+v", i, ls[i], want[i])
+		}
+	}
+	// Every address is read as it would be reached: one written as an IPv4 address inside an IPv6 one is that IPv4 one.
+	if ls, err := ParseSCTPEndpoints([]byte("h\n 0 0 2 10 1 9000 0 1 ::ffff:10.0.0.5 :: \n")); err != nil || len(ls) != 2 ||
+		ls[0].Addr != netip.MustParseAddr("10.0.0.5") || ls[1].Addr != netip.MustParseAddr("::") {
+		t.Fatalf("%v %+v", err, ls)
+	}
+	for _, bad := range []string{
+		"h\n 0 0 2 10 29 9000 1000\n",                    // a line cut short
+		"h\n 0 0 2 10 29 9000 1000 5854707\n",            // a listening socket on no address
+		"h\n 0 0 2 10 29 90000 1000 5854707 127.0.0.1\n", // a port that is none
+		"h\n 0 0 2 10 29 9000 root 5854707 127.0.0.1\n",  // an owner that is no number
+		"h\n 0 0 2 10 29 9000 1000 5854707 localhost\n",  // an address that is none
+	} {
+		if ls, err := ParseSCTPEndpoints([]byte(bad)); err == nil {
+			t.Fatalf("%q was read as %+v", bad, ls)
+		}
+	}
+	if ls, err := ParseSCTPEndpoints([]byte("h\n\n")); err != nil || len(ls) != 0 {
+		t.Fatalf("an empty line: %v %+v", err, ls)
 	}
 }
 
@@ -974,16 +1032,101 @@ func TestListeners(t *testing.T) {
 		r.Problems[0] != "[::]:546 (UDP) takes packets from any sender, owned by root, and is not in the zone map" {
 		t.Fatalf("%+v", r)
 	}
-	// What cannot be read is not passed over: without the UDP table the check has not looked.
-	for name, files := range map[string]map[string]string{
-		"no UDP table":         {"/proc/net/tcp": tcp, "/etc/passwd": passwd},
-		"a UDP table cut off":  {"/proc/net/tcp": tcp, "/proc/net/udp": "h\n 1: 3500007F:0035 0000 07\n 2: 3500007F:0035 00000000 07 0:0 0:0 0 992 0 1 2 0 0\n", "/etc/passwd": passwd},
-		"a UDP6 table cut off": {"/proc/net/tcp": tcp, "/proc/net/udp": udp, "/proc/net/udp6": "h\n 1: 00:0035 00:0000 07 0:0 0:0 0 0 0 1 2 0 0\n", "/etc/passwd": passwd},
-	} {
-		if r := run(Listeners(&fake{files: files}, declared)); r.Status != audit.Skip {
-			t.Fatalf("%s: %+v", name, r)
-		}
+	// UDP-Lite is a protocol of its own, with its own ports and its own tables, and any user may open a socket of it. No
+	// service answers for one, a UDP service on the same port neither; a connected one is left out as for UDP.
+	lite := &fake{files: map[string]string{"/proc/net/tcp": tcp, "/proc/net/udp": udp, "/etc/passwd": passwd,
+		"/proc/net/udplite":  "h\n 1871: 0100007F:0035 00000000:0000 07 0:0 0:0 0 990 0 1 2 0 0\n 4069: 0100007F:9DC0 0100007F:0035 01 0:0 0:0 0 990 0 1 2 0 0\n",
+		"/proc/net/udplite6": "h\n 1583: 00000000000000000000000001000000:940A 00000000000000000000000000000000:0000 07 0:0 0:0 0 0 0 1 2 0 0\n"}}
+	withLite := append(append([]audit.Service{}, declared...), audit.Service{Name: "lite", Addr: "127.0.0.1:53", Proto: "udp", User: "carnical-edge"})
+	if r := run(Listeners(lite, withLite)); r.Status != audit.Fail || len(r.Problems) != 2 ||
+		r.Problems[0] != "127.0.0.1:53 (UDP-Lite) takes packets from any sender, owned by carnical-edge, and is not in the zone map" ||
+		r.Problems[1] != "[::1]:37898 (UDP-Lite) takes packets from any sender, owned by root, and is not in the zone map" {
+		t.Fatalf("%+v", r)
 	}
+	// SCTP is the same to a zone map: any user may listen with it, and no service is declared to. An endpoint that is not
+	// listening takes no association, and is left out.
+	sctp := &fake{files: map[string]string{"/proc/net/tcp": tcp, "/proc/net/udp": udp, "/etc/passwd": passwd,
+		"/proc/net/sctp/eps": "h\n 0 0 2 10 29 8443 991 1 127.0.0.1 \n 0 0 2 7 30 9002 990 2 127.0.0.1 \n 0 0 2 10 31 9001 0 3 10.0.0.5 2001:db8::5 \n"}}
+	if r := run(Listeners(sctp, declared)); r.Status != audit.Fail || len(r.Problems) != 3 ||
+		r.Problems[0] != "10.0.0.5:9001 (SCTP) is listening, owned by root, and is not in the zone map" ||
+		r.Problems[1] != "127.0.0.1:8443 (SCTP) is listening, owned by carnical-ctl, and is not in the zone map" ||
+		r.Problems[2] != "[2001:db8::5]:9001 (SCTP) is listening, owned by root, and is not in the zone map" {
+		t.Fatalf("%+v", r)
+	}
+	// A table that is there and cannot be read, or cannot be understood, is a finding, and what the other tables show is
+	// still reported: a check that stopped there would hide a listener behind the table it did not read. Only the IPv6,
+	// UDP-Lite and SCTP tables may be missing, on a machine that has none of those.
+	all := map[string]string{"/proc/net/tcp": tcp, "/proc/net/udp": udp, "/proc/net/tcp6": "h\n", "/proc/net/udp6": "h\n",
+		"/proc/net/udplite": "h\n", "/proc/net/udplite6": "h\n", "/proc/net/sctp/eps": "h\n", "/etc/passwd": passwd}
+	with := func(path, content string) map[string]string {
+		m := map[string]string{}
+		for k, v := range all {
+			m[k] = v
+		}
+		if content == "" {
+			delete(m, path)
+		} else {
+			m[path] = content
+		}
+		return m
+	}
+	for _, tt := range []struct {
+		name  string
+		files map[string]string
+		deny  string // a file that is there and may not be read
+		want  string // "" if nothing but the listener nobody declared is reported
+	}{
+		{"every table", all, "", ""},
+		{"no IPv6, UDP-Lite or SCTP", map[string]string{"/proc/net/tcp": tcp, "/proc/net/udp": udp, "/etc/passwd": passwd}, "", ""},
+		{"no UDP table", with("/proc/net/udp", ""), "", "/proc/net/udp cannot be read, so its sockets were not checked"},
+		{"a UDP table cut off", with("/proc/net/udp", "h\n 1: 3500007F:0035 0000 07\n 2: 3500007F:0035 00000000 07 0:0 0:0 0 992 0 1 2 0 0\n"), "",
+			"/proc/net/udp cannot be read, so its sockets were not checked"},
+		{"a UDP table that may not be read", all, "/proc/net/udp", "/proc/net/udp cannot be read, so its sockets were not checked"},
+		{"a UDP6 table cut off", with("/proc/net/udp6", "h\n 1: 00:0035 00:0000 07 0:0 0:0 0 0 0 1 2 0 0\n"), "",
+			"/proc/net/udp6 cannot be read, so its sockets were not checked"},
+		{"a UDP6 table that may not be read", all, "/proc/net/udp6", "/proc/net/udp6 cannot be read, so its sockets were not checked"},
+		{"a TCP6 table cut off", with("/proc/net/tcp6", "h\n 1: 00:01BB 00:0000 0A 0:0 0:0 0 0 0 1 1 0 100 0\n"), "",
+			"/proc/net/tcp6 cannot be read, so its sockets were not checked"},
+		{"a TCP6 table that may not be read", all, "/proc/net/tcp6", "/proc/net/tcp6 cannot be read, so its sockets were not checked"},
+		{"a UDP-Lite table cut off", with("/proc/net/udplite", "h\n 1: 0100007F 00000000:0000 07 0:0 0:0 0 990 0 1 2 0 0\n"), "",
+			"/proc/net/udplite cannot be read, so its sockets were not checked"},
+		{"a UDP-Lite table that may not be read", all, "/proc/net/udplite6", "/proc/net/udplite6 cannot be read, so its sockets were not checked"},
+		{"an SCTP table cut off", with("/proc/net/sctp/eps", "h\n 0 0 2 10 29 9000\n"), "", "/proc/net/sctp/eps cannot be read, so its sockets were not checked"},
+		{"an SCTP table that may not be read", all, "/proc/net/sctp/eps", "/proc/net/sctp/eps cannot be read, so its sockets were not checked"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var src Source = &fake{files: tt.files}
+			if tt.deny != "" {
+				src = noRead{Source: src, path: tt.deny}
+			}
+			// The control service is not declared here: it must be reported whatever else could not be read.
+			r := run(Listeners(src, []audit.Service{declared[0], declared[2]}))
+			got := strings.Join(r.Problems, "\n")
+			if r.Status != audit.Fail || !strings.Contains(got, "127.0.0.1:8443 is listening") {
+				t.Fatalf("%+v", r)
+			}
+			if tt.want == "" && len(r.Problems) != 1 || !strings.Contains(got, tt.want) {
+				t.Fatalf("%+v", r)
+			}
+		})
+	}
+	// Without the TCP table nothing can be said at all: the check did not run.
+	if r := run(Listeners(&fake{files: with("/proc/net/tcp", "")}, declared)); r.Status != audit.Skip {
+		t.Fatalf("no TCP table: %+v", r)
+	}
+}
+
+// noRead is a machine on which one file is there and may not be read.
+type noRead struct {
+	Source
+	path string
+}
+
+func (n noRead) ReadFile(p string) ([]byte, error) {
+	if p == n.path {
+		return nil, &fs.PathError{Op: "open", Path: p, Err: fs.ErrPermission}
+	}
+	return n.Source.ReadFile(p)
 }
 
 func TestRunning(t *testing.T) {
@@ -1403,7 +1546,7 @@ func TestSUIDCopiesOfARecordedTree(t *testing.T) {
 	if err := WriteSUID(context.Background(), src, baseline, false); err != nil {
 		t.Fatal(err)
 	}
-	if r := run(SUID(src, baseline)); r.Status != audit.Pass || r.Checked != 4 {
+	if r := run(SUID(src, baseline)); r.Status != audit.Pass || r.Checked != 4 || r.Note != "" {
 		t.Fatalf("the machine as it was recorded: %+v", r)
 	}
 	withModes, err := os.ReadFile(baseline)
@@ -1430,8 +1573,10 @@ func TestSUIDCopiesOfARecordedTree(t *testing.T) {
 			[]string{"c2/merged", "overlay"}, "", false},
 		{"the next revision of the snap, its program unchanged", func() string { return put(setuid, "sudo", "snap", "core", "2015", "usr", "bin", "sudo") },
 			[]string{"snap/core/2015", "squashfs"}, "", false},
+		// A baseline from before modes were recorded cannot say that a copy runs as the same user, so against one every
+		// copy is new, as it always was.
 		{"the same against an old baseline", func() string { return put(setuid, "sudo", "snap", "core", "2015", "usr", "bin", "sudo") },
-			[]string{"snap/core/2015", "squashfs"}, "", true},
+			[]string{"snap/core/2015", "squashfs"}, "snap/core/2015/usr/bin/sudo is a new setuid or setgid file", true},
 		{"a container whose program is another", func() string { return put(setuid, "su with a back door", "c2", "merged", "usr", "bin", "su") },
 			[]string{"c2/merged", "overlay"}, "c2/merged/usr/bin/su is a new setuid or setgid file", false},
 		{"the next revision with a changed program", func() string { return put(setuid, "sudo 1.9.16", "snap", "core", "2015", "usr", "bin", "sudo") },
@@ -1442,8 +1587,8 @@ func TestSUIDCopiesOfARecordedTree(t *testing.T) {
 			[]string{"c2/merged", "overlay"}, "c2/merged/usr/bin/xsu is a new setuid or setgid file", false},
 		{"a program that was setgid, now setuid, in a new container", func() string { return put(setuid, "wall", "c2", "merged", "usr", "bin", "wall") },
 			[]string{"c2/merged", "overlay"}, "c2/merged/usr/bin/wall is a new setuid or setgid file", false},
-		{"the same against an old baseline, which cannot tell", func() string { return put(setuid, "wall", "c2", "merged", "usr", "bin", "wall") },
-			[]string{"c2/merged", "overlay"}, "", true},
+		{"that program against an old baseline", func() string { return put(setuid, "wall", "c2", "merged", "usr", "bin", "wall") },
+			[]string{"c2/merged", "overlay"}, "c2/merged/usr/bin/wall is a new setuid or setgid file", true},
 		{"a copy on a disk of the machine's own", func() string { return put(setuid, "su", "c2", "merged", "usr", "bin", "su") },
 			[]string{"c2/merged", "ext4"}, "c2/merged/usr/bin/su is a new setuid or setgid file", false},
 		{"a copy on no mount of its own", func() string { return put(setuid, "su", "c2", "merged", "usr", "bin", "su") },
@@ -1498,7 +1643,8 @@ func TestSUIDCopiesOfARecordedTree(t *testing.T) {
 	if err := os.WriteFile(baseline, withoutModes, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if r := run(SUID(src, baseline)); r.Status != audit.Pass {
+	// It passes, as it did before modes were recorded, and says beside the result what it cannot see.
+	if r := run(SUID(src, baseline)); r.Status != audit.Pass || !strings.Contains(r.Note, "written before modes and owners were recorded") {
 		t.Fatalf("the same against an old baseline: %+v", r)
 	}
 	if err := os.Chmod(wall, setgid); err != nil {

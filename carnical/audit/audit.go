@@ -39,6 +39,9 @@ type Outcome struct {
 	Problems []string
 	// SkipReason is set when the check could not run in this place.
 	SkipReason string
+	// Note is something to read beside the result of a check that ran, such as what it could not see. It is not a
+	// problem and does not fail the check.
+	Note string
 }
 
 // Check is one segmentation check.
@@ -146,11 +149,11 @@ func runOne(ctx context.Context, c Check, limit time.Duration) (res Result) {
 	case out.SkipReason != "":
 		res.Status, res.Note = Skip, out.SkipReason
 	case len(out.Problems) > 0:
-		res.Status = Fail
+		res.Status, res.Note = Fail, out.Note
 	case out.Checked == 0:
 		res.Status, res.Note = Fail, "the check exercised no cases, so it proves nothing"
 	default:
-		res.Status = Pass
+		res.Status, res.Note = Pass, out.Note
 	}
 	return res
 }
