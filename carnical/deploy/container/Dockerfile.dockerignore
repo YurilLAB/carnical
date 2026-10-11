@@ -20,6 +20,8 @@
 !carnical/formats/**
 !carnical/shield/**
 !carnical/proxy/**
+!carnical/policy/**
+!carnical/vpatch/**
 !carnical/sandbox/**
 **/*_test.go
 **/.git/**
