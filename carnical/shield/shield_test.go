@@ -523,6 +523,28 @@ func TestABanIsRenewedWithinOneAttack(t *testing.T) {
 			t.Fatalf("decisions %v, then %+v; %d bans", ids, d, s.Snapshot().Banned)
 		}
 	})
+	// Nor does a client that became known shortly before the attack lose its standing for its connections (the reserved
+	// share, and keeping an idle connection), which mitigation takes from it.
+	t.Run("monitor mode keeps a recent client known", func(t *testing.T) {
+		for _, monitor := range []bool{true, false} {
+			now := now
+			s := newTestShield(t, &now, func(c *Config) { c.MonitorOnly = monitor })
+			s.sources.do(key, now.UnixNano(), func(src *source) {
+				src.knownAt, src.knownUntil = now.Add(-10*time.Second).UnixNano(), now.Add(time.Hour).UnixNano()
+			})
+			s.det.info.Store(&attackInfo{epoch: 1, since: now.UnixNano(), fps: map[uint64]bool{}, paths: map[uint64]bool{}})
+			mine, theirs := net.Pipe()
+			defer theirs.Close()
+			c := s.admitConn(addrConn{mine, net.TCPAddrFromAddrPort(netip.AddrPortFrom(key, 40000))})
+			if c == nil {
+				t.Fatalf("monitor %v: the connection was refused", monitor)
+			}
+			if known := c.(*conn).known; known != monitor {
+				t.Fatalf("monitor %v: the client is known: %v", monitor, known)
+			}
+			c.Close()
+		}
+	})
 }
 
 // A known client gets past the attack's budgets only within a budget of its own. A botnet that earned standing before it

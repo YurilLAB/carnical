@@ -114,7 +114,13 @@ func (s *Shield) admitConn(c net.Conn) net.Conn {
 	}
 	ns := s.now().UnixNano()
 	sc := &conn{Conn: c, s: s, key: SourceKey(a), subnet: netOf(a), trusted: s.trusted(a)}
-	attack := s.det.info.Load() != nil && !s.cfg.MonitorOnly
+	// In monitor mode an attack changes nothing here: who is known, and so may use the reserved share and keep an idle
+	// connection, is decided as at any other time.
+	info := s.det.info.Load()
+	if s.cfg.MonitorOnly {
+		info = nil
+	}
+	attack := info != nil
 	refused := false
 	scaleNet := 1.0
 	if !sc.trusted {
@@ -123,7 +129,7 @@ func (s *Shield) admitConn(c net.Conn) net.Conn {
 		earn := s.det.earn.Load()
 		s.sources.do(sc.key, ns, func(src *source) {
 			src.last = ns
-			sc.known = s.isKnown(src, ns, s.det.info.Load())
+			sc.known = s.isKnown(src, ns, info)
 			scaleSrc := s.raise(src.earned.roll(earn, s.cfg.RequestRate), s.cfg.RequestRate)
 			rate, burst := s.cfg.ConnRate*scaleSrc, s.cfg.ConnBurst*scaleSrc
 			if attack && !sc.known {
