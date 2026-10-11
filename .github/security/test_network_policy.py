@@ -402,7 +402,7 @@ def egress():
     print(json.dumps({"connected": connected}), flush=True)
 
 
-def test(binary, investigate=False):
+def test(binary, investigate=False, egress_users=True):
     if os.geteuid() != 0:
         raise RuntimeError("network namespace test requires root")
     if os.stat("/proc/self/ns/net").st_ino == os.stat("/proc/1/ns/net").st_ino:
@@ -506,7 +506,7 @@ def test(binary, investigate=False):
                         lab.expect("edge_bad_tcp", 33334)
                         lab.expect("edge_udp_drop", 33333)
                         lab.expect("edge_syn_source_drop", 20000)
-                        equal(sum(lab.count(name) for name in ("edge_syn_admitted", "edge_syn_source_drop", "edge_syn_global_drop")),
+                        equal(sum(lab.count(name) for name in ("edge_syn_admitted", "edge_syn_source_drop", "edge_syn_network_drop", "edge_syn_global_drop")),
                               33333, "investigation flood SYN accounting")
                 for family in (4, 6):
                     result = measured_batch({"family": family, "count": 25, "workers": 1, "attack": True, "pace": .05})
@@ -572,22 +572,46 @@ def test(binary, investigate=False):
         print("PASS: aggregate SYN limit holds across different source addresses (reduced threshold fixture)", flush=True)
 
         for family in (4, 6):
+            # Four buckets in each meter, and sixty-four sources, each in a network of its own.
             lab.load(small_set=True)
-            sources = [f"203.0.113.{i + 1}" if family == 4 else f"fd00:{i + 256:x}::1" for i in range(5)]
-            lab.send([frame(src, ident=i) for i, src in enumerate(sources)])
-            lab.expect("edge_syn_admitted", 4)
-            lab.expect("edge_syn_source_drop", 1)
-            equal(lab.count("edge_syn_admitted"), 4, "full meter set must refuse an untracked source")
-            lab.send([frame(sources[0], ident=7)])
-            lab.expect("edge_syn_admitted", 5)
-            time.sleep(1.2)
-            # Kernel garbage collection and RCU reclamation can lag the element timeout. Retry until capacity returns.
-            deadline = time.monotonic() + 5
-            while lab.count("edge_syn_admitted") < 6 and time.monotonic() < deadline:
-                lab.send([frame(sources[4], ident=8)])
-                time.sleep(0.1)
-            lab.expect("edge_syn_admitted", 6)
-        print("PASS: full IPv4/IPv6 meter sets fail closed; existing keys work and expired entries release capacity", flush=True)
+            sources = [f"203.0.{i}.1" if family == 4 else f"fd00:{i + 256:x}::1" for i in range(64)]
+            lab.send([frame(src, ident=i + 1) for i, src in enumerate(sources)])
+            lab.expect("edge_syn_admitted", 64)
+            equal(lab.count("edge_syn_source_drop") + lab.count("edge_syn_network_drop"), 0,
+                  "sources beyond the number of buckets must not be refused")
+        print("PASS: more IPv4/IPv6 sources than a meter has buckets are all admitted: a flood of new sources cannot fill it", flush=True)
+
+        # With one bucket every source shares one budget: sharing a bucket never adds up to more than its budget.
+        lab.load(overrides={"syn_meter_size": 1})
+        lab.send([frame(f"203.{i // 200}.{i % 200}.1", ident=i + 1) for i in range(400)])
+        lab.expect("edge_syn_source_drop", 150)
+        lab.expect("edge_syn_admitted", 200)
+        equal(lab.count("edge_syn_admitted") + lab.count("edge_syn_source_drop"), 400, "shared-bucket SYN accounting")
+        print("PASS: sources that share a bucket share its budget and do not exceed it", flush=True)
+
+        # One loud source is cut down by its own budget before the aggregate: the others still have all of that.
+        lab.load(overrides={"syn_global_rate": 150, "syn_global_burst": 300})
+        lab.send([frame(PEER4, ident=i + 1) for i in range(3000)])
+        lab.expect("edge_syn_source_drop", 2500)
+        equal(lab.count("edge_syn_global_drop"), 0, "a source over its own budget must not use up the aggregate")
+        before = lab.count("edge_syn_admitted")
+        lab.send([frame(f"203.0.{i}.1", ident=i + 1) for i in range(40)])
+        lab.expect("edge_syn_admitted", before + 40)
+        equal(lab.count("edge_syn_global_drop"), 0, "other sources keep the aggregate while one source floods")
+        print("PASS: a source flood is refused by its own budget and leaves the aggregate to everyone else", flush=True)
+
+        for family in (4, 6):
+            # 120 sources in one IPv4 /24, or 120 /64s in one IPv6 /48: no source is over its budget, the network is.
+            lab.load(overrides={"syn_network_rate": 20, "syn_network_burst": 40})
+            sources = [f"203.0.113.{i + 1}" if family == 4 else f"fd00:cc:0:{i + 1:x}::1" for i in range(120)]
+            lab.send([frame(src, ident=i + 1) for i, src in enumerate(sources)])
+            lab.expect("edge_syn_network_drop", 60)
+            lab.expect("edge_syn_admitted", 40)
+            equal(lab.count("edge_syn_source_drop"), 0, "no source of the network is over its own budget")
+            before = lab.count("edge_syn_admitted")
+            lab.send([frame("203.0.114.1" if family == 4 else "fd00:cd::1")])
+            lab.expect("edge_syn_admitted", before + 1)
+        print("PASS: an IPv4 /24 and an IPv6 /48 are held to the network's budget; another network keeps its own", flush=True)
 
         lab.load()
         echo = struct.pack("!BBHHH", 128, 0, 0, 1, 1)
@@ -614,7 +638,7 @@ def test(binary, investigate=False):
 
         lab.load()
         lab.ask({"kind": "serve_origin"})
-        for uid, host, port, connected, counter in [
+        for uid, host, port, connected, counter in [] if not egress_users else [
             (61001, "198.51.100.2", 80, 16, None),
             (61001, "127.0.0.1", origin.server_port, 0, "egress_private_drop"),
             (61001, "168.63.129.16", 80, 0, "egress_private_drop"),
@@ -630,7 +654,10 @@ def test(binary, investigate=False):
             if counter:
                 lab.expect(counter, before + 16)
         # Six refusals beyond each logging burst must still be refused; successful public-port connections are the control.
-        print("PASS: service-UID egress still refuses private/metadata/Azure platform/SMTP/internal traffic after log-budget exhaustion", flush=True)
+        if egress_users:
+            print("PASS: service-UID egress still refuses private/metadata/Azure platform/SMTP/internal traffic after log-budget exhaustion", flush=True)
+        else:
+            print("SKIPPED: service-UID egress (asked for with --no-egress-users: this user cannot become another)", flush=True)
 
         # Exercise the same deployed policy at small and large budgets, including shared peers, finite overflow,
         # ordinary HTTP keep-alive and the entire WAF with its Go connection shield enabled.
@@ -659,13 +686,19 @@ def test(binary, investigate=False):
             print(f"PASS: {profile} ordinary and shared-peer bursts admitted without packet-budget refusals", flush=True)
 
             # Reduce only the peer budget to exhaust it deterministically; keep each profile's aggregate ceiling.
-            lab.load(profile=profile, peers=True, overrides={"syn_peer_rate": 10, "syn_peer_burst": 20})
-            lab.send([frame(PEER4, ident=i + 1) for i in range(200)])
-            lab.expect("edge_syn_peer_drop", 150)
-            equal(lab.count("edge_syn_admitted"), 0, "exhausted peer must not fall back to ordinary budget")
-            lab.load(profile=profile, peers=True, low_global=True)
-            lab.send([frame(PEER6, ident=i + 1) for i in range(200)])
-            lab.expect("edge_syn_global_drop", 150)
+            for src in (PEER4, PEER6):
+                lab.load(profile=profile, peers=True, overrides={"syn_peer_rate": 10, "syn_peer_burst": 20})
+                lab.send([frame(src, ident=i + 1) for i in range(200)])
+                lab.expect("edge_syn_peer_drop", 150)
+                equal(lab.count("edge_syn_admitted"), 0, "exhausted peer must not fall back to ordinary budget")
+                equal(lab.count("edge_syn_peer_admitted") + lab.count("edge_syn_peer_drop"), 200,
+                      "a peer over its budget is refused once and admitted no other way")
+                # A peer within its own budget still comes under the aggregate.
+                lab.load(profile=profile, peers=True, low_global=True)
+                lab.send([frame(src, ident=i + 1) for i in range(200)])
+                lab.expect("edge_syn_global_drop", 150)
+                equal(lab.count("edge_syn_peer_admitted") + lab.count("edge_syn_global_drop"), 200,
+                      "peer SYN accounting under the aggregate")
             print(f"PASS: {profile} peer budgets and aggregate ceiling remain enforced (reduced exhaustion fixture)", flush=True)
 
             lab.load(profile=profile, peers=True)
@@ -702,7 +735,7 @@ def test(binary, investigate=False):
             equal(lab.ask({"kind": "flood_wait"}), {"sent": packets}, "varied flood generation")
             lab.expect("edge_bad_tcp", (packets + 2) // 3)
             lab.expect("edge_udp_drop", (packets + 1) // 3)
-            syn = sum(lab.count(name) for name in ("edge_syn_admitted", "edge_syn_source_drop", "edge_syn_global_drop"))
+            syn = sum(lab.count(name) for name in ("edge_syn_admitted", "edge_syn_source_drop", "edge_syn_network_drop", "edge_syn_global_drop"))
             equal(syn, packets // 3, "every flood SYN must be admitted or refused by a named counter")
             if profile == "large":
                 lab.expect("edge_syn_source_drop", 20000)
@@ -713,7 +746,7 @@ def test(binary, investigate=False):
                 equal(result["errors"], 0, "hostile HTTP request transport errors")
                 equal(result["statuses"], {"403": 25}, "SQL injection must still be blocked")
             counts = {name: lab.count(name) for name in ("edge_bad_tcp", "edge_udp_drop", "edge_syn_admitted",
-                                                        "edge_syn_source_drop", "edge_syn_global_drop")}
+                                                        "edge_syn_source_drop", "edge_syn_network_drop", "edge_syn_global_drop")}
             print(f"PASS: {profile} varied flood {packets} packets accounted for {json.dumps(counts)}; SQL injection 50/50 blocked", flush=True)
             stop_waf(waf)
 
@@ -730,12 +763,12 @@ def test(binary, investigate=False):
 
         for family in (4, 6):
             lab.load(small_set=True, peers=("198.51.100.0/24", "fd00::/16"))
-            sources = [f"198.51.100.{i + 10}" if family == 4 else f"fd00:{i + 10:x}::1" for i in range(5)]
+            sources = [f"198.51.100.{i + 10}" if family == 4 else f"fd00:{i + 10:x}::1" for i in range(64)]
             lab.send([frame(src, ident=i + 1) for i, src in enumerate(sources)])
-            equal(lab.count("edge_syn_peer_admitted"), 4, "bounded peer-meter capacity")
-            lab.expect("edge_syn_peer_drop", 1)
-            equal(lab.count("edge_syn_admitted"), 0, "full peer meter must not fall back to ordinary admission")
-        print("PASS: full IPv4/IPv6 peer-meter sets refuse new keys without gaining another budget", flush=True)
+            lab.expect("edge_syn_peer_admitted", 64)
+            equal(lab.count("edge_syn_peer_drop"), 0, "peers beyond the number of buckets must not be refused")
+            equal(lab.count("edge_syn_admitted"), 0, "peers must not be counted as ordinary admission")
+        print("PASS: more IPv4/IPv6 peers than the peer meter has buckets are admitted, by the peer budget alone", flush=True)
 
         lab.load(port=9443)
         waf = start_waf(["-ddos", "off"], port=9443)
@@ -775,7 +808,7 @@ def test(binary, investigate=False):
         lab.expect("edge_bad_tcp", 33334)
         lab.expect("edge_udp_drop", 33333)
         lab.expect("edge_syn_source_drop", 20000)
-        equal(sum(lab.count(name) for name in ("edge_syn_admitted", "edge_syn_source_drop", "edge_syn_global_drop")),
+        equal(sum(lab.count(name) for name in ("edge_syn_admitted", "edge_syn_source_drop", "edge_syn_network_drop", "edge_syn_global_drop")),
               33333, "TLS flood SYN accounting")
         for family in (4, 6):
             result = lab.ask({"kind": "http_batch", "family": family, "count": 25, "workers": 1,
@@ -804,6 +837,8 @@ def main():
     parser.add_argument("--egress", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--binary", type=pathlib.Path)
     parser.add_argument("--latency-investigation", action="store_true", help="compare origin queue, keep-alive and TCP flush controls")
+    parser.add_argument("--no-egress-users", action="store_true",
+                        help="leave out the checks that run as the service users (for a user namespace, where root cannot become them)")
     args = parser.parse_args()
     if args.peer or args.egress:
         if os.stat("/proc/self/ns/net").st_ino == os.stat("/proc/1/ns/net").st_ino:
@@ -817,9 +852,10 @@ def main():
     elif not args.inside:
         os.execvp("unshare", ["unshare", "--net", sys.executable, str(pathlib.Path(__file__).resolve()),
                               "--inside", "--binary", str(args.binary.resolve()),
-                              *(["--latency-investigation"] if args.latency_investigation else [])])
+                              *(["--latency-investigation"] if args.latency_investigation else []),
+                              *(["--no-egress-users"] if args.no_egress_users else [])])
     else:
-        test(args.binary.resolve(), investigate=args.latency_investigation)
+        test(args.binary.resolve(), investigate=args.latency_investigation, egress_users=not args.no_egress_users)
 
 
 if __name__ == "__main__":

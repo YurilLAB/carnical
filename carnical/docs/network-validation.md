@@ -180,6 +180,41 @@ Measure edge handshakes separately from origin waits before changing packet budg
 it cannot increase a saturated origin's processing capacity. Keep evaluation, upstream and connection limits within the
 server's resource budget. These local results do not measure internet-scale volumetric attacks or multi-node capacity.
 
+### SYN budgets that a flood of new sources cannot fill (2026-10-11)
+
+The per-source SYN budgets were kept in sets of addresses, 65,536 to a family with a 60 second timeout, and the rule that
+adds a source to its set is the rule that admits it. A full set adds nothing, so once that many sources had each sent one
+SYN inside a minute (about 1,100 packets a second with invented source addresses, or one IPv6 /48 stepping through its
+/64s), the first SYN of every new client was dropped until entries expired. The test recorded above showed this at a set
+of four, where the fifth source is refused, and took it for the intended behaviour.
+
+The budgets are now counted in a fixed number of buckets. A source is counted in the bucket its address hashes to, with
+a seed the kernel draws when the rules are loaded, so there is nothing to fill; sources that fall in one bucket share
+its budget and do not add to it. A second tier counts an IPv4 /24 and an IPv6 /48 the same way (1,000 a second, burst
+2,000 in the standard profile), which bounds a host that changes its address inside its own network. The order is source,
+network, aggregate, and each is charged only for what the one before let through. Before, the aggregate was charged
+first, so one loud source could use it up for everyone while its own packets were refused a rule later.
+
+`.github/security/test_network_policy.py` was run in a private network namespace (nftables 1.1.3, Linux 6.18) against
+the built proxy:
+
+- With four buckets to a meter, 64 IPv4 sources and 64 IPv6 /64s, each in a network of its own, were all admitted.
+- With one bucket, 400 sources were held to the one budget between them: every packet was either admitted or counted as
+  refused by the source budget, at least 150 of them refused.
+- 3,000 SYNs from one source, with the aggregate lowered to 150 a second, were refused by that source's budget (at least
+  2,500) and none by the aggregate; 40 other sources sent after them were all admitted.
+- 120 sources in one /24, and 120 /64s in one /48, with the network budget lowered to 20 a second: at least 60 were
+  refused by the network budget and none by a source budget, and a source in the next network was admitted.
+- A peer over its own budget is refused once and admitted no other way, and a peer within it still comes under the
+  aggregate, in both families.
+- The other steps of the earlier records pass unchanged, 34 in all. The step that sends as each service user needs real
+  root and was not run here; the workflow's network job runs it.
+
+Each of nine deliberate breaks of the policy file fails the test, and the policy as committed passes it: the aggregate
+charged first, networks not counted (each family), IPv6 networks counted by /64, every IPv4 source in one bucket, peers
+passing the aggregate by (each family), and a peer over its budget sent on to the aggregate or to the ordinary budget.
+The host check's listing fixtures were regenerated from the new policy with the same nft.
+
 ## References
 
 - [Netfilter hook ordering](https://wiki.nftables.org/wiki-nftables/index.php/Netfilter_hooks): raw priority -300 follows

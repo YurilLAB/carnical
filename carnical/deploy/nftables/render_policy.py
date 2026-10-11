@@ -6,14 +6,16 @@ import pathlib
 import re
 
 DEFAULTS = dict(syn_global_rate=10000, syn_global_burst=20000, syn_source_rate=100, syn_source_burst=200,
-                syn_peer_rate=5000, syn_peer_burst=10000, syn_meter_size=65536, syn_peer_meter_size=4096,
-                syn_meter_ttl=60, echo_rate=20, echo_burst=40)
+                syn_network_rate=1000, syn_network_burst=2000, syn_peer_rate=5000, syn_peer_burst=10000,
+                syn_meter_size=65536, syn_peer_meter_size=4096, syn_meter_ttl=60, echo_rate=20, echo_burst=40)
 PROFILES = {
     "standard": DEFAULTS,
     "small": dict(DEFAULTS, syn_global_rate=1000, syn_global_burst=2000, syn_source_rate=50, syn_source_burst=100,
-                  syn_peer_rate=500, syn_peer_burst=1000, syn_meter_size=8192, syn_peer_meter_size=1024, syn_meter_ttl=30),
+                  syn_network_rate=500, syn_network_burst=1000, syn_peer_rate=500, syn_peer_burst=1000,
+                  syn_meter_size=8192, syn_peer_meter_size=1024, syn_meter_ttl=30),
     "large": dict(DEFAULTS, syn_global_rate=100000, syn_global_burst=200000, syn_source_rate=1000, syn_source_burst=2000,
-                  syn_peer_rate=20000, syn_peer_burst=40000, syn_meter_size=262144, echo_rate=100, echo_burst=200),
+                  syn_network_rate=10000, syn_network_burst=20000, syn_peer_rate=20000, syn_peer_burst=40000,
+                  syn_meter_size=262144, echo_rate=100, echo_burst=200),
 }
 
 
@@ -37,11 +39,14 @@ def render(profile="standard", *, port=443, peers=(), overrides=None):
         ranges[network.version].append(str(network))
     text = pathlib.Path(__file__).with_name("carnical.nft").read_text(encoding="utf-8")
     # nft's rate/size grammar requires numeric literals, not symbolic variables. Keep one policy, fail on template drift.
+    # A meter has as many buckets as its set holds, so the size and the divisor of the hash are one number.
     changes = [("define edge_port = 443", f"define edge_port = {port}", 1),
-               ("timeout 60s", f"timeout {settings['syn_meter_ttl']}s", 4),
-               ("size 65536", f"size {settings['syn_meter_size']}", 2),
-               ("size 4096", f"size {settings['syn_peer_meter_size']}", 2)]
-    for category, count in (("global", 1), ("source", 2), ("peer", 2)):
+               ("timeout 60s", f"timeout {settings['syn_meter_ttl']}s", 6),
+               ("size 65536", f"size {settings['syn_meter_size']}", 4),
+               ("mod 65536", f"mod {settings['syn_meter_size']}", 4),
+               ("size 4096", f"size {settings['syn_peer_meter_size']}", 2),
+               ("mod 4096", f"mod {settings['syn_peer_meter_size']}", 2)]
+    for category, count in (("global", 1), ("source", 2), ("network", 2), ("peer", 2)):
         key = f"syn_{category}"
         before = f"{DEFAULTS[key + '_rate']}/second burst {DEFAULTS[key + '_burst']} packets"
         after = f"{settings[key + '_rate']}/second burst {settings[key + '_burst']} packets"

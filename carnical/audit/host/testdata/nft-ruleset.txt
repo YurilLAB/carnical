@@ -22,6 +22,10 @@ table inet carnical {
 		packets 0 bytes 0
 	}
 
+	counter edge_syn_network_drop {
+		packets 0 bytes 0
+	}
+
 	counter edge_syn_admitted {
 		packets 0 bytes 0
 	}
@@ -71,14 +75,28 @@ table inet carnical {
 	}
 
 	set syn4 {
-		type ipv4_addr
+		type mark
 		size 65536
 		flags dynamic,timeout
 		timeout 1m
 	}
 
 	set syn6 {
-		type ipv6_addr
+		type mark
+		size 65536
+		flags dynamic,timeout
+		timeout 1m
+	}
+
+	set syn_net4 {
+		type mark
+		size 65536
+		flags dynamic,timeout
+		timeout 1m
+	}
+
+	set syn_net6 {
+		type mark
 		size 65536
 		flags dynamic,timeout
 		timeout 1m
@@ -95,14 +113,14 @@ table inet carnical {
 	}
 
 	set syn_peer4 {
-		type ipv4_addr
+		type mark
 		size 4096
 		flags dynamic,timeout
 		timeout 1m
 	}
 
 	set syn_peer6 {
-		type ipv6_addr
+		type mark
 		size 4096
 		flags dynamic,timeout
 		timeout 1m
@@ -150,18 +168,30 @@ table inet carnical {
 	}
 
 	chain edge_syn {
-		limit rate over 10000/second burst 20000 packets counter name "edge_syn_global_drop" drop
 		ip saddr @edge_peers4 goto edge_peer_syn
 		ip6 saddr @edge_peers6 goto edge_peer_syn
-		update @syn4 { ip saddr limit rate 100/second burst 200 packets } counter name "edge_syn_admitted" return
-		update @syn6 { ip6 saddr & ffff:ffff:ffff:ffff:: limit rate 100/second burst 200 packets } counter name "edge_syn_admitted" return
+		update @syn4 { jhash ip saddr mod 65536 limit rate 100/second burst 200 packets } goto edge_syn_network
+		update @syn6 { jhash ip6 saddr & ffff:ffff:ffff:ffff:: mod 65536 limit rate 100/second burst 200 packets } goto edge_syn_network
 		counter name "edge_syn_source_drop" drop
 	}
 
+	chain edge_syn_network {
+		update @syn_net4 { jhash ip saddr & 255.255.255.0 mod 65536 limit rate 1000/second burst 2000 packets } goto edge_syn_all
+		update @syn_net6 { jhash ip6 saddr & ffff:ffff:ffff:: mod 65536 limit rate 1000/second burst 2000 packets } goto edge_syn_all
+		counter name "edge_syn_network_drop" drop
+	}
+
 	chain edge_peer_syn {
-		update @syn_peer4 { ip saddr limit rate 5000/second burst 10000 packets } counter name "edge_syn_peer_admitted" return
-		update @syn_peer6 { ip6 saddr & ffff:ffff:ffff:ffff:: limit rate 5000/second burst 10000 packets } counter name "edge_syn_peer_admitted" return
+		update @syn_peer4 { jhash ip saddr mod 4096 limit rate 5000/second burst 10000 packets } goto edge_syn_all
+		update @syn_peer6 { jhash ip6 saddr & ffff:ffff:ffff:ffff:: mod 4096 limit rate 5000/second burst 10000 packets } goto edge_syn_all
 		counter name "edge_syn_peer_drop" drop
+	}
+
+	chain edge_syn_all {
+		limit rate over 10000/second burst 20000 packets counter name "edge_syn_global_drop" drop
+		ip saddr @edge_peers4 counter name "edge_syn_peer_admitted" return
+		ip6 saddr @edge_peers6 counter name "edge_syn_peer_admitted" return
+		counter name "edge_syn_admitted" return
 	}
 
 	chain input {

@@ -6,10 +6,11 @@ installing the Linux deployment policy.
 
 | Layer | Protection | Default budget / monitoring |
 |---|---|---|
-| Before connection tracking | SYN packets to the local public TCP endpoint, after IP reassembly | 10,000/s across IPv4 and IPv6, burst 20,000; `edge_syn_global_drop` |
-| Before connection tracking | Per-source SYN budget, including IPv6 address rotation within a /64 | 100/s per IPv4 address or IPv6 /64, burst 200; `edge_syn_source_drop` |
+| Before connection tracking | Per-source SYN budget, including IPv6 address rotation within a /64. It is taken first, so a source over its own budget uses up nothing of the budgets below | 100/s per IPv4 address or IPv6 /64, burst 200; `edge_syn_source_drop` |
+| Before connection tracking | Per-network SYN budget, for many sources in one IPv4 /24 or IPv6 /48 (a host that changes its address inside its own network, or its /64 inside its /48) | 1,000/s per network, burst 2,000; `edge_syn_network_drop` |
+| Before connection tracking | SYN packets to the local public TCP endpoint, after IP reassembly: what the two budgets above let through | 10,000/s across IPv4 and IPv6, burst 20,000; `edge_syn_global_drop` |
 | Before connection tracking | Configured high-volume CDN/load-balancer peers | 5,000/s per IPv4 address or IPv6 /64, burst 10,000; separate bounded meters, `edge_syn_peer_admitted` and `edge_syn_peer_drop`. No aggregate exemption or fallback to an ordinary bucket. |
-| Before connection tracking | Bounded SYN meter storage | 65,536 keys per family; idle keys expire after 60 seconds. A full set refuses new keys until capacity is reclaimed; existing keys retain their own budget. |
+| Before connection tracking | Bounded SYN meter storage | 65,536 buckets per meter; an idle bucket expires after 60 seconds. A source or network is counted in the bucket its address hashes to (the kernel draws the seed when the rules are loaded), so a meter cannot fill up: a flood of invented sources leaves room for every new visitor. Sources that hash to one bucket share its budget. |
 | Before connection tracking | Invalid SYN+FIN/SYN+RST, null/FIN-only/Xmas flags, impossible TCP sources and UDP to port 443 | `edge_bad_tcp`, `edge_bad_source`, `edge_udp_drop`; ECN SYN flags and valid data-in-SYN are preserved. |
 | Host input | Echo-request floods, including repeated established ICMP identifiers | 20/s combined IPv4/IPv6, burst 40; `edge_echo_admitted`, `edge_echo_drop`. Path-MTU/error messages and valid IPv6 discovery use separate rules. |
 | Accepted TCP connections | Concurrent capacity reservation and live subnet counts | Shared global cap, reserved capacity for known clients, per-/24 or /48 caps. Address-history eviction cannot reset live counts; trusted proxy peers share the global cap. See [flood protection](ddos.md). |
@@ -66,9 +67,10 @@ carry many requests over one connection.
 |---|---:|---:|---:|
 | Aggregate SYN/s / burst | 1,000 / 2,000 | 10,000 / 20,000 | 100,000 / 200,000 |
 | Ordinary address or IPv6 /64 SYN/s / burst | 50 / 100 | 100 / 200 | 1,000 / 2,000 |
+| IPv4 /24 or IPv6 /48 SYN/s / burst | 500 / 1,000 | 1,000 / 2,000 | 10,000 / 20,000 |
 | Configured peer address or IPv6 /64 SYN/s / burst | 500 / 1,000 | 5,000 / 10,000 | 20,000 / 40,000 |
-| Ordinary meter keys per family | 8,192 | 65,536 | 262,144 |
-| Peer meter keys per family | 1,024 | 4,096 | 4,096 |
+| Ordinary meter buckets (sources and networks, each family) | 8,192 | 65,536 | 262,144 |
+| Peer meter buckets per family | 1,024 | 4,096 | 4,096 |
 | Meter idle timeout (seconds) | 30 | 60 | 60 |
 | Echo/s / burst (IPv4+IPv6 together) | 20 / 40 | 20 / 40 | 100 / 200 |
 
@@ -90,8 +92,9 @@ large-to-small reload removes old peer entries and old meter budgets; splitting 
 separate delete/add shell commands would lose that atomicity.
 
 `--set NAME=INTEGER` overrides a budget in the table: `syn_global_rate`, `syn_global_burst`,
-`syn_source_rate`, `syn_source_burst`, `syn_peer_rate`, `syn_peer_burst`, `syn_meter_size`,
-`syn_peer_meter_size`, `syn_meter_ttl` (seconds), `echo_rate` and `echo_burst`. Each must be in
+`syn_source_rate`, `syn_source_burst`, `syn_network_rate`, `syn_network_burst`, `syn_peer_rate`,
+`syn_peer_burst`, `syn_meter_size`, `syn_peer_meter_size`, `syn_meter_ttl` (seconds), `echo_rate`
+and `echo_burst`. Each must be in
 1..1,048,576. Invalid ports, noncanonical/scoped CIDRs, all-address peer ranges and
 unknown/duplicate budget names are rejected before any policy is emitted.
 
