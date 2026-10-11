@@ -25,6 +25,8 @@ type zoneSpec struct {
 //
 // ARGS is the query string's arguments and BODY_ARGS the form body's. The model's "args" covers both, so a rule that names one of them
 // also matches the same name in the other place; the report counts those signatures as an approximation.
+//
+// FILES is the uploaded files' names, as FILENAMES is: CrowdSec hands both to Coraza's FILES, which holds the names, not the contents.
 var zones = map[string]zoneSpec{
 	"URI":             {target: vpatch.TargetPath, decoded: true},
 	"URI_FULL":        {target: vpatch.TargetURI},
@@ -38,7 +40,7 @@ var zones = map[string]zoneSpec{
 	"METHOD":          {target: vpatch.TargetMethod},
 	"RAW_BODY":        {target: vpatch.TargetBody},
 	"FILENAMES":       {target: vpatch.TargetFilenames},
-	"FILES":           {target: vpatch.TargetUploads},
+	"FILES":           {target: vpatch.TargetFilenames},
 }
 
 // transformMap maps CrowdSec transform names to the model's. count and length are handled apart (see buildCondition). Not here, so
@@ -75,9 +77,21 @@ func (c *converter) parseNode(v any, depth int) (importers.Expr, error) {
 	}
 	andV, hasAnd := m["and"]
 	orV, hasOr := m["or"]
-	switch {
-	case hasAnd && hasOr:
+	if hasAnd && hasOr {
 		return importers.Expr{}, skip("and-and-or-together")
+	}
+	// A node that names zones beside its "and" or "or" has a condition of its own, which CrowdSec's converter makes one more term
+	// of an "and" with the children. It is kept, and a failure to convert it fails the node: leaving it out would make the
+	// signature broader than the rule.
+	withOwn := func(e importers.Expr) importers.Expr { return e }
+	if (hasAnd || hasOr) && m["zones"] != nil {
+		own, err := c.parseLeaf(m)
+		if err != nil {
+			return importers.Expr{}, err
+		}
+		withOwn = func(e importers.Expr) importers.Expr { return importers.And(own, e) }
+	}
+	switch {
 	case hasAnd:
 		kids, ok := importers.AsList(andV)
 		if !ok || len(kids) == 0 {
@@ -91,7 +105,7 @@ func (c *converter) parseNode(v any, depth int) (importers.Expr, error) {
 			}
 			out = append(out, e)
 		}
-		return importers.And(out...), nil
+		return withOwn(importers.And(out...)), nil
 	case hasOr:
 		kids, ok := importers.AsList(orV)
 		if !ok || len(kids) == 0 {
@@ -113,7 +127,7 @@ func (c *converter) parseNode(v any, depth int) (importers.Expr, error) {
 		if len(out) == 0 {
 			return importers.Expr{}, first
 		}
-		return importers.Or(out...), nil
+		return withOwn(importers.Or(out...)), nil
 	}
 	return c.parseLeaf(m)
 }
@@ -145,9 +159,22 @@ func (c *converter) parseLeaf(m map[string]any) (importers.Expr, error) {
 	if !ok {
 		return importers.Expr{}, skip("no-match")
 	}
+	// "not" inverts the match (CrowdSec writes the operator with "!"); see buildCondition.
+	negate := false
+	if v := match["not"]; v != nil {
+		s, ok := importers.AsString(v)
+		b, err := strconv.ParseBool(strings.TrimSpace(s))
+		if !ok || err != nil {
+			return importers.Expr{}, skip("match-not-invalid")
+		}
+		negate = b
+	}
 
 	for _, z := range zoneNames {
 		if strings.EqualFold(strings.TrimSpace(z), "HEADERS_NAMES") {
+			if negate {
+				return importers.Expr{}, skip("match-not-unsupported")
+			}
 			return c.headerNames(zoneNames, vars, transforms, match)
 		}
 	}
@@ -183,18 +210,18 @@ func (c *converter) parseLeaf(m map[string]any) (importers.Expr, error) {
 
 	var leaves []importers.Expr
 	if len(decodedTargets) > 0 {
-		cond, err := c.buildCondition(match, transforms, []string{"urldecode1"}, decodedTargets)
+		e, err := c.buildCondition(match, transforms, []string{"urldecode1"}, decodedTargets, negate)
 		if err != nil {
 			return importers.Expr{}, err
 		}
-		leaves = append(leaves, importers.Leaf(cond))
+		leaves = append(leaves, e)
 	}
 	if len(rawTargets) > 0 {
-		cond, err := c.buildCondition(match, transforms, nil, rawTargets)
+		e, err := c.buildCondition(match, transforms, nil, rawTargets, negate)
 		if err != nil {
 			return importers.Expr{}, err
 		}
-		leaves = append(leaves, importers.Leaf(cond))
+		leaves = append(leaves, e)
 	}
 	if len(leaves) == 1 {
 		return leaves[0], nil
@@ -203,8 +230,8 @@ func (c *converter) parseLeaf(m map[string]any) (importers.Expr, error) {
 }
 
 // buildCondition makes the condition for one match over targets. pre are the transforms the engine has already applied that the
-// model's raw targets need to repeat.
-func (c *converter) buildCondition(match map[string]any, rawTransforms, pre, targets []string) (vpatch.Condition, error) {
+// model's raw targets need to repeat. negate is the match's "not".
+func (c *converter) buildCondition(match map[string]any, rawTransforms, pre, targets []string, negate bool) (importers.Expr, error) {
 	typ, _ := importers.AsString(match["type"])
 	typ = strings.ToLower(strings.TrimSpace(typ))
 
@@ -216,14 +243,14 @@ func (c *converter) buildCondition(match map[string]any, rawTransforms, pre, tar
 		switch name {
 		case "count", "length":
 			if i != len(rawTransforms)-1 {
-				return vpatch.Condition{}, skip("transform-after-%s", name)
+				return importers.Expr{}, skip("transform-after-%s", name)
 			}
 			special = name
 			continue
 		}
 		m, ok := transformMap[name]
 		if !ok {
-			return vpatch.Condition{}, skip("transform-unsupported:%s", importers.SafeName(name))
+			return importers.Expr{}, skip("transform-unsupported:%s", importers.SafeName(name))
 		}
 		mapped = append(mapped, m)
 	}
@@ -235,18 +262,26 @@ func (c *converter) buildCondition(match map[string]any, rawTransforms, pre, tar
 
 	switch typ {
 	case "libinjectionsql", "libinjectionxss":
-		return vpatch.Condition{}, skip("libinjection")
+		return importers.Expr{}, skip("libinjection")
 	case "gt", "gte", "lt", "lte":
 		if special == "" {
-			return vpatch.Condition{}, skip("numeric-comparison-unsupported")
+			return importers.Expr{}, skip("numeric-comparison-unsupported")
 		}
+	}
+	if negate && special != "" {
+		// A count or a length is one number for each value, so "not" is the opposite comparison of the same number.
+		inverse, ok := map[string]string{"gt": "lte", "gte": "lt", "lt": "gte", "lte": "gt"}[typ]
+		if !ok {
+			return importers.Expr{}, skip("match-not-unsupported")
+		}
+		typ, negate = inverse, false
 	}
 
 	switch special {
 	case "count":
 		n, err := strconv.Atoi(strings.TrimSpace(valStr))
 		if err != nil || !hasValue {
-			return vpatch.Condition{}, skip("count-comparison-unsupported")
+			return importers.Expr{}, skip("count-comparison-unsupported")
 		}
 		// The count of values a target has: only "none" and "at least one" can be said as "a value matches anything".
 		var exists bool
@@ -256,45 +291,46 @@ func (c *converter) buildCondition(match map[string]any, rawTransforms, pre, tar
 		case typ == "gt" && n == 0, typ == "gte" && n == 1:
 			exists = true
 		default:
-			return vpatch.Condition{}, skip("count-comparison-unsupported")
+			return importers.Expr{}, skip("count-comparison-unsupported")
 		}
 		cond := importers.NewCondition(vpatch.OpRegex, "^", targets, nil)
 		cond.Negate = !exists
-		return cond, nil
+		return importers.Leaf(cond), nil
 	case "length":
+		// t:length counts bytes, so the pattern does too (see importers.AnyByte).
 		n, err := strconv.Atoi(strings.TrimSpace(valStr))
 		if err != nil || n < 0 || n > 1000 || !hasValue {
-			return vpatch.Condition{}, skip("length-comparison-unsupported")
+			return importers.Expr{}, skip("length-comparison-unsupported")
 		}
-		var pat string
+		lo, hi := 0, -1
 		switch typ {
 		case "equals":
-			pat = "(?s)^.{" + strconv.Itoa(n) + "}$"
+			lo, hi = n, n
 		case "gt":
-			pat = "(?s)^.{" + strconv.Itoa(n+1) + ",}$"
-			if n+1 > 1000 {
-				return vpatch.Condition{}, skip("length-comparison-unsupported")
-			}
+			lo = n + 1
 		case "gte":
-			pat = "(?s)^.{" + strconv.Itoa(n) + ",}$"
+			lo = n
 		case "lt":
 			if n == 0 {
-				return vpatch.Condition{}, skip("length-comparison-unsupported")
+				return importers.Expr{}, skip("length-comparison-unsupported")
 			}
-			pat = "(?s)^.{0," + strconv.Itoa(n-1) + "}$"
+			hi = n - 1
 		case "lte":
-			pat = "(?s)^.{0," + strconv.Itoa(n) + "}$"
+			hi = n
 		default:
-			return vpatch.Condition{}, skip("length-comparison-unsupported")
+			return importers.Expr{}, skip("length-comparison-unsupported")
 		}
-		return importers.NewCondition(vpatch.OpRegex, pat, targets, all), nil
+		if lo > 1000 {
+			return importers.Expr{}, skip("length-comparison-unsupported")
+		}
+		return importers.Leaf(importers.NewCondition(vpatch.OpRegex, `\A`+importers.ByteRepeat(lo, hi)+`\z`, targets, all)), nil
 	}
 
 	if !hasValue || valStr == "" {
-		return vpatch.Condition{}, skip("empty-value")
+		return importers.Expr{}, skip("empty-value")
 	}
 	if len(valStr) > c.lim.MaxPatternBytes {
-		return vpatch.Condition{}, skip("pattern-too-long")
+		return importers.Expr{}, skip("pattern-too-long")
 	}
 	var op string
 	switch typ {
@@ -309,22 +345,58 @@ func (c *converter) buildCondition(match map[string]any, rawTransforms, pre, tar
 	case "regex":
 		op = vpatch.OpRegex
 	default:
-		return vpatch.Condition{}, skip("match-type-unsupported:%s", importers.SafeName(typ))
+		return importers.Expr{}, skip("match-type-unsupported:%s", importers.SafeName(typ))
 	}
 	if op != vpatch.OpRegex && hasLowercase(all) && strings.ContainsAny(valStr, "ABCDEFGHIJKLMNOPQRSTUVWXYZ") {
 		// The value is compared after lower-casing, so a value with a capital letter can never match. CrowdSec would never match it
 		// either; say so rather than write a signature that does nothing.
-		return vpatch.Condition{}, skip("unmatchable-literal")
+		return importers.Expr{}, skip("unmatchable-literal")
 	}
-	pattern := valStr
+	cond := importers.NewCondition(op, valStr, targets, all)
 	if op == vpatch.OpRegex {
-		p, err := c.rep.CheckRegex(pattern, "", c.lim.MaxPatternBytes)
+		// CrowdSec runs a regex through Coraza's @rx, which compiles it with (?sm): "." matches a newline, and "^" and "$" match at
+		// every line. Without the flags the signature would miss a value that only matches across a line break.
+		p, err := c.rep.CheckRegex(valStr, regexFlags, c.lim.MaxPatternBytes)
 		if err != nil {
-			return vpatch.Condition{}, err
+			return importers.Expr{}, err
 		}
-		pattern = p
+		cond.Pattern, cond.Flags = p, regexFlags
 	}
-	return importers.NewCondition(op, pattern, targets, all), nil
+	if negate {
+		return negated(cond)
+	}
+	return importers.Leaf(cond), nil
+}
+
+// regexFlags are the flags Coraza's @rx compiles every expression with.
+const regexFlags = "sm"
+
+// negated writes cond under "not". Coraza, which CrowdSec runs the rule on, fires a negated test when a value it looks at does not
+// match, and never for a value the request does not have; the model's Negate holds when no value matches, a missing one included.
+// The two agree on one value, so the condition is split into one for each target, joined by "or". The path, the URI, the method
+// and the body have one value in Coraza (the body an empty one when there is none), so a plain negation says the same. A named
+// value is paired with importers.ExistsGuard, as the SecLang importer does, because it can be missing. A target with many values
+// (every argument, every header) cannot be said either way, so a rule that negates a test of one is refused.
+func negated(cond vpatch.Condition) (importers.Expr, error) {
+	var alts []importers.Expr
+	for _, t := range cond.Targets {
+		one := importers.NewCondition(cond.Operator, cond.Pattern, []string{t}, cond.Transforms)
+		one.Flags, one.Negate = cond.Flags, true
+		switch t {
+		case vpatch.TargetPath, vpatch.TargetURI, vpatch.TargetMethod, vpatch.TargetBody:
+			alts = append(alts, importers.Leaf(one))
+			continue
+		}
+		guard, ok := importers.ExistsGuard(one.Targets)
+		if !ok {
+			return importers.Expr{}, skip("negated-on-many-values")
+		}
+		alts = append(alts, importers.And(importers.Leaf(guard), importers.Leaf(one)))
+	}
+	if len(alts) == 1 {
+		return alts[0], nil
+	}
+	return importers.Or(alts...), nil
 }
 
 func hasLowercase(ts []string) bool {

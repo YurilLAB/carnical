@@ -13,7 +13,9 @@ import (
 
 	"github.com/goccy/go-yaml"
 	"github.com/goccy/go-yaml/ast"
+	"github.com/goccy/go-yaml/lexer"
 	"github.com/goccy/go-yaml/parser"
+	"github.com/goccy/go-yaml/token"
 )
 
 // Errors from DecodeYAML. Each is also a skip reason in the reports.
@@ -37,11 +39,13 @@ const maxYAMLNodes = 500000
 // The rule files this reads are untrusted, and the YAML library's cost is not linear in the size of its input: measured here, 64 KiB
 // of nested "[" takes about 9 seconds and 64 KiB of "- " about 2 (four times as long for each doubling). So before the library
 // sees a document it is refused if it is larger than lim.MaxDocBytes, is not UTF-8, holds a NUL byte, or has a line shaped like
-// those inputs (see yamlPreScan). The parsed tree is refused, before anything is expanded, if it has more than one document, uses
-// anchors, aliases or merge keys (the "billion laughs" shape), is nested more deeply than lim.MaxNesting*4 levels, or has more
-// than 500,000 nodes. No rule feed this reads uses anchors. Last, decoding runs under a time limit, and no more than four
-// decodes run at once. The same deadline bounds waiting for a parser slot and waiting for its result; workers that time out
-// retain their slots until they finish, so outstanding parser work remains bounded.
+// those inputs (see yamlPreScan). The library's tokens are then checked before its parser sees them (see yamlTokenScan), because
+// the nesting that costs the parser its time can be spread over lines that a check of one line at a time does not connect. The
+// parsed tree is refused, before anything is expanded, if it has more than one document, uses anchors, aliases or merge keys (the
+// "billion laughs" shape), is nested more deeply than lim.MaxNesting*4 levels, or has more than 500,000 nodes. No rule feed this
+// reads uses anchors. Last, decoding runs under a time limit, and no more than four decodes run at once. The same deadline bounds
+// waiting for a parser slot and waiting for its result; workers that time out retain their slots until they finish, so
+// outstanding parser work remains bounded.
 func DecodeYAML(data []byte, lim Limits) (any, error) {
 	lim = lim.Normalize()
 	if len(data) > lim.MaxDocBytes {
@@ -94,7 +98,12 @@ const (
 var yamlSlots = make(chan struct{}, yamlMaxConcurrent)
 
 func decodeYAML(data []byte, lim Limits) (any, error) {
-	file, err := parser.ParseBytes(data, 0)
+	// Tokenizing takes time in proportion to the input; parsing does not. So the tokens are checked first, and parsed only then.
+	tokens := lexer.Tokenize(string(data))
+	if err := yamlTokenScan(tokens); err != nil {
+		return nil, err
+	}
+	file, err := parser.Parse(tokens, 0)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrYAMLInvalid, firstLine(err.Error()))
 	}
@@ -124,11 +133,16 @@ func decodeYAML(data []byte, lim Limits) (any, error) {
 	return out, nil
 }
 
-var blockScalarRe = regexp.MustCompile(`(?:^|[:\-])\s*[|>][+-]?[0-9]?[+-]?\s*(?:#.*)?$`)
+// blockScalarHeader is a block scalar's header: "|" or ">", then at most an indentation digit and a chomping sign, in either order.
+var blockScalarHeader = regexp.MustCompile(`^[|>](?:[1-9][+-]?|[+-][1-9]?)?$`)
 
 // yamlPreScan refuses the line shapes that make the YAML library slow: deep indentation, a long run of "- " (nested sequences),
 // deep or very many flow brackets, and thousands of quotes or ": " on one line. Real rule files have none of these. Lines inside a
 // block scalar ("key: |") are free text and are not looked at, except that they count toward the size limit already applied.
+//
+// A line opens a block scalar only where YAML reads one: the header ends what the line says outside quotes and comments, and it
+// stands alone or follows the line's one "key:". So "a: #: |" is the key a and a comment, as it is to the library, and does not
+// stop the lines after it from being checked.
 func yamlPreScan(data []byte) error {
 	blockIndent := -1
 	for len(data) > 0 {
@@ -166,14 +180,13 @@ func yamlPreScan(data []byte) error {
 		if dashes > yamlMaxDashes {
 			return fmt.Errorf("%w: nested sequence markers", ErrYAMLUnsafe)
 		}
-		if blockScalarRe.Match(line) {
-			blockIndent = indent
-		}
 		depth, maxDepth, tokens := 0, 0, 0
 		if bytes.Count(rest, []byte{byteDoubleQuote})+bytes.Count(rest, []byte{byteSingleQuote}) > yamlMaxQuotesPerLine {
 			return fmt.Errorf("%w: quote characters", ErrYAMLUnsafe)
 		}
 		var quote byte
+		code := len(rest) // where what the line says ends: the start of its comment, or its end
+		keys := 0         // the ": " indicators outside quotes
 		for i := 0; i < len(rest); i++ {
 			c := rest[i]
 			if quote != 0 {
@@ -192,7 +205,7 @@ func yamlPreScan(data []byte) error {
 			switch c {
 			case byteDoubleQuote, byteSingleQuote:
 				// A quote opens a quoted scalar only at the start of a value; elsewhere it is an ordinary character.
-				if i == 0 || rest[i-1] == ' ' || rest[i-1] == '[' || rest[i-1] == '{' || rest[i-1] == ',' || rest[i-1] == ':' {
+				if i == 0 || isYAMLSpace(rest[i-1]) || rest[i-1] == '[' || rest[i-1] == '{' || rest[i-1] == ',' || rest[i-1] == ':' {
 					quote = c
 					tokens++
 				}
@@ -207,17 +220,86 @@ func yamlPreScan(data []byte) error {
 					depth--
 				}
 			case ':':
-				if i+1 >= len(rest) || rest[i+1] == ' ' {
+				if i+1 >= len(rest) || isYAMLSpace(rest[i+1]) {
 					tokens++
+					keys++
 				}
 			case '#':
-				if i > 0 && rest[i-1] == ' ' {
-					i = len(rest) // a comment
+				if i == 0 || isYAMLSpace(rest[i-1]) { // at 0 it follows a "- " marker
+					code = i // a comment
+					i = len(rest)
 				}
 			}
 		}
 		if maxDepth > yamlMaxFlowDepth || tokens > yamlMaxTokensPerLine {
 			return fmt.Errorf("%w: flow nesting or token count", ErrYAMLUnsafe)
+		}
+		if quote == 0 && depth == 0 && opensBlockScalar(rest[:code], keys) {
+			// The text is the lines indented more than the node the scalar belongs to: the sequence entry ("- |"), or the key, which
+			// stands to the right of any "- " in front of it.
+			blockIndent = indent
+			if keys == 1 {
+				blockIndent = len(line) - len(rest)
+			}
+		}
+	}
+	return nil
+}
+
+// opensBlockScalar reports whether code, a line's content outside its comment with the "- " markers taken off, ends in a block
+// scalar header that YAML reads as one: alone, or after the line's only "key:".
+func opensBlockScalar(code []byte, keys int) bool {
+	end := len(code)
+	for end > 0 && isYAMLSpace(code[end-1]) {
+		end--
+	}
+	cut := end
+	for cut > 0 && !isYAMLSpace(code[cut-1]) {
+		cut--
+	}
+	if !blockScalarHeader.Match(code[cut:end]) {
+		return false
+	}
+	for cut > 0 && isYAMLSpace(code[cut-1]) {
+		cut--
+	}
+	if cut == 0 {
+		return keys == 0
+	}
+	return keys == 1 && code[cut-1] == ':'
+}
+
+func isYAMLSpace(c byte) bool { return c == ' ' || c == byteTab }
+
+// yamlTokenScan refuses a document whose tokens nest flow collections ("[", "{") more deeply than one line of the pre-scan may,
+// counted over the whole document, or that open more than yamlMaxDashes block sequences on one line. These are what the parser
+// takes more than linear time over, and the tokens are exactly what it will read, whatever comments, quotes and line breaks
+// surround them.
+func yamlTokenScan(tokens token.Tokens) error {
+	depth := 0
+	line, dashes := 0, 0
+	for _, tk := range tokens {
+		switch tk.Type {
+		case token.SequenceStartType, token.MappingStartType:
+			depth++
+			if depth > yamlMaxFlowDepth {
+				return fmt.Errorf("%w: flow nesting", ErrYAMLUnsafe)
+			}
+		case token.SequenceEndType, token.MappingEndType:
+			if depth > 0 {
+				depth--
+			}
+		case token.SequenceEntryType:
+			if tk.Position == nil {
+				continue
+			}
+			if tk.Position.Line != line {
+				line, dashes = tk.Position.Line, 0
+			}
+			dashes++
+			if dashes > yamlMaxDashes {
+				return fmt.Errorf("%w: nested sequence markers", ErrYAMLUnsafe)
+			}
 		}
 	}
 	return nil
@@ -225,6 +307,7 @@ func yamlPreScan(data []byte) error {
 
 // Byte values written as numbers, so that no backslash escape is needed in this file.
 const (
+	byteTab         = 9
 	byteNL          = 10
 	byteBackslash   = 0x5c
 	byteSingleQuote = 0x27

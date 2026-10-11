@@ -164,6 +164,9 @@ func dedupe(ts []string) []string {
 	return out
 }
 
+// rxFlags are the flags @rx compiles every expression with.
+const rxFlags = "sm"
+
 func (c *converter) condition(op operator, tf, targets []string) (vpatch.Condition, error) {
 	tf = dedupe(tf)
 	arg := op.arg
@@ -185,11 +188,14 @@ func (c *converter) condition(op operator, tf, targets []string) (vpatch.Conditi
 		if arg == "" {
 			return vpatch.Condition{}, skip("empty-value")
 		}
-		p, err := c.rep.CheckRegex(arg, "", c.lim.MaxPatternBytes)
+		// Coraza and ModSecurity v3 compile @rx with (?sm): "." matches a newline, and "^" and "$" match at every line. Without the
+		// flags the signature would miss a value that only matches across a line break.
+		p, err := c.rep.CheckRegex(arg, rxFlags, c.lim.MaxPatternBytes)
 		if err != nil {
 			return vpatch.Condition{}, err
 		}
 		cond = importers.NewCondition(vpatch.OpRegex, p, targets, tf)
+		cond.Flags = rxFlags
 	case "contains", "beginswith", "endswith", "streq":
 		if arg == "" {
 			return vpatch.Condition{}, skip("empty-value")

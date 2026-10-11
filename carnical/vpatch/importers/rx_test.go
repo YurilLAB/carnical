@@ -99,6 +99,7 @@ func TestCheckRegex(t *testing.T) {
 		{name: "with flag", pattern: `select\s+from`, flags: "i", wantStat: "compiled", want: `select\s+from`},
 		{name: "possessive translated", pattern: `<\s*+script`, wantStat: "translated", want: `<\s*script`},
 		{name: "possessive not exact", pattern: `a*+a`, wantStat: "failed", wantReason: "possessive-not-exact"},
+		{name: "possessive before $ under the multi-line flag", pattern: `[^&]*+$`, flags: "sm", wantStat: "failed", wantReason: "possessive-not-exact"},
 		{name: "lookahead", pattern: `a(?=b)`, wantStat: "failed", wantReason: "lookaround"},
 		{name: "backreference", pattern: `(a)\1`, wantStat: "failed", wantReason: "backreference"},
 		{name: "too long", pattern: strings.Repeat("a", 100), max: 50, wantStat: "failed", wantReason: "too-long"},

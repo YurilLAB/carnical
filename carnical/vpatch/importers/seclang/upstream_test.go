@@ -5,8 +5,10 @@ package seclang
 import (
 	"encoding/json"
 	"os"
+	"reflect"
 	"testing"
 
+	"github.com/YurilLAB/coraza/carnical/vpatch"
 	"github.com/YurilLAB/coraza/carnical/vpatch/importers"
 )
 
@@ -36,5 +38,31 @@ func TestCRS(t *testing.T) {
 		if r.Skipped[k] != 0 {
 			t.Errorf("%s: %d (%v)", k, r.Skipped[k], r.Examples[k])
 		}
+	}
+}
+
+// TestRuleMapping converts one rule at a time and checks the conditions it becomes; TestCRS above checks only the totals.
+func TestRuleMapping(t *testing.T) {
+	tests := []struct {
+		name string
+		rule string
+		want []vpatch.Condition // the main condition, then Also
+	}{
+		{name: "@rx keeps Coraza's dot-all and multi-line flags", rule: `SecRule ARGS:q "@rx union.*select" "id:1,phase:2,deny,t:lowercase"`,
+			want: []vpatch.Condition{{Operator: "rx", Pattern: "union.*select", Flags: "sm", Targets: []string{"arg:q"}, Transforms: []string{"lowercase"}}}},
+		{name: "@within is a word list for the whole value, not an @rx", rule: `SecRule REQUEST_METHOD "!@within GET POST" "id:2,phase:1,deny"`,
+			want: []vpatch.Condition{{Operator: "rx", Pattern: "^(?:GET|POST)$", Targets: []string{"method"}, Negate: true}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res := ConvertBytes("t.conf", []byte(tt.rule+"\n"), importers.Options{Revision: "t1"})
+			if len(res.Signatures) != 1 {
+				t.Fatalf("signatures %d, skipped %v, errors %v", len(res.Signatures), res.Report.Skipped, res.Report.Errors)
+			}
+			s := res.Signatures[0]
+			if got := append([]vpatch.Condition{s.Condition}, s.Also...); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("got\n  %+v\nwant\n  %+v", got, tt.want)
+			}
+		})
 	}
 }

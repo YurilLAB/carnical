@@ -569,7 +569,8 @@ func parseSize(v string) (sizeCons, error) {
 	return sizeCons{lo: n, hi: n}, nil
 }
 
-// sizeCond says "the buffer is between lo and hi characters long" as a regular expression; RE2 allows a repeat count up to 1000.
+// sizeCond says "the buffer is between lo and hi bytes long" as a regular expression; RE2 allows a repeat count up to 1000. bsize
+// and urilen count bytes, so the pattern does too (see importers.AnyByte).
 func (c *cvt) sizeCond(s sizeCons) (vpatch.Condition, error) {
 	spec, ok := buffers[s.buf]
 	if !ok || spec.header || len(spec.targets) == 0 {
@@ -581,15 +582,7 @@ func (c *cvt) sizeCond(s sizeCons) (vpatch.Condition, error) {
 	if s.lo > 1000 || s.hi > 1000 {
 		return vpatch.Condition{}, skip("bsize-too-large")
 	}
-	var pat string
-	switch {
-	case s.hi < 0:
-		pat = `(?s)\A.{` + strconv.Itoa(s.lo) + `,}\z`
-	case s.hi == s.lo:
-		pat = `(?s)\A.{` + strconv.Itoa(s.lo) + `}\z`
-	default:
-		pat = `(?s)\A.{` + strconv.Itoa(s.lo) + `,` + strconv.Itoa(s.hi) + `}\z`
-	}
+	pat := `\A` + importers.ByteRepeat(s.lo, s.hi) + `\z`
 	p, err := c.rep.CheckRegex(pat, "", c.lim.MaxPatternBytes)
 	if err != nil {
 		return vpatch.Condition{}, err

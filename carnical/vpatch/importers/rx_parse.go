@@ -186,8 +186,9 @@ const (
 	maxParseNodes = 200000
 )
 
-func parsePCRE(s string) (alts [][]*rnode, p *rparser, err error) {
-	p = &rparser{s: s}
+// parsePCRE parses a pattern that is compiled with flags in front; they are in force from its start, as an inline "(?flags)" would be.
+func parsePCRE(s, flags string) (alts [][]*rnode, p *rparser, err error) {
+	p = &rparser{s: s, fi: strings.Contains(flags, "i"), fs: strings.Contains(flags, "s"), fm: strings.Contains(flags, "m")}
 	alts, err = p.parseAlts()
 	if err != nil {
 		return nil, p, err

@@ -78,6 +78,8 @@ func TestDecodeYAML(t *testing.T) {
 		{name: "a hundred quotes on one line is fine", in: "k: '" + strings.Repeat(`"`, 100) + "'\n"},
 		{name: "thousands of quotes on one line", in: "k: " + strings.Repeat(`"`, 5000) + "\n", wantErr: ErrYAMLUnsafe},
 		{name: "block scalar content is not scanned", in: "k: |\n  " + strings.Repeat(`"[{`, 5000) + "\n"},
+		{name: "a block scalar header in a comment opens no block scalar", in: "a: #: |\n  c: " + strings.Repeat("[", 400) + strings.Repeat("]", 400) + "\n", wantErr: ErrYAMLUnsafe},
+		{name: "flow nesting spread over lines", in: "a:\n" + strings.Repeat(" [\n", 30) + strings.Repeat(" ]\n", 30), wantErr: ErrYAMLUnsafe},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -186,9 +186,9 @@ func TestConvertRules(t *testing.T) {
 		{name: "contents with no relative modifier are independent", rule: rl(`http.uri; content:"a"; content:"b";`),
 			want: []vpatch.Condition{cond("contains", "a", uriT, dec), cond("contains", "b", uriT, dec)}},
 		{name: "distance and within bound the gap", rule: rl(`http.uri; content:"ab"; content:"cd"; distance:1; within:4;`),
-			want: []vpatch.Condition{cond("rx", `ab(?s:.){1,3}cd`, uriT, dec)}},
+			want: []vpatch.Condition{cond("rx", `ab[\x00-\xff]{1,3}cd`, uriT, dec)}},
 		{name: "within alone starts at zero", rule: rl(`http.uri; content:"ab"; content:"cd"; within:5;`),
-			want: []vpatch.Condition{cond("rx", `ab(?s:.){0,3}cd`, uriT, dec)}},
+			want: []vpatch.Condition{cond("rx", `ab[\x00-\xff]{0,3}cd`, uriT, dec)}},
 		{name: "exact gap", rule: rl(`http.uri; content:"s?"; distance:1; within:2;`), want: []vpatch.Condition{cond("contains", `s?`, uriT, dec)}},
 		{name: "nocase pieces are scoped", rule: rl(`http.uri; content:"SELECT"; nocase; content:"from"; distance:0;`),
 			want: []vpatch.Condition{cond("rx", `(?i:SELECT)`+anyLen+`from`, uriT, dec)}},
@@ -197,10 +197,10 @@ func TestConvertRules(t *testing.T) {
 		{name: "endswith ends the chain", rule: rl(`http.uri; content:"a"; content:".cgi"; distance:0; endswith;`),
 			want: []vpatch.Condition{cond("rx", `a`+anyLen+`\.cgi\z`, uriT, dec)}},
 		{name: "depth alone is a window from the start", rule: rl(`http.request_body; content:"id="; depth:10;`),
-			want: []vpatch.Condition{cond("rx", `\A(?s:.){0,7}id=`, bodyT)}},
+			want: []vpatch.Condition{cond("rx", `\A[\x00-\xff]{0,7}id=`, bodyT)}},
 		{name: "offset and depth are a window", rule: rl(`http.request_body; content:"def"; offset:3; depth:3;`),
-			want: []vpatch.Condition{cond("rx", `\A(?s:.){3}def`, bodyT)}},
-		{name: "offset alone", rule: rl(`http.request_body; content:"x"; offset:4;`), want: []vpatch.Condition{cond("rx", `\A(?s:.){4,}x`, bodyT)}},
+			want: []vpatch.Condition{cond("rx", `\A[\x00-\xff]{3}def`, bodyT)}},
+		{name: "offset alone", rule: rl(`http.request_body; content:"x"; offset:4;`), want: []vpatch.Condition{cond("rx", `\A[\x00-\xff]{4,}x`, bodyT)}},
 		{name: "content then relative pcre is one chain", rule: rl(`http.uri; content:".cmd\""; nocase; pcre:"/\x26+/Ri";`),
 			want: []vpatch.Condition{cond("rx", `(?i:\.cmd")(?s:.)*(?i:\x26+)`, uriT, dec)}},
 		{name: "a leading ^ on a relative pcre means right after the previous match", rule: rl(`http.uri; content:"image="; nocase; pcre:"/^.+(?:script|onload)/Ri";`),
@@ -231,12 +231,12 @@ func TestConvertRules(t *testing.T) {
 			want: []vpatch.Condition{cond("contains", "/a", uriT, dec), {Operator: "contains", Pattern: "/admin/", Targets: uriT, Transforms: []string{dec, lower}, Negate: true}}},
 		{name: "relative negated content", rule: rl(`http.uri; content:"/a"; content:!"b"; within:5;`), wantSkip: "negated-relative-content"},
 		{name: "only negated", rule: rl(`http.uri; content:!"/a";`), wantSkip: "only-negated-matches"},
-		{name: "bsize greater", rule: rl(`http.uri; bsize:>600; content:"/a";`),
-			want: []vpatch.Condition{cond("contains", "/a", uriT, dec), cond("rx", `(?s)\A.{601,}\z`, uriT, dec)}},
+		{name: "bsize greater, in bytes", rule: rl(`http.uri; bsize:>600; content:"/a";`),
+			want: []vpatch.Condition{cond("contains", "/a", uriT, dec), cond("rx", `\A[\x00-\xff]{601,}\z`, uriT, dec)}},
 		{name: "bsize exact", rule: rl(`http.referer; bsize:14; content:"x";`),
-			want: []vpatch.Condition{cond("contains", "x", []string{"header:referer"}), cond("rx", `(?s)\A.{14}\z`, []string{"header:referer"})}},
+			want: []vpatch.Condition{cond("contains", "x", []string{"header:referer"}), cond("rx", `\A[\x00-\xff]{14}\z`, []string{"header:referer"})}},
 		{name: "urilen", rule: rl(`urilen:10; http.uri; content:"/login.cgi";`),
-			want: []vpatch.Condition{cond("contains", "/login.cgi", uriT, dec), cond("rx", `(?s)\A.{10}\z`, uriT)}},
+			want: []vpatch.Condition{cond("contains", "/login.cgi", uriT, dec), cond("rx", `\A[\x00-\xff]{10}\z`, uriT)}},
 		{name: "bsize beyond what RE2 repeats", rule: rl(`http.uri; bsize:>20000; content:"/a";`), wantSkip: "bsize-too-large"},
 
 		// The header block.
@@ -496,7 +496,7 @@ func TestFixtures(t *testing.T) {
 			}
 		}},
 		{file: "geoserver-within.rules", wantSigs: 1, check: func(t *testing.T, s []vpatch.Signature) {
-			if !strings.Contains(s[0].Pattern, `\A/geoserver/w(?s:.){1}s\?`) {
+			if !strings.Contains(s[0].Pattern, `\A/geoserver/w[\x00-\xff]{1}s\?`) {
 				t.Fatalf("%+v", s[0])
 			}
 		}},

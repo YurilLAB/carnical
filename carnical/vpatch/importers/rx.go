@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"regexp/syntax"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -32,7 +33,13 @@ func (e *RegexError) Error() string { return "regex: " + e.Reason }
 // Anything else that Go cannot read (lookaround, backreferences, recursion, the x flag, \K) is not translated and returns an
 // error naming it: no approximation is made. The result is not compiled here; use Report.CheckRegex, which does.
 func TranslatePCRE(pattern string) (string, error) {
-	alts, p, err := parsePCRE(pattern)
+	return translatePCRE(pattern, "")
+}
+
+// translatePCRE is TranslatePCRE for a pattern that is compiled with flags ("i", "s", "m") in front, which change what the
+// rewrites have to prove: in multi-line mode "$" also holds before a newline, and under "i" a letter stands for both cases.
+func translatePCRE(pattern, flags string) (string, error) {
+	alts, p, err := parsePCRE(pattern, flags)
 	if err != nil {
 		return "", &RegexError{Reason: translateReason(err)}
 	}
@@ -399,7 +406,7 @@ func (r *Report) CheckRegex(pattern, flags string, maxBytes int) (string, error)
 	} else if !mayTranslate(err) {
 		return fail(classifyGoError(err))
 	}
-	t, terr := TranslatePCRE(pattern)
+	t, terr := translatePCRE(pattern, flags)
 	if terr != nil {
 		var re *RegexError
 		if errors.As(terr, &re) {
@@ -416,6 +423,25 @@ func (r *Report) CheckRegex(pattern, flags string, maxBytes int) (string, error)
 	}
 	r.Regex.Translated++
 	return t, nil
+}
+
+// AnyByte is a character class that matches any one byte of a value. It is written with an escape above 0x7F, and the engine reads a
+// pattern that has one against the value's bytes, one code point for each byte, so a repeat of it counts bytes. The sources count
+// bytes (Coraza's t:length, Suricata's bsize, urilen, depth, offset, distance and within); "." would count UTF-8 characters, and a
+// value of multi-byte characters would then seem shorter than it is.
+const AnyByte = `[\x00-\xff]`
+
+// ByteRepeat is AnyByte repeated min to max times; max < 0 means no upper bound. RE2 accepts counts up to 1000; the caller checks.
+func ByteRepeat(min, max int) string {
+	switch {
+	case max < 0 && min == 0:
+		return AnyByte + "*"
+	case max < 0:
+		return AnyByte + "{" + strconv.Itoa(min) + ",}"
+	case min == max:
+		return AnyByte + "{" + strconv.Itoa(min) + "}"
+	}
+	return AnyByte + "{" + strconv.Itoa(min) + "," + strconv.Itoa(max) + "}"
 }
 
 func flagPrefix(flags string) string {

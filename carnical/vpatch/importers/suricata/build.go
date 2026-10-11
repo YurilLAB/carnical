@@ -4,7 +4,6 @@ package suricata
 
 import (
 	"regexp"
-	"strconv"
 	"strings"
 
 	"github.com/YurilLAB/coraza/carnical/vpatch"
@@ -297,7 +296,9 @@ func pcrePiece(a *atom, body string) string {
 	return "(?" + inline + ":" + body + ")"
 }
 
-// dot is "any character, min to max times" (max < 0 means no upper bound). ok is false when a count is beyond what RE2 accepts.
+// dot is "any byte, min to max times" (max < 0 means no upper bound). Suricata's offset, depth, distance and within count bytes, so a
+// counted gap is written with importers.AnyByte; a gap of any length is the same counted either way and stays "(?s:.)*". ok is false
+// when a count is beyond what RE2 accepts.
 func dot(min, max int) (s string, ok bool) {
 	if min > 1000 || max > 1000 {
 		return "", false
@@ -305,14 +306,10 @@ func dot(min, max int) (s string, ok bool) {
 	switch {
 	case max < 0 && min == 0:
 		return `(?s:.)*`, true
-	case max < 0:
-		return `(?s:.){` + strconv.Itoa(min) + `,}`, true
 	case min == 0 && max == 0:
 		return "", true
-	case min == max:
-		return `(?s:.){` + strconv.Itoa(min) + `}`, true
 	}
-	return `(?s:.){` + strconv.Itoa(min) + `,` + strconv.Itoa(max) + `}`, true
+	return importers.ByteRepeat(min, max), true
 }
 
 // pcreCond makes the condition for one pcre. The pattern is taken as written; flags i, s, m and A become the equivalent Go syntax.
