@@ -5,6 +5,15 @@ learning. Install it as both an inspector and an observer to use the full featur
 standalone proxy supports explicit contracts through `-api-spec`; it does not automatically discover
 APIs or install a learning model. See [CLI contracts](input-hardening.md).
 
+The command also accepts `-api-guard monitor` or `-api-guard enforce` for additional method,
+body-size, content-format, rate and privileged-property checks on requests recognized as API
+traffic. The default is `off`; this setting does not disable `-api-spec`. Guard-wide `enforce`
+allows each check to use its own action: general rate and format checks still monitor by default,
+while method, body-size and authentication-rate checks enforce. Local policy API
+settings can enable and tune these checks. The command does not attach a learner, discover
+descriptions, save traffic-derived state or enable learned/spec modes from that section. Those
+settings require the integration below. A local contract uses the separate strict import path.
+
 The guard can check request shape and configured budgets. Application authorization, credential
 validity and business rules remain the application's responsibility.
 

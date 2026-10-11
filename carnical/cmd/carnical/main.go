@@ -30,7 +30,6 @@ import (
 
 	"github.com/YurilLAB/coraza/carnical/crowdsec"
 	"github.com/YurilLAB/coraza/carnical/crs"
-	"github.com/YurilLAB/coraza/carnical/inspect"
 	"github.com/YurilLAB/coraza/carnical/proxy"
 	"github.com/YurilLAB/coraza/carnical/sandbox"
 )
@@ -148,6 +147,7 @@ func runFlags(args []string, private map[string]string) error {
 	certFile := flags.String("tls-cert", "", "TLS certificate file")
 	keyFile := flags.String("tls-key", "", "TLS key file (not accessible to everyone or writable by its group, as 0600 or 0640)")
 	showVersion := flags.Bool("version", false, "print the CRS version that is embedded and exit")
+	siteFlag := declareSiteFlags(flags)
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -205,21 +205,6 @@ func runFlags(args []string, private map[string]string) error {
 	}
 	if *formatsStats != 0 && (*formatsStats < 100*time.Millisecond || *formatsStats > 24*time.Hour) {
 		return errors.New("-formats-stats-interval must be 0 or between 100ms and 24h")
-	}
-	formatInspector, err := configureFormats(*formatsMode, *formatsPolicy, *requestEncoding)
-	if err != nil {
-		return err
-	}
-	var inspectors []inspect.Inspector
-	if formatInspector != nil {
-		inspectors = append(inspectors, formatInspector)
-	}
-	apiInspector, apiReport, err := configureAPI(*apiSpec, *apiSpecMode, *formatsMode)
-	if err != nil {
-		return err
-	}
-	if apiInspector != nil {
-		inspectors = append(inspectors, apiInspector)
 	}
 	target, err := url.Parse(*upstream)
 	if err != nil {
@@ -280,10 +265,6 @@ func runFlags(args []string, private map[string]string) error {
 			log.Info("CrowdSec connected", "entries", cs.Stats().Entries, "skipped", cs.Stats().Skipped, "fail_open", *csFailOpen)
 		}
 	}
-	if apiInspector != nil {
-		log.Info("API contract loaded", "mode", *apiSpecMode, "sha256", apiReport.Hash, "routes", apiReport.Routes,
-			"warnings", apiReport.Warnings, "warnings_dropped", apiReport.WarningsDropped)
-	}
 	guard, err := configureShield(log, shieldFlags{mode: *ddosMode, rate: *ddosRate, burst: *ddosBurst, maxConns: *ddosConns,
 		challenge: *ddosChallenge, baseline: *ddosBaseline, ranges: *ddosRanges, knownFactor: *ddosKnownFactor, knownRate: *ddosKnownRate, maxRaise: *ddosMaxRaise}, trusted)
 	if err != nil {
@@ -296,7 +277,7 @@ func runFlags(args []string, private map[string]string) error {
 	// the servers' do, under the name "origin".
 	originErrors := newServerErrors(log.With("server", "origin"), *details)
 	defer originErrors.flush()
-	edge, err := proxy.New(proxy.Config{
+	cfg := proxy.Config{
 		Upstream: target, Origin: proxy.OriginPolicy{Allow: origin}, OriginTLS: originTLS, UpstreamHost: *upstreamHost, CRS: settings, TrustedProxies: trusted, AllowUpgrade: *allowUpgrade,
 		MaxUpstreamInFlight: *maxUpstream, LogDetails: *details, EvalBudget: *evalBudget, MaxEvaluations: *maxEval, MaxFormBody: *maxForm,
 		AllowedHosts: splitList(*hosts), Paths: proxy.PathPolicy{AllowEncodedSlash: *encodedSlash, AllowPathParams: *pathParams},
@@ -304,7 +285,7 @@ func runFlags(args []string, private map[string]string) error {
 		APIRate:   proxy.APIRatePolicy{PerMinute: *apiRate, Paths: splitList(*apiPaths)},
 		Uploads:   proxy.UploadPolicy{AllowExecutableNames: *scriptNames, AllowScriptContent: *scriptContent},
 		Responses: proxy.ResponsePolicy{KeepBanners: *keepBanners, KeepCaching: *keepCaching}, MaxConnsPerIP: *maxConns,
-		Inspectors: inspectors, AllowRequestEncoding: *requestEncoding, NoJoinedParams: !*joinRepeated, Shield: guard, CrowdSec: cs,
+		AllowRequestEncoding: *requestEncoding, NoJoinedParams: !*joinRepeated, Shield: guard, CrowdSec: cs,
 		ErrorLog: stdlog.New(originErrors, "", 0),
 		OnMatch: func(m proxy.Match) {
 			attrs := []any{"rule", m.RuleID, "severity", m.Severity, "rule_msg", m.Message, "tx", m.TransactionID, "disruptive", m.Disruptive}
@@ -313,7 +294,20 @@ func runFlags(args []string, private map[string]string) error {
 			}
 			log.Warn("rule matched", attrs...)
 		},
-	})
+	}
+	formatInspector, effectiveFormatsMode, patches, err := configureSite(siteFlag, setFlags(flags), &cfg, log, *formatsMode, *formatsPolicy, *requestEncoding)
+	if err != nil {
+		return err
+	}
+	apiInspector, apiReport, err := configureAPI(*apiSpec, *apiSpecMode, effectiveFormatsMode)
+	if err != nil {
+		return err
+	}
+	if apiInspector != nil {
+		cfg.Inspectors = append(cfg.Inspectors, apiInspector)
+		log.Info("API contract loaded", "mode", *apiSpecMode, "sha256", apiReport.Hash, "routes", apiReport.Routes, "warnings", apiReport.Warnings, "warnings_dropped", apiReport.WarningsDropped)
+	}
+	edge, err := proxy.New(cfg)
 	if err != nil {
 		return err
 	}
@@ -380,7 +374,7 @@ func runFlags(args []string, private map[string]string) error {
 		return err
 	}
 	if *check {
-		log.Info("configuration checked", "mode", *mode, "formats_mode", *formatsMode, "origin_checked", *checkOrigin, "origin_http_checked", *checkOriginHTTP, "origin_client_identity", originTLS.Certificate != nil, "tls", *certFile != "", "sandbox_applied", false)
+		log.Info("configuration checked", "mode", cfg.CRS.Mode, "formats_mode", effectiveFormatsMode, "origin_checked", *checkOrigin, "origin_http_checked", *checkOriginHTTP, "origin_client_identity", originTLS.Certificate != nil, "tls", *certFile != "", "sandbox_applied", false)
 		return nil
 	}
 	if err := ctx.Err(); err != nil {
@@ -432,11 +426,15 @@ func runFlags(args []string, private map[string]string) error {
 		}()
 		defer func() { cancelPoll(); <-pollDone }()
 	}
+	if patches != nil {
+		stop := startSnapshotLog(log, "virtual patch totals", siteFlag.vpatchStats, patches.Stats, vpatchStatsAttrs)
+		defer stop()
+	}
 	stopStats := startFormatStats(log, formatInspector, *formatsStats)
 	defer stopStats()
 	health := &runtimeHealth{available: func() bool { return cs == nil || *csFailOpen || !cs.Stats().Stale }}
-	log.Info("listening", "addr", ln.Addr().String(), "crs", crs.Version(), "mode", *mode, "paranoia", *paranoia,
-		"inbound_threshold", *inbound, "tls", *certFile != "", "confined", *confine, "ddos", *ddosMode, "formats_mode", *formatsMode, "request_encoding", *requestEncoding,
+	log.Info("listening", "addr", ln.Addr().String(), "crs", crs.Version(), "mode", cfg.CRS.Mode, "paranoia", cfg.CRS.ParanoiaLevel,
+		"inbound_threshold", cfg.CRS.InboundThreshold, "tls", *certFile != "", "confined", *confine, "ddos", *ddosMode, "formats_mode", effectiveFormatsMode, "request_encoding", *requestEncoding,
 		"health_enabled", healthListener != nil)
 	return serveRuntime(ctx, server, ln, healthListener, health, lifecycle, log)
 }

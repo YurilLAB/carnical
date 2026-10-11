@@ -1,8 +1,8 @@
 # Signed configuration and customer policy
 
 The `config` package verifies signed per-tenant configuration. The `policy` package validates
-customer settings and compiles them to proxy/CRS configuration and bounded SecLang rules. These are
-integration libraries; `cmd/carnical` does not start a signed-policy service.
+customer settings and compiles them to proxy/CRS configuration and bounded SecLang rules. The executable can load a local policy with `-policy`; signed distribution remains a
+library integration and does not start a service automatically.
 
 A configuration envelope carries the JSON policy document, not raw SecLang. Verification binds the
 tenant, edge audience, sequence and validity window. Compilation applies the edge's own policy
@@ -13,6 +13,33 @@ Use [verification order](#what-the-verifier-checks-in-this-order), [sequence
 storage](#the-sequence-record), [policy fields](#the-document), [policy
 comparison](#comparing-policies) and [integration example](#for-the-control-worker) for review.
 Source: [config](../config/), [policy](../policy/).
+
+## Load a local policy
+
+Use `-policy site-policy.json` to load one JSON policy before startup. The file must be regular,
+not a symlink, and at most 1 MiB. Unknown or duplicate fields, invalid sections and unreadable files
+stop startup. `-check` validates the policy and other local files without contacting the origin.
+
+A policy supplies its own defaults, including CRS blocking. CLI flags and settings loaded from
+`-config` override the same policy settings. Body limits are always ceilings: a policy can lower
+`-max-body` and `-max-form-body`, including their defaults, but cannot raise them. Denied headers
+from either source are combined. Origin authentication, trusted proxies, flood controls and
+machine concurrency limits remain operator settings. Restart after changing the file.
+
+The `body_formats` section supplies format rules unless `-formats-policy` names a separate file.
+An explicit `-formats-mode` wins over the section's `monitor` setting. The `vpatch` section selects
+tiers and declared software; it requires `-vpatch-pack`. Additional API checks use `api_mode` or
+`api.mode`, with `-api-guard` taking precedence. API learning and discovery settings are rejected
+by the command. Explicit contracts continue to use `-api-spec`.
+
+For example, this policy blocks with the normal sensitivity and restricts visitor hosts:
+
+```json
+{"mode":"block","allowed_hosts":["shop.example"],"body_formats":{"monitor":false}}
+```
+
+This is an operator-managed file, not a signed envelope. Keep it writable only by administrators
+and deploy the same reviewed file to each replica.
 
 ## Part 1. The configuration channel (`config/`)
 

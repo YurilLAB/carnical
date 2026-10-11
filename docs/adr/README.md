@@ -150,5 +150,6 @@ Superseding does not delete the old record. Set its status and let the history s
 | [0079](0079-carnical-availability-and-portable-runtime.md) | — | — | unreleased (post-v3.8.1) | F | Carnical readiness, bounded draining and portable runtime |
 | [0080](0080-carnical-bounded-ids-signals.md) | — | — | unreleased (post-v3.8.1) | F | Bounded IP/network, TCP lifecycle and HTTP rejection IDS signals |
 | [0081](0081-carnical-interactive-site-setup.md) | — | — | unreleased (post-v3.8.1) | F | Interactive site setup and encrypted private settings |
+| [0082](0082-carnical-local-protection-loading.md) | — | — | unreleased (post-v3.8.1) | F | Local policy and virtual-patch loading |
 
 Categories: **F**eature · **P**arity · **⚡** Perf · **R**efactor

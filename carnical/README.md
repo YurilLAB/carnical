@@ -48,6 +48,9 @@ shutdown, containers and platform support.
 | `-formats-policy` | No file | Per-site format limits and rule actions; the CLI mode overrides the policy's monitor setting. |
 | `-allow-request-encoding` | Disabled | Opt into one bounded gzip/deflate layer; the origin receives the decoded bytes. |
 | `-api-spec` | No file | Supported OpenAPI contracts. Blocking requires `-formats-mode block`. |
+| `-api-guard` | `off` | Additional API method, body and rate checks; start with `monitor`. |
+| `-policy` | No file | Local site settings; flags override matching fields, body ceilings still apply. |
+| `-vpatch-pack` | No file | Reviewed local signature pack; monitor first, then select block mode and software scope. |
 | `-api-per-minute` | Disabled | One sliding-minute budget per verified client across the selected API routes. |
 | `-ddos` | `on` | Flood detection, connection/request budgets and bounded IDS signals. |
 | `-crowdsec-api` | Disabled | Optional CrowdSec IP/CIDR bans, enforced independently of inspection modes. |
@@ -68,8 +71,9 @@ Default finding logs omit request content. Detailed logging is an explicit opt-i
 
 The [proxy reference](docs/proxy-reference.md) lists these checks, rule identities and operational
 limits. [Host hardening](docs/hardening.md) and [network protection](docs/network-protection.md)
-describe the optional Linux layers. Signed policy, control and virtual-patch services require
-[library integration](docs/README.md#build-an-integration).
+describe the optional Linux layers. See [local policies](docs/config-and-policy.md#load-a-local-policy)
+and [virtual-patch packs](docs/vpatch.md#run-a-pack-in-the-proxy) for optional file-based protections.
+Signed policy distribution and control services require [library integration](docs/README.md#build-an-integration).
 
 ## Known limits
 

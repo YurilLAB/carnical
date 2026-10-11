@@ -230,3 +230,32 @@ That broad run also times out after ten minutes in the untracked virtual-patch b
 comparison does not normalize. This check is not claimed to pass globally.
 
 WSL's Ubuntu environment first reported a read-only home when creating the Go cache and subsequently failed to start. Linux confinement and the full Linux CI matrix have not been verified by these runs.
+
+## 2026-10-11: local policy and signature-pack integration
+
+The standalone proxy now loads optional local policies and static virtual-patch packs, and can
+enable basic API guard checks. Automatic profiling, discovery, learned-state persistence and the
+unfinished network helper are outside this validation. No new default kernel policy is installed.
+
+Built-executable tests covered ordinary forwarding, host/header policy precedence, body ceilings,
+monitor/block behavior, compressed bodies reaching the matcher after decoding, and API methods.
+Configuration tests covered malformed/duplicate JSON, missing and invalid packs, rejected regexes,
+unmatched scope, expired-only selections and unsupported learning settings. Focused cases passed
+five shuffled runs. Linux race checks passed 20 runs at CPU counts 1, 2 and 8; flag-list fuzzing
+passed 30 seconds with 261,048 executions.
+
+Negative controls reproduced raised default/zero-form ceilings and unbounded scope selections.
+Removing pack-load rejection, reversing the format/patch order and suppressing the final summary
+each caused the corresponding regression to fail.
+
+The built Windows WAF completed 10,000 varied requests with zero transport errors or unavailable
+responses. The normal corpus configuration, without an optional pack, admitted 4,672 of 5,000
+benign requests and refused 4,882 of 5,000 attack-labelled requests. The report checker passed its
+supported injection and ordinary search/JSON controls. The 118 attack-labelled admissions remain
+context-dependent cases; these counts do not prove application exploitability. The 328 benign
+refusals also remain visible and require site-specific tuning. Throughput was about 4,003 requests
+per second and p99 was 13.2 ms on this test host; no performance improvement is claimed.
+
+All five supported OS/architecture builds and both native vet targets passed. Both nonempty
+gosec scans found zero issues, and govulncheck found no known vulnerabilities. Local lint retained
+105 existing findings, with none in the changed files.

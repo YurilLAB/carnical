@@ -25,9 +25,9 @@ monitoring, and deployment tools around the Coraza engine. Carnical is an indepe
 | Linux hosts | Optional nftables packet guards and Landlock/seccomp process restrictions | [Network protection](carnical/docs/network-protection.md), [host hardening](carnical/docs/hardening.md) |
 | Deployment | Setup wizard, encrypted site fields, origin mutual TLS, startup checks, private health probes and graceful shutdown | [Website setup](carnical/docs/website-onboarding.md), [availability](carnical/docs/availability-and-deployment.md) |
 
-Signed configuration, customer policies, the authenticated control API and virtual patches
-are also available as [integration libraries](carnical/docs/README.md#build-an-integration).
-The standalone proxy does not start those services automatically.
+The proxy can load [local site policies](carnical/docs/config-and-policy.md#load-a-local-policy)
+and [virtual-patch packs](carnical/docs/vpatch.md#run-a-pack-in-the-proxy). Signed configuration
+and the authenticated control API remain [integration libraries](carnical/docs/README.md#build-an-integration).
 
 ## Run locally
 

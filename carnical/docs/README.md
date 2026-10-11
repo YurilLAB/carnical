@@ -20,6 +20,8 @@ recorded build and configuration.
 | --- | --- |
 | Understand what the proxy enforces | [Proxy reference](proxy-reference.md) |
 | Tune parsing and body/query limits | [Request formats](formats.md) |
+| Load a local site policy | [Configuration and policy](config-and-policy.md#load-a-local-policy) |
+| Run a reviewed virtual-patch pack | [Virtual patches](vpatch.md#run-a-pack-in-the-proxy) |
 | Enforce an OpenAPI contract | [Input hardening](input-hardening.md) |
 | Tune floods and inspect IDS alerts | [Flood protection and IDS](ddos.md) |
 | Add Linux packet filtering | [Network protection](network-protection.md) |

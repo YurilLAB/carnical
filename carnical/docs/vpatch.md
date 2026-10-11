@@ -2,7 +2,8 @@
 
 `vpatch` compiles signatures into an immutable, atomically replaced request matcher. The engine
 implements `inspect.Inspector`; the integrator installs it in the site's proxy and supplies a
-signature pack. The standalone `cmd/carnical` executable does not install it automatically. External
+signature pack. The standalone `cmd/carnical` executable also loads a local pack with
+`-vpatch-pack`. External
 signature libraries are not shipped here.
 
 ```go
@@ -20,6 +21,32 @@ require an explicit tier selection; experimental matches cannot block unless `Ex
 is also enabled. Review imported rules against real benign traffic before enabling them. `Scope`
 selects software tags and `Exclude` suppresses ID prefixes, allowing integrations already running
 CRS to omit duplicated CRS signatures.
+
+## Run a pack in the proxy
+
+Add `-vpatch-pack patches.json` to the usual site command. Start in monitor mode and review
+ordinary traffic before adding `-vpatch-mode block`. Packs are operator-managed JSON or YAML
+files made by `carnical-vpatch`; their content hash detects corruption, not publisher identity.
+Install packs only from a trusted, reviewed source.
+
+The default tier is `verified`. `-vpatch-tiers verified,community` explicitly enables community
+rules. Experimental rules can be monitored but the command never enables their block action.
+`-vpatch-scope wordpress,php` selects software tags. The default `auto` uses only software
+declared in the local policy; it sends no fingerprinting or discovery requests. Without declared
+software, only unscoped signatures run. `none` also selects only unscoped signatures.
+
+A missing, oversized, corrupt, empty or partly rejected pack stops startup, as does a selection
+that loads no signatures. The 64 MiB file limit is separate from compilation memory needs.
+`-vpatch-mode off` deliberately disables the pack and does not read it.
+
+No signatures are excluded by default, including CRS copies. `-vpatch-exclude ID-PREFIX`
+explicitly excludes matching IDs. Format inspection runs first, so allowed gzip/deflate bodies
+are decoded before matching. The existing local API contract and CRS still run after the patches.
+
+Match logs omit request content by default. Changed count summaries use
+`-vpatch-stats-interval` (one minute by default; zero disables them). Pack contents and scope stay
+fixed until restart; the command does not reload or fetch rules. `-check` validates and compiles
+the pack without starting listeners.
 
 ## Loading and index limits
 
