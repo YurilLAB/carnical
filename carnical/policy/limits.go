@@ -39,8 +39,15 @@ const (
 	// MaxValueBytes is the longest value of a custom rule (the pattern, for rx); MaxPMValueBytes the longest word of pm.
 	MaxValueBytes   = 256
 	MaxPMValueBytes = 64
-	// MaxRegexCost bounds the size of the program a custom regular expression compiles to (see regexCost).
-	MaxRegexCost = 2000
+	// MaxRegexCost bounds the program a custom regular expression compiles to, in instructions: worked out from the parsed
+	// tree before anything is built (see regexCost), then counted in the compiled program. It bounds time as much as size. The
+	// engine matches with an automaton whose worst case keeps every instruction alive at every byte it reads, and the
+	// evaluation budget is checked between rules, so it cannot stop one expression. Measured on the shared 4-CPU test machine
+	// that is about 11 ns per instruction per byte: at 256 one expression costs at most about 3.5 s on a 1 MiB body (the
+	// largest form limit) and under 0.5 s on the default 128 KiB, the order of the 2 s budget and the same as a contains rule
+	// with the longest value (256 bytes, case ignored: 3.4 s on 1 MiB); at 2,000 it was 22 s. 256 still takes a list of some
+	// 30 words, a credit-card or token pattern, or a run such as [A-Za-z0-9+/]{200,}; a longer list is what pm is for.
+	MaxRegexCost = 256
 	// MaxPathBytes is the longest exclusion or allowed path.
 	MaxPathBytes = 200
 

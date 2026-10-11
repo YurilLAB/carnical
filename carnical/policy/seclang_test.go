@@ -197,7 +197,7 @@ func TestRegexValuesMeanWhatRE2SaysAndStayOnOneLine(t *testing.T) {
 		{`"`, true}, {`'`, true}, {`%`, true}, {`%{tx.score}`, true}, {`a b`, true}, {` a`, true}, {`a `, true}, {`\"`, true}, {`\\`, true}, {`\\"`, true}, {`a\\`, true},
 		{`\x41`, true}, {`\x00`, true}, {`\x7f`, true}, {`\n`, true}, {`\r\n`, true}, {`\t`, true}, {`é`, true}, {`日本語`, true}, {`\Qa.b\E`, true}, {`\Q"%{x}\E`, true},
 		{`(?s:.)`, true}, {`(?m:^a$)`, true}, {`^a$`, true}, {`a$`, true}, {`[^"]`, true}, {`["']`, true}, {`[ %]`, true}, {`[\s"]`, true}, {`[\x22-\x27]`, true},
-		{"a\nb", true}, {"a\x00b", true}, {"\u2028", false}, {"\u0085", false},
+		{"a\nb", true}, {"a\x00b", true}, {"\u2028", false}, {"\u0085", false}, {`\\x90|é`, true},
 		{`(`, false}, {`)`, false}, {`[`, false}, {`a**`, false}, {`a++`, false}, {`(?=a)`, false}, {`(?!a)`, false}, {`(?<=a)b`, false}, {`(a)\1`, false}, {`\`, false},
 		{`a\`, false}, {`(?P<n`, false}, {`\x{85}`, false}, {`[\x{80}-\x{10ffff}]`, false}, {`[^\x00-\x7f]`, false}, {`\p{NoSuchScript}`, false},
 		{strings.Repeat("a", 257), false}, {`(a{1000}){1000}`, false}, {`(((a{50}){50}){50}){50}`, false}, {"", false},

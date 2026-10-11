@@ -121,6 +121,38 @@ var keyedTargets = map[string]struct {
 	"header": {"REQUEST_HEADERS", headerRe},
 }
 
+// bodyVariables are what a custom rule on the body reads. The engine keeps the body as it was sent (REQUEST_BODY) only for a
+// form and for a body it has no parser for. A JSON or multipart body becomes names and values (ARGS_POST, ARGS_POST_NAMES) and
+// an XML body its text and attribute values (XML:/*, XML://@*), with no REQUEST_BODY at all, so a rule that read only that
+// would let the same payload through as soon as a client changed the Content-Type. What none of them holds is the content of
+// an uploaded file, which the uploads section checks.
+const bodyVariables = "REQUEST_BODY|ARGS_POST|ARGS_POST_NAMES|XML:/*|XML://@*"
+
+// ruleVariables returns the SecLang variables a custom rule on a field reads, or false. It is targetVariable, widened where one
+// part of a request, as the application reads it, is in more than one place in the engine:
+//
+//   - body: see bodyVariables;
+//   - a header whose name has a hyphen (header:NAME, useragent): PHP, CGI, WSGI and IIS turn each "-" of a header's name into
+//     "_", so X_Api-Key reaches such an application as the same input as X-Api-Key, and the engine keys a header by its own
+//     name. The header is named by a key pattern that takes either character in each place, REQUEST_HEADERS:/^x[-_]api[-_]key$/,
+//     which is how the proxy folds the two spellings for deny_headers.
+//
+// An exclusion keeps targetVariable: what it takes out of inspection is never widened.
+func ruleVariables(field string) (string, bool) {
+	if field == "body" {
+		return bodyVariables, true
+	}
+	v, ok := targetVariable(field, true)
+	if !ok {
+		return "", false
+	}
+	// A header name is made of a-z, 0-9 and "-" only (headerRe), so the hyphen is the one character the pattern has to spell.
+	if name, isHeader := strings.CutPrefix(v, "REQUEST_HEADERS:"); isHeader && strings.Contains(name, "-") {
+		return "REQUEST_HEADERS:/^" + strings.ReplaceAll(name, "-", "[-_]") + "$/", true
+	}
+	return v, true
+}
+
 // targetVariable returns the SecLang variable (with its key, if it names one value) for a target or field name, or false.
 func targetVariable(name string, allowExtra bool) (string, bool) {
 	if v, ok := fixedTargets[name]; ok {

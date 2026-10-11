@@ -318,6 +318,32 @@ func TestConsoleExportRows(t *testing.T) {
 					t.Fatalf("rule numbers %v", ids)
 				}
 			}},
+		{name: "a rule in extended mode (flag x) is left out, not matched as literal spaces and comment", in: wrap(`{"mode":"block","rules":[{"id":"SITE-0001","action":"block","targets":["args"],"operator":"rx","pattern":"union \\s+ select  # comment","flags":"ix"}]}`),
+			skipped: [][]string{{"SITE-0001", "flag", "x"}}, check: func(t *testing.T, p Policy) {
+				if len(p.CustomRules) != 0 {
+					t.Fatalf("a rule whose flag cannot be honoured was carried: %+v", p.CustomRules)
+				}
+			}},
+		{name: "a pattern's \\s also matches the vertical tab, as PCRE's does", in: wrap(`{"mode":"block","rules":[{"id":"SITE-0001","action":"block","targets":["args"],"operator":"rx","pattern":"union\\s+select","flags":"i"}]}`),
+			clean: true, check: func(t *testing.T, p Policy) {
+				c, err := Compile(p)
+				if err != nil {
+					t.Fatal(err)
+				}
+				waf, _, err := wafWith(t, c.CRS.Before)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if ids, _ := matched(t, waf, "GET", query("UNION\vselect"), nil, ""); !has(ids, idCustom+1) {
+					t.Fatalf("union, a vertical tab and select did not match %q", p.CustomRules[0].Value)
+				}
+			}},
+		{name: "a rule that URL-decodes a header is carried and the difference named", in: wrap(`{"mode":"block","rules":[{"id":"SITE-0001","action":"block","targets":["header:x-data"],"transforms":["urldecode"],"operator":"contains","pattern":"union select"}]}`),
+			skipped: [][]string{{"SITE-0001", "URL-decodes", "header:x-data"}}, check: func(t *testing.T, p Policy) {
+				if len(p.CustomRules) != 1 || p.CustomRules[0].Action != ActionBlock {
+					t.Fatalf("%+v", p.CustomRules)
+				}
+			}},
 		{name: "a setting this program does not know", in: wrap(`{"mode":"block","telepathy":true}`), skipped: [][]string{{"telepathy:", "not a setting"}}},
 		{name: "a part of the export this program does not know", in: `{"site_firewall_policy":1,"policy":{"mode":"block"},"extra":1}`, skipped: [][]string{{"extra:"}}},
 		{name: "bookkeeping is ignored", in: wrap(`{"mode":"block","schema":1,"rev":9,"updated":"x","by":"y","compiled":null}`), clean: true},

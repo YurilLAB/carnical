@@ -381,7 +381,10 @@ With no targets the whole category is removed for the request; with targets only
 taken out of what its rules look at, which is the Core Rule Set's own exclusion model. Targets:
 `args argnames cookies cookienames headers body query path uri method filenames`, or `arg:NAME`,
 `cookie:NAME`, `header:NAME` (names of letters, digits and `_ . - [ ]`, 64 at most; headers without
-`_ . [ ]`; lower case, because the engine compares in lower case).
+`_ . [ ]`; lower case, because the engine compares in lower case). `body` here is the body as it was
+sent (`REQUEST_BODY`, which the engine keeps for forms and text bodies only); the values the engine
+reads out of a form, JSON or multipart body are `args` and `arg:NAME`. An exclusion is never
+widened to what a custom rule on the same name reads (below).
 
 `arg:NAME` takes out the argument's value; its name is still seen unless `argnames` or `arg:` plus
 the name under `argnames` is also excluded. Tested against the real rule set (17 requests): the
@@ -404,6 +407,19 @@ useragent`, or `arg:NAME`, `cookie:NAME`, `header:NAME`. The rule runs in phase 
 complete after the request headers (everything but `args`, `argnames`, `arg:`, `body`, `filenames`).
 `uri` and `query` are matched after one round of URL decoding.
 
+Two fields are more than one place in the engine, and a rule reads all of them:
+
+- `body` is `REQUEST_BODY|ARGS_POST|ARGS_POST_NAMES|XML:/*|XML://@*`. The engine keeps the body as
+  sent only for a form or a body it has no parser for; a JSON or multipart body becomes names and
+  values and an XML body its text and attribute values, with no `REQUEST_BODY` at all. Reading only
+  that would let the same payload through as JSON, XML or multipart (the client picks the Content-Type).
+  A form's values are therefore also matched URL-decoded. The content of an uploaded file is in none
+  of them; the `uploads` section checks it.
+- A header whose name has a hyphen (`header:NAME`, `useragent`) is read under either spelling of
+  each hyphen: `header:x-api-key` is `REQUEST_HEADERS:/^x[-_]api[-_]key$/`. PHP, CGI, WSGI and IIS
+  turn `-` into `_` in a header's name, so `X_Api-Key` reaches such an application as the same input
+  (the proxy folds the two spellings the same way for `deny_headers`).
+
 The text of a value reaches the engine inside `"@rx ..."`, where the quote, the backslash, the
 percent sign (it opens a macro, `%{tx.score}`), white space and the backtick mean something to the
 SecLang reader, and where the engine itself decides, from the backslash escapes in the text, whether
@@ -414,7 +430,7 @@ So **the customer's text is never written into a rule**. Every operator becomes 
 expression, built from a parsed tree:
 
 - `contains equals beginsWith endsWith pm`: each character is written as itself if it is an ASCII letter or digit, as `\xHH` if it is any other ASCII character (so a quote, a backslash, a space, a percent sign, a newline and a NUL are the same plain thing: four characters), as itself if it is a printable character outside ASCII, and **refused** if it is anything else (a control, line or paragraph separator, zero-width or direction-changing character, non-breaking space, invalid UTF-8). `equals` is `\A...\z`, `beginsWith` `\A...`, `endsWith` `...\z`, `pm` an alternation; case is ignored with `(?i:...)` unless `case_sensitive`.
-- `rx`: parsed as RE2 with the engine's own flags in front (`(?sm)`), refused if it does not parse, if its compiled size (worked out from the tree, without expanding it, so a hostile expression costs nothing to refuse: `((a{100}){100}){100}` is refused in microseconds and allocates almost nothing) is over 2,000 instructions, or if writing the tree back out does not parse to the same tree; then written in the library's canonical spelling with the five characters SecLang cares about (quote, apostrophe, percent sign, space, backtick) as `\x` escapes and the whole put in a group so the text never ends in a backslash. What RE2 cannot say (lookahead, back-references, possessive quantifiers, atomic groups) is refused; so is anything that would need `\x{...}` or an escape above 0x7f (invisible characters, and a negated class such as `[^\x00-\x7f]`, which is a range above 0x7f): those make the engine read the expression as raw bytes, or fail to build the whole WAF for every tenant on the edge.
+- `rx`: parsed as RE2 with the engine's own flags in front (`(?sm)`), refused if it does not parse, if its size is over 256 instructions (worked out from the tree first, without expanding it, so a hostile expression costs nothing to refuse: `((a{100}){100}){100}` is refused in microseconds and allocates almost nothing; then counted in the compiled program), or if writing the tree back out does not parse to the same tree; then written in the library's canonical spelling with the five characters SecLang cares about (quote, apostrophe, percent sign, space, backtick) and a literal backslash as `\x` escapes and the whole put in a group so the text never ends in a backslash. The size bounds time: the engine's automaton can keep every instruction alive at every byte it reads (about 11 ns per instruction per byte on the 4-CPU test machine), and the evaluation budget is checked between rules, so it cannot stop one expression. At 256 the worst expression takes about 3.5 s on a 1 MiB body (the largest form limit) and under 0.5 s on the default 128 KiB, the same as a `contains` rule with the longest value; at the earlier 2,000 `[a-z]{1000}[a-z]{990}0` took 22 s. 256 still takes a list of some 30 words or a run such as `[A-Za-z0-9+/]{200,}`; a longer list is what `pm` is for. A literal backslash is written `\x5c` because the engine's test for byte escapes takes each backslash on its own: to it `\\x90` is a backslash and the byte 0x90, which would make it match the whole expression as raw bytes, so that `café` beside it no longer matched. What RE2 cannot say (lookahead, back-references, possessive quantifiers, atomic groups) is refused; so is anything that would need `\x{...}` or an escape above 0x7f (invisible characters, and a negated class such as `[^\x00-\x7f]`, which is a range above 0x7f): those make the engine read the expression as raw bytes, or fail to build the whole WAF for every tenant on the edge.
 
 After the line is made it is checked (`checkRuleLine`): one line, exactly four quotation marks, none
 preceded by a backslash, no control, separator or backtick character, shorter than 32 KiB (the
@@ -422,7 +438,9 @@ parser reads lines with a 64 KiB limit and **stops without an error** at the fir
 which would silently drop every directive after it), starting `SecRule `, carrying the id it was
 made for.
 
-The text of the pattern is checked again on its own (`checkEmittable`). And `Validate` finishes by
+The text of the pattern is checked again on its own (`checkEmittable`), including with a copy of the
+engine's own test for byte escapes (`matchesArbitraryBytes` in `internal/operators/rx.go`), so that
+nothing the engine would match as raw bytes is ever written. And `Validate` finishes by
 writing the whole policy out, so **a policy that passes `Validate` always compiles**. The ids in the
 reserved range 1000000 to 1099999:
 
@@ -442,7 +460,7 @@ refused for a documented reason or becomes exactly one rule that the engine read
 rule, and that matches what an independent oracle (`regexp.QuoteMeta` and the standard library) says
 the operator means.
 
-67 regular expressions, valid and not, against 39 probes, the same way. A deliberately naive escaper
+68 regular expressions, valid and not, against 39 probes, the same way. A deliberately naive escaper
 (the value pasted into the line) is shown to fail the same checks. Fuzzing: see the last section.
 
 ### Address lists and pages
@@ -495,7 +513,8 @@ covers `arg:x`; a shorter path covers a longer one; the whole request covers any
 |---|---|---|
 | `mode.lowered` / `mode.raised` | yes / no | block > monitor > off |
 | `paranoia.lowered`, `threshold.raised` / `paranoia.raised`, `threshold.lowered` | yes / no | the *effective* level and score, preset and override together; any one dimension getting weaker is reported even if the other got stronger |
-| `sensitivity.changed` | no | a different setting with the same effect |
+| `outbound_threshold.raised` / `outbound_threshold.lowered` | yes / no | the score that blocks a response, which only the preset sets (relaxed 8, normal and strict 4; `threshold` replaces the request score only); compared when responses are inspected before and after |
+| `sensitivity.changed` | no | a different setting with the same effect, on requests and, while they are inspected, on responses |
 | `rule_group.off`, `rule_group.log` / `rule_group.on` | yes / no | by the new state, weakening when it is lower than the old (log > off) |
 | `exclusion.added` / `exclusion.removed` | yes / no | only when something new is not already covered |
 | `custom_rule.removed` | when it blocked | |
@@ -534,12 +553,12 @@ written by the console's own code (`Policy::blank()`, `Policy::ruleFromForm`,
 | `disabled`, `overrides` | **not carried** and listed with their ids: single rules cannot be switched off here, and the rule set scores a rule by its severity, so a score between cannot be set exactly; a rule group or an exclusion is the nearest |
 | `exclusions` | carried; categories with no group, and targets this model does not have (`uploads`) are dropped and named; **an exclusion that would lose all its targets is dropped, never widened to the whole request**; a path the strict character set refuses is dropped |
 | `allow_ips`, `block_ips`, `allow_paths` | carried when valid; an entry that is not an address, is wider than the lists here take, or does not fit the path character set is named |
-| `rules` | a rule that needs several conditions (`also`), a minimum length, a transformation other than URL-decoding and lower-casing, an operator other than `contains`, `rx`, `pm`, a pattern PCRE accepts and RE2 does not (possessive quantifier, lookaround), or an action other than block or log is left out and named. A rule that looks at several parts of the request becomes one rule for each part. A rule that blocks with a score **below the point at which the PHP firewall stops a request** adds to other matches there and cannot here, so it is carried as `log` and named |
+| `rules` | a rule that needs several conditions (`also`), a minimum length, a transformation other than URL-decoding and lower-casing, an operator other than `contains`, `rx`, `pm`, a pattern PCRE accepts and RE2 does not (possessive quantifier, lookaround), a pattern flag other than `i s m u U D` (`x` above all: its white space and `#` comments would be matched literally), a pattern that RE2 would read differently without an error (`\v`, which is any vertical white space to PCRE and the vertical tab alone to RE2, or `\S` in a negated class), or an action other than block or log is left out and named. PCRE's `\s` also matches the vertical tab and RE2's does not, so `\s` is carried as `[\s\x0b]`, as the Core Rule Set writes it. URL-decoding is honoured where a rule here decodes: `uri` and `query` (the rule decodes them) and the path and arguments (the engine does); a rule that URL-decodes a header, a cookie or the body is carried as it is and named, because an encoded value there may not be matched. A rule that looks at several parts of the request becomes one rule for each part. A rule that blocks with a score **below the point at which the PHP firewall stops a request** adds to other matches there and cannot here, so it is carried as `log` and named |
 | `block_oversize` | a request too big to inspect is always refused here; named when the export has it off |
 | `outbound.inspect` | carried; `outbound.max_kb`, `contact`, `timezone`, `stats`, `log`, `reputation`, `ips` (automatic bans and the IDS/IPS points) named as not carried |
 | anything else | named as unknown, not an error |
 
-An export carrying every one of these (`console_export_tuned.json`) gives 33 lines. A document that
+An export carrying every one of these (`console_export_tuned.json`) gives 34 lines. A document that
 is not an export, is over 2 MiB, repeats a field or nests more than 32 levels is an error.
 
 ### For the control worker

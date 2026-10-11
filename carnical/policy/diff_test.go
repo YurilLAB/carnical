@@ -61,7 +61,7 @@ func TestWeakensReportsEachKindOfWeakeningAndOnlyThose(t *testing.T) {
 		// ---- weakening
 		{"block to monitor", func(p *Policy) { p.Mode = ModeMonitor }, []string{"mode.lowered"}, nil},
 		{"block to off", func(p *Policy) { p.Mode = ModeOff }, []string{"mode.lowered"}, nil},
-		{"normal to relaxed (a higher blocking score)", func(p *Policy) { p.Sensitivity = SensitivityRelaxed }, []string{"threshold.raised"}, nil},
+		{"normal to relaxed (a higher blocking score, for requests and for the responses this policy inspects)", func(p *Policy) { p.Sensitivity = SensitivityRelaxed }, []string{"outbound_threshold.raised", "threshold.raised"}, nil},
 		{"a threshold of 5 replaced by 8", func(p *Policy) { p.Threshold = intp(8) }, []string{"threshold.raised"}, nil},
 		{"no threshold to a threshold of 10", th(10), []string{"threshold.raised"}, nil},
 		{"a rule group on to log only", func(p *Policy) { p.RuleGroups["sqli"] = GroupLog }, []string{"rule_group.log"}, nil},
@@ -260,6 +260,8 @@ func TestWeakensFromOtherStartingPoints(t *testing.T) {
 			}
 		}, []string{"allow_ip.added"}, nil},
 		{"a threshold removed for a normal sensitivity whose preset is the same", func(p *Policy) { p.Threshold = intp(5) }, func(p *Policy) { p.Threshold = nil }, nil, []string{"sensitivity.changed"}},
+		{"normal to relaxed with the request threshold kept still doubles the response threshold while responses are inspected", func(p *Policy) { p.Responses.Inspect = true },
+			func(p *Policy) { p.Responses.Inspect, p.Sensitivity, p.Threshold = true, SensitivityRelaxed, intp(5) }, []string{"outbound_threshold.raised"}, nil},
 	}
 	for _, r := range rows {
 		t.Run(r.name, func(t *testing.T) {
@@ -375,7 +377,7 @@ func TestEveryCodeThatWeakensIsStable(t *testing.T) {
 	want := []string{
 		"allow_ip.added", "allow_path.added", "api.config_changed", "api.mode_lowered", "block_ip.removed", "body.form_limit_raised", "body.upload_limit_raised",
 		"body_formats.config_changed", "custom_rule.changed", "custom_rule.relaxed", "custom_rule.removed", "deny_header.removed", "exclusion.added",
-		"framework.next_action_allowed", "host.added", "hosts.opened", "method.added", "mode.lowered", "paranoia.lowered", "paths.encoded_slash_allowed",
+		"framework.next_action_allowed", "host.added", "hosts.opened", "method.added", "mode.lowered", "outbound_threshold.raised", "paranoia.lowered", "paths.encoded_slash_allowed",
 		"paths.path_params_allowed", "responses.banners_kept", "responses.caching_kept", "responses.inspection_disabled", "rule_group.log", "rule_group.off",
 		"threshold.raised", "uploads.script_content_allowed", "uploads.script_names_allowed", "vpatch.software_removed", "vpatch.tier_removed",
 		"wordpress.disabled", "wordpress.login_rate_raised", "wordpress.xmlrpc_allowed",

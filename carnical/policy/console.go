@@ -549,11 +549,13 @@ func (c *converter) rule(name string, m map[string]any) {
 		c.skip("%s: it only matches values of at least %d characters; a rule here cannot say that, so it was left out", name, n)
 		return
 	}
+	decodes := false
 	for _, t := range stringList(m["transforms"]) {
 		if t != "urldecode" && t != "lowercase" && t != "none" {
 			c.skip("%s: it uses the transformation %q, which a rule here cannot, so it was left out", name, safeName(t))
 			return
 		}
+		decodes = decodes || t == "urldecode"
 	}
 	op, _ := m["operator"].(string)
 	var operator Operator
@@ -569,8 +571,22 @@ func (c *converter) rule(name string, m map[string]any) {
 		return
 	}
 	insensitive := false
-	if f, _ := m["flags"].(string); strings.Contains(f, "i") {
-		insensitive = true
+	flags, _ := m["flags"].(string)
+	for _, f := range flags {
+		switch {
+		case f == 'i':
+			insensitive = true
+		case operator != OpRX:
+			// The other operators compare text, where a pattern flag means nothing.
+		case strings.ContainsRune("smuUD", f):
+			// None of these can make the pattern match less here: the engine always matches with s and m and reads UTF-8, U
+			// changes how much a match takes but not whether there is one, and D only stops $ matching before a final newline.
+		default:
+			// x above all, which lets a pattern hold white space and # comments that are not matched: RE2 has no such mode,
+			// and the pattern read without it would look for them literally and match nothing.
+			c.skip("%s: it uses the pattern flag %q, which a rule here cannot honour, so it was left out", name, safeName(string(f)))
+			return
+		}
 	}
 	for _, t := range stringList(m["transforms"]) {
 		if t == "lowercase" {
@@ -592,6 +608,13 @@ func (c *converter) rule(name string, m map[string]any) {
 		if !ok {
 			c.skip("%s: its pattern is not text, so it was left out", name)
 			return
+		}
+		if operator == OpRX {
+			var differs string
+			if s, differs = re2Pattern(s); differs != "" {
+				c.skip("%s: its pattern uses %s, which PCRE and RE2 read differently and which cannot be written here exactly, so it was left out", name, differs)
+				return
+			}
 		}
 		rule.Value = s
 	}
@@ -655,10 +678,91 @@ func (c *converter) rule(name string, m map[string]any) {
 			return
 		}
 		c.p.CustomRules = append(c.p.CustomRules, r)
+		if decodes && !urlDecoded(f) {
+			c.skip("%s: it URL-decodes %s before matching, which a rule here does only for the path, uri, query and arguments, so a URL-encoded value in %s may not be matched (the rule was carried as it is)", name, f, f)
+		}
 	}
 	if len(made) > 1 {
 		c.skip("%s: it looks at several parts of the request, which here takes one rule for each part, so it became rules %s", name, strings.Join(made, ", "))
 	}
+}
+
+// urlDecoded says whether a rule here matches a field after URL-decoding, as a PHP rule with the urldecode transformation does:
+// uri and query are decoded by the rule (t:urlDecodeUni), the path and the arguments by the engine. Headers, cookies and the
+// body are matched as they are sent (a form's values apart, which are arguments too).
+func urlDecoded(field string) bool {
+	switch field {
+	case "uri", "query", "path", "args", "argnames":
+		return true
+	}
+	return strings.HasPrefix(field, "arg:")
+}
+
+// re2Pattern rewrites what RE2 accepts in a PCRE pattern but would match in fewer places, or says what it cannot rewrite. PCRE's
+// \s matches the vertical tab (0x0b) and RE2's does not, so \s is written [\s\x0b] (\s\x0b inside a class), as the Core Rule Set
+// writes it, and SQL that MySQL reads with a vertical tab between its words still matches. Two things cannot be written so: \v,
+// which is any vertical white space to PCRE and only the vertical tab to RE2, and \S in a negated class, which leaves the vertical
+// tab in the class to PCRE and takes it out to RE2. \S anywhere else also matches the vertical tab to RE2, which only makes the
+// rule match more, and is left. The rest is copied as it is; what RE2 does not accept at all is refused when the pattern is
+// parsed. It reads the pattern as PCRE does: an escape is two characters, \Q...\E is literal text, and a class runs to the
+// first ] that is not its first character, an escape or the end of a POSIX class such as [:alpha:].
+func re2Pattern(p string) (string, string) {
+	var b strings.Builder
+	inClass, negated, first := false, false, false
+	for i := 0; i < len(p); i++ {
+		c := p[i]
+		if c == '\\' && i+1 < len(p) {
+			next := p[i+1]
+			switch {
+			case next == 'Q' && !inClass:
+				end := strings.Index(p[i+2:], `\E`)
+				if end < 0 {
+					b.WriteString(p[i:])
+					return b.String(), ""
+				}
+				b.WriteString(p[i : i+2+end+2])
+				i += 2 + end + 1
+				continue
+			case next == 's' && inClass:
+				b.WriteString(`\s\x0b`)
+			case next == 's':
+				b.WriteString(`[\s\x0b]`)
+			case next == 'v':
+				return "", `\v`
+			case next == 'S' && inClass && negated:
+				return "", `\S in a negated class`
+			default:
+				b.WriteByte(c)
+				b.WriteByte(next)
+			}
+			i++
+			first = false
+			continue
+		}
+		switch {
+		case c == '[' && !inClass:
+			inClass, negated, first = true, false, true
+			b.WriteByte(c)
+			if i+1 < len(p) && p[i+1] == '^' {
+				negated = true
+				b.WriteByte('^')
+				i++
+			}
+			continue
+		case c == '[' && inClass && i+1 < len(p) && p[i+1] == ':':
+			if end := strings.Index(p[i+2:], ":]"); end >= 0 {
+				b.WriteString(p[i : i+2+end+2])
+				i += 2 + end + 1
+				first = false
+				continue
+			}
+		case c == ']' && inClass && !first:
+			inClass = false
+		}
+		first = false
+		b.WriteByte(c)
+	}
+	return b.String(), ""
 }
 
 func stringList(v any) []string {

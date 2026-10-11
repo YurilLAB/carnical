@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"regexp"
 	"regexp/syntax"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -58,9 +59,9 @@ func literalRx(s string) (string, error) {
 
 // canonRx makes the text of a customer's regular expression safe to put in a rule, without changing what it matches. It
 // parses the expression the way the engine will read it (RE2, with the engine's flags in front), refuses one that is too
-// big, writes the parsed tree back out in the library's canonical spelling, checks that this parses back to the same tree,
-// and then writes the five characters SecLang cares about (quote, apostrophe, percent sign, space, backtick) as \x escapes. The result
-// is checked as every rule's text is (checkEmittable).
+// big, writes the parsed tree back out in the library's canonical spelling with the five characters SecLang cares about
+// (quote, apostrophe, percent sign, space, backtick) and a literal backslash as \x escapes, and checks that this parses back
+// to the same tree. The result is checked as every rule's text is (checkEmittable).
 func canonRx(pattern string) (string, error) {
 	if pattern == "" {
 		return "", errors.New("is empty")
@@ -78,24 +79,45 @@ func canonRx(pattern string) (string, error) {
 	if cost := regexCost(re); cost > MaxRegexCost {
 		return "", fmt.Errorf("is too large a regular expression (%d, at most %d): fewer or smaller repeats are needed", cost, MaxRegexCost)
 	}
-	if prog, err := syntax.Compile(re.Simplify()); err != nil || len(prog.Inst) > 4*MaxRegexCost {
-		return "", errors.New("compiles to a program that is too large")
+	// The estimate counts an optional copy of a{n,m} once, where the compiler writes a branch as well, so the program itself is
+	// counted too: its size is what bounds the time a match can take (see MaxRegexCost).
+	prog, err := syntax.Compile(re.Simplify())
+	if err != nil {
+		return "", errors.New("does not compile")
+	}
+	if len(prog.Inst) > MaxRegexCost {
+		return "", fmt.Errorf("compiles to a program of %d instructions, more than %d: fewer or smaller repeats are needed", len(prog.Inst), MaxRegexCost)
 	}
 	canon := re.String()
-	back, err := syntax.Parse(engineFlags+canon, syntax.Perl)
-	if err != nil || !back.Equal(re) {
-		return "", errors.New("cannot be written back out exactly; write it more plainly")
-	}
 	var b strings.Builder
-	for _, r := range canon {
-		switch r {
-		case '"', '\'', '%', ' ', '`':
+	for i := 0; i < len(canon); {
+		r, size := utf8.DecodeRuneInString(canon[i:])
+		switch {
+		case r == '\\' && i+1 < len(canon) && canon[i+1] == '\\':
+			// A literal backslash. The engine's test for byte escapes (engineReadsBytes) takes each backslash on its own, so in
+			// "\\x90" it would see the escape \x90, a byte that is not UTF-8, and match the whole expression as raw bytes. \x5c is
+			// the same backslash to RE2 and nothing to that test.
+			b.WriteString(`\x5c`)
+			i += 2
+			continue
+		case r == '\\' && i+1 < len(canon):
+			// Any other escape is copied whole, so that the character after the backslash is never read as one of its own.
+			_, n := utf8.DecodeRuneInString(canon[i+1:])
+			b.WriteString(canon[i : i+1+n])
+			i += 1 + n
+			continue
+		case r == '"', r == '\'', r == '%', r == ' ', r == '`':
 			fmt.Fprintf(&b, `\x%02x`, r)
 		default:
 			b.WriteRune(r)
 		}
+		i += size
 	}
 	out := b.String()
+	back, err := syntax.Parse(engineFlags+out, syntax.Perl)
+	if err != nil || !back.Equal(re) {
+		return "", errors.New("cannot be written back out exactly; write it more plainly")
+	}
 	if err := checkEmittable(out); err != nil {
 		return "", err
 	}
@@ -155,8 +177,8 @@ func regexCost(re *syntax.Regexp) int {
 
 // checkEmittable is the last check on the text of an @rx pattern before it is written into a rule. It must be one thing:
 // printable characters that mean nothing to SecLang. No control character, space, quote, apostrophe or percent sign, every
-// backslash followed by something, no \x escape above 0x7f and no \x{...} (the engine reads those as raw bytes), and the
-// result compiles with the engine's flags.
+// backslash followed by something, no \x escape above 0x7f and no \x{...} (the engine reads those as raw bytes), nothing
+// the engine's own test for byte escapes reads as raw bytes (engineReadsBytes), and the result compiles with the engine's flags.
 func checkEmittable(s string) error {
 	if len(s) > MaxLineBytes/2 {
 		return errors.New("is too long once written out")
@@ -185,10 +207,53 @@ func checkEmittable(s string) error {
 		}
 		i += size
 	}
+	if engineReadsBytes(engineFlags + s) {
+		return errors.New("would be matched by the engine as raw bytes and not as text (it reads a backslash, x and two hex digits from 80 to ff as a byte, even after another backslash)")
+	}
 	if _, err := regexp.Compile(engineFlags + s); err != nil {
 		return errors.New("does not compile once written out")
 	}
 	return nil
+}
+
+// engineReadsBytes is the engine's own test of whether an @rx pattern is matched as raw bytes (matchesArbitraryBytes in
+// internal/operators/rx.go), repeated here step for step so that checkEmittable refuses what the engine would read that way.
+// It reads each backslash on its own and does not know an escaped one: to it, "\\x90" is a backslash and then the escape \x90,
+// the byte 0x90, which is not UTF-8, so the engine would compile the whole expression to match bytes and a letter outside
+// ASCII in it would stop matching text.
+func engineReadsBytes(expr string) bool {
+	decoded := make([]byte, 0, len(expr))
+	for i := 0; i < len(expr); i++ {
+		c := expr[i]
+		if c != '\\' {
+			decoded = append(decoded, c)
+			continue
+		}
+		if i+3 >= len(expr) {
+			decoded = append(decoded, expr[i:]...)
+			break
+		}
+		if expr[i+1] != 'x' {
+			decoded = append(decoded, expr[i])
+			continue
+		}
+		sub := expr[i:]
+		advance := 3
+		if len(sub) >= 6 && sub[2] == '{' {
+			if end := strings.IndexByte(sub, '}'); end != -1 {
+				sub = `\x` + sub[3:end]
+				advance = end
+			}
+		}
+		v, multibyte, _, err := strconv.UnquoteChar(sub, 0)
+		if err != nil || multibyte || v < 0 || v > 255 {
+			decoded = append(decoded, expr[i])
+			continue
+		}
+		decoded = append(decoded, byte(v))
+		i += advance
+	}
+	return !utf8.Valid(decoded)
 }
 
 func isHex(c byte) bool {

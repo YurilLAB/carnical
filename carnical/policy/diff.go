@@ -51,12 +51,13 @@ func Diff(oldP, newP Policy) []Change {
 	return d.out
 }
 
-// Weakens returns the changes from oldP to newP that lower protection: the mode lowered, a higher threshold or a lower paranoia
-// level, a rule group turned off or to log only, an exclusion added, an address or page added to what is never inspected, a
-// block-list entry taken away, a body limit raised, an upload or path restriction relaxed, a host or method added (or the host
-// list emptied), a deny-header or virtual-patch tier or declared software removed, API protection lowered, and an API or
-// body-format section changed while it is enforced. The web UI asks the customer to confirm a change that has any, with their
-// password. A change that only strengthens, or that narrows an exclusion or allow list, is not reported.
+// Weakens returns the changes from oldP to newP that lower protection: the mode lowered, a higher threshold (for requests, or for
+// responses while they are inspected) or a lower paranoia level, a rule group turned off or to log only, an exclusion added, an
+// address or page added to what is never inspected, a block-list entry taken away, a body limit raised, an upload or path
+// restriction relaxed, a host or method added (or the host list emptied), a deny-header or virtual-patch tier or declared
+// software removed, API protection lowered, and an API or body-format section changed while it is enforced. The web UI asks the
+// customer to confirm a change that has any, with their password. A change that only strengthens, or that narrows an exclusion
+// or allow list, is not reported.
 func Weakens(oldP, newP Policy) []Change {
 	var out []Change
 	for _, c := range Diff(oldP, newP) {
@@ -119,7 +120,19 @@ func (d *differ) protection(a, b Policy) {
 		d.add(code, "sensitivity", tb > ta, "The score that blocks a request changed from %d to %d (sensitivity %s to %s): %s.", ta, tb, a.Sensitivity, b.Sensitivity,
 			map[bool]string{true: "a request has to look worse to be stopped", false: "a request is stopped sooner"}[tb > ta])
 	}
-	if pb == pa && tb == ta && (a.Sensitivity != b.Sensitivity || !sameInt(a.Threshold, b.Threshold)) {
+	// The score that blocks a response is the preset's alone (a policy's threshold replaces only the one for requests), and it
+	// decides something only while responses are inspected; switching inspection on or off is a change of its own (flags).
+	oa, ob := presets[a.Sensitivity].OutboundThreshold, presets[b.Sensitivity].OutboundThreshold
+	outbound := a.Responses.Inspect && b.Responses.Inspect && ob != oa
+	if outbound {
+		code := "outbound_threshold.lowered"
+		if ob > oa {
+			code = "outbound_threshold.raised"
+		}
+		d.add(code, "sensitivity", ob > oa, "The score that blocks a response changed from %d to %d (sensitivity %s to %s): %s.", oa, ob, a.Sensitivity, b.Sensitivity,
+			map[bool]string{true: "a response has to look worse to be stopped", false: "a response is stopped sooner"}[ob > oa])
+	}
+	if pb == pa && tb == ta && !outbound && (a.Sensitivity != b.Sensitivity || !sameInt(a.Threshold, b.Threshold)) {
 		d.add("sensitivity.changed", "sensitivity", false, "The sensitivity setting changed from %s to %s, which blocks exactly the same requests.", a.Sensitivity, b.Sensitivity)
 	}
 }

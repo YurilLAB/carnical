@@ -503,6 +503,7 @@ func TestValidateCustomRules(t *testing.T) {
 		{"an rx with an atomic group", rule(base(OpRX, `(?>a+)b`)), "custom_rules[1].value"},
 		{"an rx that repeats too much", rule(base(OpRX, `(a{1000}){1000}`)), "custom_rules[1].value"},
 		{"an rx that repeats too much, nested deeper", rule(base(OpRX, `((a{100}){100}){100}`)), "custom_rules[1].value"},
+		{"an rx that keeps two thousand states alive at every byte it reads", rule(base(OpRX, `[a-z]{1000}[a-z]{990}0`)), "custom_rules[1].value"},
 		{"an rx with a hex escape above 0x7f, which RE2 reads as that character and is written out as itself", rule(base(OpRX, `\xff`)), ""},
 		{"an rx with a braced escape", rule(base(OpRX, `\x{1F600}|\x{85}`)), "custom_rules[1].value"},
 		{"an rx that is empty", rule(base(OpRX, ``)), "custom_rules[1].value"},

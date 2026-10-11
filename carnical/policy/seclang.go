@@ -18,9 +18,10 @@ import (
 // The rule it writes are built from the structure of the policy, never from its text. Every value that reaches a line is one
 // of: a number, a word from a fixed list, a variable name from a fixed table, an address or range written by netip, a path
 // made only of the characters in pathRe (which mean nothing to SecLang), a header, argument or cookie name made only of
-// letters, digits and . _ [ ] -, or the text of a regular expression made by rxcheck.go. And each line, once written, is
-// checked (checkRuleLine): one line, four quotation marks, none of them escaped, no control or separator character, short
-// enough for the engine to read. A rule that fails its check is an error, never emitted.
+// letters, digits and . _ [ ] - (a header's in a key pattern ^...$ with each hyphen written [-_], see ruleVariables), or the
+// text of a regular expression made by rxcheck.go. And each line, once written, is checked (checkRuleLine): one line, four
+// quotation marks, none of them escaped, no control or separator character, short enough for the engine to read. A rule that
+// fails its check is an error, never emitted.
 
 // ruleText is the SecLang of one rule, with the number of rules it is.
 type generated struct {
@@ -161,9 +162,10 @@ func exclusionRule(id int, e Exclusion, g GroupInfo) (string, error) {
 	return fmt.Sprintf(`SecRule REQUEST_FILENAME "@beginsWith %s" "id:%d,phase:1,pass,nolog,t:none,%s"`, e.Path, id, strings.Join(ctl, ",")), nil
 }
 
-// customRule compiles a custom rule. It is one rule, with one variable, one @rx operator and a fixed action list.
+// customRule compiles a custom rule. It is one rule, with the variables of one field (see ruleVariables), one @rx operator and a
+// fixed action list.
 func customRule(r CustomRule) (string, error) {
-	v, ok := targetVariable(r.Field, true)
+	v, ok := ruleVariables(r.Field)
 	if !ok {
 		return "", errors.New("the field is not a part of a request")
 	}
