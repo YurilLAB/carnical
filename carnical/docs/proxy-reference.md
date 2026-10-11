@@ -11,7 +11,7 @@ guard](../proxy/origin.go), [CLI](../cmd/carnical/main.go).
 
 | Check | Behavior |
 | --- | --- |
-| Request target | Forward the inspected target unchanged; refuse targets Go would re-encode. |
+| Request target | Forward the inspected target unchanged; refuse targets Go would re-encode and a raw `#` anywhere in the target. |
 | Paths | Refuse ambiguous encoded separators, dot segments, semicolons and unnecessary escapes. |
 | Identity headers | Remove proxy/identity headers, treating underscore and hyphen aliases alike, then rebuild from the verified address. |
 | Trusted proxies | Read X-Forwarded-For from the right only for configured peer ranges; a `/0` trust range is refused. |

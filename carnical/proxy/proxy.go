@@ -543,11 +543,16 @@ func (t *trackWriter) Flush() {
 func (t *trackWriter) Unwrap() http.ResponseWriter { return t.ResponseWriter }
 
 // checkTarget requires the target to be a path and query that Go would write back exactly as received. The WAF
-// inspects the parsed form of the target and the application gets the raw one; this makes them the same.
+// inspects the parsed form of the target and the application gets the raw one; this makes them the same. A raw '#' is
+// refused anywhere: a request target has no fragment, and the engine cuts the URI at '#' before it reads the query,
+// while an application that does not (Go's url.ParseQuery, for one) reads the parameters after it uninspected.
 func checkTarget(r *http.Request) error {
 	raw := r.RequestURI
 	if !strings.HasPrefix(raw, "/") || strings.HasPrefix(raw, "//") {
 		return errors.New("not an origin-form target")
+	}
+	if strings.IndexByte(raw, '#') >= 0 {
+		return errors.New("a raw '#' in the target")
 	}
 	path, _, _ := strings.Cut(raw, "?")
 	if r.URL.EscapedPath() != path {

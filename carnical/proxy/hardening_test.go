@@ -113,6 +113,8 @@ func TestRefusalsHoldWithTheRuleSetOffAndAreRecorded(t *testing.T) {
 		{"an ordinary request", get("/page"), nil, 200, 0},
 		{"an encoded slash", get("/a%2fb"), nil, 400, idPathNotCanon},
 		{"a dot segment", get("/a/../admin"), nil, 400, idPathNotCanon},
+		{"a raw hash in the query", get("/page?a=1#&q=x"), nil, 400, 0},
+		{"an encoded hash in the query", get("/page?a=%23&q=x"), nil, 200, 0},
 		{"a name the site does not answer to", get("/page"), func(c *Config) { c.AllowedHosts = []string{"www.other.test"} }, 421, idHostNotAllowed},
 		{"a name it does answer to", get("/page"), func(c *Config) { c.AllowedHosts = []string{"SHOP.example.test."} }, 200, 0},
 		{"a name with a port", "GET /page HTTP/1.1\r\nHost: shop.example.test:8443\r\nConnection: close\r\n\r\n", func(c *Config) { c.AllowedHosts = []string{"shop.example.test"} }, 200, 0},
