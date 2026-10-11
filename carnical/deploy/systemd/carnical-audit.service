@@ -10,7 +10,9 @@ User=carnical-audit
 Group=carnical-audit
 # -allow-skips is NOT set: a check that could not run is reported as a problem, because a check that quietly does not run is
 # how a gap stays open.
-ExecStart=/usr/local/bin/carnical-audit -zones /etc/carnical/zones.json -log /var/log/carnical/audit.jsonl -status /var/lib/carnical/audit/audit-status.json
+# -origin-allow is the edge's own -origin-allow, written here again (the audit user cannot read the edge's site file, and
+# should not); "" says the edge has none. Keep the two the same: origin-guard checks the list it is given.
+ExecStart=/usr/local/bin/carnical-audit -zones /etc/carnical/zones.json -origin-allow "" -log /var/log/carnical/audit.jsonl -status /var/lib/carnical/audit/audit-status.json
 
 NoNewPrivileges=yes
 CapabilityBoundingSet=

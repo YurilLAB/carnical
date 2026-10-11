@@ -2,11 +2,14 @@ package audit
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
 	"sort"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/YurilLAB/coraza/carnical/proxy"
@@ -53,6 +56,25 @@ func OriginGuard(zm Map, policy proxy.OriginPolicy) Check {
 					out.Problems = append(out.Problems, fmt.Sprintf("an origin at %s would be allowed", a))
 				}
 			}
+			// The addresses above are samples: the ends of each internal prefix and its services. An allowed range strictly
+			// inside a zone misses all of them, so every allowed range is also compared with every internal prefix whole.
+			for _, a := range policy.Allow {
+				for _, z := range zm.Zones {
+					if !z.Internal {
+						continue
+					}
+					for _, p := range z.Prefixes {
+						pf, err := netip.ParsePrefix(p)
+						if err != nil {
+							continue
+						}
+						out.Checked++
+						if a.Overlaps(pf) {
+							out.Problems = append(out.Problems, fmt.Sprintf("the allowed range %s overlaps %s in the %s zone", a, pf, z.Name))
+						}
+					}
+				}
+			}
 			sort.Strings(out.Problems)
 			return out
 		},
@@ -87,9 +109,10 @@ func ZoneReach(zm Map, dial Dialer) Check {
 				}
 			}
 			var (
-				mu  sync.Mutex
-				out Outcome
-				wg  sync.WaitGroup
+				mu     sync.Mutex
+				out    Outcome
+				wg     sync.WaitGroup
+				unsent int // probes this process could not send, which say nothing about the walls
 			)
 			sem := make(chan struct{}, 8)
 			for _, p := range probes {
@@ -108,6 +131,10 @@ func ZoneReach(zm Map, dial Dialer) Check {
 					allowed := zm.Allowed(zm.Here, p.zone)
 					mu.Lock()
 					defer mu.Unlock()
+					if !reached && !probed(ctx, err) {
+						unsent++
+						return
+					}
 					out.Checked++
 					switch {
 					case reached && !allowed:
@@ -118,8 +145,33 @@ func ZoneReach(zm Map, dial Dialer) Check {
 				}()
 			}
 			wg.Wait()
+			if out.Checked == 0 && unsent > 0 {
+				return Outcome{SkipReason: fmt.Sprintf("none of the %d connections could be attempted from here (no network sockets, or this process's own firewall rules)", unsent)}
+			}
+			if unsent > 0 {
+				out.Note = fmt.Sprintf("%d of the connections could not be attempted from here and say nothing about their walls", unsent)
+			}
 			sort.Strings(out.Problems)
 			return out
 		},
 	}
+}
+
+// probed reports whether a failed dial says something about the way to the listener: it was refused, unreachable or
+// timed out on the way. An error from opening the socket at all, or from this machine's own firewall turning the
+// process away (EPERM, EACCES), is about where the check runs, and a wall cannot be said to hold because of it.
+func probed(ctx context.Context, err error) bool {
+	if ctx.Err() != nil {
+		return false // the whole run was stopped
+	}
+	var se *os.SyscallError
+	if errors.As(err, &se) && se.Syscall == "socket" {
+		return false
+	}
+	for _, local := range []error{syscall.EPERM, syscall.EACCES, syscall.EAFNOSUPPORT, syscall.EMFILE, syscall.ENFILE} {
+		if errors.Is(err, local) {
+			return false
+		}
+	}
+	return true
 }

@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/YurilLAB/coraza/carnical/audit"
+	"github.com/YurilLAB/coraza/carnical/proxy"
 )
 
 // A unit copied from -print-schedule must write where the shipped unit does, inside the directories it may write.
@@ -29,7 +31,8 @@ func TestPrintedScheduleMatchesTheShippedUnit(t *testing.T) {
 		t.Fatal(err)
 	}
 	shipped := strings.ReplaceAll(string(raw), "\r\n", "\n")
-	for _, re := range []*regexp.Regexp{regexp.MustCompile(`-status (\S+)`), regexp.MustCompile(`-log (\S+)`), regexp.MustCompile(`(?m)^ReadWritePaths=(.*)$`)} {
+	for _, re := range []*regexp.Regexp{regexp.MustCompile(`-status (\S+)`), regexp.MustCompile(`-log (\S+)`), regexp.MustCompile(`(?m)^ExecStart=.* -origin-allow (\S+)`),
+		regexp.MustCompile(`(?m)^ReadWritePaths=(.*)$`)} {
 		p, s := re.FindStringSubmatch(printed), re.FindStringSubmatch(shipped)
 		if p == nil || s == nil || p[1] != s[1] {
 			t.Errorf("%s: printed %q, shipped %q", re, p, s)
@@ -233,5 +236,27 @@ func TestReportOutput(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Without the edge's allow list origin-guard would check an empty one and pass whatever the edge allows, so it is skipped;
+// given "" (the edge has none) it runs. Not a table of the audit package: it is what this command makes of its flags.
+func TestOriginGuardNeedsTheEdgesAllowList(t *testing.T) {
+	zm := audit.Map{Here: "edge", Zones: []audit.Zone{{Name: "edge"}}}
+	for _, given := range []bool{false, true} {
+		var guard *audit.Check
+		checks := catalogue(zm, proxy.OriginPolicy{}, given)
+		for i := range checks {
+			if checks[i].Name == "origin-guard" {
+				guard = &checks[i]
+			}
+		}
+		if guard == nil {
+			t.Fatal("no origin-guard from the edge")
+		}
+		r := audit.Run(context.Background(), []audit.Check{*guard}, time.Second).Results[0]
+		if want := map[bool]audit.Status{false: audit.Skip, true: audit.Pass}[given]; r.Status != want {
+			t.Fatalf("allow list given %v: %+v, want %s", given, r, want)
+		}
 	}
 }

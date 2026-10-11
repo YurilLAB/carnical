@@ -37,7 +37,7 @@ func main() {
 
 func run() int {
 	zonesFile := flag.String("zones", "", "the zone map (JSON); required")
-	originAllow := flag.String("origin-allow", "", "the edge's -origin-allow value, so the check sees the policy the edge really runs with")
+	originAllow := flag.String("origin-allow", "", "the edge's -origin-allow value (\"\" when the edge has none), so the check sees the policy the edge really runs with; without it origin-guard is skipped")
 	logFile := flag.String("log", "", "append each report to this file, one JSON line per run")
 	statusFile := flag.String("status", "", "write a short status file here after each run (for the owner's health view)")
 	allowSkips := flag.Bool("allow-skips", false, "do not treat a check that could not run as a problem")
@@ -46,7 +46,7 @@ func run() int {
 	every := flag.Duration("every", 6*time.Hour, "with -watch, how long between runs")
 	jitter := flag.Duration("jitter", 0, "wait a random time up to this long before each run, so the runs are not predictable")
 	list := flag.Bool("list", false, "list the checks and exit")
-	hostChecks := flag.Bool("host", false, "also check this machine: kernel settings, mounts, the services' sandboxes, network and audit rules, who is listening, what is running, whether anything that should not change has changed (Linux; needs root to see other users' processes)")
+	hostChecks := flag.Bool("host", false, "check this machine instead of the zones: kernel settings, mounts, the services' sandboxes, network and audit rules, who is listening, what is running, whether anything that should not change has changed (Linux; needs root to see other users' processes). The zone checks run without it, as the unprivileged audit user, whose reach is what they test")
 	baselineDir := flag.String("baseline-dir", "/var/lib/carnical/host-audit", "where the integrity and setuid baselines are kept: a directory only the user running the host checks (root) owns and can write")
 	writeBaseline := flag.Bool("write-baseline", false, "record the current integrity and setuid state as the baseline, and exit (run it once, when the machine is known to be good)")
 	force := flag.Bool("force", false, "with -write-baseline, replace a baseline that exists (a baseline rewritten by whoever changed the machine proves nothing)")
@@ -90,9 +90,14 @@ func run() int {
 		fmt.Fprintln(os.Stderr, "carnical-audit:", err)
 		return 2
 	}
-	checks := catalogue(zm, proxy.OriginPolicy{Allow: allow})
+	allowGiven := false
+	flag.Visit(func(f *flag.Flag) { allowGiven = allowGiven || f.Name == "origin-allow" })
+	var checks []audit.Check
 	if *hostChecks {
-		checks = append(checks, hostCatalogue(zm, *baselineDir)...)
+		// Root, in a unit with no network sockets: a zone check run from here would measure this sandbox, not the zones.
+		checks = hostCatalogue(zm, *baselineDir)
+	} else {
+		checks = catalogue(zm, proxy.OriginPolicy{Allow: allow}, allowGiven)
 	}
 	if *list {
 		for _, c := range checks {
@@ -130,10 +135,17 @@ func run() int {
 	}
 }
 
-// catalogue is every check that makes sense from the zone this machine is in.
-func catalogue(zm audit.Map, policy proxy.OriginPolicy) []audit.Check {
+// catalogue is every check that makes sense from the zone this machine is in. allowGiven says the edge's allow list was
+// passed: without it the origin guard would check an empty list, which passes whatever the edge really allows.
+func catalogue(zm audit.Map, policy proxy.OriginPolicy, allowGiven bool) []audit.Check {
 	var d net.Dialer
-	all := []audit.Check{audit.OriginGuard(zm, policy), audit.ZoneReach(zm, d.DialContext)}
+	guard := audit.OriginGuard(zm, policy)
+	if !allowGiven {
+		guard.Run = func(context.Context) audit.Outcome {
+			return audit.Outcome{SkipReason: "the edge's allow list was not given: pass the edge's -origin-allow, \"\" when it has none"}
+		}
+	}
+	all := []audit.Check{guard, audit.ZoneReach(zm, d.DialContext)}
 	// The tenant checks need a deployment with canary tenants to act against. None is connected yet, so they report
 	// that they could not run, which is a visible gap and not a pass.
 	all = append(all, audit.TenantChecks(nil)...)

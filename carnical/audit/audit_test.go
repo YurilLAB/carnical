@@ -7,7 +7,9 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"os"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -172,6 +174,7 @@ func TestOriginGuardCatchesAnAllowListThatCoversTheBackend(t *testing.T) {
 		{"a range beside the backend but touching none of it", allow("10.50.0.0/16"), ""},
 		{"a range that covers the control plane", allow("10.0.0.0/8"), "10.20.0.5"},
 		{"a range that covers only the owner zone", allow("10.99.0.0/24"), "10.99.0.0"},
+		{"a range inside the control zone that misses its ends and its service", allow("10.20.0.64/26"), "10.20.0.64/26"},
 		{"the metadata range", allow("169.254.0.0/16"), "169.254.169.254"},
 		{"Azure's platform address", allow("168.63.128.0/17"), "168.63.129.16"},
 		{"loopback", allow("127.0.0.0/8"), "127.0.0.1"},
@@ -246,6 +249,15 @@ func TestZoneReachFindsAnOpenWallAndABrokenFlow(t *testing.T) {
 	r = run()
 	if r.Status != Fail || !strings.Contains(strings.Join(r.Problems, "\n"), "allowed to reach control/config but cannot") {
 		t.Fatalf("a broken flow was not reported: %+v", r)
+	}
+
+	// A probe this process cannot send (no socket, its own firewall) says nothing about the walls: with none sent, the check
+	// is skipped, not passed.
+	unsent := func(context.Context, string, string) (net.Conn, error) {
+		return nil, &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("socket", syscall.EAFNOSUPPORT)}
+	}
+	if r := Run(context.Background(), []Check{ZoneReach(zm, unsent)}, 10*time.Second).Results[0]; r.Status != Skip {
+		t.Fatalf("probes that were never sent passed as walls that hold: %+v", r)
 	}
 
 	// A map that does not say where this machine is cannot be checked.
