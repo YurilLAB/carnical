@@ -116,7 +116,10 @@ func (l *connLimiter) state(c net.Conn, s http.ConnState) {
 		l.perIP[key]++
 		l.counted[c] = key
 		l.mu.Unlock()
-	case http.StateClosed, http.StateHijacked:
+	case http.StateHijacked:
+		// A connection taken over for an allowed upgrade is still the address's: it counts until the tunnel closes it, which
+		// Edge.hijacked reports as StateClosed. Otherwise one address could hold any number of tunnels open.
+	case http.StateClosed:
 		l.mu.Lock()
 		if ip, ok := l.counted[c]; ok {
 			delete(l.counted, c)
@@ -126,4 +129,17 @@ func (l *connLimiter) state(c net.Conn, s http.ConnState) {
 		}
 		l.mu.Unlock()
 	}
+}
+
+// hijackedConn is a connection taken over for an upgrade, whose close is reported once.
+type hijackedConn struct {
+	net.Conn
+	once   sync.Once
+	closed func()
+}
+
+func (h *hijackedConn) Close() error {
+	err := h.Conn.Close()
+	h.once.Do(h.closed)
+	return err
 }

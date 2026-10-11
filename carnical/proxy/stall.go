@@ -3,6 +3,7 @@
 package proxy
 
 import (
+	"bufio"
 	"context"
 	"net"
 	"net/http"
@@ -37,6 +38,8 @@ type writeWatch struct {
 	gone   bool
 	cancel context.CancelFunc // cancels the request to the application
 	conn   net.Conn           // the client's connection when this response is all it carries (HTTP/1), or nil
+	// onHijack, if set, is given the connection when it is taken over for an allowed upgrade (see Edge.hijacked).
+	onHijack func(net.Conn) net.Conn
 }
 
 func (w *writeWatch) setCancel(c context.CancelFunc) {
@@ -101,6 +104,16 @@ func (w *writeWatch) Flush() {
 		f.Flush()
 		w.since.Store(0)
 	}
+}
+
+// Hijack hands the connection over for an allowed upgrade (Config.AllowUpgrade). The writer chain must offer it all the way
+// down, or the engine's middleware hides it and the reverse proxy cannot take the connection over.
+func (w *writeWatch) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	c, rw, err := http.NewResponseController(w.ResponseWriter).Hijack()
+	if err == nil && w.onHijack != nil {
+		c = w.onHijack(c)
+	}
+	return c, rw, err
 }
 
 func (w *writeWatch) Unwrap() http.ResponseWriter { return w.ResponseWriter }

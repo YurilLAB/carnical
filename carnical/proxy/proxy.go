@@ -10,6 +10,7 @@
 package proxy
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -332,7 +333,7 @@ func (e *Edge) guard(next http.Handler) http.Handler {
 		}
 		// Coraza splits RemoteAddr at its last colon, so an IPv6 address is given without brackets.
 		r.RemoteAddr = fmt.Sprintf("%s:%d", addr, port)
-		watch := &writeWatch{ResponseWriter: w}
+		watch := &writeWatch{ResponseWriter: w, onHijack: e.hijacked}
 		if r.ProtoMajor == 1 { // an HTTP/2 connection carries other requests too
 			watch.conn, _ = r.Context().Value(connKey{}).(net.Conn)
 		}
@@ -540,7 +541,24 @@ func (t *trackWriter) Flush() {
 	}
 }
 
+// Hijack is for an allowed upgrade; once the connection is the tunnel's, nothing may be written to it as a response.
+func (t *trackWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	c, rw, err := http.NewResponseController(t.ResponseWriter).Hijack()
+	if err == nil {
+		t.wrote = true
+	}
+	return c, rw, err
+}
+
 func (t *trackWriter) Unwrap() http.ResponseWriter { return t.ResponseWriter }
+
+// hijacked keeps a connection taken over for an allowed upgrade counted against its address until the tunnel closes it.
+func (e *Edge) hijacked(c net.Conn) net.Conn {
+	if e.conns == nil {
+		return c
+	}
+	return &hijackedConn{Conn: c, closed: func() { e.conns.state(c, http.StateClosed) }}
+}
 
 // checkTarget requires the target to be a path and query that Go would write back exactly as received. The WAF
 // inspects the parsed form of the target and the application gets the raw one; this makes them the same. A raw '#' is
@@ -762,6 +780,10 @@ func (s *shieldWriter) code() int {
 		return http.StatusOK
 	}
 	return s.status
+}
+
+func (s *shieldWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return http.NewResponseController(s.ResponseWriter).Hijack()
 }
 
 func (s *shieldWriter) Unwrap() http.ResponseWriter { return s.ResponseWriter }

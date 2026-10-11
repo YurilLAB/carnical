@@ -831,6 +831,21 @@ func TestOneAddressCannotHoldManyConnectionsOpen(t *testing.T) {
 			t.Fatal("a place freed in the /64 was not reused")
 		}
 	})
+	t.Run("a connection taken over for an upgrade counts until it closes", func(t *testing.T) {
+		l := newConnLimiter(1, nil, nil)
+		tunnel := &limitConn{remote: "192.0.2.1:1000"}
+		l.state(tunnel, http.StateNew)
+		l.state(tunnel, http.StateHijacked)
+		second := &limitConn{remote: "192.0.2.1:1001"}
+		if l.state(second, http.StateNew); !second.closed {
+			t.Fatal("a hijacked connection stopped counting against its address")
+		}
+		l.state(tunnel, http.StateClosed)
+		third := &limitConn{remote: "192.0.2.1:1002"}
+		if l.state(third, http.StateNew); third.closed {
+			t.Fatal("a closed tunnel still counts")
+		}
+	})
 }
 
 // limitConn is a connection with only an address, for the connection limiter.

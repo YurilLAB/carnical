@@ -233,6 +233,54 @@ func TestProtocolUpgradesAreRefused(t *testing.T) {
 	if n := len(s.up.requests()); n != 0 {
 		t.Fatalf("%d upgrade requests reached the application", n)
 	}
+	t.Run("an allowed upgrade is tunnelled and its connection counted", func(t *testing.T) {
+		app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Upgrade") == "" {
+				return // an ordinary request: 200
+			}
+			conn, brw, err := http.NewResponseController(w).Hijack()
+			if err != nil {
+				return
+			}
+			defer conn.Close()
+			brw.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
+			brw.Flush()
+			line, _ := brw.ReadString('\n')
+			brw.WriteString("echo " + line)
+			brw.Flush()
+			brw.ReadString('\n') // hold the tunnel open until the client closes it
+		}))
+		defer app.Close()
+		s := start(t, func(c *Config) { c.AllowUpgrade = true; c.MaxConnsPerIP = 1; c.Upstream = mustURL(app.URL) })
+		conn, err := net.DialTimeout("tcp", s.addr, 3*time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		conn.SetDeadline(time.Now().Add(5 * time.Second))
+		fmt.Fprint(conn, "GET /ws HTTP/1.1\r\nHost: shop.example.test\r\nUser-Agent: Mozilla/5.0 Chrome/120\r\nAccept: */*\r\n"+
+			"Connection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n")
+		r := bufio.NewReader(conn)
+		resp, err := http.ReadResponse(r, nil)
+		if err != nil || resp.StatusCode != http.StatusSwitchingProtocols {
+			t.Fatalf("upgrade: %v %v", resp, err)
+		}
+		fmt.Fprint(conn, "ping\n")
+		if line, _ := r.ReadString('\n'); line != "echo ping\n" {
+			t.Fatalf("through the tunnel: %q", line)
+		}
+		if status, _ := s.raw(t, get("/page")); status != 0 {
+			t.Fatalf("a second connection from the address was served (%d) while its tunnel was open", status)
+		}
+		conn.Close()
+		deadline := time.Now().Add(3 * time.Second)
+		for status, _ := s.raw(t, get("/page")); status != http.StatusOK; status, _ = s.raw(t, get("/page")) {
+			if time.Now().After(deadline) {
+				t.Fatalf("after the tunnel closed, a new connection got %d", status)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	})
 }
 
 func TestTrailersAreNotForwarded(t *testing.T) {
