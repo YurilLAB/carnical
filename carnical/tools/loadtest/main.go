@@ -302,6 +302,28 @@ func probes() []testCase {
 	return append(out, p)
 }
 
+// listeningAddress is the address the WAF says in its log that it listens on, or "" while it has not said so.
+func listeningAddress(logPath string) string {
+	data, err := os.ReadFile(logPath) // #nosec G304 -- The log this tool itself created beside the operator-selected -output.
+	if err != nil {
+		return ""
+	}
+	return listeningIn(data)
+}
+
+// listeningIn finds that address in a log: the "addr" of the first complete "listening" line.
+func listeningIn(log []byte) string {
+	_, rest, ok := bytes.Cut(log, []byte(`"msg":"listening","addr":"`))
+	if !ok {
+		return ""
+	}
+	addr, _, ok := bytes.Cut(rest, []byte(`"`))
+	if !ok {
+		return "" // the line is still being written
+	}
+	return string(addr)
+}
+
 func run() error {
 	binary := flag.String("binary", "", "compiled Carnical executable (required)")
 	corpus := flag.String("corpus", "", "directory with benign.jsonl and attack.jsonl (required)")
@@ -379,12 +401,6 @@ func run() error {
 		_, _ = io.WriteString(w, "{\"ok\":true}")
 	}))
 	defer origin.Close()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return err
-	}
-	addr := ln.Addr().String()
-	_ = ln.Close()
 	if err = os.MkdirAll(filepath.Dir(*output), 0700); err != nil {
 		return err
 	}
@@ -394,7 +410,9 @@ func run() error {
 		return err
 	}
 	defer logFile.Close()
-	args := []string{"-listen", addr, "-upstream", origin.URL, "-origin-allow", "127.0.0.1/32", "-mode", "block", "-formats-mode", "block", "-inspect-responses", "-formats-stats-interval", "5s"}
+	// The WAF picks its own port and says which in its log. A port found free here could be taken before the WAF had it,
+	// and whatever took it would be what the requests reach.
+	args := []string{"-listen", "127.0.0.1:0", "-upstream", origin.URL, "-origin-allow", "127.0.0.1/32", "-mode", "block", "-formats-mode", "block", "-inspect-responses", "-formats-stats-interval", "5s"}
 	args = append(args, "-ddos", *ddos, fmt.Sprintf("-local-rules=%t", *localRules))
 	if *strict {
 		// What the defaults leave to the site: a name given twice, the address of a script in a form or JSON field, and a
@@ -418,16 +436,23 @@ func run() error {
 	transport := &http.Transport{MaxIdleConns: *concurrency * 2, MaxIdleConnsPerHost: *concurrency, MaxConnsPerHost: *concurrency}
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	target := "http://" + addr
+	addr, target := "", ""
 	ready := false
 	for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); {
-		res, e := client.Get(target + "/__loadtest_ready")
-		if e == nil {
-			_, e = io.Copy(io.Discard, res.Body)
-			e = errors.Join(e, res.Body.Close())
-			if e == nil && res.StatusCode == 200 {
-				ready = true
-				break
+		if addr == "" {
+			if addr = listeningAddress(logPath); addr != "" {
+				target = "http://" + addr
+			}
+		}
+		if addr != "" {
+			res, e := client.Get(target + "/__loadtest_ready")
+			if e == nil {
+				_, e = io.Copy(io.Discard, res.Body)
+				e = errors.Join(e, res.Body.Close())
+				if e == nil && res.StatusCode == 200 {
+					ready = true
+					break
+				}
 			}
 		}
 		select {

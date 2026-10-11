@@ -121,3 +121,24 @@ func TestHTTPExchange(t *testing.T) {
 		}
 	})
 }
+
+// The WAF is started on port 0 and the requests go where its log says it listens.
+func TestListeningIn(t *testing.T) {
+	for _, tc := range []struct {
+		name, log, want string
+	}{
+		{"the line the WAF writes", `{"time":"t","level":"INFO","msg":"API contract loaded","mode":"block"}` + "\n" +
+			`{"time":"t","level":"INFO","msg":"listening","addr":"127.0.0.1:43211","crs":"4.30.0","mode":"block"}` + "\n", "127.0.0.1:43211"},
+		{"an IPv6 address", `{"level":"INFO","msg":"listening","addr":"[::1]:8443","mode":"block"}`, "[::1]:8443"},
+		{"nothing yet", "", ""},
+		{"other lines only", `{"level":"INFO","msg":"API contract loaded","addr":"127.0.0.1:1"}` + "\n", ""},
+		{"a line still being written", `{"level":"INFO","msg":"listening","addr":"127.0.0.1:432`, ""},
+		{"the first of two", `{"msg":"listening","addr":"127.0.0.1:1"}` + "\n" + `{"msg":"listening","addr":"127.0.0.1:2"}`, "127.0.0.1:1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := listeningIn([]byte(tc.log)); got != tc.want {
+				t.Fatalf("%q, want %q", got, tc.want)
+			}
+		})
+	}
+}
