@@ -38,6 +38,13 @@ func TestPrintedScheduleMatchesTheShippedUnit(t *testing.T) {
 			t.Errorf("%s: printed %q, shipped %q", re, p, s)
 		}
 	}
+	// The Windows task passes the same allow list, its quotes escaped for /TR: without it origin-guard never runs.
+	tasks, ok := scheduleText("schtasks")
+	p := regexp.MustCompile(`(?m)^schtasks .* -origin-allow (\S+)`).FindStringSubmatch(strings.ReplaceAll(tasks, `\"`, `"`))
+	s := regexp.MustCompile(`(?m)^ExecStart=.* -origin-allow (\S+)`).FindStringSubmatch(shipped)
+	if !ok || p == nil || s == nil || p[1] != s[1] {
+		t.Errorf("schtasks -origin-allow: printed %q, shipped %q", p, s)
+	}
 }
 
 // The documented `carnical-audit -write-baseline` is about this machine, so it does not ask for a zone map.

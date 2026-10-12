@@ -394,7 +394,8 @@ WantedBy=timers.target
 `, true
 	case "schtasks":
 		return `rem Four runs a day, each a random time up to 45 minutes late. Edit the paths, then run this once, by hand.
-schtasks /Create /TN "Carnical\Audit" /SC HOURLY /MO 6 /ST 00:15 /RL LIMITED /TR "\"C:\Carnical\carnical-audit.exe\" -jitter 45m -zones C:\Carnical\zones.json -log C:\Carnical\audit.jsonl -status C:\Carnical\audit-status.json"
+rem -origin-allow is the edge's own -origin-allow; "" says the edge has none. Keep the two the same.
+schtasks /Create /TN "Carnical\Audit" /SC HOURLY /MO 6 /ST 00:15 /RL LIMITED /TR "\"C:\Carnical\carnical-audit.exe\" -jitter 45m -zones C:\Carnical\zones.json -origin-allow \"\" -log C:\Carnical\audit.jsonl -status C:\Carnical\audit-status.json"
 `, true
 	}
 	return "", false
