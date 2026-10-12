@@ -62,6 +62,9 @@ func TestRuleMapping(t *testing.T) {
 		{name: "a chained link with its own id is still checked, so its multiMatch is refused",
 			rule: "SecRule REQUEST_FILENAME \"@streq /a\" \"id:6,phase:2,deny,chain\"\nSecRule ARGS:x \"@rx ^%41$\" \"id:7,multiMatch,t:urlDecode\"",
 			skip: "multimatch"},
+		{name: "a negated test of the body is not guarded, as Coraza's REQUEST_BODY is an empty value when there is none",
+			rule: `SecRule REQUEST_BODY "!@rx ^token=" "id:8,phase:2,deny"`,
+			want: []vpatch.Condition{{Operator: "rx", Pattern: "^token=", Flags: "sm", Targets: []string{"body"}, Negate: true}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

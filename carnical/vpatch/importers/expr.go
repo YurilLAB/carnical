@@ -222,9 +222,9 @@ func SortedKeys[V any](m map[string]V) []string {
 	return keys
 }
 
-// ExistsGuard returns the condition "the target has a value", which a negated test of a named value must be paired with. SecLang and
-// Suricata do not fire a negated test on something the request does not have (a "!@rx" on a header the request lacks is false), but
-// the model's Negate holds when no value matches, and a missing value matches nothing. So "header X is not like this" is written
+// ExistsGuard returns the condition "the target has a value", which a negated test of a named value must be paired with. Suricata
+// does not fire a negated test on a buffer the request does not have (a negated content on a header the request lacks is false),
+// but the model's Negate holds when no value matches, and a missing value matches nothing. So "header X is not like this" is written
 // "header X exists, and is not like this". ok is false for targets that always have a value (the method, the URI, the path) and for
 // targets with many values, where the guard would not mean the same thing.
 func ExistsGuard(targets []string) (c vpatch.Condition, ok bool) {

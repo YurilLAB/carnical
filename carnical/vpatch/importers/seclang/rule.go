@@ -132,13 +132,8 @@ func (c *converter) ruleExpr(r secRule) (importers.Expr, error) {
 		if err != nil {
 			return importers.Expr{}, err
 		}
-		if cond.Negate {
-			// SecLang does not fire a negated test on a value the request does not have; see ExistsGuard.
-			if guard, ok := importers.ExistsGuard(g.targets); ok {
-				leaves = append(leaves, importers.And(importers.Leaf(guard), importers.Leaf(cond)))
-				continue
-			}
-		}
+		// A negated test reaches here only on targets with one value each. Coraza always gives each of them a value, an empty
+		// REQUEST_BODY when there is no body, so a plain negation says the same and needs no guard.
 		leaves = append(leaves, importers.Leaf(cond))
 	}
 	if len(leaves) == 1 {
