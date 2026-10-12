@@ -137,17 +137,105 @@ func scanUpload(body []byte, boundary string, p UploadPolicy) (id int, reason st
 	if p.AllowScriptContent || boundary == "" {
 		return 0, ""
 	}
-	delim := []byte("--" + boundary)
-	for _, part := range bytes.Split(body, delim) {
-		head, content, ok := cutHeader(part)
-		if !ok || !bytes.Contains(bytes.ToLower(head), []byte("filename")) {
-			continue
-		}
-		if scriptRe.Match(content) {
-			return idUploadScript, "an uploaded file contains the opening tag of a server-side script"
-		}
+	if scriptInFile(body, []byte("--"+boundary)) {
+		return idUploadScript, "an uploaded file contains the opening tag of a server-side script"
 	}
 	return 0, ""
+}
+
+// scriptInFile reports a script opening tag in anything a multipart parser could take for a file's content, since the
+// application's parser may not find the parts where the proxy would. Parsers take a delimiter only at the start of a
+// line and end a part's headers at the first blank line, CRLF or LF, and PHP reads a delimiter line among the headers
+// as one more header line. So a part may start at any delimiter, its content starts after the first blank line that
+// follows, and it is a file if "filename" is in its headers (or, as before, anywhere up to its first CRLF blank line
+// before the next delimiter). The content runs to the next delimiter every parser ends a part at: one after a CRLF and
+// followed by a CRLF or "--". Stretches that overlap are matched as one, so no byte is matched twice.
+func scriptInFile(body, delim []byte) bool {
+	line := append([]byte("\r\n"), delim...)
+	crlfBlank := seeker{body: body, at: -1, find: func(b []byte) int { return bytes.Index(b, []byte("\n\r\n")) }}
+	lfBlank := seeker{body: body, at: -1, find: func(b []byte) int { return bytes.Index(b, []byte("\n\n")) }}
+	names := seeker{body: body, at: -1, find: indexFilename}
+	ends := seeker{body: body, at: -1, find: func(b []byte) int {
+		for i := 0; ; i++ {
+			j := bytes.Index(b[i:], line)
+			if j < 0 {
+				return -1
+			}
+			i += j
+			if rest := b[i+len(line):]; bytes.HasPrefix(rest, []byte("\r\n")) || bytes.HasPrefix(rest, []byte("--")) {
+				return i
+			}
+		}
+	}}
+	from, to := 0, 0 // file content found and not yet matched
+	for start := 0; ; {
+		next := len(body)
+		if i := bytes.Index(body[start:], delim); i >= 0 {
+			next = start + i
+		}
+		blank, sep := crlfBlank.next(start), 3
+		if lf := lfBlank.next(start); lf < blank {
+			blank, sep = lf, 2
+		}
+		if blank == len(body) {
+			break // no header block ends after here
+		}
+		head := blank
+		if h, _, ok := cutHeader(body[start:next]); ok {
+			head = max(head, start+len(h))
+		}
+		if names.next(start) < head {
+			content, end := blank+sep, len(body)
+			if e := ends.next(content); e < len(body) {
+				end = e + 2 // up to the delimiter itself
+			}
+			if content >= to {
+				if scriptRe.Match(body[from:to]) {
+					return true
+				}
+				from = content
+			}
+			to = max(to, end)
+		}
+		if next == len(body) {
+			break
+		}
+		start = next + len(delim)
+	}
+	return scriptRe.Match(body[from:to])
+}
+
+// seeker finds where a pattern next is, for places asked about in increasing order, so that the body is searched once
+// however many parts ask.
+type seeker struct {
+	body []byte
+	find func([]byte) int // the index of the pattern in a slice, or -1
+	at   int              // where it was last found: len(body) if nowhere, -1 before the first search
+}
+
+func (s *seeker) next(from int) int {
+	if s.at < from {
+		s.at = len(s.body)
+		if i := s.find(s.body[from:]); i >= 0 {
+			s.at = from + i
+		}
+	}
+	return s.at
+}
+
+// indexFilename finds "filename", in any case.
+func indexFilename(b []byte) int {
+	const word = "filename"
+	for i := 0; i+len(word) <= len(b); i++ {
+		k := 0
+		for k < len(word) && b[i+k]|0x20 == word[k] { // every byte of word is a lower-case letter
+			k++
+		}
+		if k == len(word) {
+			return i
+		}
+	}
+	return -1
 }
 
 // cutHeader splits a part into its header block and its content at the first blank line, accepting LF as well as CRLF.

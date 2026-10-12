@@ -440,6 +440,7 @@ func TestUploadPolicy(t *testing.T) {
 		{"a picture with a script in it", multipartBody(filePart("photo.jpg", shell)), UploadPolicy{}, idUploadScript},
 		{"a script far into a large file", multipartBody(filePart("photo.jpg", jpeg+strings.Repeat("A", 50000)+"<?= `id` ?>")), UploadPolicy{}, idUploadScript},
 		{"an asp tag", multipartBody(filePart("photo.jpg", "x<%@ Page Language=\"C#\" %>")), UploadPolicy{}, idUploadScript},
+		{"a script after a boundary in the middle of a line", multipartBody(filePart("photo.jpg", "GIF89a--XX\r\n\r\n<?php system($_GET['c']); ?>")), UploadPolicy{}, idUploadScript},
 		{"script names allowed", multipartBody(filePart("shell.php", "x")), UploadPolicy{AllowExecutableNames: true}, 0},
 		{"script content allowed", multipartBody(filePart("photo.jpg", shell)), UploadPolicy{AllowScriptContent: true}, 0},
 	}
