@@ -213,6 +213,11 @@ func (in *Inspector) contentType(f *finder, r *inspect.Request) (ctInfo, bool) {
 		}
 		ci.kind = kindOf(mt)
 	}
+	if ci.kind == kindMultipart && pr == nil {
+		if at, ok := strayBoundary(strings.Trim(vals[0], " \t"), &mt); ok && f.hit(rMPBadBound, at, dBoundaryElsewhere) {
+			return ci, false
+		}
+	}
 	if cs, ok := mt.param("charset"); ok {
 		ci.charset = strings.ToLower(cs)
 		if !in.charsets[ci.charset] && f.hit(rCharset, -1, dNone) {

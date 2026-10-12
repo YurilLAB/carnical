@@ -14,7 +14,11 @@ const (
 	maxParams = 8
 )
 
-type param struct{ name, value string }
+// param is one parameter; off is where its name starts in the value.
+type param struct {
+	name, value string
+	off         int
+}
 
 type mediaType struct {
 	typ, sub string
@@ -166,8 +170,41 @@ func parseParams(s string, i int, allowExtended bool) ([]param, *problem) {
 		if len(out) >= maxParams {
 			return nil, &problem{pkMalformed, dTooManyParams, start}
 		}
-		out = append(out, param{name, value})
+		out = append(out, param{name, value, start})
 	}
+}
+
+// strayBoundary finds where PHP takes a multipart boundary from, and reports whether that is anywhere but the boundary parameter's
+// own name. PHP does not parse the parameters: it finds the first "boundary" in the value, in lower case or else in any case, and
+// reads what follows the next '='. So in "xboundary=a; boundary=b", or with the word inside another parameter's value, PHP splits
+// the body on another boundary than the one read here.
+func strayBoundary(s string, m *mediaType) (int, bool) {
+	const word = "boundary"
+	at := strings.Index(s, word)
+	for i := 0; at < 0 && i+len(word) <= len(s); i++ {
+		if strings.EqualFold(s[i:i+len(word)], word) { // an 8-byte window can equal the word only in ASCII
+			at = i
+		}
+	}
+	if at < 0 {
+		return 0, false
+	}
+	for _, p := range m.params {
+		if p.name != word {
+			continue
+		}
+		if at != p.off {
+			return at, true
+		}
+		// PHP reads a quoted boundary up to the next quote and resolves no quoted pair: "a\=b" is a\=b to PHP and a=b here.
+		if v := s[p.off+len(word)+1:]; v != "" && v[0] == '"' {
+			if e := strings.IndexByte(v[1:], '"'); e < 0 || v[1:1+e] != p.value {
+				return at, true
+			}
+		}
+		return at, false
+	}
+	return at, true
 }
 
 // readQuoted reads a quoted string starting at s[i] == '"' and returns its value with the quoted pairs resolved, and the index

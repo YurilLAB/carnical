@@ -116,6 +116,7 @@ const (
 	dBoundaryChar
 	dNoBoundaryInBody
 	dBadBoundaryLine
+	dBoundaryElsewhere
 	dTooManyParts
 	dMidLine
 	dNoBlankLine
@@ -248,6 +249,7 @@ var detailText = [dCount]string{
 	dBoundaryChar:          "the boundary holds a character RFC 2046 does not allow",
 	dNoBoundaryInBody:      "the body does not contain the boundary",
 	dBadBoundaryLine:       "a line starts with the boundary and is not a delimiter",
+	dBoundaryElsewhere:     "another parameter or a value holds the word boundary, and PHP takes the boundary from there",
 	dTooManyParts:          "too many parts",
 	dMidLine:               "the boundary appears inside a line",
 	dNoBlankLine:           "the boundary comes straight after the part's headers",

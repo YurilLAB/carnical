@@ -88,6 +88,8 @@ var multipartRows = register("multipart", []row{
 	{name: "boundary of 71 characters", ct: "multipart/form-data; boundary=" + strings.Repeat("b", 71), body: "--" + strings.Repeat("b", 71) + "--\r\n", want: idMPBadBound},
 	{name: "boundary ending in a space", ct: `multipart/form-data; boundary="abc "`, body: "--abc \r\nContent-Disposition: form-data; name=\"a\"\r\n\r\n1\r\n--abc --\r\n", want: idMPBadBound},
 	{name: "boundary given twice", ct: "multipart/form-data; boundary=a; boundary=b", body: "--a--\r\n", want: 5002007},
+	{name: "another parameter holds the word boundary", ct: "multipart/form-data; xboundary=AAA; boundary=" + bnd, body: mp(field("a", "1")), want: idMPBadBound},
+	{name: "a quoted boundary with a quoted pair PHP keeps", ct: `multipart/form-data; boundary="AAA\=x"`, body: "--AAA=x\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\n1\r\n--AAA=x--\r\n", want: idMPBadBound},
 	{name: "boundary that is not in the body", ct: "multipart/form-data; boundary=other", body: mp(field("a", "1")), want: idMPDelim},
 
 	// Structure.
