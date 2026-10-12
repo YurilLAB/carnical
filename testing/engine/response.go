@@ -34,6 +34,27 @@ var _ = profile.RegisterProfile(profile.Profile{
 				},
 			},
 		},
+		{
+			// Media types are case-insensitive and may carry whitespace
+			// before the parameters (RFC 9110 8.3.1).
+			Title: "response mime type matched case-insensitively",
+			Stages: []profile.Stage{
+				{
+					Stage: profile.SubStage{
+						Input: profile.StageInput{
+							URI: "/test.php?id=12345",
+						},
+						Output: profile.ExpectedOutput{
+							Headers: map[string]string{
+								"content-type": "Secret/MIME ; charset=utf-8",
+							},
+							Data:           `<?php echo "Hello World!\n" ?>`,
+							TriggeredRules: []int{953120},
+						},
+					},
+				},
+			},
+		},
 	},
 	Rules: `
 SecResponseBodyAccess On

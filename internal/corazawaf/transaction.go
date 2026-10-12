@@ -29,7 +29,6 @@ import (
 	"github.com/corazawaf/coraza/v3/internal/corazarules"
 	"github.com/corazawaf/coraza/v3/internal/corazatypes"
 	"github.com/corazawaf/coraza/v3/internal/environment"
-	stringsutil "github.com/corazawaf/coraza/v3/internal/strings"
 	urlutil "github.com/corazawaf/coraza/v3/internal/url"
 	"github.com/corazawaf/coraza/v3/types"
 	"github.com/corazawaf/coraza/v3/types/variables"
@@ -1245,8 +1244,17 @@ func (tx *Transaction) IsResponseBodyProcessable() bool {
 		// we force the response body to be processed because of the ctl:forceResponseBodyVariable
 		return true
 	}
-	ct := tx.variables.responseContentType.Get()
-	return stringsutil.InSlice(ct, tx.WAF.ResponseBodyMimeTypes)
+	// Media types are case-insensitive and may be followed by whitespace
+	// before the parameters (RFC 9110 8.3.1), so "Text/HTML ; charset=utf-8"
+	// is processed like "text/html". ModSecurity v2 also matches without
+	// regard to case. RESPONSE_CONTENT_TYPE itself is left as sent.
+	ct := strings.TrimSpace(tx.variables.responseContentType.Get())
+	for _, m := range tx.WAF.ResponseBodyMimeTypes {
+		if strings.EqualFold(ct, m) {
+			return true
+		}
+	}
+	return false
 }
 
 // WriteResponseBody writes bytes from a slice of bytes into the response body,
