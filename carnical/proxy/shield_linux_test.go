@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -34,7 +35,7 @@ func TestAFloodFromAThousandAddressesThroughTheProxy(t *testing.T) {
 			name = "monitor only (control)"
 		}
 		t.Run(name, func(t *testing.T) {
-			res := flood(t, monitor)
+			res := flood(t, monitor, floodProfile{addrs: 1000, senders: 100, pace: 40 * time.Millisecond, duration: 12 * time.Second, keepAlive: true})
 			t.Logf("detected %.1fs after the flood began; after detection: visitors %d/%d served, flood %d/%d reached the application",
 				res.detected.Seconds(), res.legitOK, res.legitSent, res.attackOK, res.attackSent)
 			if res.detected <= 0 || res.detected > 8*time.Second {
@@ -52,12 +53,66 @@ func TestAFloodFromAThousandAddressesThroughTheProxy(t *testing.T) {
 	}
 }
 
+// A bigger, faster flood through the same proxy: four thousand source addresses and 135,500 requests sent as fast as the
+// clients can, with no pacing between them, while the regular visitors keep using the site. It stresses the same
+// detection and mitigation at a higher offered rate and a wider spread than the thousand-address flood above. The clients
+// do not keep connections alive, so the generator holds no more open sockets than it has senders however many it sends.
+func TestABiggerFloodOfManyAddressesThroughTheProxy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live flood")
+	}
+	// Opt-in: this sends 135,500 requests as fast as the clients can, so how long it
+	// takes depends on the machine. It is a deliberate big run, like the 750k loadtest,
+	// not part of the default suite. Set CARNICAL_BIG_FLOOD=1 to run it.
+	if os.Getenv("CARNICAL_BIG_FLOOD") == "" {
+		t.Skip("set CARNICAL_BIG_FLOOD=1 to run the 135,500-request flood")
+	}
+	const budget = 135_500
+	for _, monitor := range []bool{false, true} {
+		name := "mitigating"
+		if monitor {
+			name = "monitor only (control)"
+		}
+		t.Run(name, func(t *testing.T) {
+			res := flood(t, monitor, floodProfile{addrs: 4000, senders: 120, budget: budget})
+			t.Logf("sent %d requests; detected %.1fs after the flood began; after detection: visitors %d/%d served, flood %d/%d reached the application",
+				res.sent, res.detected.Seconds(), res.legitOK, res.legitSent, res.attackOK, res.attackSent)
+			if res.sent != budget {
+				t.Fatalf("the flood sent %d requests, want %d", res.sent, budget)
+			}
+			if res.detected <= 0 || res.detected > 8*time.Second {
+				t.Fatalf("the attack was not detected in time (%v)", res.detected)
+			}
+			legit := float64(res.legitOK) / float64(max(res.legitSent, 1))
+			attack := float64(res.attackOK) / float64(max(res.attackSent, 1))
+			if !monitor && (legit < 0.95 || attack > 0.1 || res.attackSent < 2000) {
+				t.Fatalf("visitors served %.1f%%, flood admitted %.1f%%", 100*legit, 100*attack)
+			}
+			if monitor && attack < 0.8 {
+				t.Fatalf("in monitor mode the flood should reach the application, but only %.1f%% did", 100*attack)
+			}
+		})
+	}
+}
+
+// floodProfile is how a flood is sent. addrs source addresses are spread over addrs/250 adjacent /24s, senders send
+// concurrently, and pace is the wait between one sender's requests (zero sends as fast as it can). A flood runs for
+// duration, or, when budget is set, until budget requests have been sent. keepAlive reuses connections per source.
+type floodProfile struct {
+	addrs, senders int
+	pace           time.Duration
+	duration       time.Duration
+	budget         int64
+	keepAlive      bool
+}
+
 type floodResult struct {
 	detected                                 time.Duration
 	legitOK, legitSent, attackOK, attackSent int64
+	sent                                     int64
 }
 
-func flood(t *testing.T, monitor bool) floodResult {
+func flood(t *testing.T, monitor bool, prof floodProfile) floodResult {
 	sh, err := shield.New(shield.Config{
 		MonitorOnly: monitor, KnownAfter: 3, KnownMinAge: 3 * time.Second, MinUnknownRate: 5, ClusterRate: 2,
 		// The per-network limit would stop this flood on its own (its bots share four /24s); it is set out of the way so
@@ -97,7 +152,7 @@ func flood(t *testing.T, monitor bool) floodResult {
 			return c
 		}
 		d := &net.Dialer{LocalAddr: &net.TCPAddr{IP: net.ParseIP(local)}, Timeout: 3 * time.Second}
-		c := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{DialContext: d.DialContext, MaxIdleConnsPerHost: 2}}
+		c := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{DialContext: d.DialContext, MaxIdleConnsPerHost: 2, DisableKeepAlives: !prof.keepAlive}}
 		clients[local] = c
 		return c
 	}
@@ -163,24 +218,39 @@ func flood(t *testing.T, monitor bool) floodResult {
 			time.Sleep(50 * time.Millisecond)
 		}
 	}()
-	floodCtx, stopFlood := context.WithTimeout(ctx, 12*time.Second)
+	// A count-bounded flood still gets a generous deadline so a wedged client can never hang the test.
+	limit := prof.duration
+	if prof.budget > 0 {
+		limit = 90 * time.Second
+	}
+	floodCtx, stopFlood := context.WithTimeout(ctx, limit)
 	defer stopFlood()
+	var claimed atomic.Int64
+	more := func() bool {
+		if prof.budget == 0 {
+			return floodCtx.Err() == nil
+		}
+		return floodCtx.Err() == nil && claimed.Add(1) <= prof.budget
+	}
 	var fwg sync.WaitGroup
-	for g := 0; g < 100; g++ {
+	for g := 0; g < prof.senders; g++ {
 		fwg.Add(1)
 		go func(seed uint64) {
 			defer fwg.Done()
 			r := rand.New(rand.NewPCG(seed, 1))
-			for floodCtx.Err() == nil {
-				i := r.IntN(1000)
+			for more() {
+				i := r.IntN(prof.addrs)
 				ok := send(fmt.Sprintf("127.1.%d.%d", i/250, i%250+1), fmt.Sprintf("/?r=%d", r.Int64()), "python-requests/2.32.3")
+				atomic.AddInt64(&res.sent, 1)
 				if detectedAt.Load() != 0 {
 					atomic.AddInt64(&res.attackSent, 1)
 					if ok {
 						atomic.AddInt64(&res.attackOK, 1)
 					}
 				}
-				time.Sleep(40 * time.Millisecond)
+				if prof.pace > 0 {
+					time.Sleep(prof.pace)
+				}
 			}
 		}(uint64(g))
 	}
