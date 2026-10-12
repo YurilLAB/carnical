@@ -88,6 +88,7 @@ func TestRequestsAreHeldToTheApiDescription(t *testing.T) {
 		{"a header parameter and a pattern that fit", mk("GET", "/api/v1/orders/AB-123456", withHeader("X-Shop-Key", "12345678")), 0, 0},
 		{"a header array written in the default simple style", mk("GET", "/api/v1/orders/AB-123456", withHeader("X-Shop-Key", "12345678"), withHeader("X-Item-Ids", "4,5")), 0, 0},
 		{"a header array with spaces after its commas", mk("GET", "/api/v1/orders/AB-123456", withHeader("X-Shop-Key", "12345678"), withHeader("X-Item-Ids", "4, 5")), 0, 0},
+		{"a query parameter given as JSON content", mk("GET", "/api/v1/orders/AB-123456?lines=%5B1%2C2%5D", withHeader("X-Shop-Key", "12345678")), 0, 0},
 		{"a required header that is missing", mk("GET", "/api/v1/orders/AB-123456", auth), IDSpecMissingParam, 400},
 		{"a header that is too short", mk("GET", "/api/v1/orders/AB-123456", withHeader("X-Shop-Key", "123")), IDSpecHeaderParam, 400},
 		{"a path that does not match its pattern", mk("GET", "/api/v1/orders/ab-1", withHeader("X-Shop-Key", "12345678")), IDSpecPathParam, 400},

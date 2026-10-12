@@ -773,7 +773,7 @@ func (im *importer) params(v any) []Param {
 			slices.Sort(keys)
 			for _, k := range keys {
 				if cm, ok := content[k].(map[string]any); ok {
-					p.Schema = im.schema(cm["schema"], 0)
+					p.Schema, p.Media = im.schema(cm["schema"], 0), mediaType(k)
 					break
 				}
 			}
@@ -802,6 +802,11 @@ func (im *importer) params(v any) []Param {
 		}
 		if e, ok := asBool(pm["explode"]); ok {
 			p.Explode = &e
+		}
+		if p.Style == "label" || p.Style == "matrix" {
+			// The guard does not read these styles, so such a parameter is not checked rather than refused when it is right.
+			im.warnOnce("style:"+name, "a parameter in the "+p.Style+" style is not checked: "+name)
+			p.Schema = nil
 		}
 		out = append(out, p)
 	}

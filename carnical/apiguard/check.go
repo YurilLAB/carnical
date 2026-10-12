@@ -108,6 +108,22 @@ func (p *Param) validateText(vals []string) vkind {
 	if hasType(s, "object") && !isArray {
 		return vkNone // an object in a URL is written in styles this guard does not read
 	}
+	if isJSONType(p.Media) {
+		// A parameter the description gives as JSON content is one JSON value, read as such before it is checked.
+		if len(vals) > 1 {
+			return vkRepeated
+		}
+		v, _, err := parseJSON([]byte(vals[0]), jsonLimits{depth: 16, nodes: 10_000})
+		if err != nil {
+			return vkType
+		}
+		c := &vctx{steps: 20_000, request: true}
+		s.validate(v, c, 0)
+		if c.over {
+			return vkTooComplex
+		}
+		return c.first.kind
+	}
 	if isArray {
 		// OpenAPI's defaults: style form for a query or cookie parameter and simple for a path or header one, and explode only for
 		// form. A simple array is written 1,2,3 whether or not it is exploded.

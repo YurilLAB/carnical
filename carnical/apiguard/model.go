@@ -61,6 +61,8 @@ type Param struct {
 	// are OpenAPI's defaults: form with explode for a query or cookie parameter, simple (1,2,3) for a path or header one.
 	Style   string `json:"style,omitempty"`
 	Explode *bool  `json:"explode,omitempty"`
+	// Media is the media type of a parameter the description gives as content instead of a style, such as application/json.
+	Media string `json:"media,omitempty"`
 }
 
 // Route is one method on one path template, with what the API says it takes.
