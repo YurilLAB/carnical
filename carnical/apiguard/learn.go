@@ -37,6 +37,8 @@ type position struct {
 	vals  []posVal
 	total uint32
 	last  int64
+	// words is the evidence of who brought the words seen here for the first time.
+	words Evidence
 }
 
 type posShard struct {
@@ -153,7 +155,7 @@ func (l *learner) observe(r *inspect.Request, rv *reqView, client uint32, truste
 	cs := l.collapsed.Load()
 	again := false
 	key, ok := templateOf(method, r.Path, *cs, keybuf[:0], func(prefix []byte, seg string) {
-		if l.track(prefix, seg, cfg, now) {
+		if l.track(prefix, seg, client, trusted, cfg, now) {
 			again = true
 		}
 	})
@@ -449,8 +451,9 @@ func (l *learner) shape(rt *lroute, sh *Shape, v any, depth int, client, w uint3
 // two differ in how often a word comes back: each name is used again and again, and most slugs are seen once or twice. So a
 // position becomes a parameter when it has more than DistinctValues different words, has been seen at least collapseMinTotal
 // times, and fewer than half of its words have been seen three times. An API with fifteen resources is therefore not read as
-// /{id}, and a catalogue with thousands of slugs is.
-func (l *learner) track(prefix []byte, seg string, cfg *Config, now int64) bool {
+// /{id}, and a catalogue with thousands of slugs is. The words that were new there must also have come from enough clients, by the
+// evidence rule, so that one client cannot make a position a parameter by inventing words.
+func (l *learner) track(prefix []byte, seg string, client uint32, trusted bool, cfg *Config, now int64) bool {
 	seed := l.seed.Load()
 	sh := &l.pos[hashOf(seed, prefix)%posShards]
 	h := hashOf(seed, seg)
@@ -476,11 +479,19 @@ func (l *learner) track(prefix []byte, seg string, cfg *Config, now int64) bool 
 			break
 		}
 	}
+	// The rule's clients and share apply to who brought new words; how many words there are is the count test below.
+	rule := cfg.rule()
+	rule.minObs = 1
+	// Only words that enter the table count, and an owner's words carry no weight in the share, so neither a full table nor
+	// a recording can let one client's words decide. A position no visitor brought a word to is judged on its counts alone.
 	if !found && len(p.vals) < maxPosValues {
 		p.vals = append(p.vals, posVal{h, 1})
+		if !trusted {
+			p.words.add(client, 1, &rule)
+		}
 	}
 	collapse := false
-	if n := len(p.vals); n > cfg.Learn.DistinctValues && (p.total >= collapseMinTotal || n >= maxPosValues) {
+	if n := len(p.vals); n > cfg.Learn.DistinctValues && (p.total >= collapseMinTotal || n >= maxPosValues) && (p.words.N == 0 || p.words.supported(&rule)) {
 		repeated := 0
 		for _, v := range p.vals {
 			if v.n >= 3 {

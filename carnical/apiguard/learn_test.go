@@ -351,6 +351,33 @@ func TestAPositionWithManyResourceNamesIsNotAParameterButOneWithManySlugsIs(t *t
 			t.Fatalf("a slug that was not seen before was refused: %+v", res.Verdicts)
 		}
 	})
+	t.Run("one client's invented words", func(t *testing.T) {
+		g, _ := learnedShop(t)
+		for _, w := range []string{"alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india", "juliet"} {
+			g.Observe(mk("GET", "/api/"+w, withClient("192.0.2.9")), 200)
+		}
+		if n := g.Stats().CollapsedPlaces; n != 0 {
+			t.Fatalf("one client made %d positions parameters", n)
+		}
+		g.Flush()
+		if routeState(g, "GET", "/api/items") != StateEnforceable {
+			t.Fatalf("routes: %v", routeNames(g.Snapshot()))
+		}
+	})
+	t.Run("one client's words after an owner's recording", func(t *testing.T) {
+		g, _ := learnedShop(t)
+		var obs []Observation
+		for _, r := range []string{"orders", "carts", "reviews", "wishlists"} {
+			obs = append(obs, Observation{Request: *mk("GET", "/api/"+r), Status: 200})
+		}
+		g.Learn(obs)
+		for _, w := range []string{"alpha", "bravo", "charlie"} {
+			g.Observe(mk("GET", "/api/"+w, withClient("192.0.2.9")), 200)
+		}
+		if n := g.Stats().CollapsedPlaces; n != 0 {
+			t.Fatalf("one client made %d positions parameters", n)
+		}
+	})
 	t.Run("too few sightings to say", func(t *testing.T) {
 		g, _ := testGuard(t, nil)
 		for i := 0; i < 12; i++ {
