@@ -305,6 +305,9 @@ func (g *Guard) noteGraphQL(ctx context.Context, fetch Fetcher) string {
 
 // ---- WordPress REST index ----
 
+// wordPressIndex is the format of a model read from a WordPress REST index.
+const wordPressIndex = "wordpress rest index"
+
 // importWordPress reads the index the WordPress REST API gives at /wp-json/: the routes it has, with the methods of each. Its
 // routes are written as patterns, with a regular expression for each parameter; a parameter that is plainly numeric becomes an
 // integer, and every other becomes a string.
@@ -321,7 +324,7 @@ func importWordPress(body []byte) (Model, Report, error) {
 	if root == nil || routes == nil || root["namespaces"] == nil {
 		return Model{}, rep, errors.New("not a WordPress REST index")
 	}
-	rep.Format = "wordpress rest index"
+	rep.Format = wordPressIndex
 	rep.Title = clean(scalarText(root["name"]), 120)
 	m := Model{Format: ModelFormat, Hash: rep.Hash, Title: rep.Title, SpecVersion: rep.Format}
 	keys := make([]string, 0, len(routes))
@@ -364,6 +367,115 @@ func importWordPress(body []byte) (Model, Report, error) {
 	m.finish(rep.warn)
 	rep.Routes = len(m.Routes)
 	return m, rep, nil
+}
+
+// wpRestRoute reads the route a request names through WordPress's rest_route variable, which WordPress serves on any path and
+// before the path itself, as PHP and WordPress read it: a form body's value before the query's, and the last one given. It returns
+// the path that route has under /wp-json, or "" when PHP makes the variable an array, which names no route.
+func wpRestRoute(rv *reqView) (path string, found bool) {
+	v, arr, found := wpRestRouteIn(rv.r.RawQuery)
+	if rv.ct == "application/x-www-form-urlencoded" {
+		if bv, barr, ok := wpRestRouteIn(rv.body); ok {
+			v, arr, found = bv, barr, true
+		}
+	}
+	switch {
+	case !found:
+		return "", false
+	case arr:
+		return "", true
+	}
+	// WordPress cuts trailing slashes and backslashes off the route. The value is decoded already, so a % in it is escaped
+	// again for the lookup, which decodes the path once.
+	if v = strings.TrimRight(v, `/\`); v == "" {
+		return "/wp-json", true
+	}
+	return "/wp-json" + strings.ReplaceAll(v, "%", "%25"), true
+}
+
+// wpRestRouteIn finds the last rest_route in a query string or a form body, and whether PHP makes it an array.
+func wpRestRouteIn[T ~string | ~[]byte](raw T) (value string, arr, found bool) {
+	for start := 0; start < len(raw); {
+		end, eq := start, -1
+		for ; end < len(raw) && raw[end] != '&'; end++ {
+			if eq < 0 && raw[end] == '=' {
+				eq = end
+			}
+		}
+		nameEnd, valStart := end, end
+		if eq >= 0 {
+			nameEnd, valStart = eq, eq+1
+		}
+		// Decoding a name never makes it longer, so a shorter one cannot be rest_route.
+		if nameEnd-start >= len("rest_route") {
+			if n, isArr := phpName(phpURLDecode(string(raw[start:nameEnd]))); n == "rest_route" {
+				value, arr, found = phpURLDecode(string(raw[valStart:end])), isArr, true
+			}
+		}
+		start = end + 1
+	}
+	return value, arr, found
+}
+
+// phpName returns the variable PHP makes of a decoded query or form name, and whether it is an array: the name ends at a NUL,
+// leading spaces are dropped, a space or a dot becomes an underscore, and a [ starts an array if a ] follows it and otherwise
+// becomes an underscore too.
+func phpName(name string) (string, bool) {
+	if i := strings.IndexByte(name, 0); i >= 0 {
+		name = name[:i]
+	}
+	name = strings.TrimLeft(name, " ")
+	if !strings.ContainsAny(name, " .[") {
+		return name, false
+	}
+	b := []byte(name)
+	for i, c := range b {
+		switch c {
+		case ' ', '.':
+			b[i] = '_'
+		case '[':
+			if strings.IndexByte(name[i+1:], ']') >= 0 {
+				return string(b[:i]), true
+			}
+			for j := i; j < len(b); j++ {
+				if b[j] == ' ' || b[j] == '.' || b[j] == '[' {
+					b[j] = '_'
+				}
+			}
+			return string(b), false
+		}
+	}
+	return string(b), false
+}
+
+// phpURLDecode decodes as PHP does: a + is a space, a % and two hex digits is that byte, and any other % is kept as it is.
+func phpURLDecode(s string) string {
+	if strings.IndexByte(s, '%') < 0 && strings.IndexByte(s, '+') < 0 {
+		return s
+	}
+	b := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case c == '+':
+			b = append(b, ' ')
+		case c == '%' && i+2 < len(s) && isHex(s[i+1]) && isHex(s[i+2]):
+			b = append(b, hexDigit(s[i+1])<<4|hexDigit(s[i+2]))
+			i += 2
+		default:
+			b = append(b, c)
+		}
+	}
+	return string(b)
+}
+
+func hexDigit(c byte) byte {
+	switch {
+	case c >= 'a':
+		return c - 'a' + 10
+	case c >= 'A':
+		return c - 'A' + 10
+	}
+	return c - '0'
 }
 
 // wpTemplate turns a WordPress route pattern such as /wp/v2/posts/(?P<id>[\d]+) into a path template and its parameters.

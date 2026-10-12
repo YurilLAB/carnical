@@ -328,6 +328,13 @@ func TestDiscoveryReadsTheWordPressRESTIndex(t *testing.T) {
 	if res := g.Inspect(mk("GET", "/wp-json/wp/v2/unknown")); !has(res, IDSpecUnknownRoute) {
 		t.Fatalf("%+v", res.Verdicts)
 	}
+	// WordPress serves the same routes through its rest_route variable, on any path.
+	if res := g.Inspect(mk("GET", "/?rest_route=/wp/v2/unknown")); !has(res, IDSpecUnknownRoute) {
+		t.Fatalf("%+v", res.Verdicts)
+	}
+	if res := g.Inspect(mk("GET", "/?rest_route=/wp/v2/posts/7")); len(res.Verdicts) != 0 {
+		t.Fatalf("%+v", res.Verdicts)
+	}
 }
 
 // ---- promotion ----

@@ -224,8 +224,16 @@ func (in *inspection) run() {
 	var dnode *trieNode
 	var drt *Route
 	respelled := false
-	if decl != nil {
-		if dnode = decl.idx.lookup(r.Path, &caps); dnode != nil {
+	// WordPress serves a REST route named by its rest_route variable on any path, and before the path, so such a request is held
+	// to that route. A variable that names no route leaves path empty, and the request is refused as an unknown route.
+	path, restRoute := r.Path, false
+	if decl != nil && decl.SpecVersion == wordPressIndex {
+		if p, found := wpRestRoute(rv); found {
+			path, restRoute = p, true
+		}
+	}
+	if decl != nil && path != "" {
+		if dnode = decl.idx.lookup(path, &caps); dnode != nil {
 			drt = dnode.route(method)
 			if drt == nil && preflight {
 				drt = dnode.route(acrm)
@@ -235,7 +243,7 @@ func (in *inspection) run() {
 		// A path that names a described route only in another spelling (letter case, ';' parameters, empty segments), or names
 		// another route that way than it does as written, is served by an operation that it would not be held to. It is not a
 		// route the description has, so it is refused as an unknown one, whether or not it looks like an API.
-		if decl.idx.respelled(r.Path, dnode) {
+		if decl.idx.respelled(path, dnode) {
 			respelled, dnode, drt, asked = true, nil, nil, false
 		}
 	}
@@ -249,7 +257,7 @@ func (in *inspection) run() {
 			}
 		}
 	}
-	api := dnode != nil || respelled || lk.view != nil || lk.otherMethod || isAPIPath(r.Path) || isAPIContentType(rv.ct) || acceptsAPI(r.Header.Get("Accept"))
+	api := restRoute || dnode != nil || respelled || lk.view != nil || lk.otherMethod || isAPIPath(r.Path) || isAPIContentType(rv.ct) || acceptsAPI(r.Header.Get("Accept"))
 	if !api {
 		return
 	}
