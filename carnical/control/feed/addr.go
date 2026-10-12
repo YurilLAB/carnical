@@ -100,7 +100,22 @@ func scrubAddresses(s string) string {
 
 // cutRun looks at one run of address characters, s[i:j], for an IPv6 address. A sentence can put a full stop or a
 // colon after an address and a label can put a single colon before it, and none of those is part of the address.
+// A whole address can also be glued to more address characters, such as the hex end of a label ("blocked:") or a
+// port written without brackets (":443"). Then the longest start of the run that reads as an IPv6 address is cut
+// and stands for the whole run, so no address leaves whole and a second scrub finds the run already cut. A first label
+// that cannot be a group ("exceeded:", "12345:", "HTTP/1.1:") is not part of an address glued after it, so then the
+// run is read once more from just after that label's colon.
 func cutRun(s string, i, j int) (cut string, from, to int, ok bool) {
+	if cut, from, to, ok = cutRunFrom(s, i, j); ok {
+		return cut, from, to, ok
+	}
+	if k := strings.IndexByte(s[i:j], ':'); k > 4 || k > 0 && strings.IndexByte(s[i:i+k], '.') >= 0 {
+		return cutRunFrom(s, i+k+1, j)
+	}
+	return "", 0, 0, false
+}
+
+func cutRunFrom(s string, i, j int) (cut string, from, to int, ok bool) {
 	run := s[i:j]
 	if strings.Count(run, ":") < 2 {
 		return "", 0, 0, false
@@ -110,8 +125,9 @@ func cutRun(s string, i, j int) (cut string, from, to int, ok bool) {
 		run = run[1:]
 		from++
 	}
+	var core string
 	for _, trim := range []string{".", ".:"} {
-		core := strings.TrimRight(run, trim)
+		core = strings.TrimRight(run, trim)
 		if len(core) < 3 {
 			continue
 		}
@@ -119,6 +135,16 @@ func cutRun(s string, i, j int) (cut string, from, to int, ok bool) {
 			if c == core {
 				return "", 0, 0, false
 			}
+			return c, from, from + len(core), true
+		}
+	}
+	// An address is never longer than parseAddr allows, so only the start of a long run is worth trying.
+	head := core[:min(len(core), 64)]
+	for k := strings.LastIndexByte(head, ':'); k > 0; k = strings.LastIndexByte(head[:k], ':') {
+		if strings.Count(head[:k], ":") < 2 {
+			break
+		}
+		if c, good := CutAddress(head[:k]); good {
 			return c, from, from + len(core), true
 		}
 	}

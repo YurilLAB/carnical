@@ -71,6 +71,8 @@ func TestScrubAddresses(t *testing.T) {
 		{"ipv6", "from 2001:db8:abcd:1234::1 today", "from 2001:db8:abcd:: today"},
 		{"ipv6 at end with full stop", "from 2001:db8:abcd:1234::1.", "from 2001:db8:abcd::."},
 		{"ipv6 after a label", "addr:2001:db8:abcd:1234::1", "addr:2001:db8:abcd::"},
+		{"whole ipv6 between a hex-ending label and a port", "blocked:2001:db8:abcd:1234:5678:9abc:def0:1234:443", "blocked:2001:db8::"},
+		{"whole ipv6 after a label longer than a group", "limit exceeded:2001:db8:abcd:1234:5678:9abc:def0:1234", "limit exceeded:2001:db8:abcd::"},
 		{"already cut", "from 203.0.113.0", "from 203.0.113.0"},
 		{"mapped", "from ::ffff:203.0.113.7", "from 203.0.113.0"},
 		{"no address", "3 blocked in 15 minutes", "3 blocked in 15 minutes"},
