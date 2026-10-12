@@ -55,6 +55,10 @@ func TestRuleMapping(t *testing.T) {
 			want: []vpatch.Condition{{Operator: "rx", Pattern: "^(?:GET|POST)$", Targets: []string{"method"}, Negate: true}}},
 		{name: "a negated test of a named argument is refused, as a request may repeat it", rule: `SecRule ARGS:role "!@streq user" "id:3,phase:2,deny"`,
 			skip: "negated-on-many-values"},
+		{name: "a quote after an even run of backslashes closes the operator, as in Coraza", rule: `SecRule ARGS:f "@rx \.\.\\" "id:4,phase:2,deny"`,
+			want: []vpatch.Condition{{Operator: "rx", Pattern: `\.\.\\`, Flags: "sm", Targets: []string{"arg:f"}}}},
+		{name: "white space around the operator argument is trimmed, as in Coraza", rule: `SecRule REQUEST_METHOD "@streq PUT " "id:5,phase:1,deny"`,
+			want: []vpatch.Condition{{Operator: "equals", Pattern: "PUT", Targets: []string{"method"}}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

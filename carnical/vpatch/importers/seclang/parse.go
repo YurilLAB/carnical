@@ -60,8 +60,8 @@ var (
 )
 
 // splitWords splits the text after SecRule into at most three words: the variables, the operator and the actions. A word that starts
-// with a double quote runs to the closing quote; inside it \" is a quote and every other backslash stays, which is what a
-// regular expression needs.
+// with a double quote runs to the first quote after an even run of backslashes, as in Coraza; inside it \" is a quote and every
+// other backslash stays, which is what a regular expression needs.
 func splitWords(s string) ([]string, error) {
 	var words []string
 	i := 0
@@ -73,28 +73,21 @@ func splitWords(s string) ([]string, error) {
 			break
 		}
 		if s[i] == '"' {
-			i++
-			var b strings.Builder
-			closed := false
-			for i < len(s) {
-				c := s[i]
-				if c == '\\' && i+1 < len(s) && s[i+1] == '"' {
-					b.WriteByte('"')
-					i += 2
-					continue
+			j := i + 1
+			backslashes := 0
+			for j < len(s) && (s[j] != '"' || backslashes%2 == 1) {
+				if s[j] == '\\' {
+					backslashes++
+				} else {
+					backslashes = 0
 				}
-				if c == '"' {
-					closed = true
-					i++
-					break
-				}
-				b.WriteByte(c)
-				i++
+				j++
 			}
-			if !closed {
+			if j >= len(s) {
 				return nil, errBadQuote
 			}
-			words = append(words, b.String())
+			words = append(words, strings.ReplaceAll(s[i+1:j], `\"`, `"`))
+			i = j + 1
 		} else {
 			j := i
 			for j < len(s) && s[j] != ' ' && s[j] != '\t' {
@@ -214,7 +207,8 @@ type operator struct {
 	arg     string
 }
 
-// parseOperator reads "!@rx pattern". With no "@" the whole string is the pattern of @rx, as in ModSecurity.
+// parseOperator reads "!@rx pattern". With no "@" the whole string is the pattern of @rx, as in ModSecurity. White space around the
+// argument is dropped, as Coraza does.
 func parseOperator(s string) operator {
 	op := operator{}
 	t := strings.TrimLeft(s, " \t")
@@ -225,10 +219,10 @@ func parseOperator(s string) operator {
 	if strings.HasPrefix(t, "@") {
 		name, arg, _ := strings.Cut(t[1:], " ")
 		op.name = strings.ToLower(name)
-		op.arg = strings.TrimLeft(arg, " \t")
+		op.arg = strings.TrimSpace(arg)
 		return op
 	}
 	op.name = "rx"
-	op.arg = t
+	op.arg = strings.TrimSpace(t)
 	return op
 }
