@@ -127,7 +127,7 @@ func (d *detector) incidentEvent(kind string, ns int64) Event {
 	if len(inc.labels.e) > 0 {
 		out.DistinctLabels = int(inc.labelSet.estimate())
 		for _, e := range inc.labels.e {
-			out.Labels = append(out.Labels, LabelCount{Label: e.label, Requests: uint64(e.count)})
+			out.Labels = append(out.Labels, LabelCount{Label: e.label, Requests: e.count})
 		}
 		slices.SortFunc(out.Labels, func(a, b LabelCount) int { return cmp.Compare(b.Requests, a.Requests) })
 		out.Labels = out.Labels[:min(len(out.Labels), 10)]

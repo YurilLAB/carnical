@@ -103,10 +103,13 @@ func TestTopKKeepsTheHeavyHittersAmongNoise(t *testing.T) {
 	t.Run("incident labels retain unsigned counter ordering", func(t *testing.T) {
 		d := &detector{incident: &incidentAcc{}}
 		d.incident.labels = newTopK(2)
-		d.incident.labels.e = []topEntry{{label: "small", count: 1}, {label: "large", count: math.MaxUint32}}
+		d.incident.labels.add(1, "small", 0, 1)
+		d.incident.labels.add(2, "large", 0, 1)
+		d.incident.labels.e[1].count = math.MaxUint32
+		d.incident.labels.add(2, "large", 0, 1) // a long attack counts past 32 bits
 		event := d.incidentEvent("attack_update", 0)
-		if event.Incident.Labels[0].Label != "large" {
-			t.Fatalf("incorrect incident ordering: %+v", event.Incident.Labels)
+		if got := event.Incident.Labels[0]; got.Label != "large" || got.Requests != math.MaxUint32+1 {
+			t.Fatalf("incorrect incident ordering or count: %+v", event.Incident.Labels)
 		}
 	})
 	k := newTopK(16)
@@ -121,7 +124,7 @@ func TestTopKKeepsTheHeavyHittersAmongNoise(t *testing.T) {
 			k.add(uint64(1000+r.IntN(50_000)), "noise", uint64(i), 1)
 		}
 	}
-	got := map[uint64]uint32{}
+	got := map[uint64]uint64{}
 	for _, e := range k.e {
 		got[e.key] = e.count
 	}

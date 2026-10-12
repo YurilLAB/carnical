@@ -76,7 +76,7 @@ func (h *hll) estimate() float64 {
 // topEntry is one tracked key of a topK, with the number of different sources seen sending it.
 type topEntry struct {
 	key   uint64
-	count uint32
+	count uint64 // an incident counts for as long as the attack lasts, which can pass 32 bits
 	label string
 	srcs  hll
 }
@@ -90,7 +90,7 @@ type topK struct {
 
 func newTopK(k int) topK { return topK{k: k, e: make([]topEntry, 0, k)} }
 
-func (t *topK) add(key uint64, label string, src uint64, n uint32) {
+func (t *topK) add(key uint64, label string, src uint64, n uint64) {
 	low := -1
 	for i := range t.e {
 		if t.e[i].key == key {
