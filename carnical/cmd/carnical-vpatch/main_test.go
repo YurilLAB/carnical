@@ -91,6 +91,7 @@ func TestCommands(t *testing.T) {
 		{"load converted JSON", []string{"load", "-in", neighbourOut}, 0, []string{"read 1 signatures", "loaded 1 "}, ""},
 		{"convert keeps input at legacy temporary name", []string{"convert", "-in", aliasedInput, "-format", "legacy", "-out", aliasOut}, 0, []string{"wrote"}, ""},
 		{"rename failure", []string{"convert", "-in", lib, "-out", failedOut}, 1, nil, "rename"},
+		{"convert keeping no signatures keeps the pack", []string{"convert", "-in", write(t, dir, "none.jsonl", ""), "-out", pack}, 1, nil, "no signatures"},
 		{"load the converted pack", []string{"load", "-in", pack, "-tiers", "verified,community"}, 0, []string{"read 3 signatures", "loaded 2 ", "rejected: 1"}, ""},
 		{"no arguments", nil, 2, nil, "usage"},
 		{"unknown command", []string{"frobnicate"}, 2, nil, "unknown command"},

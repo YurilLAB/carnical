@@ -603,6 +603,10 @@ func cmdConvert(args []string, stdout, stderr io.Writer) error {
 			kept = append(kept, s)
 		}
 	}
+	// The proxy refuses an empty pack, so never publish one over a working pack.
+	if len(kept) == 0 {
+		return fmt.Errorf("no signatures in tiers %v of the %d read; %s was not written", tl, len(sigs), *out)
+	}
 	p := vpatch.Pack{Name: *name, Version: *version, Created: time.Now().UTC().Format(time.RFC3339), Signatures: kept}
 	if p.Name == "" {
 		p.Name = baseName(*in)

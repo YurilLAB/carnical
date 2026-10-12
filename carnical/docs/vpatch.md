@@ -150,7 +150,9 @@ selected output directory.
 Converted packs are created with private permissions (0600 on Unix; Windows uses filesystem ACLs).
 Use an operator-controlled directory and explicitly grant read access to a separate service account
 when installing a pack. The converter validates the temporary pack through its open handle before
-publication; a serialization, validation or rename failure preserves the previous output.
+publication; a serialization, validation or rename failure preserves the previous output. A
+conversion that keeps no signatures is refused and writes nothing, since the proxy refuses an
+empty pack.
 
 A failed report write returns an error even if the valid pack has already been published. For
 replay, supply `-scope jira` (or the site's other software tags) to activate scoped rules. A replay
