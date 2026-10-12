@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"syscall"
 
 	"github.com/YurilLAB/coraza/carnical/apiguard"
 )
@@ -25,7 +26,8 @@ func configureAPI(path, mode, formatsMode string) (*apiguard.Guard, apiguard.Rep
 	if mode == "block" && formatsMode != "block" {
 		return nil, rep, errors.New("-api-spec-mode block requires -formats-mode block for structural validation")
 	}
-	f, err := os.Open(path) // #nosec G304 -- Operator-selected API spec is read before listening; regular-file, size and schema checks follow.
+	// Opened without blocking, so a FIFO cannot hold start-up; regular-file, size and schema checks follow.
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOCTTY, 0) // #nosec G304 -- Operator-selected API spec is read before listening.
 	if err != nil {
 		return nil, rep, fmt.Errorf("-api-spec: %w", err)
 	}

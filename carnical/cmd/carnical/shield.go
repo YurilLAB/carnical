@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"os"
 	"strings"
+	"syscall"
 
 	"github.com/YurilLAB/coraza/carnical/shield"
 )
@@ -49,7 +50,8 @@ func configureShield(log *slog.Logger, f shieldFlags, trusted []netip.Prefix) (*
 	}
 	cfg.OnEvent = func(ev shield.Event) { logShieldEvent(log, ev, cfg.MonitorOnly) }
 	if f.ranges != "" {
-		file, err := os.Open(f.ranges)
+		// Opened without blocking, so a FIFO cannot hold start-up.
+		file, err := os.OpenFile(f.ranges, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOCTTY, 0)
 		if err != nil {
 			return nil, fmt.Errorf("-ddos-ranges: %w", err)
 		}

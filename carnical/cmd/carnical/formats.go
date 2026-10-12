@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"slices"
+	"syscall"
 	"time"
 
 	"github.com/YurilLAB/coraza/carnical/formats"
@@ -65,7 +66,8 @@ func configureFormats(mode, path string, encoding bool) (*formats.Inspector, err
 	}
 	p := formats.Policy{}
 	if path != "" {
-		file, err := os.Open(path) // #nosec G304 -- Operator-selected policy is read before listening; regular-file, size and strict policy checks follow.
+		// Opened without blocking, so a FIFO cannot hold start-up; regular-file, size and strict policy checks follow.
+		file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOCTTY, 0) // #nosec G304 -- Operator-selected policy is read before listening.
 		if err != nil {
 			return nil, fmt.Errorf("-formats-policy: %w", err)
 		}

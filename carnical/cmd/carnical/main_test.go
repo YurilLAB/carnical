@@ -1848,6 +1848,41 @@ func TestPrivateFilesAreReadWithCare(t *testing.T) {
 			}
 		})
 	}
+	t.Run("other operator files from a FIFO", func(t *testing.T) {
+		// These are not keys, so they hold no rows above; a FIFO must not hold start-up for them either.
+		if runtime.GOOS == "windows" {
+			t.Skip("no FIFO on Windows")
+		}
+		fifo := filepath.Join(t.TempDir(), "operator.fifo")
+		if err := exec.Command("mkfifo", "-m", "0600", fifo).Run(); err != nil {
+			t.Skipf("no FIFO here: %v", err)
+		}
+		log := slog.New(slog.NewTextHandler(io.Discard, nil))
+		for _, tc := range []struct {
+			name string
+			read func() error
+		}{
+			{"-api-spec", func() error { _, _, err := configureAPI(fifo, "monitor", "monitor"); return err }},
+			{"-formats-policy", func() error { _, err := configureFormats("monitor", fifo, false); return err }},
+			{"-ddos-ranges", func() error {
+				_, err := configureShield(log, shieldFlags{mode: "monitor", rate: 10, burst: 20, maxConns: 10, maxRaise: 1, ranges: fifo}, nil)
+				return err
+			}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				done := make(chan error, 1)
+				go func() { done <- tc.read() }()
+				select {
+				case err := <-done:
+					if err == nil {
+						t.Fatal("a FIFO was read")
+					}
+				case <-time.After(10 * time.Second):
+					t.Fatal("reading a FIFO blocked")
+				}
+			})
+		}
+	})
 	t.Run("visitor TLS through a link", func(t *testing.T) {
 		// certbot's live/ directory holds links into archive/; the visitor's pair is read through them.
 		link := filepath.Join(t.TempDir(), "privkey.pem")
