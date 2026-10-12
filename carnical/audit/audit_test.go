@@ -31,29 +31,36 @@ func TestRunnerStatuses(t *testing.T) {
 	boom := func(context.Context) Outcome { panic("boom") }
 	slow := func(ctx context.Context) Outcome { <-ctx.Done(); return Outcome{Checked: 1} }
 	tests := []struct {
-		name string
-		run  func(context.Context) Outcome
-		want Status
-		note string
+		name    string
+		run     func(context.Context) Outcome
+		want    Status
+		note    string
+		stopped bool // the whole run is stopped, not just this check
 	}{
-		{"cases and no problems", func(context.Context) Outcome { return Outcome{Checked: 3} }, Pass, ""},
-		{"a problem", func(context.Context) Outcome { return Outcome{Checked: 3, Problems: []string{"x"}} }, Fail, ""},
-		{"nothing exercised is not a pass", func(context.Context) Outcome { return Outcome{} }, Fail, "the check exercised no cases, so it proves nothing"},
-		{"could not run", func(context.Context) Outcome { return Outcome{SkipReason: "no network"} }, Skip, "no network"},
-		{"a panic", boom, Error, "the check panicked: boom"},
-		{"out of time", slow, Error, "the check ran out of time"},
+		{"cases and no problems", func(context.Context) Outcome { return Outcome{Checked: 3} }, Pass, "", false},
+		{"a problem", func(context.Context) Outcome { return Outcome{Checked: 3, Problems: []string{"x"}} }, Fail, "", false},
+		{"nothing exercised is not a pass", func(context.Context) Outcome { return Outcome{} }, Fail, "the check exercised no cases, so it proves nothing", false},
+		{"could not run", func(context.Context) Outcome { return Outcome{SkipReason: "no network"} }, Skip, "no network", false},
+		{"a panic", boom, Error, "the check panicked: boom", false},
+		{"out of time", slow, Error, "the check ran out of time", false},
+		{"the run stopped", slow, Error, StoppedNote, true},
 		// What a check wants read beside its result goes with a pass or a failure, and never takes the place of the
 		// reason a check did not run.
-		{"a pass with something to say", func(context.Context) Outcome { return Outcome{Checked: 3, Note: "read with care"} }, Pass, "read with care"},
+		{"a pass with something to say", func(context.Context) Outcome { return Outcome{Checked: 3, Note: "read with care"} }, Pass, "read with care", false},
 		{"a problem with something to say", func(context.Context) Outcome {
 			return Outcome{Checked: 3, Problems: []string{"x"}, Note: "read with care"}
-		}, Fail, "read with care"},
-		{"nothing exercised, with something to say", func(context.Context) Outcome { return Outcome{Note: "read with care"} }, Fail, "the check exercised no cases, so it proves nothing"},
-		{"could not run, with something to say", func(context.Context) Outcome { return Outcome{SkipReason: "no network", Note: "read with care"} }, Skip, "no network"},
+		}, Fail, "read with care", false},
+		{"nothing exercised, with something to say", func(context.Context) Outcome { return Outcome{Note: "read with care"} }, Fail, "the check exercised no cases, so it proves nothing", false},
+		{"could not run, with something to say", func(context.Context) Outcome { return Outcome{SkipReason: "no network", Note: "read with care"} }, Skip, "no network", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			rep := Run(context.Background(), []Check{{Name: "c", Run: tt.run}}, 100*time.Millisecond)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if tt.stopped {
+				cancel()
+			}
+			rep := Run(ctx, []Check{{Name: "c", Run: tt.run}}, 100*time.Millisecond)
 			if got := rep.Results[0]; got.Status != tt.want || got.Note != tt.note {
 				t.Fatalf("status %s (%q), want %s (%q): %+v", got.Status, got.Note, tt.want, tt.note, got)
 			}

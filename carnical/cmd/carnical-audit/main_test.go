@@ -239,6 +239,65 @@ func TestReportOutput(t *testing.T) {
 	}
 }
 
+// Not a row of TestReportOutput: a stop is decided around the run, before any report is built.
+func TestAStoppedRun(t *testing.T) {
+	failing := audit.Check{Name: "failing-check", Run: func(context.Context) audit.Outcome {
+		return audit.Outcome{Checked: 1, Problems: []string{"the wall is open"}}
+	}}
+	passing := audit.Check{Name: "passing-check", Run: func(context.Context) audit.Outcome { return audit.Outcome{Checked: 1} }}
+	tests := []struct {
+		name     string
+		first    audit.Check // finishes before the stop
+		code     int
+		recorded bool
+	}{
+		{"records nothing when nothing was found", passing, 0, false},
+		{"reports what a finished check found", failing, 1, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			logPath, statusPath := filepath.Join(dir, "audit.jsonl"), filepath.Join(dir, "status.json")
+			previous := map[string]string{logPath: `{"started":"2026-10-06T00:00:00Z","results":[]}` + "\n", statusPath: `{"ok": true}`}
+			for path, content := range previous {
+				if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			interrupted := audit.Check{Name: "interrupted-check", Run: func(ctx context.Context) audit.Outcome {
+				cancel() // the stop request arrives while the check runs, long before its time limit
+				<-ctx.Done()
+				return audit.Outcome{Checked: 1}
+			}}
+			code, stopped := audited(ctx, []audit.Check{tt.first, interrupted}, time.Hour, logPath, statusPath, false)
+			if !stopped || code != tt.code {
+				t.Fatalf("exit %d, stopped %v; want exit %d, stopped", code, stopped, tt.code)
+			}
+			status, err := os.ReadFile(statusPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !tt.recorded {
+				for path, want := range previous {
+					if got, err := os.ReadFile(path); err != nil || string(got) != want {
+						t.Errorf("%s changed: %q, %v", filepath.Base(path), got, err)
+					}
+				}
+				return
+			}
+			if !strings.Contains(string(status), `"ok": false`) || !strings.Contains(string(status), "the wall is open") ||
+				!strings.Contains(string(status), audit.StoppedNote) {
+				t.Errorf("status does not report the finding and the stop: %s", status)
+			}
+			if got, _ := os.ReadFile(logPath); !strings.Contains(string(got), "failing-check") {
+				t.Errorf("log does not carry the run: %s", got)
+			}
+		})
+	}
+}
+
 // Without the edge's allow list origin-guard would check an empty one and pass whatever the edge allows, so it is skipped;
 // given "" (the edge has none) it runs. Not a table of the audit package: it is what this command makes of its flags.
 func TestOriginGuardNeedsTheEdgesAllowList(t *testing.T) {

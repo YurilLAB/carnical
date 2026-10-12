@@ -28,7 +28,7 @@ const (
 	Pass  Status = "pass"
 	Fail  Status = "fail"  // a wall is broken, or the check found nothing to test
 	Skip  Status = "skip"  // the check could not run here; see Note
-	Error Status = "error" // the check itself broke (it panicked or ran out of time)
+	Error Status = "error" // the check itself broke (it panicked or ran out of time), or the run was stopped
 )
 
 // Outcome is what a check's Run returns.
@@ -116,6 +116,9 @@ func (r Report) Problems() []string {
 	return out
 }
 
+// StoppedNote is the note on a check cut short because the whole run was stopped, rather than because it ran out of time.
+const StoppedNote = "the run was stopped before the check finished"
+
 // Run runs every check once, each with its own time limit, and never lets one check's failure or panic stop the rest.
 func Run(ctx context.Context, checks []Check, perCheck time.Duration) Report {
 	host, _ := os.Hostname()
@@ -129,7 +132,7 @@ func Run(ctx context.Context, checks []Check, perCheck time.Duration) Report {
 	return rep
 }
 
-func runOne(ctx context.Context, c Check, limit time.Duration) (res Result) {
+func runOne(run context.Context, c Check, limit time.Duration) (res Result) {
 	start := time.Now()
 	res = Result{Check: c.Name, Zone: c.Zone}
 	defer func() {
@@ -139,11 +142,13 @@ func runOne(ctx context.Context, c Check, limit time.Duration) (res Result) {
 			_ = debug.Stack() // kept out of the report: a stack can carry values
 		}
 	}()
-	ctx, cancel := context.WithTimeout(ctx, limit)
+	ctx, cancel := context.WithTimeout(run, limit)
 	defer cancel()
 	out := c.Run(ctx)
 	res.Checked, res.Problems = out.Checked, out.Problems
 	switch {
+	case run.Err() != nil:
+		res.Status, res.Note = Error, StoppedNote
 	case ctx.Err() != nil:
 		res.Status, res.Note = Error, "the check ran out of time"
 	case out.SkipReason != "":

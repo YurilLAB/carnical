@@ -9,6 +9,8 @@
 //
 // Exit status: 0 everything passed, 1 something failed or broke, 3 nothing failed but a check could not run (a
 // skipped check is not a pass), 2 a usage error. It installs nothing: -print-schedule only prints what to install.
+// A run stopped by SIGINT or SIGTERM records nothing and exits with the last finished run's status, 0 if there was none,
+// unless a check that finished before the stop failed or broke: that run is reported, the checks it cut short marked so.
 package main
 
 import (
@@ -122,9 +124,12 @@ func run() int {
 				return code
 			}
 		}
-		rep := audit.Run(ctx, checks, *perCheck)
-		code = report(rep, *logFile, *statusFile, *allowSkips)
-		if !*watch {
+		c, stopped := audited(ctx, checks, *perCheck, *logFile, *statusFile, *allowSkips)
+		if stopped && c == 0 {
+			return code // nothing was recorded, so the last finished run stands
+		}
+		code = c
+		if stopped || !*watch {
 			return code
 		}
 		select {
@@ -197,6 +202,24 @@ func writeBaselines(dir string, replace bool) int {
 	}
 	fmt.Println("recorded the baselines in", dir, "- copy them somewhere an attacker on this machine cannot reach")
 	return 0
+}
+
+// audited runs the checks once and reports them; stopped says a stop request cut the run short. Such a run is not
+// reported, as its unfinished checks would read as broken and the log and status keep the last finished run, unless a
+// check that finished first failed or broke: that is a finding, and is not held back until the next run.
+func audited(ctx context.Context, checks []audit.Check, perCheck time.Duration, logFile, statusFile string, allowSkips bool) (code int, stopped bool) {
+	rep := audit.Run(ctx, checks, perCheck)
+	if ctx.Err() == nil {
+		return report(rep, logFile, statusFile, allowSkips), false
+	}
+	for _, r := range rep.Results {
+		if r.Status == audit.Fail || r.Status == audit.Error && r.Note != audit.StoppedNote {
+			fmt.Fprintln(os.Stderr, "carnical-audit: stopped before the checks finished; reporting what the finished ones found")
+			return report(rep, logFile, statusFile, allowSkips), true
+		}
+	}
+	fmt.Fprintln(os.Stderr, "carnical-audit: stopped before the checks finished; the log and status were not changed")
+	return 0, true
 }
 
 func report(rep audit.Report, logFile, statusFile string, allowSkips bool) int {
