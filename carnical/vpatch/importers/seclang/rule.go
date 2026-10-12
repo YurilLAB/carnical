@@ -53,7 +53,8 @@ var transforms = map[string]string{
 // ruleExpr turns one SecRule line into an expression: an "or" over its variables (SecLang looks at each), split further where the
 // variables need different transforms.
 func (c *converter) ruleExpr(r secRule) (importers.Expr, error) {
-	if err := c.checkActionsOfLink(r); err != nil {
+	// Every link of a chain is checked, with or without an id of its own: Coraza runs each link's actions, multiMatch among them.
+	if err := c.checkActions(r); err != nil {
 		return importers.Expr{}, err
 	}
 	var decodedTargets, rawTargets []string
@@ -144,15 +145,6 @@ func (c *converter) ruleExpr(r secRule) (importers.Expr, error) {
 		return leaves[0], nil
 	}
 	return importers.Or(leaves...), nil
-}
-
-// checkActionsOfLink checks the actions of a chained rule: they are not required to have an id, but the ones that change meaning
-// are still refused.
-func (c *converter) checkActionsOfLink(r secRule) error {
-	if r.has("id") {
-		return nil // the head: checked with its own id
-	}
-	return c.checkActions(r)
 }
 
 func dedupe(ts []string) []string {

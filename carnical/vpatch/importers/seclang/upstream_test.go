@@ -59,6 +59,9 @@ func TestRuleMapping(t *testing.T) {
 			want: []vpatch.Condition{{Operator: "rx", Pattern: `\.\.\\`, Flags: "sm", Targets: []string{"arg:f"}}}},
 		{name: "white space around the operator argument is trimmed, as in Coraza", rule: `SecRule REQUEST_METHOD "@streq PUT " "id:5,phase:1,deny"`,
 			want: []vpatch.Condition{{Operator: "equals", Pattern: "PUT", Targets: []string{"method"}}}},
+		{name: "a chained link with its own id is still checked, so its multiMatch is refused",
+			rule: "SecRule REQUEST_FILENAME \"@streq /a\" \"id:6,phase:2,deny,chain\"\nSecRule ARGS:x \"@rx ^%41$\" \"id:7,multiMatch,t:urlDecode\"",
+			skip: "multimatch"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
