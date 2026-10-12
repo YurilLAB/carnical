@@ -674,7 +674,13 @@ func paramSchema(ps *ParamStat) *Schema {
 			}
 			switch classifyValue(v) {
 			case pcInt, pcNum:
-				enum = append(enum, JSONValue{Num(v)})
+				// A number is kept as a request's value is read when it is checked (007 is 7, +5 is 5). One with no JSON spelling
+				// (.5) is kept as the text it was, which a request's value is compared with too.
+				if n := urlNumber(v); n != "" && validNumberText(n) {
+					enum = append(enum, JSONValue{Num(n)})
+				} else {
+					enum = append(enum, JSONValue{v})
+				}
 			case pcBool:
 				enum = append(enum, JSONValue{v == "true" || v == "True"})
 			default:

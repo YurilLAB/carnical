@@ -392,7 +392,7 @@ func TestAPositionWithManyResourceNamesIsNotAParameterButOneWithManySlugsIs(t *t
 func TestAnEnumerationIsLearnedOnlyFromValuesWithSupport(t *testing.T) {
 	g, _ := testGuard(t, func(c *Config) { c.Modes.Learned = ModeEnforce })
 	for i := 0; i < 300; i++ {
-		g.Observe(mk("GET", "/api/list?status="+[]string{"open", "closed", "pending"}[i%3], withClient(ip(i))), 200)
+		g.Observe(mk("GET", "/api/list?status="+[]string{"open", "closed", "pending", "007"}[i%4], withClient(ip(i))), 200)
 	}
 	// One attacker adds a value of its own, many times.
 	for i := 0; i < 500; i++ {
@@ -401,6 +401,9 @@ func TestAnEnumerationIsLearnedOnlyFromValuesWithSupport(t *testing.T) {
 	g.Flush()
 	if res := g.Inspect(mk("GET", "/api/list?status=closed")); len(res.Verdicts) != 0 {
 		t.Fatalf("a value that was learned was refused: %+v", res.Verdicts)
+	}
+	if res := g.Inspect(mk("GET", "/api/list?status=007")); len(res.Verdicts) != 0 {
+		t.Fatalf("a zero-padded number that was learned was refused: %+v", res.Verdicts)
 	}
 	if res := g.Inspect(mk("GET", "/api/list?status=x;DROP")); !has(res, IDLearnedQueryParam) {
 		t.Fatalf("a value one client taught was believed: %+v", res.Verdicts)
