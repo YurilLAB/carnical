@@ -206,6 +206,10 @@ func runFlags(args []string, private map[string]string) error {
 	if *formatsStats != 0 && (*formatsStats < 100*time.Millisecond || *formatsStats > 24*time.Hour) {
 		return errors.New("-formats-stats-interval must be 0 or between 100ms and 24h")
 	}
+	// A negative limit would refuse every request and break the reading of a chunked body.
+	if *maxForm < 0 {
+		return errors.New("-max-form-body must not be negative")
+	}
 	target, err := url.Parse(*upstream)
 	if err != nil {
 		return fmt.Errorf("-upstream: %w", err)

@@ -955,6 +955,7 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 		{name: "health hostname refused", extraArgs: []string{"-health-listen", "localhost:8082"}, fails: true},
 		{name: "health ephemeral port refused", extraArgs: []string{"-health-listen", "127.0.0.1:0"}, fails: true},
 		{name: "negative drain delay refused", extraArgs: []string{"-drain-delay", "-1s"}, fails: true},
+		{name: "negative form body limit refused", extraArgs: []string{"-max-form-body", "-1", "-check"}, fails: true, says: "-max-form-body must not be negative"},
 		{name: "drain must fit shutdown budget", extraArgs: []string{"-drain-delay", "1s", "-shutdown-timeout", "1s"}, fails: true},
 		{name: "unbounded shutdown refused", extraArgs: []string{"-shutdown-timeout", "0"}, fails: true},
 		{name: "excess shutdown refused", extraArgs: []string{"-shutdown-timeout", "11m"}, fails: true},
