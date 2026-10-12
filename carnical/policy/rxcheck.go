@@ -288,13 +288,14 @@ func inlineFolding(pattern string) int {
 // same; any other class is kept out of the spans ('A' folds to 'a', which the marker does not hold), where it means what it
 // says. canonRx checks that the result reads back as the same tree.
 func canonString(re *syntax.Regexp) string {
-	const mark = 0xf0000 // private use, so the markers are unique
+	next := rune(0xf0000) // private use, so the markers are unique
 	var markers, classes []string
 	var swap func(n *syntax.Regexp) *syntax.Regexp
 	swap = func(n *syntax.Regexp) *syntax.Regexp {
 		c := *n
 		if n.Op == syntax.OpCharClass {
-			m := mark + rune(len(classes))
+			m := next
+			next++
 			if c.Rune = []rune{m, m}; n.Flags&syntax.FoldCase == 0 {
 				c.Rune = []rune{'A', 'A', m, m}
 			}
