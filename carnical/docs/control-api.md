@@ -138,7 +138,8 @@ new file and then its directory are flushed to disk before the revocation takes 
 reported, so a power cut cannot bring the revoked credential back (the directory flush is a no-op on
 Windows, where NTFS journals the rename); if a flush fails the revocation is answered as an error. A
 file that changed and did not load (an edit in progress) is copied beside it as
-`.<name>.unparsed-<time>` before a revocation replaces it, so the edit is not lost.
+`.<name>.unparsed-<time>` before a revocation replaces it, so the edit is not lost. If the path is
+a symlink, the revocation is written to the file it names and the link is kept.
 
 The client certificate's fingerprint is `sha256(cert.RawSubjectPublicKeyInfo)`:
 

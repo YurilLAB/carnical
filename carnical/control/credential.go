@@ -655,20 +655,47 @@ func (f *CredentialFile) Revoke(id string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	path, err := writeTarget(f.path)
+	if err != nil {
+		return false, err
+	}
 	// The file changed since it last loaded and did not load (an edit in progress, a typo): it is replaced by the last good
 	// set with the revocation, and its bytes are kept beside it, so the edit is not thrown away.
-	if st, err := os.Stat(f.path); err == nil && (fileSig{st.ModTime(), st.Size()}) != f.sig {
-		if err := keepUnparsed(f.path, f.now()); err != nil {
+	if st, err := os.Stat(path); err == nil && (fileSig{st.ModTime(), st.Size()}) != f.sig {
+		if err := keepUnparsed(path, f.now()); err != nil {
 			return false, err
 		}
 	}
-	if err := writeFileAtomic(f.path, b, f.syncDir); err != nil {
+	if err := writeFileAtomic(path, b, f.syncDir); err != nil {
 		return false, err
 	}
 	if err := f.load(); err != nil {
 		return false, err
 	}
 	return true, nil
+}
+
+// writeTarget is the file a write to path replaces. A symlink in the last component is followed, as reads follow it, so
+// a revocation lands in the file the link names and the link stays: renaming over the link would leave the store
+// reading a private copy that later edits to that file never reach.
+func writeTarget(path string) (string, error) {
+	for range 40 { // the Linux limit on links followed in one lookup
+		st, err := os.Lstat(path)
+		if err != nil || st.Mode()&os.ModeSymlink == 0 {
+			return path, nil
+		}
+		link, err := os.Readlink(path)
+		if err != nil {
+			return "", err
+		}
+		// A relative link is resolved in the directory that holds it; Split keeps "link/.." as writeFileAtomic does.
+		if link != "" && !os.IsPathSeparator(link[0]) && filepath.VolumeName(link) == "" {
+			dir, _ := filepath.Split(path)
+			link = dir + link
+		}
+		path = link
+	}
+	return "", &os.PathError{Op: "readlink", Path: path, Err: syscall.ELOOP}
 }
 
 // keepUnparsed copies the file at path to a new private file beside it, named .<name>.unparsed-<time>.

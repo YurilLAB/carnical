@@ -644,6 +644,55 @@ func TestCredentialFile(t *testing.T) {
 				}
 			}
 		})
+		t.Run("a revocation through a symlinked file lands in the file it names", func(t *testing.T) {
+			base := t.TempDir()
+			target := filepath.Join(base, "managed", "credentials.json")
+			if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			write := func(cs ...Credential) {
+				data, err := MarshalCredentials(cs)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(target, data, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			write(a, b)
+			link := filepath.Join(base, "credentials.json")
+			if err := os.Symlink(filepath.Join("managed", "credentials.json"), link); err != nil {
+				t.Fatal(err)
+			}
+			clock := &fakeClock{t: epoch}
+			store, err := OpenCredentialFile(link, clock.now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if was, err := store.Revoke(b.ID); err != nil || !was {
+				t.Fatalf("revocation through a symlink: %v, %v", was, err)
+			}
+			if st, err := os.Lstat(link); err != nil || st.Mode()&os.ModeSymlink == 0 {
+				t.Fatalf("the symlink was replaced by a copy: %v", err)
+			}
+			if onDisk, err := OpenCredentialFile(target, nil); err != nil {
+				t.Fatal(err)
+			} else if got, _ := onDisk.Lookup(b.ID); !got.Revoked {
+				t.Fatal("the revocation did not reach the file the link names")
+			}
+			// An emergency revocation made by editing that file still takes effect.
+			revokedA, revokedB := a, b
+			revokedA.Revoked, revokedB.Revoked = true, true
+			write(revokedA, revokedB)
+			when := time.Now().Add(time.Minute)
+			if err := os.Chtimes(target, when, when); err != nil {
+				t.Fatal(err)
+			}
+			clock.advance(2 * time.Second)
+			if got, _ := store.Lookup(a.ID); !got.Revoked {
+				t.Fatalf("an edit to the file the link names was not seen: %v", store.LastError())
+			}
+		})
 		t.Run("a symlinked working directory is pinned at open", func(t *testing.T) {
 			base := t.TempDir()
 			for name, set := range map[string][]Credential{"one": {a}, "two": {b}} {
