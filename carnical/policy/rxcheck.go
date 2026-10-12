@@ -72,12 +72,24 @@ func canonRx(pattern string) (string, error) {
 	if !utf8.ValidString(pattern) {
 		return "", errors.New("is not valid UTF-8 text")
 	}
+	if n := inlineFolding(pattern); n > MaxClassFolding {
+		return "", fmt.Errorf("has character classes too wide to read case-insensitively (%d characters, at most %d): fewer or narrower ranges are needed", n, MaxClassFolding)
+	}
 	re, err := syntax.Parse(engineFlags+pattern, syntax.Perl)
 	if err != nil {
 		return "", fmt.Errorf("is not a valid regular expression (RE2 syntax): %s", syntaxCode(err))
 	}
 	if cost := regexCost(re); cost > MaxRegexCost {
 		return "", fmt.Errorf("is too large a regular expression (%d, at most %d): fewer or smaller repeats are needed", cost, MaxRegexCost)
+	}
+	n := classFolding(re)
+	if foldFlag.MatchString(pattern) {
+		// A (?i) of the pattern's own is folded again when the text is read back and when checkEmittable compiles it, twice,
+		// not only in the (?i:...) a rule that ignores case is put in.
+		n *= 3
+	}
+	if n > MaxClassFolding {
+		return "", fmt.Errorf("has character classes too wide to read case-insensitively (%d characters, at most %d): fewer or narrower ranges are needed", n, MaxClassFolding)
 	}
 	// The estimate counts an optional copy of a{n,m} once, where the compiler writes a branch as well, so the program itself is
 	// counted too: its size is what bounds the time a match can take (see MaxRegexCost).
@@ -88,7 +100,7 @@ func canonRx(pattern string) (string, error) {
 	if len(prog.Inst) > MaxRegexCost {
 		return "", fmt.Errorf("compiles to a program of %d instructions, more than %d: fewer or smaller repeats are needed", len(prog.Inst), MaxRegexCost)
 	}
-	canon := re.String()
+	canon := canonString(re)
 	var b strings.Builder
 	for i := 0; i < len(canon); {
 		r, size := utf8.DecodeRuneInString(canon[i:])
@@ -173,6 +185,178 @@ func regexCost(re *syntax.Regexp) int {
 		return c
 	}
 	return 1
+}
+
+// The code points that have a case, as far as regexp/syntax knows (its minFold and maxFold). Reading a class under (?i), it
+// folds each range of the class that does not hold all of them one code point at a time: [\x{100}-\x{1e942}] is 125,000 steps,
+// some 3 ms, where \w is 53. It is the one part of reading a pattern whose cost is not in proportion to the text.
+const foldFirst, foldLast = 0x41, 0x1e943
+
+// foldSpan is how many code points of lo-hi are folded one at a time.
+func foldSpan(lo, hi rune) int {
+	if lo <= foldFirst && hi >= foldLast {
+		return 0
+	}
+	return max(int(min(hi, foldLast)-max(lo, foldFirst)+1), 0)
+}
+
+// printed is the ranges regexp/syntax writes a class as: its own, or its gaps (after ^) when it holds both ends of Unicode.
+func printed(r []rune) (negated bool, ranges []rune) {
+	if len(r) <= 2 || r[0] != 0 || r[len(r)-1] != unicode.MaxRune {
+		return false, r
+	}
+	for i := 1; i+1 < len(r); i += 2 {
+		ranges = append(ranges, r[i]+1, r[i+1]-1)
+	}
+	return true, ranges
+}
+
+// classFolding is how many code points are folded one at a time when the expression is written out and read again under (?i),
+// as a rule that ignores case is, and as the engine reads it. [^/] costs nothing: it is written as its gap.
+func classFolding(re *syntax.Regexp) int {
+	n := 0
+	if re.Op == syntax.OpCharClass {
+		_, ranges := printed(re.Rune)
+		for i := 0; i+1 < len(ranges); i += 2 {
+			n += foldSpan(ranges[i], ranges[i+1])
+		}
+	}
+	for _, s := range re.Sub {
+		n += classFolding(s)
+	}
+	return n
+}
+
+// foldFlag finds a flag group that may switch case folding on, such as (?i) or (?si:.
+var foldFlag = regexp.MustCompile(`\(\?[imsU-]*i`)
+
+// inlineFolding bounds the folding the parser itself does, before anything can be checked, for a pattern that switches it on:
+// each range written in a class is folded whole, however much of it another range repeats, so a class costs at most its hyphens
+// times the code points written in it, which reading the class on its own, without the flag or a ^, counts.
+func inlineFolding(pattern string) int {
+	if !foldFlag.MatchString(pattern) {
+		return 0
+	}
+	n := 0
+	for i := 0; i < len(pattern); i++ {
+		switch {
+		case strings.HasPrefix(pattern[i:], `\Q`):
+			end := strings.Index(pattern[i:], `\E`)
+			if end < 0 {
+				return n
+			}
+			i += end + 1
+		case pattern[i] == '\\':
+			i++
+		case pattern[i] == '[':
+			// A class runs to the first ] that is not its first character, an escaped one or the end of [:alpha:].
+			j, hyphens := i+1, 0
+			if strings.HasPrefix(pattern[j:], "^") {
+				j++
+			}
+			if strings.HasPrefix(pattern[j:], "]") {
+				j++
+			}
+			for ; j < len(pattern) && pattern[j] != ']'; j++ {
+				switch {
+				case pattern[j] == '\\':
+					j++
+				case strings.HasPrefix(pattern[j:], "[:") && strings.Contains(pattern[j+2:], ":]"):
+					j += strings.Index(pattern[j+2:], ":]") + 3
+				case pattern[j] == '-':
+					hyphens++
+				}
+			}
+			class, written := strings.Replace(pattern[i:min(j+1, len(pattern))], "[^", "[", 1), foldLast-foldFirst+1
+			if re, err := syntax.Parse(class, syntax.Perl); err == nil && re.Op == syntax.OpCharClass {
+				written = 0
+				for k := 0; k+1 < len(re.Rune); k += 2 {
+					written += max(int(min(re.Rune[k+1], foldLast)-max(re.Rune[k], foldFirst)+1), 0)
+				}
+			}
+			n += hyphens * written
+			i = j
+		}
+	}
+	return n
+}
+
+// canonString is re.String() without the one part of it that is not in proportion to the text it writes: to place (?i) around
+// letters, the library checks every code point a class holds against case folding, 125,000 of them for [^/], some 2.5 ms each
+// time. Each class stands in the tree as a marker that answers the check at once, and is written in its place as the library
+// writes it. A class read under (?i) holds every case of its letters, so it may go in a (?i) span and must, to read back the
+// same; any other class is kept out of the spans ('A' folds to 'a', which the marker does not hold), where it means what it
+// says. canonRx checks that the result reads back as the same tree.
+func canonString(re *syntax.Regexp) string {
+	const mark = 0xf0000 // private use, so the markers are unique
+	var markers, classes []string
+	var swap func(n *syntax.Regexp) *syntax.Regexp
+	swap = func(n *syntax.Regexp) *syntax.Regexp {
+		c := *n
+		if n.Op == syntax.OpCharClass {
+			m := mark + rune(len(classes))
+			if c.Rune = []rune{m, m}; n.Flags&syntax.FoldCase == 0 {
+				c.Rune = []rune{'A', 'A', m, m}
+			}
+			markers, classes = append(markers, classString(c.Rune)), append(classes, classString(n.Rune))
+			return &c
+		}
+		c.Sub = make([]*syntax.Regexp, len(n.Sub))
+		for i, s := range n.Sub {
+			c.Sub[i] = swap(s)
+		}
+		return &c
+	}
+	text := swap(re).String()
+	var b strings.Builder
+	for i, class := range classes {
+		before, after, _ := strings.Cut(text, markers[i])
+		b.WriteString(before + class)
+		text = after
+	}
+	b.WriteString(text)
+	return b.String()
+}
+
+// classString writes a class as regexp/syntax does.
+func classString(r []rune) string {
+	var b strings.Builder
+	b.WriteByte('[')
+	negated, ranges := printed(r)
+	if len(r) == 0 {
+		b.WriteString(`^\x00-\x{10FFFF}`)
+	} else if negated {
+		b.WriteByte('^')
+	}
+	for i := 0; i+1 < len(ranges); i += 2 {
+		lo, hi := ranges[i], ranges[i+1]
+		classRune(&b, lo, lo == '-')
+		if lo != hi {
+			if hi != lo+1 {
+				b.WriteByte('-')
+			}
+			classRune(&b, hi, hi == '-')
+		}
+	}
+	b.WriteByte(']')
+	return b.String()
+}
+
+// classRune writes one character of a class as regexp/syntax's escape does.
+func classRune(b *strings.Builder, r rune, force bool) {
+	switch {
+	case unicode.IsPrint(r):
+		if force || strings.ContainsRune(`\.+*?()|[]{}^$`, r) {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	case r != 0 && strings.ContainsRune("\a\f\n\r\t\v", r):
+		b.WriteString(strconv.Quote(string(r))[1:3])
+	case r < 0x100:
+		fmt.Fprintf(b, `\x%02x`, r)
+	default:
+		fmt.Fprintf(b, `\x{%x}`, r)
+	}
 }
 
 // checkEmittable is the last check on the text of an @rx pattern before it is written into a rule. It must be one thing:

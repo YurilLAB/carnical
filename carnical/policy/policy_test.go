@@ -143,6 +143,7 @@ func TestDecodingAHostileDocumentIsFast(t *testing.T) {
 		"many empty arrays":     `{"allowed_hosts":[` + strings.Repeat(`[],`, 200000) + `[]]}`,
 		"many fields":           `{"api":{` + strings.Repeat(`"k":1,`, 1) + `"z":1}}`,
 		"deep and wide section": `{"api":` + strings.Repeat(`{"a":[`, 11) + strings.Repeat(`1,`, 50000) + `1` + strings.Repeat(`]}`, 11) + `}`,
+		"costly rules past cap": `{"custom_rules":[` + strings.Repeat(`{"operator":"rx","value":"\\p{Lo}\\p{Lo}\\p{Lo}\\p{Lo}"},`, 2300) + `{}]}`,
 	}
 	for name, doc := range docs {
 		t.Run(name, func(t *testing.T) {

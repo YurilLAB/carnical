@@ -48,6 +48,10 @@ const (
 	// with the longest value (256 bytes, case ignored: 3.4 s on 1 MiB); at 2,000 it was 22 s. 256 still takes a list of some
 	// 30 words, a credit-card or token pattern, or a run such as [A-Za-z0-9+/]{200,}; a longer list is what pm is for.
 	MaxRegexCost = 256
+	// MaxClassFolding bounds the code points of a custom regular expression's character classes that are case-folded one at a
+	// time when it is read case-insensitively (see classFolding), about 25 ns each, so that checking or loading one costs a few
+	// milliseconds at most. It takes three \pL (66,000 each, the widest class in common use); [^/] and \w cost next to nothing.
+	MaxClassFolding = 1 << 18
 	// MaxPathBytes is the longest exclusion or allowed path.
 	MaxPathBytes = 200
 

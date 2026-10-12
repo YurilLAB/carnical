@@ -403,7 +403,7 @@ func TestIPListsCompileToRulesThatMatchTheRightAddresses(t *testing.T) {
 // A regular expression that expands to a huge program must be refused before it is expanded: the size is worked out from the
 // parsed tree, so refusing it costs next to nothing, where compiling it would cost memory and seconds of the control host's time.
 func TestAHugeRegularExpressionIsRefusedCheaply(t *testing.T) {
-	for _, pattern := range []string{`((a{100}){100}){100}`, `(a{1000}){1000}`, `((((a{30}){30}){30}){30}){30}`, `(\pL{500}){500}`, "(" + strings.Repeat(`(a|b)`, 40) + "){200}"} {
+	for _, pattern := range []string{`((a{100}){100}){100}`, `(a{1000}){1000}`, `((((a{30}){30}){30}){30}){30}`, `(\pL{500}){500}`, "(" + strings.Repeat(`(a|b)`, 40) + "){200}", strings.Repeat("[B-\U0001e943]", 3), "(?i)a[\u0100-\U0001e942][\u0100-\U0001e942]"} {
 		start := time.Now()
 		var before, after runtime.MemStats
 		runtime.ReadMemStats(&before)

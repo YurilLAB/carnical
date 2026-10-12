@@ -88,6 +88,11 @@ func exclusionID(position, category int) int { return idExclusions + 100*positio
 // beats everything), the block list, the pages that are never inspected, the exclusions, and the custom rules. It returns the
 // number of rules it wrote. The policy must be valid and normalised.
 func renderBefore(p Policy) (text string, rules int, err error) {
+	return renderBeforeWith(p, nil)
+}
+
+// renderBeforeWith is renderBefore, given the regular expressions Validate already made for the custom rules, by id.
+func renderBeforeWith(p Policy, made map[int]string) (text string, rules int, err error) {
 	var g generated
 	for i, part := range chunks(p.AllowIPs) {
 		id := idAllowIPs + i
@@ -121,7 +126,7 @@ func renderBefore(p Policy) (text string, rules int, err error) {
 		}
 	}
 	for _, r := range p.CustomRules {
-		line, err := customRule(r)
+		line, err := customRule(r, made[r.ID])
 		if err != nil {
 			return "", 0, fmt.Errorf("custom rule %d: %w", r.ID, err)
 		}
@@ -162,16 +167,18 @@ func exclusionRule(id int, e Exclusion, g GroupInfo) (string, error) {
 	return fmt.Sprintf(`SecRule REQUEST_FILENAME "@beginsWith %s" "id:%d,phase:1,pass,nolog,t:none,%s"`, e.Path, id, strings.Join(ctl, ",")), nil
 }
 
-// customRule compiles a custom rule. It is one rule, with the variables of one field (see ruleVariables), one @rx operator and a
-// fixed action list.
-func customRule(r CustomRule) (string, error) {
+// customRule compiles a custom rule. It is one rule, with the variables of one field (see ruleVariables), one @rx operator (rx,
+// or made from the rule if rx is empty) and a fixed action list.
+func customRule(r CustomRule, rx string) (string, error) {
 	v, ok := ruleVariables(r.Field)
 	if !ok {
 		return "", errors.New("the field is not a part of a request")
 	}
-	rx, err := operatorRegex(r.Operator, r.Value, r.Values, r.CaseSensitive)
-	if err != nil {
-		return "", err
+	if rx == "" {
+		var err error
+		if rx, err = operatorRegex(r.Operator, r.Value, r.Values, r.CaseSensitive); err != nil {
+			return "", err
+		}
 	}
 	action, severity := "pass,log", "NOTICE"
 	if r.Action == ActionBlock {

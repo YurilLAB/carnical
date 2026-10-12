@@ -17,6 +17,19 @@ import (
 //
 // Index numbers in the paths refer to the normalised, sorted lists, except for custom rules, which are named by their id.
 func (p Policy) Validate() error {
+	_, err := p.validate()
+	return err
+}
+
+// rendered is the SecLang a valid policy is written as (renderBefore and renderAfter).
+type rendered struct {
+	before, after string
+	notes         []string
+}
+
+// validate is Validate, and returns what it wrote for a policy that passes, so that Compile does not write it again: each custom
+// rule's regular expression is made once.
+func (p Policy) validate() (rendered, error) {
 	q := p.Normalize()
 	var c checker
 
@@ -57,7 +70,7 @@ func (p Policy) Validate() error {
 		}
 	}
 	validateExclusions(&c, q.Exclusions)
-	validateRules(&c, q.CustomRules)
+	made := validateRules(&c, q.CustomRules)
 	validateIPs(&c, "allow_ips", q.AllowIPs, MaxAllowIPs, 16, 32)
 	validateIPs(&c, "block_ips", q.BlockIPs, MaxBlockIPs, 8, 16)
 	if len(q.AllowPaths) > MaxAllowPaths {
@@ -107,16 +120,18 @@ func (p Policy) Validate() error {
 	if msg := textProblem(q.Note, MaxNoteBytes, true); msg != "" {
 		c.add("note", "%s", msg)
 	}
+	var out rendered
 	if len(c.problems) == 0 {
 		// Everything above checked the parts. This writes the whole: a policy that passes can always be compiled, because
 		// compiling it is what was just done, and each line written passes the line check.
-		if _, _, err := renderBefore(q); err != nil {
+		var err error
+		if out.before, _, err = renderBeforeWith(q, made); err != nil {
 			c.add("$", "the rules written for this policy fail their own check (%s)", err.Error())
-		} else if _, _, err := renderAfter(q); err != nil {
+		} else if out.after, out.notes, err = renderAfter(q); err != nil {
 			c.add("$", "the changes to the rule set written for this policy fail their own check (%s)", err.Error())
 		}
 	}
-	return c.err()
+	return out, c.err()
 }
 
 func validateBody(c *checker, b BodyLimits) {
@@ -179,10 +194,14 @@ func validateExclusions(c *checker, ex []Exclusion) {
 	}
 }
 
-func validateRules(c *checker, rules []CustomRule) {
+// validateRules checks the custom rules and returns the regular expression made for each one whose value is valid, by id.
+func validateRules(c *checker, rules []CustomRule) map[int]string {
 	if len(rules) > MaxCustomRules {
+		// Checking a rule's pattern is work; past the limit, the count is all that is said.
 		c.add("custom_rules", "at most %d rules", MaxCustomRules)
+		return nil
 	}
+	made := make(map[int]string, len(rules))
 	seen := map[int]bool{}
 	for i, r := range rules {
 		at := fmt.Sprintf("custom_rules[%d]", r.ID)
@@ -206,23 +225,27 @@ func validateRules(c *checker, rules []CustomRule) {
 			c.add(at+".operator", "must be contains, equals, beginsWith, endsWith, pm or rx")
 			continue
 		}
-		validateRuleValue(c, at, r)
+		if rx := validateRuleValue(c, at, r); rx != "" {
+			made[r.ID] = rx
+		}
 	}
+	return made
 }
 
-func validateRuleValue(c *checker, at string, r CustomRule) {
+// validateRuleValue checks a rule's value and returns the regular expression it is compiled to, or "".
+func validateRuleValue(c *checker, at string, r CustomRule) string {
 	if r.Operator == OpPM {
 		if r.Value != "" {
 			c.add(at+".value", "pm takes a list of words in values, not a value")
 		}
 		if len(r.Values) == 0 || len(r.Values) > MaxPMValues {
 			c.add(at+".values", "needs from 1 to %d words", MaxPMValues)
-			return
+			return ""
 		}
 		for _, w := range r.Values {
 			if len(w) > MaxPMValueBytes {
 				c.add(at+".values", "a word is longer than %d bytes", MaxPMValueBytes)
-				return
+				return ""
 			}
 		}
 	} else {
@@ -231,16 +254,18 @@ func validateRuleValue(c *checker, at string, r CustomRule) {
 		}
 		if len(r.Value) > MaxValueBytes {
 			c.add(at+".value", "is longer than %d bytes", MaxValueBytes)
-			return
+			return ""
 		}
 	}
-	if _, err := operatorRegex(r.Operator, r.Value, r.Values, r.CaseSensitive); err != nil {
+	rx, err := operatorRegex(r.Operator, r.Value, r.Values, r.CaseSensitive)
+	if err != nil {
 		field := ".value"
 		if r.Operator == OpPM {
 			field = ".values"
 		}
 		c.add(at+field, "%s", err.Error())
 	}
+	return rx
 }
 
 // validateIPs checks an address list: each entry an address or a CIDR range, a range no wider than minV4 bits (IPv4) or

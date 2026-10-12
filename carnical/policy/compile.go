@@ -55,19 +55,12 @@ type Compiled struct {
 // cost is bounded by the policy's limits: at most a few thousand lines of SecLang.
 func Compile(p Policy) (Compiled, error) {
 	q := p.Normalize()
-	if err := q.Validate(); err != nil {
+	out, err := q.validate()
+	if err != nil {
 		return Compiled{}, err
 	}
 	pre := presets[q.Sensitivity]
 	_, inbound := q.effective()
-	before, _, err := renderBefore(q)
-	if err != nil {
-		return Compiled{}, fmt.Errorf("policy: %w", err)
-	}
-	after, notes, err := renderAfter(q)
-	if err != nil {
-		return Compiled{}, fmt.Errorf("policy: %w", err)
-	}
 	mode := map[Mode]crs.Mode{ModeBlock: crs.ModeBlock, ModeMonitor: crs.ModeDetect, ModeOff: crs.ModeOff}[q.Mode]
 	deny := append([]string(nil), q.DenyHeaders...)
 	if q.Framework.DenyNextAction {
@@ -90,8 +83,8 @@ func Compile(p Policy) (Compiled, error) {
 			RequestBodyLimit:       q.Body.MaxUploadBytes,
 			InspectResponses:       q.Responses.Inspect,
 			AllowedMethods:         append([]string(nil), q.AllowedMethods...),
-			Before:                 before,
-			After:                  after,
+			Before:                 out.before,
+			After:                  out.after,
 		},
 		VPatch:      VPatchOptions{Tiers: append([]string{}, q.VPatch.Tiers...), Software: append([]string{}, q.VPatch.Software...)},
 		APIMode:     q.APIMode,
@@ -99,7 +92,7 @@ func Compile(p Policy) (Compiled, error) {
 		BodyFormats: append(json.RawMessage(nil), q.BodyFormats...),
 		Revision:    q.Revision,
 		Hash:        q.Hash(),
-		Notes:       notes,
+		Notes:       out.notes,
 	}
 	if err := c.CRS.Validate(); err != nil {
 		return Compiled{}, fmt.Errorf("policy: the Core Rule Set settings are not usable: %w", err)

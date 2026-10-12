@@ -16,6 +16,9 @@ import (
 // MaxConsoleExportBytes is the largest export FromConsoleExport reads (the PHP console's own limit).
 const MaxConsoleExportBytes = 2 << 20
 
+// maxExportRules is how many of an export's rules are read, four times as many as a policy can hold.
+const maxExportRules = 4 * MaxCustomRules
+
 // FromConsoleExport reads the export of the PHP site console (firewall/engine/src/PolicyTransfer.php:
 // {"site_firewall_policy":1,"exported":...,"site":...,"engine":...,"rev":...,"policy":{...}}), or a policy.json copied as it is
 // (schema 1), and returns the policy that says the same thing here, with a list of what could not be carried over and why.
@@ -497,6 +500,11 @@ func (c *converter) rules(pol map[string]any) {
 		}
 	}
 	for i, v := range list {
+		if i == maxExportRules {
+			// Checking a pattern is work, and a rule left out never counts towards the custom rules' limit.
+			c.skip("rules: more than %d rules in the export; the rest were left out", maxExportRules)
+			break
+		}
 		name := fmt.Sprintf("rules[%d]", i+1)
 		m, ok := v.(map[string]any)
 		if !ok {
