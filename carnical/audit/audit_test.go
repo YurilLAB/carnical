@@ -130,6 +130,7 @@ func TestZoneMapIsValidated(t *testing.T) {
 		{"a zone to itself", strings.Replace(sampleMap, `"to": "control"`, `"to": "edge"`, 1), false},
 		{"here is not a zone", strings.Replace(sampleMap, `"here": "edge"`, `"here": "moon"`, 1), false},
 		{"bad prefix", strings.Replace(sampleMap, `10.20.0.0/24`, `10.20.0.0/99`, 1), false},
+		{"an IPv4 prefix in IPv6 form", strings.Replace(sampleMap, `10.20.0.0/24`, `::ffff:10.20.0.0/120`, 1), false},
 		{"service without a port", strings.Replace(sampleMap, `10.20.0.5:8443`, `10.20.0.5`, 1), false},
 		{"service with an empty port", strings.Replace(sampleMap, `10.20.0.5:8443`, `10.20.0.5:`, 1), false},
 		{"a UDP service", strings.Replace(sampleMap, `"addr": "10.20.0.5:8443"`, `"addr": "10.20.0.5:53", "proto": "udp"`, 1), true},

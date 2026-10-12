@@ -79,8 +79,14 @@ func (m Map) Validate() error {
 		}
 		names[z.Name] = z
 		for _, p := range z.Prefixes {
-			if _, err := netip.ParsePrefix(p); err != nil {
+			pf, err := netip.ParsePrefix(p)
+			if err != nil {
 				return fmt.Errorf("zone %q: prefix %q: %w", z.Name, p, err)
+			}
+			// The origin allow list holds IPv4 ranges as IPv4, and a range never overlaps one of the other family, so an
+			// IPv4 zone written in IPv6 form would hide an allowed range inside it.
+			if pf.Addr().Is4In6() {
+				return fmt.Errorf("zone %q: prefix %q: write an IPv4 range as IPv4, not as an IPv4-mapped IPv6 range", z.Name, p)
 			}
 		}
 		for _, s := range z.Services {
