@@ -7,15 +7,49 @@ This helper needs only Python's standard library; it supports x64 Linux/Windows.
 
 import argparse
 import hashlib
+import http.client
 import io
 import json
 import os
 from pathlib import Path
 import platform
+import ssl
 import tarfile
 import tempfile
+import time
+import urllib.error
 import urllib.request
 import zipfile
+
+# Answers that say the server could not serve the request just then. Release downloads go through a CDN that now and then
+# answers 502 or 504; anything else (404, 403, a checksum mismatch) is permanent and is not retried.
+TRANSIENT_STATUS = {408, 429, 500, 502, 503, 504}
+ATTEMPTS = 4
+
+
+def fetch(url, limit):
+    """Read at most limit bytes from url, retrying a transient failure (a 5xx or 429 answer, a timeout, a dropped or cut
+    connection) with backoff. What is read is still checked against the pinned digest by the caller."""
+    for attempt in range(1, ATTEMPTS + 1):
+        try:
+            with urllib.request.urlopen(url, timeout=30) as response:
+                data = response.read(limit)
+                # A body cut short by a closed connection comes back without an error. It is retried as a dropped
+                # connection, rather than reaching the digest check as a checksum mismatch.
+                if response.length and len(data) < limit:
+                    raise http.client.IncompleteRead(data, response.length)
+                return data
+        except urllib.error.HTTPError as err:
+            if err.code not in TRANSIENT_STATUS or attempt == ATTEMPTS:
+                raise
+        except urllib.error.URLError as err:
+            # A refused or reset connection, a timeout or a lookup that failed is retried; a bad certificate or URL is not.
+            if not isinstance(err.reason, OSError) or isinstance(err.reason, ssl.CertificateError) or attempt == ATTEMPTS:
+                raise
+        except (TimeoutError, ConnectionError, http.client.HTTPException):
+            if attempt == ATTEMPTS:
+                raise
+        time.sleep(2 ** attempt)
 
 
 def main():
@@ -34,8 +68,7 @@ def main():
     url = f"https://github.com/{tool['repository']}/releases/download/{tool['version']}/{release['asset']}"
     download_limit = 64 * 1024 * 1024
     extraction_limit = 128 * 1024 * 1024
-    with urllib.request.urlopen(url, timeout=60) as response:
-        data = response.read(download_limit + 1)
+    data = fetch(url, download_limit + 1)
     if len(data) > download_limit:
         raise ValueError("release exceeds the 64 MiB download limit")
     if hashlib.sha256(data).hexdigest() != release["sha256"]:
