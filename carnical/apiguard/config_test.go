@@ -26,6 +26,7 @@ func TestConfigValidation(t *testing.T) {
 		{"a negative body limit", func(c *Config) { c.BodyLimits = map[string]int64{"POST": -1} }, "bodyLimits"},
 		{"an absurd body limit", func(c *Config) { c.BodyLimits = map[string]int64{"POST": 1 << 40} }, "bodyLimits"},
 		{"a body limit of zero is allowed", func(c *Config) { c.BodyLimits = map[string]int64{"GET": 0} }, ""},
+		{"a body limit given twice in different case", func(c *Config) { c.BodyLimits = map[string]int64{"post": 10, "POST": 1 << 20} }, "twice"},
 		{"a negative default body limit", func(c *Config) { c.DefaultBodyLimit = -5 }, "defaultBodyLimit"},
 		{"a limit with a burst and no period", func(c *Config) { c.Rate.Sustained = Limit{Burst: 5} }, "period"},
 		{"a limit with a period and no burst", func(c *Config) { c.Rate.Burst = Limit{Per: time.Second} }, "burst"},

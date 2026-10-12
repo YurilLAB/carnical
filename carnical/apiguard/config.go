@@ -318,10 +318,17 @@ func (c Config) Validate() error {
 		}
 		seen[m] = true
 	}
+	// Body limits are named in any case, so two names for one method would leave the limit to the map's order.
+	limitSeen := map[string]bool{}
 	for m, n := range c.BodyLimits {
-		if !validMethodToken(strings.ToUpper(m)) {
+		up := strings.ToUpper(m)
+		if !validMethodToken(up) {
 			return fmt.Errorf("bodyLimits: %q is not a method name", clean(m, 20))
 		}
+		if limitSeen[up] {
+			return fmt.Errorf("bodyLimits: %s is given twice", up)
+		}
+		limitSeen[up] = true
 		if n < 0 || n > maxBodyLimit {
 			return fmt.Errorf("bodyLimits[%s]: %d is outside 0 to %d", clean(m, 20), n, int64(maxBodyLimit))
 		}
