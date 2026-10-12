@@ -118,6 +118,12 @@ func TestCredentialRules(t *testing.T) {
 				t.Fatalf("AllowsSource(%s) = %v", tc.addr, got)
 			}
 		}
+		// A range written in ::ffff: form is the IPv4 range it names, as the connecting address is.
+		r := goodCredential(t).Record()
+		r.Sources = []string{"::ffff:198.51.100.0/120"}
+		if mapped, err := r.Credential(); err != nil || !mapped.AllowsSource(ip("198.51.100.7")) || mapped.AllowsSource(ip("198.51.101.1")) {
+			t.Fatalf("a source range in ::ffff: form: %v, %v", mapped.Sources, err)
+		}
 		open := goodCredential(t)
 		if !open.AllowsSource(ip("192.0.2.1")) || !open.AllowsSource(netipAddrZero()) {
 			t.Fatal("a credential with no list allows every address, including one that did not parse")
@@ -189,6 +195,7 @@ func TestParseCredentials(t *testing.T) {
 		{"an unknown scope", edit(func(r *CredentialRecord) { r.Scopes = []string{"read", "root"} }), false},
 		{"a source that is not an address", edit(func(r *CredentialRecord) { r.Sources = []string{"everywhere"} }), false},
 		{"a /0 source", edit(func(r *CredentialRecord) { r.Sources = []string{"0.0.0.0/0"} }), false},
+		{"a ::ffff: source range shorter than /96", edit(func(r *CredentialRecord) { r.Sources = []string{"::ffff:203.0.113.5/24"} }), false},
 		{"a bad expiry", edit(func(r *CredentialRecord) { r.NotAfter = "tomorrow" }), false},
 		{"no expiry", edit(func(r *CredentialRecord) { r.NotAfter = "" }), false},
 		{"one good and one bad", file(rec, func() CredentialRecord { r := rec; r.ID = "other-id"; r.Scopes = nil; return r }()), false},

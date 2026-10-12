@@ -367,6 +367,13 @@ func (r CredentialRecord) Credential() (Credential, error) {
 	}
 	for _, s := range r.Sources {
 		if p, err := netip.ParsePrefix(s); err == nil {
+			// A range in ::ffff: form is the IPv4 range it names, since AllowsSource unmaps the connecting address.
+			if p.Addr().Is4In6() {
+				if p.Bits() < 96 {
+					return Credential{}, errors.New("a source range in ::ffff: form must be /96 or longer")
+				}
+				p = netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96)
+			}
 			c.Sources = append(c.Sources, p.Masked())
 		} else if a, err := netip.ParseAddr(s); err == nil {
 			c.Sources = append(c.Sources, netip.PrefixFrom(a.Unmap(), a.Unmap().BitLen()))
