@@ -366,6 +366,12 @@ func TestConsoleExportRows(t *testing.T) {
 					t.Fatalf("letters and digits matched %q", p.CustomRules[0].Value)
 				}
 			}},
+		{name: "a back-reference past the ninth group is left out, not read as an octal character", in: wrap(`{"mode":"block","rules":[{"id":"SITE-0001","action":"block","targets":["args"],"operator":"rx","pattern":"(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)\\10"}]}`),
+			skipped: [][]string{{"SITE-0001", `back-reference (\10)`}}, check: func(t *testing.T, p Policy) {
+				if len(p.CustomRules) != 0 {
+					t.Fatalf("%+v", p.CustomRules)
+				}
+			}},
 		{name: "a rule that URL-decodes a header is carried and the difference named", in: wrap(`{"mode":"block","rules":[{"id":"SITE-0001","action":"block","targets":["header:x-data"],"transforms":["urldecode"],"operator":"contains","pattern":"union select"}]}`),
 			skipped: [][]string{{"SITE-0001", "URL-decodes", "header:x-data"}}, check: func(t *testing.T, p Policy) {
 				if len(p.CustomRules) != 1 || p.CustomRules[0].Action != ActionBlock {

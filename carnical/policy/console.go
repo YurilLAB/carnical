@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -727,12 +728,14 @@ func urlDecoded(field string) bool {
 // Core Rule Set writes it, and SQL that MySQL reads with a vertical tab between its words still matches. Two things cannot be written so: \v,
 // which is any vertical white space to PCRE and only the vertical tab to RE2, and \S in a negated class, which leaves the vertical
 // tab in the class to PCRE and takes it out to RE2. \S anywhere else also matches the vertical tab to RE2, which only makes the
-// rule match more, and is left. The rest is copied as it is; what RE2 does not accept at all is refused when the pattern is
-// parsed. It reads the pattern as PCRE does: an escape is two characters, \Q...\E is literal text, and a class runs to the
-// first ] that is not its first character, an escape or the end of a POSIX class such as [:alpha:].
+// rule match more, and is left. Nor can \10 and up when at least that many groups were opened before it, which PCRE reads as a
+// back-reference and RE2 as an octal character. The rest is copied as it is; what RE2 does not accept at all is refused when
+// the pattern is parsed. It reads the pattern as PCRE does: an escape is two characters, \Q...\E is literal text, and a class
+// runs to the first ] that is not its first character, an escape or the end of a POSIX class such as [:alpha:].
 func re2Pattern(p string) (string, string) {
 	var b strings.Builder
 	inClass, negated, first := false, false, false
+	groups := 0 // the groups opened so far, as PCRE numbers them
 	for i := 0; i < len(p); i++ {
 		c := p[i]
 		if c == '\\' && i+1 < len(p) {
@@ -755,6 +758,8 @@ func re2Pattern(p string) (string, string) {
 				return "", `\v`
 			case next == 'S' && inClass && negated:
 				return "", `\S in a negated class`
+			case next >= '1' && next <= '9' && !inClass && backReference(p[i+1:], groups) > 0:
+				return "", fmt.Sprintf(`a back-reference (\%d)`, backReference(p[i+1:], groups))
 			default:
 				b.WriteByte(c)
 				b.WriteByte(next)
@@ -782,11 +787,31 @@ func re2Pattern(p string) (string, string) {
 			}
 		case c == ']' && inClass && !first:
 			inClass = false
+		case c == '(' && !inClass && !nonCapturing.MatchString(p[i+1:]):
+			// Counted generously: any other (? is a named group or something RE2 refuses anyway.
+			groups++
 		}
 		first = false
 		b.WriteByte(c)
 	}
 	return b.String(), ""
+}
+
+// nonCapturing is what follows the ( of a group that PCRE does not number: (?: and flags, as (?i) and (?i:.
+var nonCapturing = regexp.MustCompile(`\A\?[a-zA-Z-]*[:)]`)
+
+// backReference reads the digits after a backslash as PCRE does, as one number, and returns it if PCRE reads it as a
+// back-reference that RE2 would read as a character: 10 or more, with at least that many groups before it. Under 10, RE2 refuses
+// it as PCRE's back-reference, or reads it as the same octal character.
+func backReference(digits string, groups int) int {
+	end := 0
+	for end < len(digits) && digits[end] >= '0' && digits[end] <= '9' {
+		end++
+	}
+	if n, err := strconv.Atoi(digits[:end]); err == nil && n >= 10 && n <= groups {
+		return n
+	}
+	return 0
 }
 
 func stringList(v any) []string {
