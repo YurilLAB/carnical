@@ -112,7 +112,7 @@ without the key. A request with no credential is keyed by address alone. Two mor
 ways round that:
 
 * When a credential is presented, the **address as a whole** is counted too, at four times the limits, so changing the credential on every request does not start a new count.
-* An **authentication endpoint** (a path segment that is, or starts or ends with, `login`, `signin`, `sign-in`, `token`, `oauth`, `auth`, `password`, `reset`, `forgot`, `otp`, `2fa`, `mfa`, `verify`, `register` or `signup`; `authors` and `presets` are not) has its own, much stricter limit, kept **for the address alone**: a client guessing credentials changes the credential with every try, so a limit that included it would never be reached.
+* An **authentication endpoint** (a path segment that is, or starts or ends with, `login`, `signin`, `sign-in`, `token`, `oauth`, `auth`, `password`, `reset`, `forgot`, `otp`, `2fa`, `mfa`, `verify`, `register` or `signup`, with any `;` parameters cut off; `authors` and `presets` are not) has its own, much stricter limit, kept **for the address alone**: a client guessing credentials changes the credential with every try, so a limit that included it would never be reached.
 
 Memory is bounded: the table holds at most `Rate.MaxKeys` clients (100,000 by default, about 15 MB).
 When it is full, a client that has been idle for as long as its buckets take to refill is forgotten

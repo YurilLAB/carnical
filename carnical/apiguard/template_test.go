@@ -161,6 +161,7 @@ func TestAuthenticationPaths(t *testing.T) {
 		{"/api/verify-email", true}, {"/register", true}, {"/signup", true}, {"/api/tokens", true}, {"/api/refreshToken", true},
 		{"/api/authenticate", true}, {"/api/users", false}, {"/api/authors", false}, {"/api/presets", false}, {"/api/authority", false},
 		{"/api/products/42", false}, {"/api/loginhistory-report", true}, {"/", false}, {"/api/Login", true},
+		{"/api/user-login;jsessionid=" + strings.Repeat("A", 60), true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {

@@ -90,10 +90,12 @@ var authAffix = []string{"login", "logon", "signin", "signup", "token", "passwor
 
 // isAuthPath reports whether a path looks like an authentication endpoint: login, signin, sign-in, token, oauth, auth, password,
 // reset, forgot, otp, 2fa, mfa, verify, register or signup, as a path segment. "authors" is not "auth", and "presets" is not "reset".
+// Path parameters are not part of the segment: a servlet container serves /api/auth;jsessionid=1 as /api/auth.
 func isAuthPath(p string) bool {
 	for rest := p; rest != ""; {
 		var seg string
 		seg, rest, _ = strings.Cut(rest, "/")
+		seg, _, _ = strings.Cut(seg, ";")
 		if seg == "" || len(seg) > 64 {
 			continue
 		}
