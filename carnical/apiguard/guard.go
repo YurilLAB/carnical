@@ -230,6 +230,8 @@ func (in *inspection) run() {
 	if decl != nil && decl.SpecVersion == wordPressIndex {
 		if p, found := wpRestRoute(rv); found {
 			path, restRoute = p, true
+		} else if p, ok := wpIndexPath(r.Path); ok {
+			path, restRoute = p, true
 		}
 	}
 	if decl != nil && path != "" {

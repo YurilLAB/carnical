@@ -3,11 +3,15 @@
 package apiguard
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
+	"mime"
+	"mime/multipart"
 	"slices"
 	"strings"
 	"sync"
@@ -374,10 +378,20 @@ func importWordPress(body []byte) (Model, Report, error) {
 // the path that route has under /wp-json, or "" when PHP makes the variable an array, which names no route.
 func wpRestRoute(rv *reqView) (path string, found bool) {
 	v, arr, found := wpRestRouteIn(rv.r.RawQuery)
-	if rv.ct == "application/x-www-form-urlencoded" {
-		if bv, barr, ok := wpRestRouteIn(rv.body); ok {
-			v, arr, found = bv, barr, true
+	var bv string
+	var barr, bfound bool
+	switch rv.ct {
+	case "application/x-www-form-urlencoded":
+		bv, barr, bfound = wpRestRouteIn(rv.body)
+	case "multipart/form-data":
+		bv, barr, bfound = wpRestRouteMultipart(rv)
+	}
+	if bfound {
+		// No client names a route in both, and which one is served depends on the server's settings, so such a request names none.
+		if found {
+			return "", true
 		}
+		v, arr, found = bv, barr, true
 	}
 	switch {
 	case !found:
@@ -409,12 +423,68 @@ func wpRestRouteIn[T ~string | ~[]byte](raw T) (value string, arr, found bool) {
 		// Decoding a name never makes it longer, so a shorter one cannot be rest_route.
 		if nameEnd-start >= len("rest_route") {
 			if n, isArr := phpName(phpURLDecode(string(raw[start:nameEnd]))); n == "rest_route" {
+				// PHP keeps the last one it reads, but it stops reading at max_input_vars, so a second one names no route.
+				if found {
+					return "", true, true
+				}
 				value, arr, found = phpURLDecode(string(raw[valStart:end])), isArr, true
 			}
 		}
 		start = end + 1
 	}
 	return value, arr, found
+}
+
+// wpRestRouteMultipart finds rest_route among the fields of a multipart body, which PHP reads into $_POST as it does a form body.
+// A body that cannot be read, and might name it, names no route.
+func wpRestRouteMultipart(rv *reqView) (value string, arr, found bool) {
+	unreadable := func() (string, bool, bool) {
+		if bytes.Contains(rv.body, []byte("rest")) {
+			return "", true, true
+		}
+		return "", false, false
+	}
+	_, params, err := mime.ParseMediaType(rv.r.Header.Get("Content-Type"))
+	if err != nil || params["boundary"] == "" {
+		return unreadable()
+	}
+	mr := multipart.NewReader(bytes.NewReader(rv.body), params["boundary"])
+	for {
+		part, err := mr.NextPart()
+		if err == io.EOF {
+			return value, arr, found
+		}
+		if err != nil {
+			return unreadable()
+		}
+		if part.FileName() != "" {
+			continue // a file goes to $_FILES
+		}
+		n, isArr := phpName(part.FormName())
+		if n != "rest_route" {
+			continue
+		}
+		if found {
+			return "", true, true
+		}
+		b, err := io.ReadAll(part)
+		if err != nil {
+			return "", true, true
+		}
+		value, arr, found = string(b), isArr, true
+	}
+}
+
+// wpIndexPath maps a path under /index.php/wp-json, which WordPress serves as the REST route after it, to that route.
+func wpIndexPath(p string) (string, bool) {
+	const index = "/index.php"
+	if len(p) <= len(index) || !strings.EqualFold(p[:len(index)], index) {
+		return "", false
+	}
+	if rest := p[len(index):]; rest == "/wp-json" || strings.HasPrefix(rest, "/wp-json/") {
+		return rest, true
+	}
+	return "", false
 }
 
 // phpName returns the variable PHP makes of a decoded query or form name, and whether it is an array: the name ends at a NUL,

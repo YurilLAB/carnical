@@ -248,8 +248,10 @@ owner's), never from the request.
 `/api/swagger.json`, `/swagger/v1/swagger.json`, `/docs/openapi.json`, `/.well-known/openapi.json`,
 `/api/v1/openapi.json` and `/wp-json/` (the WordPress REST index, whose route patterns are turned
 into templates, a numeric pattern becoming an integer; WordPress also serves those routes through
-its `rest_route` variable on any path, so a request that names one there, in the query or a form
-body, is held to that route), and notes whether `/graphql` answers.
+its `rest_route` variable on any path and under `/index.php/wp-json/`, so a request that names one
+there, in the query, a form body or a multipart body, is held to that route; one that names it
+twice, or in both the query and the body, names no route and is refused), and notes whether
+`/graphql` answers.
 
 It stops at the first description that parses. The `Fetcher` is `func(ctx, path) (status,
 contentType, body, err)` and is the caller's, so the guard does no network I/O of its own; it only

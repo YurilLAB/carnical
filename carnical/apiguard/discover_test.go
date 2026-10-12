@@ -328,12 +328,26 @@ func TestDiscoveryReadsTheWordPressRESTIndex(t *testing.T) {
 	if res := g.Inspect(mk("GET", "/wp-json/wp/v2/unknown")); !has(res, IDSpecUnknownRoute) {
 		t.Fatalf("%+v", res.Verdicts)
 	}
-	// WordPress serves the same routes through its rest_route variable, on any path.
-	if res := g.Inspect(mk("GET", "/?rest_route=/wp/v2/unknown")); !has(res, IDSpecUnknownRoute) {
-		t.Fatalf("%+v", res.Verdicts)
-	}
-	if res := g.Inspect(mk("GET", "/?rest_route=/wp/v2/posts/7")); len(res.Verdicts) != 0 {
-		t.Fatalf("%+v", res.Verdicts)
+	// WordPress serves the same routes through its rest_route variable, on any path, and under /index.php.
+	const mpBody = "--XX\r\nContent-Disposition: form-data; name=\"rest_route\"\r\n\r\n/wp/v2/unknown\r\n--XX--\r\n"
+	for _, tc := range []struct {
+		name    string
+		req     *inspect.Request
+		unknown bool
+	}{
+		{"an unknown route in rest_route", mk("GET", "/?rest_route=/wp/v2/unknown"), true},
+		{"a known route in rest_route", mk("GET", "/?rest_route=/wp/v2/posts/7"), false},
+		{"rest_route given twice", mk("GET", "/?rest_route=/wp/v2/unknown&rest_route=/wp/v2/posts/7"), true},
+		{"rest_route in a multipart body", mk("POST", "/", withBody("multipart/form-data; boundary=XX", mpBody)), true},
+		{"an unknown route under index.php", mk("GET", "/index.php/wp-json/wp/v2/unknown"), true},
+		{"a known route under index.php", mk("GET", "/index.php/wp-json/wp/v2/posts/7"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := g.Inspect(tc.req)
+			if tc.unknown != has(res, IDSpecUnknownRoute) || !tc.unknown && len(res.Verdicts) != 0 {
+				t.Fatalf("%+v", res.Verdicts)
+			}
+		})
 	}
 }
 
