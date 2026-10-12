@@ -158,11 +158,19 @@ func (c *matchCtx) buildMethod(v *view) {
 // multipart body that cannot be read (no boundary, no parts), or not all of it (a part Go's reader refuses, more parts than are
 // read), is offered raw, so nothing hides behind a broken one.
 func (c *matchCtx) multipartBody() bool {
-	if len(c.req.Body) == 0 || c.contentType() != "multipart/form-data" {
+	if len(c.req.Body) == 0 || !c.isMultipart() {
 		return false
 	}
 	c.raw(kArgs)
-	return c.multipartOK && !c.multipartPartial
+	// Only the exact type is surely a multipart form to every parser; for one that only begins like it ("multipart/form-datax"),
+	// PHP may read the body as raw input, so it is offered raw as well.
+	return c.multipartOK && !c.multipartPartial && c.contentType() == "multipart/form-data"
+}
+
+// isMultipart reports whether the body is read as a multipart form. It goes by how the media type begins, as the rule set does:
+// PHP cuts the type at a ',' or a space as well as at a ';', so "multipart/form-data, x" is a multipart form to it.
+func (c *matchCtx) isMultipart() bool {
+	return strings.HasPrefix(c.contentType(), "multipart/form-data")
 }
 
 func (v *view) add(name, val string) {
@@ -469,15 +477,16 @@ func formDecode(s string) string {
 func (c *matchCtx) bodyArgs() {
 	req := c.req
 	ct := c.contentType()
-	if ct == "multipart/form-data" {
+	if c.isMultipart() {
 		c.multipartArgs()
-		if c.multipartOK {
+		if c.multipartOK && ct == "multipart/form-data" {
 			return
 		}
 		// Not readable as multipart (no boundary, no parts): read it the way any other body is read, so that a payload is not
 		// hidden by a content type that lies.
 	}
-	if ct == "" || ct == "application/x-www-form-urlencoded" || looksLikeForm(req.Body) {
+	// A form by the same test as a multipart one: how the media type begins.
+	if ct == "" || strings.HasPrefix(ct, "application/x-www-form-urlencoded") || looksLikeForm(req.Body) {
 		c.formBody()
 	}
 	if strings.Contains(ct, "json") || looksLikeJSON(req.Body) {
@@ -746,7 +755,12 @@ func (c *matchCtx) addJSONArg(path, val, leaf string) bool {
 // some parsers take for a file (filename* alone) is also a field.
 func (c *matchCtx) multipartArgs() {
 	req := c.req
-	_, params, err := mime.ParseMediaType(req.Header.Get("Content-Type"))
+	ct := req.Header.Get("Content-Type")
+	_, params, err := mime.ParseMediaType(ct)
+	if i := strings.IndexByte(ct, ';'); err != nil && i >= 0 {
+		// A type Go refuses and PHP reads ("multipart/form-data, x; boundary=..."): the boundary is still in its parameters.
+		_, params, err = mime.ParseMediaType("multipart/form-data" + ct[i:])
+	}
 	if err != nil || params["boundary"] == "" {
 		return
 	}
