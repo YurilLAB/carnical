@@ -1495,6 +1495,14 @@ func TestSUID(t *testing.T) {
 	if r := run(SUID(src, baseline)); r.Status != audit.Fail || !strings.Contains(r.Problems[0], "backdoor is a new setuid or setgid file") {
 		t.Fatalf("a new setuid file: %+v", r)
 	}
+	// A name is not trimmed: a new file named as a recorded one with a space after it is new.
+	if err := os.WriteFile(sudo+" ", []byte("a root shell"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src.out = sudo + "\x00" + sudo + " \x00"
+	if r := run(SUID(src, baseline)); r.Status != audit.Fail || !strings.Contains(r.Problems[0], "sudo  is a new setuid or setgid file") {
+		t.Fatalf("a new setuid file named as a recorded one with a space after it: %+v", r)
+	}
 	src.out = sudo + "\x00"
 	os.WriteFile(sudo, []byte("a patched sudo"), 0o755)
 	if r := run(SUID(src, baseline)); r.Status != audit.Fail || !strings.Contains(r.Problems[0], "has changed") {

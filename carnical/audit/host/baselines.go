@@ -363,10 +363,12 @@ func SUIDFiles(ctx context.Context, src Source) ([]string, error) {
 			return nil, fmt.Errorf("%w: %s", errScanIncomplete, why)
 		}
 	}
+	// Each name is taken as find printed it: a name may end in a space, and trimming it could make a new file look like a
+	// recorded one.
 	var out []string
 	for _, p := range bytes.Split(data, []byte{0}) {
-		if s := strings.TrimSpace(string(p)); s != "" {
-			out = append(out, s)
+		if len(p) > 0 {
+			out = append(out, string(p))
 		}
 	}
 	sort.Strings(out)
