@@ -1,7 +1,6 @@
 package host
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -183,9 +182,10 @@ var Mounts = []MountRule{
 // ParseMounts reads /proc/self/mounts: mount point to its options.
 func ParseMounts(data []byte) map[string]map[string]bool {
 	out := map[string]map[string]bool{}
-	sc := bufio.NewScanner(bytes.NewReader(data))
-	for sc.Scan() {
-		f := strings.Fields(sc.Text())
+	// Every line is read however long it is: a mount point can be longer than a scanner's line, and a table read only up
+	// to it would hide a later mount over the same directory.
+	for line := range bytes.Lines(data) {
+		f := strings.Fields(string(line))
 		if len(f) < 4 {
 			continue
 		}

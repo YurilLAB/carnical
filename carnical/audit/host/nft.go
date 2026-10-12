@@ -1,7 +1,6 @@
 package host
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -88,16 +87,16 @@ func braces(line string) (open, closed int) {
 // parseNFTTable finds one table in a listing and reads its chains and sets. It reports false if the table is not there.
 func parseNFTTable(text, family, name string) (*nftTable, bool) {
 	header := "table " + family + " " + name + " {"
-	sc := bufio.NewScanner(strings.NewReader(text))
-	sc.Buffer(make([]byte, 64<<10), 4<<20)
 	var t *nftTable
 	depth := 0
 	var chain *nftChain
 	var set, elements *strings.Builder
 	var setName string
 	var pending string // a rule whose braces are not closed yet
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
+	// Every line is read however long it is: nft prints a set written into a rule on one line, and a listing read only up
+	// to a long line would hide what comes after it.
+	for line := range strings.Lines(text) {
+		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "#") {
 			continue // a comment, in a ruleset file
 		}
@@ -181,10 +180,8 @@ func outputRewriters(text string) []nftRewriter {
 	var out []nftRewriter
 	var table, chain string
 	depth := 0
-	sc := bufio.NewScanner(strings.NewReader(text))
-	sc.Buffer(make([]byte, 64<<10), 4<<20)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
+	for line := range strings.Lines(text) {
+		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "#") {
 			continue
 		}
@@ -214,10 +211,8 @@ var nftRewrite = regexp.MustCompile(`(?:^| )(?:(?:ip6?|ether) daddr set|(?:tcp|u
 func nftTableNames(text string) [][2]string {
 	var out [][2]string
 	depth := 0
-	sc := bufio.NewScanner(strings.NewReader(text))
-	sc.Buffer(make([]byte, 64<<10), 4<<20)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
+	for line := range strings.Lines(text) {
+		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "#") {
 			continue
 		}

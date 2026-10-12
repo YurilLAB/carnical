@@ -228,6 +228,7 @@ func TestMounts(t *testing.T) {
 		{"/tmp without noexec", strings.Replace(good, "/tmp tmpfs rw,nosuid,nodev,noexec", "/tmp tmpfs rw,nosuid,nodev", 1), "/tmp is mounted without noexec", audit.Fail},
 		{"/tmp not a mount of its own", strings.Replace(good, "tmpfs /tmp tmpfs rw,nosuid,nodev,noexec 0 0\n", "", 1), "/tmp is not a mount of its own", audit.Fail},
 		{"/proc shows everyone's processes", strings.Replace(good, ",hidepid=invisible", "", 1), "/proc shows every user's processes", audit.Fail},
+		{"/tmp mounted over after a line longer than a scanner reads", good + "tmpfs /" + strings.Repeat("a", 70<<10) + " tmpfs rw 0 0\ntmpfs /tmp tmpfs rw 0 0\n", "/tmp is mounted without noexec", audit.Fail},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -534,6 +535,9 @@ func TestNFT(t *testing.T) {
 		{"a private IPv4 range dropped", " 10.0.0.0/8,", "", "do not include 10.0.0.0/8"},
 		{"IPv6 loopback dropped", "\t\t\t     ::1,\n", "", "do not include ::1"},
 		{"no carnical table", "table inet carnical {", "table inet other {", "no carnical table"},
+		{"a later table's NAT chain after a line longer than a scanner reads", "\t\tlimit rate 10/minute burst 10 packets log prefix \"carnical-internal-egress \"\n\t\tdrop\n\t}\n}\n",
+			"\t\tlimit rate 10/minute burst 10 packets log prefix \"carnical-internal-egress \"\n\t\tdrop\n\t}\n}\ntable ip big {\n\tchain c {\n\t\tip saddr { " + strings.Repeat("192.0.2.1, ", 400000) +
+				"192.0.2.2 } counter\n\t}\n\n\tchain out {\n\t\ttype nat hook output priority 100; policy accept;\n\t\tmeta skuid 990 dnat to 10.0.0.5\n\t}\n}\n", "NAT chain out in table ip big"},
 	} {
 		t.Run("fails: "+tt.name, func(t *testing.T) {
 			r := run(NFT(m(edit(t, tt.old, tt.new))))
