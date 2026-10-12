@@ -107,6 +107,7 @@ func TestCheckRegex(t *testing.T) {
 		{name: "unknown escape", pattern: `a\hb`, wantStat: "failed", wantReason: "escape:\\h"},
 		{name: "unclosed bracket", pattern: `[a-z`, wantStat: "failed", wantReason: "bracket"},
 		{name: "repeat too big", pattern: `a{2000}`, wantStat: "failed", wantReason: "too-complex"},
+		{name: "over the engine's instruction limit", pattern: `(?:abcdefghij){1000}`, wantStat: "failed", wantReason: "too-complex"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

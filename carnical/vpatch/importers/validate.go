@@ -32,8 +32,8 @@ func ValidTarget(t string) bool {
 }
 
 // Validate checks that a signature is well formed in the model's own terms: known category, severity, operator, targets and
-// transforms; a regular expression that compiles in Go; no empty literals. It is the safety net behind every converter: a
-// signature that fails it is never written. maxPattern bounds the pattern length (0 means DefaultLimits).
+// transforms; a regular expression that compiles in Go and that the engine accepts; no empty literals. It is the safety net behind
+// every converter: a signature that fails it is never written. maxPattern bounds the pattern length (0 means DefaultLimits).
 func Validate(s vpatch.Signature, maxPattern, maxConds int) error {
 	if maxPattern <= 0 {
 		maxPattern = DefaultLimits().MaxPatternBytes
@@ -128,6 +128,9 @@ func validCondition(c vpatch.Condition, maxPattern int) error {
 	case vpatch.OpRegex:
 		if _, err := regexp.Compile(flagPrefix(c.Flags) + c.Pattern); err != nil {
 			return fmt.Errorf("regex does not compile")
+		}
+		if vpatch.CheckRegex(c.Pattern, c.Flags) != nil {
+			return fmt.Errorf("regex is refused by the engine")
 		}
 	case vpatch.OpPM:
 		words := c.Patterns

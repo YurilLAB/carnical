@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/YurilLAB/coraza/carnical/vpatch"
 )
 
 // RegexError says why a pattern could not be used. Reason is a short stable code that goes into the report.
@@ -382,8 +384,8 @@ func endReachable(frames []frame) bool {
 }
 
 // CheckRegex makes sure a regular expression compiles in Go, translating PCRE-only syntax only where that is exact (see
-// TranslatePCRE), and counts it in the report. It returns the pattern to use; when it returns an error the signature that
-// holds the pattern must be skipped, and the error's Reason is already counted in the report.
+// TranslatePCRE), and that the engine accepts it, and counts it in the report. It returns the pattern to use; when it returns an
+// error the signature that holds the pattern must be skipped, and the error's Reason is already counted in the report.
 //
 // flags may hold "i", "s" and "m"; they are how the pattern is meant to be compiled.
 func (r *Report) CheckRegex(pattern, flags string, maxBytes int) (string, error) {
@@ -401,6 +403,9 @@ func (r *Report) CheckRegex(pattern, flags string, maxBytes int) (string, error)
 	}
 	prefix := flagPrefix(flags)
 	if _, err := regexp.Compile(prefix + pattern); err == nil {
+		if reason := engineRefusal(pattern, flags); reason != "" {
+			return fail(reason)
+		}
 		r.Regex.Compiled++
 		return pattern, nil
 	} else if !mayTranslate(err) {
@@ -421,8 +426,24 @@ func (r *Report) CheckRegex(pattern, flags string, maxBytes int) (string, error)
 	if _, err := regexp.Compile(prefix + t); err != nil {
 		return fail(classifyGoError(err))
 	}
+	if reason := engineRefusal(t, flags); reason != "" {
+		return fail(reason)
+	}
 	r.Regex.Translated++
 	return t, nil
+}
+
+// engineRefusal is why the engine would refuse a pattern that compiles in Go, or "". The engine has limits of its own, such as the
+// size of the compiled program, and a signature it refuses would be counted as converted and then never load.
+func engineRefusal(pattern, flags string) string {
+	err := vpatch.CheckRegex(pattern, flags)
+	switch {
+	case err == nil:
+		return ""
+	case errors.Is(err, vpatch.ErrRegexTooComplex):
+		return "too-complex"
+	}
+	return "engine-refused"
 }
 
 // AnyByte is a character class that matches any one byte of a value. It is written with an escape above 0x7F, and the engine reads a

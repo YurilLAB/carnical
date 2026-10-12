@@ -3,6 +3,7 @@
 package vpatch
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"regexp/syntax"
@@ -27,6 +28,24 @@ const (
 	// rxSmallRepeat is the largest count that is not charged for: \d{4} or [a-f]{1,8} keep few threads alive.
 	rxSmallRepeat = 16
 )
+
+// ErrRegexTooComplex is, for errors.Is, why a regular expression that compiles to more than maxProgInsts instructions is refused.
+var ErrRegexTooComplex = errors.New("regular expression compiles to too many instructions")
+
+// progSizeError is the error of an expression that compiles to n instructions, more than maxProgInsts.
+type progSizeError int
+
+func (n progSizeError) Error() string {
+	return fmt.Sprintf("regular expression compiles to %d instructions, over the limit of %d", int(n), maxProgInsts)
+}
+
+func (progSizeError) Is(target error) bool { return target == ErrRegexTooComplex }
+
+// CheckRegex reports why Load would refuse a regular expression condition with this pattern and flags, or nil if it would compile
+// it. Converters use it so that a signature they count as converted also loads.
+func CheckRegex(pattern, flags string) error {
+	return safeCompileRx(pattern, flags).err
+}
 
 // repeatThreads estimates how many NFA threads an expression's counted repeats can keep alive at once. RE2 compiles x{0,990}
 // as 990 copies of x, and on a value of the right shape every copy is live for every byte, so the time per byte grows with the
@@ -188,7 +207,7 @@ func (t *translator) compileParts(prefix string, parts []string) (res []*regexp.
 			return nil, 0, nil, false, fmt.Errorf("not valid for RE2: %s", cleanReErr(err))
 		}
 		if len(p.Inst) > maxProgInsts {
-			return nil, 0, nil, false, fmt.Errorf("regular expression compiles to %d instructions, over the limit of %d", len(p.Inst), maxProgInsts)
+			return nil, 0, nil, false, progSizeError(len(p.Inst))
 		}
 		re, err := regexp.Compile(src)
 		if err != nil {
