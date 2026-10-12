@@ -87,28 +87,45 @@ class InstallerTests(unittest.TestCase):
     def test_only_transient_download_failures_are_retried(self):
         def http_error(code):
             return installer.urllib.error.HTTPError("https://example.invalid", code, "error", {}, None)
+
+        clock = [0.0]  # time.sleep moves this clock on, so the retry budget is spent without waiting
+
+        def down_for(seconds, failure):
+            def urlopen(*args, **kwargs):
+                if clock[0] < seconds:
+                    raise failure
+                return answer(b"ok")
+            return urlopen
+
         cases = [("a gateway timeout, then the release", [http_error(504), b"ok"], b"ok", 2),
                  ("a rate limit, then the release", [http_error(429), b"ok"], b"ok", 2),
                  ("a dropped connection, then the release", [ConnectionResetError(), b"ok"], b"ok", 2),
                  ("a connect timeout, then the release", [installer.urllib.error.URLError(TimeoutError()), b"ok"], b"ok", 2),
                  ("a body cut short, then the release", [answer(b"o", unsent=1), b"ok"], b"ok", 2),
+                 ("gateway timeouts for two minutes, then the release", down_for(120, http_error(504)), b"ok", None),
                  ("a release that is not there", [http_error(404)], installer.urllib.error.HTTPError, 1),
                  ("a certificate that does not verify", [installer.urllib.error.URLError(ssl.SSLCertVerificationError())],
                   installer.urllib.error.URLError, 1),
-                 ("a server that never recovers", [http_error(503)] * installer.ATTEMPTS,
-                  installer.urllib.error.HTTPError, installer.ATTEMPTS)]
+                 ("a server that never recovers", down_for(float("inf"), http_error(503)),
+                  installer.urllib.error.HTTPError, None)]
         for name, answers, want, calls in cases:
-            answers = [answer(a) if isinstance(a, bytes) else a for a in answers]
+            if isinstance(answers, list):
+                answers = [answer(a) if isinstance(a, bytes) else a for a in answers]
+            clock[0] = 0.0
             with self.subTest(name), \
                  patch.object(installer.urllib.request, "urlopen", side_effect=answers) as urlopen, \
-                 patch.object(installer.time, "sleep"):
+                 patch.object(installer.time, "monotonic", side_effect=lambda: clock[0]), \
+                 patch.object(installer.time, "sleep", side_effect=lambda s: clock.__setitem__(0, clock[0] + s)):
                 if isinstance(want, bytes):
                     self.assertEqual(installer.fetch("https://example.invalid", 10), want)
                 else:
                     with self.assertRaises(want):
                         installer.fetch("https://example.invalid", 10)
-                self.assertEqual(urlopen.call_count, calls)
-
+                if calls is not None:
+                    self.assertEqual(urlopen.call_count, calls)
+                self.assertLessEqual(clock[0], installer.RETRY_SECONDS)  # never waits past the budget
+                if want is installer.urllib.error.HTTPError and calls is None:
+                    self.assertGreater(clock[0], installer.RETRY_SECONDS - installer.MAX_DELAY)  # gives up only once it is spent
 
 if __name__ == "__main__":
     unittest.main()

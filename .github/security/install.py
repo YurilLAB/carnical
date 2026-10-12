@@ -24,13 +24,22 @@ import zipfile
 # Answers that say the server could not serve the request just then. Release downloads go through a CDN that now and then
 # answers 502 or 504; anything else (404, 403, a checksum mismatch) is permanent and is not retried.
 TRANSIENT_STATUS = {408, 429, 500, 502, 503, 504}
-ATTEMPTS = 4
+# How long a download is retried for. The CDN has answered 504 for half a minute at a time, so the backoff spans three
+# minutes, still well inside the shortest job's timeout.
+RETRY_SECONDS = 180
+MAX_DELAY = 30
 
 
 def fetch(url, limit):
     """Read at most limit bytes from url, retrying a transient failure (a 5xx or 429 answer, a timeout, a dropped or cut
-    connection) with backoff. What is read is still checked against the pinned digest by the caller."""
-    for attempt in range(1, ATTEMPTS + 1):
+    connection) with backoff for up to RETRY_SECONDS. What is read is still checked against the pinned digest by the caller."""
+    deadline = time.monotonic() + RETRY_SECONDS
+    delay = 2
+
+    def out_of_time():
+        return time.monotonic() + delay > deadline
+
+    while True:
         try:
             with urllib.request.urlopen(url, timeout=30) as response:
                 data = response.read(limit)
@@ -40,16 +49,17 @@ def fetch(url, limit):
                     raise http.client.IncompleteRead(data, response.length)
                 return data
         except urllib.error.HTTPError as err:
-            if err.code not in TRANSIENT_STATUS or attempt == ATTEMPTS:
+            if err.code not in TRANSIENT_STATUS or out_of_time():
                 raise
         except urllib.error.URLError as err:
             # A refused or reset connection, a timeout or a lookup that failed is retried; a bad certificate or URL is not.
-            if not isinstance(err.reason, OSError) or isinstance(err.reason, ssl.CertificateError) or attempt == ATTEMPTS:
+            if not isinstance(err.reason, OSError) or isinstance(err.reason, ssl.CertificateError) or out_of_time():
                 raise
         except (TimeoutError, ConnectionError, http.client.HTTPException):
-            if attempt == ATTEMPTS:
+            if out_of_time():
                 raise
-        time.sleep(2 ** attempt)
+        time.sleep(delay)
+        delay = min(delay * 2, MAX_DELAY)
 
 
 def main():
