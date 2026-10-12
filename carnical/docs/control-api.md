@@ -487,8 +487,9 @@ belongs to one site, and one for another site is "unknown key". Data comes from 
   must return at most the requested number of days. If the other sections alone exceed the budget, the handler returns
   a generic 500 before writing any data; request fewer days or fewer scopes instead of silently losing traffic figures.
 * **Privacy.** With `addresses: "cut"` an IPv4 address becomes a.b.c.0 and an IPv6 address its /48 (an IPv4 address inside IPv6
-  is the IPv4 address), in events, bans, offenders and marks. Free-text fields that carry our own explanations (`why`, `what`,
-  `detail`, `msg`) are scanned for addresses and those are cut too. That scan is best effort; the address fields are exact.
+  is the IPv4 address, and a 6to4 address keeps only the /24 it carries), in events, bans, offenders and marks. Free-text
+  fields that carry our own explanations (`why`, `what`, `detail`, `msg`) are scanned for addresses and those are cut too.
+  That scan is best effort; the address fields are exact.
 * **Proof of compatibility** (`feed/compat_test.go`, skipped when Python or the reader is missing) uses the real reader:
   `feed.authorization` and `feed.request_path` sign requests the handler accepts; `feed.parse` accepts every byte the handler
   sends, with nothing left out (the same tests show it does refuse a missing cursor, an empty address and an empty map as a

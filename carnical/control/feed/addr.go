@@ -10,8 +10,9 @@ import (
 
 // CutAddress shortens an address for a customer who has not asked to see whole ones: an IPv4 address becomes its /24
 // (a.b.c.0) and an IPv6 address its /48. An IPv4 address carried inside IPv6 (::ffff:a.b.c.d) is treated as the IPv4
-// address it is, so it cannot be used to keep the last byte. A zone ("%eth0") is dropped. The second result is false
-// when the text is not an address, and then nothing should be sent.
+// address it is, so it cannot be used to keep the last byte. A 6to4 address (2002::/16) holds a whole IPv4 address in
+// its /48, so it is cut to the /40 that holds that address's /24. A zone ("%eth0") is dropped. The second result is
+// false when the text is not an address, and then nothing should be sent.
 func CutAddress(s string) (string, bool) {
 	a, ok := parseAddr(s)
 	if !ok {
@@ -22,8 +23,13 @@ func CutAddress(s string) (string, bool) {
 		b[3] = 0
 		return netip.AddrFrom4(b).String(), true
 	}
+	if sixToFour.Contains(a) {
+		return netip.PrefixFrom(a, 40).Masked().Addr().String(), true
+	}
 	return netip.PrefixFrom(a, 48).Masked().Addr().String(), true
 }
+
+var sixToFour = netip.MustParsePrefix("2002::/16")
 
 // WholeAddress returns an address in its one canonical spelling, so the same address is always the same text (the
 // reader recognises a repeated event by its exact bytes). The second result is false when the text is not an address.
