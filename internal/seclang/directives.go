@@ -568,7 +568,7 @@ func directiveSecResponseBodyMimeType(options *DirectiveOptions) error {
 		return errEmptyOptions
 	}
 
-	options.WAF.ResponseBodyMimeTypes = strings.Split(options.Opts, " ")
+	options.WAF.ResponseBodyMimeTypes = append(options.WAF.ResponseBodyMimeTypes, strings.Fields(options.Opts)...)
 	return nil
 }
 

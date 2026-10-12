@@ -55,9 +55,30 @@ var _ = profile.RegisterProfile(profile.Profile{
 				},
 			},
 		},
+		{
+			// A second SecResponseBodyMimeType adds to the list.
+			Title: "response mime type from an earlier directive",
+			Stages: []profile.Stage{
+				{
+					Stage: profile.SubStage{
+						Input: profile.StageInput{
+							URI: "/test.php?id=12345",
+						},
+						Output: profile.ExpectedOutput{
+							Headers: map[string]string{
+								"content-type": "text/plain",
+							},
+							Data:           `<?php echo "Hello World!\n" ?>`,
+							TriggeredRules: []int{953120},
+						},
+					},
+				},
+			},
+		},
 	},
 	Rules: `
 SecResponseBodyAccess On
+SecResponseBodyMimeType text/plain
 SecResponseBodyMimeType secret/mime
 SecRule RESPONSE_BODY "@rx <\?(?:=|php)?\s+" \
   "id:953120,\
