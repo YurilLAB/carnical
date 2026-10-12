@@ -48,6 +48,7 @@ func TestRuleMapping(t *testing.T) {
 		rule string
 		want []vpatch.Condition // the main condition, then Also
 		skip string             // or why the rule is refused
+		each []vpatch.Condition // or, when the rule becomes one signature per alternative, the condition of each
 	}{
 		{name: "@rx keeps Coraza's dot-all and multi-line flags", rule: `SecRule ARGS:q "@rx union.*select" "id:1,phase:2,deny,t:lowercase"`,
 			want: []vpatch.Condition{{Operator: "rx", Pattern: "union.*select", Flags: "sm", Targets: []string{"arg:q"}, Transforms: []string{"lowercase"}}}},
@@ -65,6 +66,10 @@ func TestRuleMapping(t *testing.T) {
 		{name: "a negated test of the body is not guarded, as Coraza's REQUEST_BODY is an empty value when there is none",
 			rule: `SecRule REQUEST_BODY "!@rx ^token=" "id:8,phase:2,deny"`,
 			want: []vpatch.Condition{{Operator: "rx", Pattern: "^token=", Flags: "sm", Targets: []string{"body"}, Negate: true}}},
+		{name: "a negated test of several variables fires when any one fails, as in Coraza",
+			rule: `SecRule REQUEST_BODY|REQUEST_URI "!@rx zzz" "id:9,phase:2,deny"`,
+			each: []vpatch.Condition{{Operator: "rx", Pattern: "zzz", Flags: "sm", Targets: []string{"body"}, Negate: true},
+				{Operator: "rx", Pattern: "zzz", Flags: "sm", Targets: []string{"uri"}, Negate: true}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -72,6 +77,16 @@ func TestRuleMapping(t *testing.T) {
 			if tt.skip != "" {
 				if len(res.Signatures) != 0 || res.Report.Skipped[tt.skip] != 1 {
 					t.Fatalf("signatures %d, skipped %v, want it skipped as %s", len(res.Signatures), res.Report.Skipped, tt.skip)
+				}
+				return
+			}
+			if tt.each != nil {
+				var got []vpatch.Condition
+				for _, s := range res.Signatures {
+					got = append(got, s.Condition)
+				}
+				if !reflect.DeepEqual(got, tt.each) {
+					t.Fatalf("got\n  %+v\nwant\n  %+v", got, tt.each)
 				}
 				return
 			}

@@ -128,13 +128,23 @@ func (c *converter) ruleExpr(r secRule) (importers.Expr, error) {
 		if len(g.targets) == 0 {
 			continue
 		}
-		cond, err := c.condition(r.op, g.tf, g.targets)
-		if err != nil {
-			return importers.Expr{}, err
-		}
 		// A negated test reaches here only on targets with one value each. Coraza always gives each of them a value, an empty
-		// REQUEST_BODY when there is no body, so a plain negation says the same and needs no guard.
-		leaves = append(leaves, importers.Leaf(cond))
+		// REQUEST_BODY when there is no body, so a plain negation says the same and needs no guard. It fires when any one of them
+		// fails to match, while a negated condition over several targets holds only when none matches, so each gets its own.
+		each := [][]string{g.targets}
+		if r.op.negated {
+			each = each[:0]
+			for _, t := range g.targets {
+				each = append(each, []string{t})
+			}
+		}
+		for _, targets := range each {
+			cond, err := c.condition(r.op, g.tf, targets)
+			if err != nil {
+				return importers.Expr{}, err
+			}
+			leaves = append(leaves, importers.Leaf(cond))
+		}
 	}
 	if len(leaves) == 1 {
 		return leaves[0], nil
