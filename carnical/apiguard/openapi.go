@@ -870,9 +870,13 @@ func mediaType(s string) string {
 }
 
 func (im *importer) bodyV3(r *Route, op map[string]any) {
-	rb := im.deref(op["requestBody"])
+	raw := op["requestBody"]
+	rb := im.deref(raw)
 	if rb == nil {
-		r.NoBody = true
+		// An operation with no requestBody takes no body. One whose requestBody is a reference that could not be followed (deref
+		// has warned) accepts any body, as a schema cut the same way does: what the importer cannot read refuses less, never more.
+		_, cut := raw.(map[string]any)
+		r.NoBody = !cut
 		return
 	}
 	r.BodyRequired, _ = asBool(rb["required"])

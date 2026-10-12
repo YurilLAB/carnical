@@ -280,6 +280,10 @@ func TestImportedSchemasCarryWhatTheDescriptionSays(t *testing.T) {
 	if !list.NoBody {
 		t.Error("a route with no requestBody takes no body")
 	}
+	cut := mustImport(t, `{"openapi":"3.0.0","paths":{"/a":{"post":{"requestBody":{"$ref":"#/components/requestBodies/Nope"}}}}}`)
+	if r := routeOf(t, cut, "POST", "/a"); r.NoBody {
+		t.Error("a requestBody whose reference could not be followed was read as taking no body, so every body is refused")
+	}
 
 	create := routeOf(t, m, "POST", "/api/v1/products")
 	if !create.BodyRequired || !slices.Equal(create.ContentTypes, []string{"application/json"}) || create.Body == nil || len(create.Body.AllOf) != 2 {
