@@ -27,8 +27,11 @@ The last socket closes its subnet entry. Trusted proxy peers may use the reserve
 source/subnet limits, but still share the global cap.
 
 Refused connections are reset. HTTP refusals return 429 or 503 with `Retry-After`, `Cache-Control:
-no-store` and `Connection: close`. Logs are bounded rather than written for each Shield refusal. A
-failed reset/socket option does not turn a refusal into admission.
+no-store` and `Connection: close`, except on a trusted proxy's connection, which carries other
+visitors' requests and stays open unless the refused request is HTTP/1 with a body still to read
+(`Shield.ConnContext`, set by `Edge.Server`). Logs are bounded
+rather than written for each Shield refusal. A failed reset/socket option does not turn a refusal
+into admission.
 
 | Monitoring field | Meaning |
 | --- | --- |

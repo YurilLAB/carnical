@@ -212,6 +212,65 @@ func TestRefusalsHoldWithTheRuleSetOffAndAreRecorded(t *testing.T) {
 			})
 		}
 	})
+	// A shield refusal is for one visitor; whether the connection survives it is HTTP, not a SecLang profile.
+	t.Run("shield refusals close only the refused client's own connection", func(t *testing.T) {
+		get := func(visitor string) string {
+			return "GET /page HTTP/1.1\r\n" + preamble + "X-Forwarded-For: " + visitor + "\r\n\r\n"
+		}
+		// A body that is still arriving: the refusal must not wait for it.
+		post := "POST /page HTTP/1.1\r\n" + preamble + "X-Forwarded-For: 192.0.2.9\r\nContent-Type: text/plain\r\nContent-Length: 1000\r\n\r\n0123456789"
+		for _, tc := range []struct {
+			name     string
+			trusted  bool
+			requests []string
+			want     []int
+		}{
+			{"a trusted proxy relaying a refused visitor keeps its connection", true, []string{get("192.0.2.9"), get("192.0.2.9"), get("198.51.100.9")}, []int{200, 429, 200}},
+			{"a refused direct client loses its own", false, []string{get("192.0.2.9"), get("192.0.2.9"), get("198.51.100.9")}, []int{200, 429}},
+			{"a refused relayed request whose body is still coming is answered at once", true, []string{get("192.0.2.9"), post}, []int{200, 429}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				var trusted []netip.Prefix
+				if tc.trusted {
+					trusted = loopback.Allow
+				}
+				sh, err := shield.New(shield.Config{RequestRate: 0.1, RequestBurst: 1, Trusted: trusted})
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(sh.Close)
+				s := start(t, func(c *Config) { ruleSetOff(c); c.Shield = sh; c.TrustedProxies = trusted })
+				conn, err := net.DialTimeout("tcp", s.addr, 3*time.Second)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer conn.Close()
+				if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+					t.Fatal(err)
+				}
+				br := bufio.NewReader(conn)
+				var statuses []int
+				for _, request := range tc.requests {
+					if _, err := conn.Write([]byte(request)); err != nil {
+						break
+					}
+					resp, err := http.ReadResponse(br, nil)
+					if err != nil {
+						break
+					}
+					_, err = io.Copy(io.Discard, resp.Body)
+					resp.Body.Close()
+					if err != nil {
+						break
+					}
+					statuses = append(statuses, resp.StatusCode)
+				}
+				if !equalInts(statuses, tc.want) {
+					t.Fatalf("statuses on one connection %v, want %v", statuses, tc.want)
+				}
+			})
+		}
+	})
 }
 
 func TestFrameworkControlHeadersNeverReachTheApplication(t *testing.T) {

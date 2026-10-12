@@ -294,6 +294,9 @@ func (e *Edge) Server(addr string) *http.Server {
 			}
 			sh.ConnState(c, st)
 		}
+		// A shield refusal closes the refused client's connection, but not a trusted proxy's.
+		connContext := srv.ConnContext
+		srv.ConnContext = func(ctx context.Context, c net.Conn) context.Context { return sh.ConnContext(connContext(ctx, c), c) }
 	}
 	return srv
 }

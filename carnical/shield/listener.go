@@ -3,6 +3,7 @@
 package shield
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"net/netip"
@@ -203,6 +204,24 @@ func (s *Shield) release(c *conn) {
 	s.idleMu.Lock()
 	s.idle.remove(c)
 	s.idleMu.Unlock()
+}
+
+type connKey struct{}
+
+// ConnContext is for http.Server.ConnContext: it keeps each request's connection, so that a refusal can tell a trusted
+// proxy's connection, which carries other visitors' requests too, from the refused client's own.
+func (s *Shield) ConnContext(ctx context.Context, c net.Conn) context.Context {
+	return context.WithValue(ctx, connKey{}, c)
+}
+
+// relayed reports whether a request came on a trusted proxy's connection (see ConnContext).
+func (s *Shield) relayed(r *http.Request) bool {
+	c, _ := r.Context().Value(connKey{}).(net.Conn)
+	if c == nil {
+		return false
+	}
+	a, ok := remoteAddr(c)
+	return ok && s.trusted(a)
 }
 
 // ConnState is for http.Server.ConnState: it keeps the list of idle keep-alive connections, oldest first, so that when

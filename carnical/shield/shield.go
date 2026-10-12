@@ -636,7 +636,8 @@ func (s *Shield) banWorker() {
 	}
 }
 
-// Write answers a request the shield did not allow. The answer is small, never cached, and closes the connection.
+// Write answers a request the shield did not allow. The answer is small, never cached, and closes the connection unless
+// a trusted proxy relayed the request and no HTTP/1 body is left to read (see ConnContext).
 func (s *Shield) Write(w http.ResponseWriter, r *http.Request, d Decision) {
 	h := w.Header()
 	h.Set("Cache-Control", "no-store")
@@ -671,7 +672,11 @@ func (s *Shield) Write(w http.ResponseWriter, r *http.Request, d Decision) {
 		}
 		return
 	}
-	h.Set("Connection", "close")
+	// A trusted proxy's connection carries other visitors' requests too, so it stays open, except after an HTTP/1 request
+	// with a body: net/http would wait for the rest of that body before answering, and a refused request is never read.
+	if !s.relayed(r) || (r.ProtoMajor == 1 && r.ContentLength != 0) {
+		h.Set("Connection", "close")
+	}
 	h.Set("Content-Type", "text/plain; charset=utf-8")
 	if d.RetryAfter > 0 {
 		h.Set("Retry-After", strconv.Itoa(d.RetryAfter))
