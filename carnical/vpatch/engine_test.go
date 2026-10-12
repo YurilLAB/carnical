@@ -149,6 +149,8 @@ func TestConditionSemantics(t *testing.T) {
 		{"arg:NAME picks only that argument", sig("T", cond("equals", "evil", tg("arg:action"))), mkReq("GET", "/?other=evil", nil, ""), false},
 		{"arg:NAME as PHP names it (dots)", sig("T", cond("equals", "evil", tg("arg:a_b"))), mkReq("GET", "/?a.b=evil", nil, ""), true},
 		{"arg:NAME as PHP names it (brackets)", sig("T", cond("equals", "evil", tg("arg:a"))), mkReq("GET", "/?a[]=evil", nil, ""), true},
+		{"arg:NAME as PHP names it (a NUL ends it)", sig("T", cond("equals", "evil", tg("arg:page"))), mkReq("GET", "/?page%00xyz=evil", nil, ""), true},
+		{"a NUL after a bracket keeps the bracket reading", sig("T", cond("equals", "evil", tg("arg:a"))), mkReq("GET", "/?a[b%00c]=evil", nil, ""), true},
 		{"arg:NAME for JSON by path", sig("T", cond("equals", "evil", tg("arg:json.p.q"))), mkReq("POST", "/", jsonH, `{"p":{"q":"evil"}}`), true},
 		{"arg:NAME for JSON by key", sig("T", cond("equals", "evil", tg("arg:q"))), mkReq("POST", "/", jsonH, `{"p":{"q":"evil"}}`), true},
 		{"repeated parameters are also offered joined with a space", sig("T", cond("contains", "union/**/ select", tg("arg:id"))), mkReq("GET", "/?id=1%20union/**/&id=select", nil, ""), true},

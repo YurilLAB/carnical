@@ -981,7 +981,7 @@ func (c *matchCtx) addArgOnly(name, val string) bool {
 
 // nameOK reports whether item i of v is the one a named target picks: the argument, cookie or header with that name, compared
 // without regard to case, with '_' and '-' alike for a header, and for an argument or cookie also by the names PHP would give it
-// ("a.b" is a_b, "a[b]" is a). A JSON value is picked by its full path or by its last key.
+// ("a.b" is a_b, "a[b]" is a, "a\x00b" is a). A JSON value is picked by its full path or by its last key.
 func nameOK(v *view, i int, want string) bool {
 	if i < len(v.names) {
 		n := v.names[i]
@@ -998,9 +998,16 @@ func nameOK(v *view, i int, want string) bool {
 	return i < len(v.leaf) && v.leaf[i] != "" && strings.EqualFold(v.leaf[i], want)
 }
 
-// phpNameMatches reports whether PHP would file a parameter called name under want: it turns the dots and spaces of a name into
-// underscores and reads "a[b][c]" as the variable a holding an array. A signature for "a_b" or for "a" must see them.
+// phpNameMatches reports whether PHP would file a parameter called name under want: it ends a name at a NUL, turns its dots and
+// spaces into underscores and reads "a[b][c]" as the variable a holding an array. A signature for "a_b" or for "a" must see them.
 func phpNameMatches(name, want string) bool {
+	if i := strings.IndexByte(name, 0); i >= 0 {
+		// PHP registers a variable by its C-string name, so the name cut at its NUL is one more reading of it, besides the
+		// readings of the whole name below that other parsers make.
+		if cut := name[:i]; strings.EqualFold(strings.TrimLeft(cut, " "), want) || phpNameMatches(cut, want) {
+			return true
+		}
+	}
 	if strings.IndexAny(name, " .[") < 0 {
 		return false
 	}
