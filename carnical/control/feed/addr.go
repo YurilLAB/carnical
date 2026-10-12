@@ -102,17 +102,26 @@ func scrubAddresses(s string) string {
 // colon after an address and a label can put a single colon before it, and none of those is part of the address.
 // A whole address can also be glued to more address characters, such as the hex end of a label ("blocked:") or a
 // port written without brackets (":443"). Then the longest start of the run that reads as an IPv6 address is cut
-// and stands for the whole run, so no address leaves whole and a second scrub finds the run already cut. A first label
-// that cannot be a group ("exceeded:", "12345:", "HTTP/1.1:") is not part of an address glued after it, so then the
-// run is read once more from just after that label's colon.
+// and stands for the whole run, so no address leaves whole and a second scrub finds the run already cut. Failing that,
+// a first label is set aside and the run is read once more from just after its colon; a label that can be a group goes
+// into the cut with the address.
 func cutRun(s string, i, j int) (cut string, from, to int, ok bool) {
 	if cut, from, to, ok = cutRunFrom(s, i, j); ok {
 		return cut, from, to, ok
 	}
-	if k := strings.IndexByte(s[i:j], ':'); k > 4 || k > 0 && strings.IndexByte(s[i:i+k], '.') >= 0 {
-		return cutRunFrom(s, i+k+1, j)
+	k := strings.IndexByte(s[i:j], ':')
+	if k <= 0 {
+		return "", 0, 0, false
 	}
-	return "", 0, 0, false
+	if cut, from, to, ok = cutRunFrom(s, i+k+1, j); !ok || from != i+k+1 {
+		return cut, from, to, ok
+	}
+	// A label that can be a group ("ed:" of "blocked:") would read as part of the cut on a second scrub, so it goes into
+	// the cut too, and the result is cut once and for all.
+	if c, good := CutAddress(s[i:i+k+1] + cut); good {
+		return c, i, to, true
+	}
+	return cut, from, to, ok
 }
 
 func cutRunFrom(s string, i, j int) (cut string, from, to int, ok bool) {
