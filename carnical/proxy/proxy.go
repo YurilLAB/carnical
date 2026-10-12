@@ -408,9 +408,8 @@ func (e *Edge) guard(next http.Handler) http.Handler {
 			capped.rc, r.Body = r.Body, capped
 		}
 		var seen *inspect.Request // what the inspectors saw, for the observers
-		mt, _, mtErr := mime.ParseMediaType(r.Header.Get("Content-Type"))
 		hasBody := r.Body != nil && r.Body != http.NoBody
-		isUpload := mtErr == nil && mt == "multipart/form-data"
+		isUpload := hasBody && readAsMultipart(r.Header)
 		isForm := hasBody && readAsForm(r.Header)
 		var formBody []byte    // a form body, for the joined reading of repeated parameters
 		var fields []joinParam // and the fields of a multipart one
@@ -439,14 +438,18 @@ func (e *Edge) guard(next http.Handler) http.Handler {
 				http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
 				return
 			}
-			mt, params, mtErr := mime.ParseMediaType(r.Header.Get("Content-Type"))
-			if mtErr == nil && mt == "multipart/form-data" {
-				if id, why := scanUpload(body, params["boundary"], e.cfg.Uploads); id != 0 {
+			if readAsMultipart(r.Header) {
+				boundary, ok := uploadBoundary(r.Header.Get("Content-Type"))
+				if !ok {
+					e.refuse(w, r, http.StatusBadRequest, idAmbiguousType, "a multipart Content-Type that parsers read differently")
+					return
+				}
+				if id, why := scanUpload(body, boundary, e.cfg.Uploads); id != 0 {
 					e.refuse(w, r, http.StatusForbidden, id, why)
 					return
 				}
 				if !e.cfg.NoJoinedParams {
-					fields = multipartFields(body, params["boundary"])
+					fields = multipartFields(body, boundary)
 				}
 			}
 			if isForm {

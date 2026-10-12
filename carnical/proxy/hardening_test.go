@@ -128,6 +128,7 @@ func TestRefusalsHoldWithTheRuleSetOffAndAreRecorded(t *testing.T) {
 		{"a gzip request body", get("/page", "Content-Encoding: gzip\r\n"), nil, 415, idRequestEncoding},
 		{"an identity request encoding", get("/page", "Content-Encoding: identity\r\n"), nil, 200, 0},
 		{"two Content-Type headers", get("/page", "Content-Type: text/plain\r\n", "Content-Type: application/json\r\n"), nil, 400, idAmbiguousType},
+		{"an upload whose type only PHP and the rules read as multipart", strings.Replace(uploadRequest(multipartBody(filePart("shell.php", "x"))), "data; boundary", "data, boundary", 1), nil, 400, idAmbiguousType},
 		{"a header the site does not accept", get("/page", "Next-Action: abc\r\n"), func(c *Config) { c.DenyHeaders = []string{"next-action"} }, 400, idInternalHeader},
 		{"the same header with underscores", get("/page", "Next_Action: abc\r\n"), func(c *Config) { c.DenyHeaders = []string{"Next-Action"} }, 400, idInternalHeader},
 		{"that header on a site that did not ask", get("/page", "Next-Action: abc\r\n"), nil, 200, 0},

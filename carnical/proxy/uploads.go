@@ -2,6 +2,8 @@ package proxy
 
 import (
 	"bytes"
+	"mime"
+	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
@@ -67,6 +69,56 @@ func executableName(raw string) bool {
 		}
 	}
 	return false
+}
+
+// readAsMultipart says whether the rule set will read the body as multipart, by the same rule as readAsForm. A type
+// that Go's parser refuses is still multipart to the rules and to PHP, so it is not passed on as something else.
+func readAsMultipart(h http.Header) bool {
+	v := h.Values("Content-Type")
+	return len(v) > 0 && strings.HasPrefix(strings.TrimSpace(strings.ToLower(v[0])), "multipart/form-data")
+}
+
+// uploadBoundary returns the boundary of a multipart/form-data type, if every parser finds the same one. Go's parser
+// refuses a type that does not follow the grammar, where PHP takes the first "boundary" anywhere in it, so the type
+// must parse and PHP's reading must give the same value: "multipart/form-data, boundary=XX" and
+// "multipart/form-data; xboundary=YY; boundary=XX" are both refused.
+func uploadBoundary(contentType string) (string, bool) {
+	mt, params, err := mime.ParseMediaType(contentType)
+	boundary := params["boundary"]
+	if err != nil || mt != "multipart/form-data" || boundary == "" {
+		return "", false
+	}
+	return boundary, boundary == searchedBoundary(contentType)
+}
+
+// searchedBoundary is the boundary PHP finds in a Content-Type: after the first "boundary" (in lower case if there is
+// one, in any case if not) and the next "=", the value up to its closing quote, or up to a ';' or ','.
+func searchedBoundary(contentType string) string {
+	i := strings.Index(contentType, "boundary")
+	if i < 0 {
+		lower := []byte(contentType) // ASCII only, so that it lines up byte for byte
+		for k, c := range lower {
+			if 'A' <= c && c <= 'Z' {
+				lower[k] = c + 'a' - 'A'
+			}
+		}
+		i = bytes.Index(lower, []byte("boundary"))
+	}
+	if i < 0 {
+		return ""
+	}
+	_, value, ok := strings.Cut(contentType[i:], "=")
+	if !ok {
+		return ""
+	}
+	if quoted, ok := strings.CutPrefix(value, `"`); ok {
+		value, _, _ = strings.Cut(quoted, `"`)
+		return value
+	}
+	if end := strings.IndexAny(value, ";,"); end >= 0 {
+		value = value[:end]
+	}
+	return value
 }
 
 // scanUpload looks through a multipart body. It returns what to report, or id 0 if nothing is wrong.
