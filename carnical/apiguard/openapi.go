@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -882,6 +883,7 @@ func (im *importer) bodyV3(r *Route, op map[string]any) {
 	}
 	slices.Sort(keys)
 	best, bestRank := "", 99
+	var jsonSchemas []any // the different schemas of the JSON media types
 	for _, k := range keys {
 		mt := mediaType(k)
 		if mt == "" || len(r.ContentTypes) >= 32 {
@@ -901,13 +903,28 @@ func (im *importer) bodyV3(r *Route, op map[string]any) {
 		case mt == "*/*":
 			rank = 3
 		}
+		cm, ok := content[k].(map[string]any)
+		if !ok || cm["schema"] == nil {
+			continue
+		}
 		if rank < bestRank {
-			if cm, ok := content[k].(map[string]any); ok && cm["schema"] != nil {
-				best, bestRank = k, rank
-			}
+			best, bestRank = k, rank
+		}
+		if isJSONType(mt) && !slices.ContainsFunc(jsonSchemas, func(x any) bool { return reflect.DeepEqual(x, cm["schema"]) }) {
+			jsonSchemas = append(jsonSchemas, cm["schema"])
 		}
 	}
-	if best != "" {
+	switch {
+	case len(jsonSchemas) > 1:
+		// A route keeps one body schema, so a JSON body is held to any of its media types' schemas: one type's schema applied to
+		// another's bodies would refuse what the description allows.
+		im.warnOnce("body-schemas", "a request body's JSON media types have different schemas; a JSON body is checked against any of them")
+		alts := make([]*Schema, 0, len(jsonSchemas))
+		for _, x := range jsonSchemas {
+			alts = append(alts, im.schema(x, 1))
+		}
+		r.Body = &Schema{AnyOf: alts}
+	case best != "":
 		cm := content[best].(map[string]any)
 		r.Body = im.schema(cm["schema"], 0)
 	}

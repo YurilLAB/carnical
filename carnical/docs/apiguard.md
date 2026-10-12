@@ -155,7 +155,8 @@ YAML. The description is not trusted:
 * More than 5,000 routes, 64 parameters on one route, 1,000 properties in one schema or 64 alternatives in one `oneOf` is an error, not a truncation: a model with some of the routes missing would refuse real traffic.
 
 The model holds each route (method and path template), its parameters with their schemas, the
-content types it accepts, the schema of a JSON body, whether a body is required or forbidden, and
+content types it accepts, the schema of a JSON body (when its JSON media types have different schemas, a body is
+checked against any of them, and the import warns), whether a body is required or forbidden, and
 whether a credential is expected (the operation's `security`, else the document's; an empty
 requirement means anonymous).
 

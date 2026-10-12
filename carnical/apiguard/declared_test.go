@@ -124,6 +124,40 @@ func TestDescriptionFindingsAreWarningsUntilThePromotedToEnforce(t *testing.T) {
 	}
 }
 
+// A body is held to the schema of any of the route's JSON media types, not to one of them for all. This has a description of its
+// own because a second body media type in the shop description would change the rows and route counts that rely on it.
+func TestABodyIsHeldToAnyOfItsJSONMediaTypesSchemas(t *testing.T) {
+	const doc = `{"openapi":"3.0.3","info":{"title":"t","version":"1"},"paths":{"/docs/{id}":{"patch":{
+		"parameters":[{"name":"id","in":"path","required":true,"schema":{"type":"integer"}}],
+		"requestBody":{"required":true,"content":{
+			"application/json-patch+json":{"schema":{"type":"array","items":{"type":"object","required":["op","path"]}}},
+			"application/merge-patch+json":{"schema":{"type":"object","properties":{"title":{"type":"string"}}}}}},
+		"responses":{"200":{"description":"ok"}}}}}}`
+	tests := []struct {
+		name, ct, body string
+		want           int // the first verdict id, 0 for none
+	}{
+		{"a merge patch, whose schema is not the one that sorts first", "application/merge-patch+json", `{"title":"x"}`, 0},
+		{"a body that fits neither schema", "application/merge-patch+json", `"x"`, IDSpecBodySchema},
+		{"a privileged property neither schema lists", "application/merge-patch+json", `{"title":"x","role":"admin"}`, IDMassAssignRefused},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g, _ := testGuard(t, func(c *Config) { c.Modes.Spec = ModeEnforce })
+			if _, err := g.ImportOpenAPI([]byte(doc)); err != nil {
+				t.Fatal(err)
+			}
+			res := g.Inspect(mk("PATCH", "/docs/1", withBody(tt.ct, tt.body)))
+			switch {
+			case tt.want == 0 && len(res.Verdicts) != 0:
+				t.Fatalf("unexpected verdicts: %+v", res.Verdicts)
+			case tt.want != 0 && (len(res.Verdicts) == 0 || res.Verdicts[0].ID != tt.want):
+				t.Fatalf("verdicts %+v, want %d first", res.Verdicts, tt.want)
+			}
+		})
+	}
+}
+
 // A segment with two parameters is one capture. The parameters after it must still be checked against their own values, and a
 // value that fits must not be refused because it was checked against another parameter's schema.
 func TestParametersAfterASharedSegmentKeepTheirPlace(t *testing.T) {
