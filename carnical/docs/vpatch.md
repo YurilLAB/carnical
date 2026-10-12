@@ -88,7 +88,9 @@ is. Multipart parts are read to their end on the same terms. A multipart body wi
 parts, longer than 8 MiB, or with a part that Go's reader rejects after one it read, is also offered
 raw to `body` signatures, since the parts that were not read still reach the application. A part is
 a file only when its plain `filename` parameter is set; one with `filename*` alone, a file to some
-parsers and a field to others, is read as both.
+parsers and a field to others, is read as both. A part whose `Content-Disposition` Go's parser
+rejects (a parameter given twice, a quote left open) is read for its name and file name as PHP
+reads them, the last of each, and the body is offered raw as well.
 
 At most 1,024 cookies and 1,024 header values are read, the Host first. A request with more reports
 rule 5100003, which `BlockOnWorkLimit` also makes refuse requests in block mode.

@@ -795,6 +795,12 @@ func (c *matchCtx) multipartArgs() {
 				name = p["name"]
 				filename, hasFile = p["filename"], p["filename"] != ""
 				alsoField = hasFile && !plainParam(cd, "filename")
+			} else {
+				// A header Go refuses (a parameter given twice, a quote left open) is still read by PHP: the part is read as PHP
+				// reads it, and the raw body is offered too, for a parser that reads it another way.
+				name, filename = phpDisposition(cd)
+				hasFile = filename != ""
+				c.truncated, c.multipartPartial = true, true
 			}
 		}
 		if len(names.vals) < maxArgs {
@@ -851,6 +857,75 @@ func plainParam(h, key string) bool {
 		}
 	}
 	return false
+}
+
+// phpSpace is what C's isspace takes for white space.
+const phpSpace = " \t\n\v\f\r"
+
+// phpDisposition reads the name and filename parameters of a Content-Disposition as PHP does: the header splits at each ';'
+// outside quotes, a key runs to its '=', and a value runs to its closing quote or, unquoted, to the next white space. The last of
+// each wins.
+func phpDisposition(cd string) (name, filename string) {
+	for cd = strings.TrimLeft(cd, phpSpace); cd != ""; cd = strings.TrimLeft(cd, phpSpace) {
+		var pair string
+		pair, cd = phpWord(cd, ';')
+		if strings.IndexByte(pair, '=') < 0 {
+			continue
+		}
+		key, val := phpWord(pair, '=')
+		switch {
+		case strings.EqualFold(key, "name"):
+			name = phpValue(val)
+		case strings.EqualFold(key, "filename"):
+			filename = phpValue(val)
+		}
+	}
+	return name, filename
+}
+
+// phpWord splits s at the first stop byte outside quotes (" or '), and drops the stop bytes that follow it.
+func phpWord(s string, stop byte) (word, rest string) {
+	i := 0
+	for i < len(s) && s[i] != stop {
+		q := s[i]
+		i++
+		if q != '"' && q != '\'' {
+			continue
+		}
+		for ; i < len(s) && s[i] != q; i++ {
+			if s[i] == '\\' && i+1 < len(s) && s[i+1] == q {
+				i++
+			}
+		}
+		if i < len(s) {
+			i++
+		}
+	}
+	word, rest = s[:i], s[i:]
+	for rest != "" && rest[0] == stop {
+		rest = rest[1:]
+	}
+	return word, rest
+}
+
+// phpValue is a parameter value as PHP reads it: after any white space, quoted to the closing quote (or the end), where a
+// backslash escapes the quote or itself, or unquoted to the next white space.
+func phpValue(s string) string {
+	s = strings.TrimLeft(s, phpSpace)
+	quote := byte(0)
+	if s != "" && (s[0] == '"' || s[0] == '\'') {
+		quote, s = s[0], s[1:]
+	} else if i := strings.IndexAny(s, phpSpace); i >= 0 {
+		s = s[:i]
+	}
+	var b strings.Builder
+	for i := 0; i < len(s) && (quote == 0 || s[i] != quote); i++ {
+		if s[i] == '\\' && i+1 < len(s) && (s[i+1] == '\\' || quote != 0 && s[i+1] == quote) {
+			i++
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
 }
 
 // readEnds reads a part to its end and keeps its first and last maxValue bytes, so a payload after a long run of padding is
