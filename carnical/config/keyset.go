@@ -295,7 +295,8 @@ func parseKeySet(payload []byte, rootID string, roots []ed25519.PublicKey) (*Key
 }
 
 // strictUnmarshal decodes one JSON value into v, refusing a field v does not have, a repeated name anywhere in the
-// document, nesting deeper than 8, invalid UTF-8, and anything after the value.
+// document, a name that is not lower-case ASCII, nesting deeper than 8, invalid UTF-8, and anything after the value.
+// encoding/json matches names without regard to case, so "REVOKED" would otherwise be read as a second "revoked".
 func strictUnmarshal(raw []byte, v any) error {
 	if !utf8.Valid(raw) || hasRepeatedName(raw, 8) {
 		return ErrMalformed
@@ -311,8 +312,9 @@ func strictUnmarshal(raw []byte, v any) error {
 	return nil
 }
 
-// hasRepeatedName reports whether any object in the document names a field twice, or the document is nested deeper than
-// maxDepth, or is not valid JSON. A true result means "do not read this".
+// hasRepeatedName reports whether any object in the document names a field twice or by a name with anything but a-z,
+// 0-9 and "_", or the document is nested deeper than maxDepth, or is not valid JSON. A true result means "do not read
+// this".
 func hasRepeatedName(raw []byte, maxDepth int) bool {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	type frame struct {
@@ -350,7 +352,7 @@ func hasRepeatedName(raw []byte, maxDepth int) bool {
 			if len(stack) > 0 && stack[len(stack)-1].object {
 				f := &stack[len(stack)-1]
 				if f.key {
-					if _, dup := f.names[tok]; dup {
+					if _, dup := f.names[tok]; dup || !lowerName(tok) {
 						return true
 					}
 					f.names[tok] = struct{}{}
@@ -365,4 +367,14 @@ func hasRepeatedName(raw []byte, maxDepth int) bool {
 			}
 		}
 	}
+}
+
+// lowerName reports whether name is made only of a-z, 0-9 and "_".
+func lowerName(name string) bool {
+	for i := 0; i < len(name); i++ {
+		if c := name[i]; (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '_' {
+			return false
+		}
+	}
+	return true
 }

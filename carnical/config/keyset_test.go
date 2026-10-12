@@ -182,6 +182,8 @@ func TestKeyListRefusals(t *testing.T) {
 			pub := configKey.Public().(ed25519.PublicKey)
 			return resign([]byte(fmt.Sprintf(p, KeyID(pub), KeyID(pub), b64.EncodeToString(pub))))
 		}(), t0, ErrMalformed},
+		// encoding/json matches names without regard to case, and the later one wins.
+		{"a revocation lifted by a name in capitals", resign([]byte(`{"schema":1,"seq":1,"issued":"2026-10-01T00:00:00Z","expires":"2026-12-01T00:00:00Z","keys":[],"revoked":["0123456789abcdef"],"REVOKED":[]}`)), t0, ErrMalformed},
 		{"text after the payload", resign(append([]byte(`{"schema":1,"seq":1,"issued":"2026-10-01T00:00:00Z","expires":"2026-12-01T00:00:00Z","keys":[],"revoked":[]}`), ' ', '{', '}')), t0, ErrMalformed},
 		{"an empty but valid list", resign([]byte(`{"schema":1,"seq":1,"issued":"2026-10-01T00:00:00Z","expires":"2026-12-01T00:00:00Z","keys":[],"revoked":[]}`)), t0, nil},
 	}

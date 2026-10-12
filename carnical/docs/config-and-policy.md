@@ -149,9 +149,10 @@ payload:      {"schema":1,"seq":3,"issued":"...Z","expires":"...Z",
 ```
 
 A list is refused (with the error that says why) for: a bad signature, a root that is not pinned, a
-repeated name anywhere in the payload, an unknown field, a key whose id is not the hash of its key,
-a role other than `config`, a key listed twice, a root key listed as a signing key, more than 50
-keys or 500 revoked ids, a validity over 366 days, or dates in the wrong form.
+repeated name anywhere in the payload, an unknown field or a name in other capitals, a key whose id
+is not the hash of its key, a role other than `config`, a key listed twice, a root key listed as a
+signing key, more than 50 keys or 500 revoked ids, a validity over 366 days, or dates in the wrong
+form.
 
 `Apply` gives the verifier the keys, the revoked ids and the list's expiry; after the expiry no key
 is believed until a newer list arrives (`key_list_expired`).
