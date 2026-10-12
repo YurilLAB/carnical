@@ -66,6 +66,9 @@ func LoadMap(r io.Reader) (Map, error) {
 	return m, m.Validate()
 }
 
+// mappedRange is where IPv6 holds IPv4 addresses; a zone that reaches into it, from inside or around it, hides IPv4 ranges.
+var mappedRange = netip.MustParsePrefix("::ffff:0:0/96")
+
 // Validate checks that the map is consistent.
 func (m Map) Validate() error {
 	names := map[string]*Zone{}
@@ -85,14 +88,16 @@ func (m Map) Validate() error {
 			}
 			// The origin allow list holds IPv4 ranges as IPv4, and a range never overlaps one of the other family, so an
 			// IPv4 zone written in IPv6 form would hide an allowed range inside it.
-			if pf.Addr().Is4In6() {
+			if pf.Addr().Is6() && pf.Overlaps(mappedRange) {
 				return fmt.Errorf("zone %q: prefix %q: write an IPv4 range as IPv4, not as an IPv4-mapped IPv6 range", z.Name, p)
 			}
 		}
 		for _, s := range z.Services {
 			// The port is a number: an empty one is dialled as port 0, and one that cannot be looked up is never dialled.
 			_, port, err := net.SplitHostPort(s.Addr)
-			if n, perr := strconv.ParseUint(port, 10, 16); err != nil || perr != nil || n == 0 || s.Name == "" {
+			// It is written as the listener check writes it, so "08443" cannot name a service no listener matches.
+			n, perr := strconv.ParseUint(port, 10, 16)
+			if err != nil || perr != nil || n == 0 || strconv.FormatUint(n, 10) != port || s.Name == "" {
 				return fmt.Errorf("zone %q: service %q needs a name and a host:port address, with the port as a number", z.Name, s.Name)
 			}
 			if s.Proto != "" && s.Proto != "tcp" && s.Proto != "udp" {
