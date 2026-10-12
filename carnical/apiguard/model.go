@@ -126,6 +126,7 @@ type routeC struct {
 	pathNames  []string
 	pathParams []*Param // aligned with pathNames, one per capture; nil where no single declared parameter fills it
 	query      map[string]*Param
+	queryFold  map[string][]string // the declared query names by foldName, for names a request spells in another case
 	headers    []*Param
 	cookies    []*Param
 	required   []*Param // required query, header and cookie parameters
@@ -484,6 +485,11 @@ func (r *Route) compile() {
 			}
 		case "query":
 			c.query[p.Name] = p
+			if c.queryFold == nil {
+				c.queryFold = map[string][]string{}
+			}
+			f := foldName(p.Name)
+			c.queryFold[f] = append(c.queryFold[f], p.Name)
 			if p.Required {
 				c.required = append(c.required, p)
 			}

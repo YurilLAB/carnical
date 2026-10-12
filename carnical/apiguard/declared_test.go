@@ -57,6 +57,7 @@ func TestRequestsAreHeldToTheApiDescription(t *testing.T) {
 		{"a string over its maximum length", mk("GET", "/api/v1/products?q="+longQ), IDSpecQueryParam, 400},
 		{"an array over its maximum size", mk("GET", "/api/v1/products?tags=a,b,c,d"), IDSpecQueryParam, 400},
 		{"a scalar given twice", mk("GET", "/api/v1/products?limit=1&limit=2"), IDSpecQueryParam, 400},
+		{"a query parameter named in other capitals is held to its schema", mk("GET", "/api/v1/products?LIMIT=101"), IDSpecQueryParam, 400},
 		{"an unknown query parameter is allowed by default", mk("GET", "/api/v1/products?utm_source=x"), 0, 0},
 		{"a path parameter that fits", mk("GET", "/api/v1/products/42"), 0, 0},
 		{"a path parameter of the wrong type", mk("GET", "/api/v1/products/abc"), IDSpecPathParam, 400},

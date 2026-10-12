@@ -228,6 +228,19 @@ func (g *Guard) checkRoute(rt *Route, rv *reqView, caps *captures, ids *idSet, c
 	if rv.q(); rv.qmore {
 		add(ids.queryParam, "more query parameters than the guard reads")
 	}
+	// ASP.NET Core and echo bind a query name to the parameter it names in other letters (LIMIT for limit), so its values are held
+	// to that parameter too. A required parameter must still be sent in the spelling it is given.
+	var respelled []qpair // named by foldName
+	if len(c.queryFold) > 0 {
+		for _, q := range rv.q() {
+			if _, known := c.query[q.name]; known {
+				continue
+			}
+			if f := foldName(q.name); c.queryFold[f] != nil {
+				respelled = append(respelled, qpair{name: f, value: q.value})
+			}
+		}
+	}
 	var vbuf [4]string
 	for i := range rt.Params {
 		p := &rt.Params[i]
@@ -235,10 +248,15 @@ func (g *Guard) checkRoute(rt *Route, rv *reqView, caps *captures, ids *idSet, c
 			continue
 		}
 		vals := rv.queryValues(p.Name, vbuf[:0])
-		if len(vals) == 0 {
-			if p.Required {
-				add(ids.missingParam, paramDetail(ids, p.Name, vkRequired))
+		if len(vals) == 0 && p.Required {
+			add(ids.missingParam, paramDetail(ids, p.Name, vkRequired))
+		}
+		for _, q := range respelled {
+			if slices.Contains(c.queryFold[q.name], p.Name) {
+				vals = append(vals, q.value)
 			}
+		}
+		if len(vals) == 0 {
 			continue
 		}
 		if k := p.validateText(vals); k != vkNone {
