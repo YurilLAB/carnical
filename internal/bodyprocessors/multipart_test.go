@@ -809,6 +809,9 @@ func TestMultipartDuplicatePartHeader(t *testing.T) {
 		name          string
 		headers       string
 		wantDuplicate bool
+		// wantPartHeader, when set, must be one of the part's
+		// MULTIPART_PART_HEADERS values.
+		wantPartHeader string
 	}{
 		{
 			name:    "distinct headers",
@@ -825,6 +828,12 @@ func TestMultipartDuplicatePartHeader(t *testing.T) {
 			headers: "Content-Disposition: form-data; name=\"upload\"; filename=\"safe.jpg\"\r\n" +
 				"Content-Type: image/jpeg\r\n" + "Content-Type: application/x-php\r\n",
 			wantDuplicate: true,
+		},
+		{
+			name: "quoted-printable Content-Transfer-Encoding stays visible",
+			headers: "Content-Disposition: form-data; name=\"upload\"; filename=\"safe.jpg\"\r\n" +
+				"Content-Transfer-Encoding: quoted-printable\r\n",
+			wantPartHeader: "Content-Transfer-Encoding: quoted-printable",
 		},
 	}
 
@@ -849,6 +858,11 @@ func TestMultipartDuplicatePartHeader(t *testing.T) {
 			}
 			if got := v.MultipartStrictError().Get(); got != want {
 				t.Errorf("MULTIPART_STRICT_ERROR = %q, want %q", got, want)
+			}
+			if tc.wantPartHeader != "" {
+				if got := v.MultipartPartHeaders().Get("upload"); !slices.Contains(got, tc.wantPartHeader) {
+					t.Errorf("MULTIPART_PART_HEADERS:upload = %q, want it to contain %q", got, tc.wantPartHeader)
+				}
 			}
 		})
 	}

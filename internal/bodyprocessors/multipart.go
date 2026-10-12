@@ -9,6 +9,7 @@ import (
 	"io"
 	"mime"
 	"mime/multipart"
+	"mime/quotedprintable"
 	"os"
 	"strings"
 
@@ -44,7 +45,11 @@ func (mbp *multipartBodyProcessor) ProcessRequest(reader io.Reader, v plugintype
 	multipartFilenameLanguageCol := v.MultipartFilenameLanguage()
 	multipartNameCol := v.MultipartName()
 	for {
-		p, err := mr.NextPart()
+		// NextRawPart, not NextPart: NextPart deletes a quoted-printable
+		// Content-Transfer-Encoding header before the part headers are
+		// recorded below, hiding it from MULTIPART_PART_HEADERS (and so from
+		// CRS 922120). The content is still decoded the way NextPart would.
+		p, err := mr.NextRawPart()
 		if err == io.EOF {
 			break
 		}
@@ -59,6 +64,10 @@ func (mbp *multipartBodyProcessor) ProcessRequest(reader io.Reader, v plugintype
 		if err != nil {
 			v.MultipartStrictError().(*collections.Single).Set("1")
 			return err
+		}
+		var content io.Reader = p
+		if strings.EqualFold(p.Header.Get("Content-Transfer-Encoding"), "quoted-printable") {
+			content = quotedprintable.NewReader(p)
 		}
 		partName := p.FormName()
 		duplicateHeader := false
@@ -122,7 +131,7 @@ func (mbp *multipartBodyProcessor) ProcessRequest(reader io.Reader, v plugintype
 					v.MultipartStrictError().(*collections.Single).Set("1")
 					return err
 				}
-				sz, err := io.Copy(temp, p)
+				sz, err := io.Copy(temp, content)
 				if cerr := temp.Close(); cerr != nil && err == nil {
 					err = cerr
 				}
@@ -140,7 +149,7 @@ func (mbp *multipartBodyProcessor) ProcessRequest(reader io.Reader, v plugintype
 				}
 				size = sz
 			} else {
-				sz, err := io.Copy(io.Discard, p)
+				sz, err := io.Copy(io.Discard, content)
 				if err != nil {
 					if !errors.Is(err, io.ErrUnexpectedEOF) {
 						v.MultipartStrictError().(*collections.Single).Set("1")
@@ -170,7 +179,7 @@ func (mbp *multipartBodyProcessor) ProcessRequest(reader io.Reader, v plugintype
 			}
 		} else {
 			// if is a field
-			data, err := io.ReadAll(p)
+			data, err := io.ReadAll(content)
 			if err != nil {
 				if !errors.Is(err, io.ErrUnexpectedEOF) {
 					v.MultipartStrictError().(*collections.Single).Set("1")
