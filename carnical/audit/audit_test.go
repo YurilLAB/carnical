@@ -131,6 +131,7 @@ func TestZoneMapIsValidated(t *testing.T) {
 		{"here is not a zone", strings.Replace(sampleMap, `"here": "edge"`, `"here": "moon"`, 1), false},
 		{"bad prefix", strings.Replace(sampleMap, `10.20.0.0/24`, `10.20.0.0/99`, 1), false},
 		{"service without a port", strings.Replace(sampleMap, `10.20.0.5:8443`, `10.20.0.5`, 1), false},
+		{"service with an empty port", strings.Replace(sampleMap, `10.20.0.5:8443`, `10.20.0.5:`, 1), false},
 		{"a UDP service", strings.Replace(sampleMap, `"addr": "10.20.0.5:8443"`, `"addr": "10.20.0.5:53", "proto": "udp"`, 1), true},
 		{"a service said to be TCP", strings.Replace(sampleMap, `"addr": "10.20.0.5:8443"`, `"addr": "10.20.0.5:8443", "proto": "tcp"`, 1), true},
 		{"a protocol that is neither", strings.Replace(sampleMap, `"addr": "10.20.0.5:8443"`, `"addr": "10.20.0.5:8443", "proto": "sctp"`, 1), false},
@@ -265,6 +266,14 @@ func TestZoneReachFindsAnOpenWallAndABrokenFlow(t *testing.T) {
 	}
 	if r := Run(context.Background(), []Check{ZoneReach(zm, unsent)}, 10*time.Second).Results[0]; r.Status != Skip {
 		t.Fatalf("probes that were never sent passed as walls that hold: %+v", r)
+	}
+	// A name that could not be looked up was never dialled either: it says nothing about the wall to owner, though the
+	// allowed flow to control still cannot be made.
+	unresolved := func(_ context.Context, _, addr string) (net.Conn, error) {
+		return nil, &net.OpError{Op: "dial", Net: "tcp", Err: &net.DNSError{Err: "no such host", Name: addr, IsNotFound: true}}
+	}
+	if r := Run(context.Background(), []Check{ZoneReach(zm, unresolved)}, 10*time.Second).Results[0]; r.Status != Fail || r.Checked != 1 || !strings.Contains(r.Note, "1 of the connections") {
+		t.Fatalf("a name that could not be looked up passed as a wall that holds: %+v", r)
 	}
 
 	// A map that does not say where this machine is cannot be checked.

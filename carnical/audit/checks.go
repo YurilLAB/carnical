@@ -131,7 +131,9 @@ func ZoneReach(zm Map, dial Dialer) Check {
 					allowed := zm.Allowed(zm.Here, p.zone)
 					mu.Lock()
 					defer mu.Unlock()
-					if !reached && !probed(ctx, err) {
+					// A name that could not be looked up was never dialled, so it shows nothing about a wall; an allowed flow
+					// to it still cannot be made from here.
+					if !reached && (!probed(ctx, err) || !allowed && !resolved(err)) {
 						unsent++
 						return
 					}
@@ -146,7 +148,7 @@ func ZoneReach(zm Map, dial Dialer) Check {
 			}
 			wg.Wait()
 			if out.Checked == 0 && unsent > 0 {
-				return Outcome{SkipReason: fmt.Sprintf("none of the %d connections could be attempted from here (no network sockets, or this process's own firewall rules)", unsent)}
+				return Outcome{SkipReason: fmt.Sprintf("none of the %d connections could be attempted from here (no network sockets, names that could not be looked up, or this process's own firewall rules)", unsent)}
 			}
 			if unsent > 0 {
 				out.Note = fmt.Sprintf("%d of the connections could not be attempted from here and say nothing about their walls", unsent)
@@ -174,4 +176,12 @@ func probed(ctx context.Context, err error) bool {
 		}
 	}
 	return true
+}
+
+// resolved reports whether a failed dial got as far as an address to connect to. A name or port that could not be looked
+// up, or an address that could not be read, never left this machine.
+func resolved(err error) bool {
+	var dns *net.DNSError
+	var addr *net.AddrError
+	return !errors.As(err, &dns) && !errors.As(err, &addr)
 }

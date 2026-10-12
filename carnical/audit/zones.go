@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"strconv"
 	"strings"
 )
 
@@ -83,8 +84,10 @@ func (m Map) Validate() error {
 			}
 		}
 		for _, s := range z.Services {
-			if _, _, err := net.SplitHostPort(s.Addr); err != nil || s.Name == "" {
-				return fmt.Errorf("zone %q: service %q needs a name and a host:port address", z.Name, s.Name)
+			// The port is a number: an empty one is dialled as port 0, and one that cannot be looked up is never dialled.
+			_, port, err := net.SplitHostPort(s.Addr)
+			if n, perr := strconv.ParseUint(port, 10, 16); err != nil || perr != nil || n == 0 || s.Name == "" {
+				return fmt.Errorf("zone %q: service %q needs a name and a host:port address, with the port as a number", z.Name, s.Name)
 			}
 			if s.Proto != "" && s.Proto != "tcp" && s.Proto != "udp" {
 				return fmt.Errorf("zone %q: service %q: proto must be tcp or udp, not %q", z.Name, s.Name, s.Proto)
