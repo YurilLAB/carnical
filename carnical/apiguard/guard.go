@@ -311,9 +311,18 @@ func (in *inspection) run() {
 		}
 	}
 
+	// A write with no Content-Type is bound as JSON by many frameworks (Go's encoding/json, gin, FastAPI), so one that starts like
+	// JSON is scanned for mass assignment too.
+	untypedJSON := rv.ct == "" && startsLikeJSON(rv.body)
+	if untypedJSON {
+		if val, _, err := rv.json(); err == nil {
+			body, bodyOK = val, true
+		}
+	}
+
 	// Mass assignment: a privileged property in a write. It is looked for before the description and the learned model are
 	// consulted, because it is the more specific finding (and 403 says more than 400 does), and a refusal here ends the check.
-	if bodyOK && (method == "POST" || method == "PUT" || method == "PATCH") && effective(cfg.Mode, cfg.Modes.MassAssign) >= ModeMonitor {
+	if (rv.isJSON || untypedJSON) && (method == "POST" || method == "PUT" || method == "PATCH") && effective(cfg.Mode, cfg.Modes.MassAssign) >= ModeMonitor {
 		var sch *Schema
 		switch {
 		case drt != nil:
@@ -322,7 +331,16 @@ func (in *inspection) run() {
 			sch = lk.view.Body
 		}
 		var pf privFinding
-		scanPrivileged(body, sch, 0, &pf)
+		switch {
+		case bodyOK:
+			scanPrivileged(body, sch, 0, &pf)
+		case schemaCoversProps(sch, 0) || schemaCoversProps(schemaItems(sch, 0), 0):
+			// A body the guard could not read may still be one the application's decoder reads, so where the schema says which
+			// properties clients send, it is not cleared of the others.
+			if in.emit(IDMassAssignRefused, "the body could not be read to look for a property this API's clients do not send", cfg.Modes.MassAssign) {
+				return
+			}
+		}
 		switch {
 		case pf.refused != "":
 			if in.emit(IDMassAssignRefused, "the body sets "+pf.refused+", which this API's clients do not send", cfg.Modes.MassAssign) {
@@ -710,4 +728,18 @@ func (g *Guard) Stats() Stats {
 		}
 	}
 	return s
+}
+
+// startsLikeJSON reports whether a body's first byte after white space opens a JSON object or array.
+func startsLikeJSON(b []byte) bool {
+	for _, c := range b {
+		switch c {
+		case ' ', '\t', '\r', '\n':
+			continue
+		case '{', '[':
+			return true
+		}
+		return false
+	}
+	return false
 }

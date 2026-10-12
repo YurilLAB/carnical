@@ -3,6 +3,7 @@
 package apiguard
 
 import (
+	"errors"
 	"net/http"
 	"slices"
 	"strings"
@@ -286,18 +287,29 @@ func (g *Guard) checkRoute(rt *Route, rv *reqView, caps *captures, ids *idSet, c
 			}
 		}
 	}
-	// The body.
+	// The body. One with no Content-Type is application/octet-stream (RFC 9110, section 8.3), which a described route that lists
+	// its media types takes only if it says so. What was learned says nothing about such bodies: they are not recorded.
 	hasBody := len(rv.body) > 0
 	switch {
 	case hasBody && rt.NoBody:
 		add(ids.unexpectedBody, "")
 	case hasBody && rv.ct != "" && !rt.acceptsContentType(rv.ct):
 		add(ids.contentType, "")
+	case hasBody && rv.ct == "" && ids.named && !rt.acceptsContentType("application/octet-stream"):
+		add(ids.contentType, "the body has no Content-Type")
 	case !hasBody && rt.BodyRequired && !preflight:
 		add(ids.bodyMissing, "")
 	}
 	if hasBody && rt.Body != nil && rv.isJSON && !(rt.c.hasCTypes && !rt.acceptsContentType(rv.ct)) {
-		if val, _, err := rv.json(); err == nil {
+		// A body this parser cannot read (nested past its depth, or not UTF-8) may still be one the application's decoder reads,
+		// so it is refused rather than let through unchecked.
+		val, _, err := rv.json()
+		switch {
+		case errors.Is(err, errTooDeep) || errors.Is(err, errTooMany):
+			add(ids.tooComplex, "")
+		case err != nil:
+			add(ids.bodySchema, "the body is not valid JSON")
+		default:
 			viol, ok, over := rt.Body.validateBody(val, true)
 			switch {
 			case over:

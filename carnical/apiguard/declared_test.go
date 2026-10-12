@@ -108,6 +108,12 @@ func TestRequestsAreHeldToTheApiDescription(t *testing.T) {
 			}
 		})
 	}
+	// A body with no Content-Type is application/octet-stream, which a route that lists its media types does not take. The
+	// missing type is reported first, so this is not a row of the table above.
+	g := shopGuard(t, nil)
+	if res := g.Inspect(mk("POST", "/api/v1/products", auth, withBody("", `name=n&price=9.99`))); !has(res, IDSpecContentType) || !blocked(res) {
+		t.Fatalf("a body with no Content-Type: %+v", res.Verdicts)
+	}
 }
 
 func TestDescriptionFindingsAreWarningsUntilThePromotedToEnforce(t *testing.T) {

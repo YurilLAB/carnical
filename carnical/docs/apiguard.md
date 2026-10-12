@@ -142,7 +142,11 @@ description or by enough traffic, that clients of this API never send it.
 
 After that, a client that starts sending it (a new release that adds a `status` field) is refused
 until the description is updated or `Approve`/learning in monitor teaches it (section 6). Only JSON
-bodies are scanned; a form post that sets `role=admin` is not.
+bodies are scanned, and a write with no `Content-Type` that starts like JSON, which many frameworks
+bind as JSON; a form post that sets `role=admin` is not. A JSON write body the guard cannot read
+(not valid JSON, not UTF-8, nested more than 32 deep, or holding more values than the guard reads)
+cannot be scanned, and the application's decoder may read it all the same: where the description or
+the learned model describes the body's properties, it is refused (`5003021`) too.
 
 ## 5. Level 1 in detail
 
@@ -188,7 +192,11 @@ parsers read it (`007` is 7, and its bounds apply); a scalar query or header par
 is reported (parameter pollution). With `RefuseUnknownParams`, the API key a security scheme puts in
 the query is not an unknown parameter. A cookie may come more than once (browsers send one per path it was set on), so every
 value is checked. The guard reads the first 256 query parameters; a query with more is reported on a
-checked route rather than checked in part.
+checked route rather than checked in part. A JSON body the guard cannot read is reported rather than
+let through unchecked (`5003108`, or `5003115` when it is nested more than 32 deep or holds more values
+than the guard reads), and so is a body
+with no `Content-Type` on a route that lists its media types (`5003107`), unless the route takes
+`application/octet-stream` or any type.
 
 Numbers are compared as exact decimals for integer types, enums, constants, bounds, decimal
 multiples and array uniqueness. Equivalent numeric spellings such as `1` and `1.0` compare equally.
@@ -351,7 +359,7 @@ proxy answers with it); a finding in monitor is logged and the request goes on.
 | 5003010 | rate limited | Rate | 429 | medium | One client sent more requests than the sustained or burst limit. |
 | 5003011 | authentication rate limited | AuthRate | 429 | high | Too many requests to an authentication endpoint from one address (credential stuffing, password guessing). |
 | 5003020 | mass assignment suspected | MassAssign | 403 | medium | A write body sets a privileged property (role, admin, price and the like). A warning only: nothing says clients never send it. |
-| 5003021 | mass assignment | MassAssign | 403 | high | A write body sets a privileged property that the description or the learned model says this API's clients never send. |
+| 5003021 | mass assignment | MassAssign | 403 | high | A write body sets a privileged property that the description or the learned model says this API's clients never send, or could not be read to look for one where they list what clients send. |
 | 5003990 | internal error | - | - | high | The guard failed on this request and did not inspect it. Never blocks. |
 
 **Level 1: the API's own description**
