@@ -281,12 +281,20 @@ func (c *cvt) convertRule(r *rule) (*vpatch.Signature, error) {
 			}
 			sizes = append(sizes, s)
 		case o.key == "urilen":
-			val, _, _ := strings.Cut(o.val, ",")
+			val, mode, _ := strings.Cut(o.val, ",")
 			s, err := parseSize(val)
 			if err != nil {
 				return nil, err
 			}
-			s.buf = "http.uri.raw"
+			// Suricata measures the normalised URI unless the rule asks for the raw one.
+			switch strings.TrimSpace(mode) {
+			case "", "norm":
+				s.buf = "http.uri"
+			case "raw":
+				s.buf = "http.uri.raw"
+			default:
+				return nil, skip("malformed-size")
+			}
 			sizes = append(sizes, s)
 			sawHTTP = true
 		default:

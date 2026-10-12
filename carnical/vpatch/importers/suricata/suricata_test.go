@@ -235,7 +235,9 @@ func TestConvertRules(t *testing.T) {
 			want: []vpatch.Condition{cond("contains", "/a", uriT, dec), cond("rx", `\A[\x00-\xff]{601,}\z`, uriT, dec)}},
 		{name: "bsize exact", rule: rl(`http.referer; bsize:14; content:"x";`),
 			want: []vpatch.Condition{cond("contains", "x", []string{"header:referer"}), cond("rx", `\A[\x00-\xff]{14}\z`, []string{"header:referer"})}},
-		{name: "urilen", rule: rl(`urilen:10; http.uri; content:"/login.cgi";`),
+		{name: "urilen measures the normalised uri", rule: rl(`urilen:10; http.uri; content:"/login.cgi";`),
+			want: []vpatch.Condition{cond("contains", "/login.cgi", uriT, dec), cond("rx", `\A[\x00-\xff]{10}\z`, uriT, dec)}},
+		{name: "urilen raw measures the uri as received", rule: rl(`urilen:10,raw; http.uri; content:"/login.cgi";`),
 			want: []vpatch.Condition{cond("contains", "/login.cgi", uriT, dec), cond("rx", `\A[\x00-\xff]{10}\z`, uriT)}},
 		{name: "bsize beyond what RE2 repeats", rule: rl(`http.uri; bsize:>20000; content:"/a";`), wantSkip: "bsize-too-large"},
 
