@@ -49,7 +49,7 @@ func templateVars(v any) map[string]string {
 		return out
 	}
 	for k, x := range m {
-		s, ok := importers.AsString(x)
+		s, ok := importers.AsString(importers.Untyped(x)) // nuclei reads variables as untyped values
 		if !ok || strings.Contains(s, "{{") || dslRe.MatchString(s) || len(s) > 2048 || !identRe.MatchString(k) {
 			continue
 		}
@@ -69,7 +69,7 @@ func inlinePayloads(v any) map[string][]string {
 		if _, isList := importers.AsList(x); !isList {
 			continue // a payload kept in a file is not available
 		}
-		l, bad := importers.AsStrings(x)
+		l, bad := importers.AsStrings(importers.Untyped(x)) // and payloads
 		if bad != 0 || len(l) == 0 {
 			continue
 		}

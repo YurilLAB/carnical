@@ -286,7 +286,7 @@ func (c *converter) metadata(base string, root, labels map[string]any, alts [][]
 	conf := "medium"
 	tier := c.opts.StartTier()
 	if v, ok := labels["confidence"]; ok {
-		n, _ := strconv.Atoi(strings.TrimSpace(fmt.Sprint(v)))
+		n, _ := strconv.Atoi(strings.TrimSpace(fmt.Sprint(importers.Untyped(v)))) // labels is an untyped map in CrowdSec
 		switch {
 		case n >= 3:
 			conf = "high"

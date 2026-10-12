@@ -34,7 +34,7 @@ var (
 // maxYAMLNodes bounds how many nodes a document may have. A 1 MiB document of "- a" lines has about 350,000.
 const maxYAMLNodes = 500000
 
-// DecodeYAML reads one YAML document into plain Go values (map[string]any, []any, string, bool, numbers, nil).
+// DecodeYAML reads one YAML document into plain Go values (map[string]any, []any, string, bool, Number, nil).
 //
 // The rule files this reads are untrusted, and the YAML library's cost is not linear in the size of its input: measured here, 64 KiB
 // of nested "[" takes about 9 seconds and 64 KiB of "- " about 2 (four times as long for each doubling). So before the library
@@ -126,11 +126,91 @@ func decodeYAML(data []byte, lim Limits) (any, error) {
 	if st.complex {
 		return nil, errYAMLComplexity
 	}
-	var out any
-	if err := yaml.NodeToValue(body, &out); err != nil {
+	out, err := (&plainDecoder{lib: yaml.NewDecoder(&bytes.Buffer{})}).value(body)
+	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrYAMLInvalid, firstLine(err.Error()))
 	}
 	return out, nil
+}
+
+// Number is a number in a decoded document. CrowdSec and nuclei read most fields into Go strings, which get the text as written
+// (1.10, 010, 0x41); a field they read as an untyped value gets the number the YAML library reads (1.1, 8, 65).
+type Number struct {
+	Text  string
+	Value any // int64, uint64 or float64
+}
+
+// plainDecoder converts a parsed tree as the library's NodeToValue does, except that a number becomes a Number.
+type plainDecoder struct {
+	lib *yaml.Decoder
+}
+
+func (d *plainDecoder) value(n ast.Node) (any, error) {
+	switch x := n.(type) {
+	case nil:
+		return nil, nil
+	case *ast.IntegerNode, *ast.FloatNode, *ast.InfinityNode, *ast.NanNode:
+		v, err := d.libValue(x)
+		if err != nil {
+			return nil, err
+		}
+		return Number{Text: x.GetToken().Value, Value: v}, nil
+	case *ast.MappingNode:
+		m := make(map[string]any, len(x.Values))
+		for _, kv := range x.Values {
+			if err := d.setPair(m, kv); err != nil {
+				return nil, err
+			}
+		}
+		return m, nil
+	case *ast.MappingValueNode:
+		m := map[string]any{}
+		if err := d.setPair(m, x); err != nil {
+			return nil, err
+		}
+		return m, nil
+	case *ast.SequenceNode:
+		l := make([]any, 0, len(x.Values))
+		for _, e := range x.Values {
+			v, err := d.value(e)
+			if err != nil {
+				return nil, err
+			}
+			l = append(l, v)
+		}
+		return l, nil
+	}
+	return d.libValue(n) // strings, booleans, nulls, block scalars and tagged nodes, as the library reads them
+}
+
+// setPair adds one entry to m, with the key named as the library names it.
+func (d *plainDecoder) setPair(m map[string]any, kv *ast.MappingValueNode) error {
+	k, err := d.libValue(kv.Key)
+	if err != nil {
+		return err
+	}
+	v, err := d.value(kv.Value)
+	if err != nil {
+		return err
+	}
+	switch key := k.(type) {
+	case nil:
+		m["null"] = v
+	case string:
+		m[key] = v
+	default:
+		m[fmt.Sprint(key)] = v
+	}
+	return nil
+}
+
+func (d *plainDecoder) libValue(n ast.Node) (any, error) {
+	if n == nil {
+		return nil, nil
+	}
+	var v any
+	err := d.lib.DecodeFromNode(n, &v)
+	return v, err
 }
 
 // blockScalarHeader is a block scalar's header: "|" or ">", then at most an indentation digit and a chomping sign, in either order.
@@ -385,12 +465,14 @@ func AsList(v any) ([]any, bool) {
 	return l, ok
 }
 
-// AsString returns a scalar as a string: strings as they are, numbers and booleans in their usual text form. Maps, lists and nil
-// are not scalars.
+// AsString returns a scalar as a string: strings as they are, a Number as it is written, other numbers and booleans in their usual
+// text form. Maps, lists and nil are not scalars.
 func AsString(v any) (string, bool) {
 	switch x := v.(type) {
 	case string:
 		return x, true
+	case Number:
+		return x.Text, true
 	case bool:
 		return strconv.FormatBool(x), true
 	case int:
@@ -403,6 +485,21 @@ func AsString(v any) (string, bool) {
 		return strconv.FormatFloat(x, 'f', -1, 64), true
 	}
 	return "", false
+}
+
+// Untyped returns v as a source engine sees a field it reads as an untyped value: a Number, also one in a list, is its value.
+func Untyped(v any) any {
+	switch x := v.(type) {
+	case Number:
+		return x.Value
+	case []any:
+		out := make([]any, len(x))
+		for i, e := range x {
+			out[i] = Untyped(e)
+		}
+		return out
+	}
+	return v
 }
 
 // AsStrings returns a scalar as a one-element list, or a list of scalars as a list of strings; items that are not scalars are

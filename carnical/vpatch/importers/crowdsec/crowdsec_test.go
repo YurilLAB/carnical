@@ -72,6 +72,8 @@ func TestLeafMapping(t *testing.T) {
 			want: [][]vpatch.Condition{{{Operator: "rx", Pattern: "[^a-z]+", Flags: "sm", Targets: []string{"arg:f"}}}}},
 		{name: "number as value", entry: "  - zones: [ARGS]\n    variables: [n]\n    match: {type: equals, value: 5}\n",
 			want: [][]vpatch.Condition{{cond("equals", "5", []string{"arg:n"})}}},
+		{name: "a number keeps the text it is written as, which CrowdSec reads into a string", entry: "  - zones: [ARGS]\n    variables: [n]\n    match: {type: equals, value: 1.10}\n",
+			want: [][]vpatch.Condition{{cond("equals", "1.10", []string{"arg:n"})}}},
 		{name: "count equals zero is absence", entry: "  - zones: [HEADERS]\n    variables: [X-A]\n    transform: [count]\n    match: {type: equals, value: '0'}\n",
 			want: [][]vpatch.Condition{{{Operator: "rx", Pattern: "^", Targets: []string{"header:x-a"}, Negate: true}}}},
 		{name: "count at least one is presence", entry: "  - zones: [HEADERS]\n    variables: [X-A]\n    transform: [count]\n    match: {type: gte, value: 1}\n",
