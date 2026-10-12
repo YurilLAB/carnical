@@ -139,6 +139,9 @@ go run ./cmd/carnical-sigs convert -format crowdsec -in rule.yaml -out signature
 go run ./cmd/carnical-vpatch -h
 ```
 
+A `carnical-sigs convert` run that converts nothing exits 1 and leaves `-out` as it was; the report
+is still written, so it shows what was skipped.
+
 Conversion reports and legacy comparison reports can contain private patterns/metadata and are
 private too. Use an operator-controlled directory and explicitly grant any service-account access.
 

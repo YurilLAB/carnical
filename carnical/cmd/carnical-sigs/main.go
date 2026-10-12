@@ -109,19 +109,23 @@ func runConvert(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "carnical-sigs convert: %v\n", err)
 		return 1
 	}
-	var buf bytes.Buffer
-	if err := importers.WriteJSONL(&buf, res.Signatures); err != nil {
-		fmt.Fprintf(stderr, "carnical-sigs convert: %v\n", err)
-		return 1
-	}
-	if *out == "-" {
-		if _, err := stdout.Write(buf.Bytes()); err != nil {
-			fmt.Fprintf(stderr, "carnical-sigs convert: output: %v\n", err)
+	// A run that converts nothing has failed, so it must not replace the previous signatures.
+	nothing := res.Report.Signatures == 0
+	if !nothing {
+		var buf bytes.Buffer
+		if err := importers.WriteJSONL(&buf, res.Signatures); err != nil {
+			fmt.Fprintf(stderr, "carnical-sigs convert: %v\n", err)
 			return 1
 		}
-	} else if err := writeFile(*out, buf.Bytes()); err != nil {
-		fmt.Fprintf(stderr, "carnical-sigs convert: %v\n", err)
-		return 1
+		if *out == "-" {
+			if _, err := stdout.Write(buf.Bytes()); err != nil {
+				fmt.Fprintf(stderr, "carnical-sigs convert: output: %v\n", err)
+				return 1
+			}
+		} else if err := writeFile(*out, buf.Bytes()); err != nil {
+			fmt.Fprintf(stderr, "carnical-sigs convert: %v\n", err)
+			return 1
+		}
 	}
 	if *report != "" {
 		var rb bytes.Buffer
@@ -135,8 +139,8 @@ func runConvert(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	summary(stderr, res.Report)
-	if res.Report.Signatures == 0 {
-		fmt.Fprintln(stderr, "carnical-sigs convert: nothing was converted")
+	if nothing {
+		fmt.Fprintln(stderr, "carnical-sigs convert: nothing was converted; -out was left as it was")
 		return 1
 	}
 	return 0

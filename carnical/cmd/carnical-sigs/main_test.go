@@ -87,27 +87,45 @@ func TestCommandOutput(t *testing.T) {
 			})
 		}
 	})
-	t.Run("rename failure preserves previous output", func(t *testing.T) {
-		dir := t.TempDir()
-		out := filepath.Join(dir, "existing")
-		if err := os.Mkdir(out, 0700); err != nil {
+	t.Run("failure preserves previous output", func(t *testing.T) {
+		empty := filepath.Join(t.TempDir(), "empty.conf")
+		if err := os.WriteFile(empty, []byte("# nothing here yet\n"), 0600); err != nil {
 			t.Fatal(err)
 		}
-		previous := filepath.Join(out, "previous")
-		if err := os.WriteFile(previous, []byte("keep"), 0600); err != nil {
-			t.Fatal(err)
-		}
-		var stdout, stderr bytes.Buffer
-		if code := run([]string{"convert", "-format", "seclang", "-in", path, "-out", out}, &stdout, &stderr); code != 1 {
-			t.Fatalf("rename failure returned %d: %s", code, stderr.String())
-		}
-		data, err := os.ReadFile(previous)
-		if err != nil || string(data) != "keep" {
-			t.Fatalf("previous output changed: %q, %v", data, err)
-		}
-		leftovers, err := filepath.Glob(filepath.Join(dir, ".carnical-sigs-*"))
-		if err != nil || len(leftovers) != 0 {
-			t.Fatalf("temporary outputs remain: %v, %v", leftovers, err)
+		for _, tc := range []struct {
+			name     string
+			in       string
+			outIsDir bool // the output path is a directory, so the rename fails
+		}{
+			{name: "rename failure", in: path, outIsDir: true},
+			{name: "nothing converted", in: empty},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				dir := t.TempDir()
+				out := filepath.Join(dir, "existing")
+				previous := out
+				if tc.outIsDir {
+					if err := os.Mkdir(out, 0700); err != nil {
+						t.Fatal(err)
+					}
+					previous = filepath.Join(out, "previous")
+				}
+				if err := os.WriteFile(previous, []byte("keep"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				var stdout, stderr bytes.Buffer
+				if code := run([]string{"convert", "-format", "seclang", "-in", tc.in, "-out", out}, &stdout, &stderr); code != 1 {
+					t.Fatalf("failed conversion returned %d: %s", code, stderr.String())
+				}
+				data, err := os.ReadFile(previous)
+				if err != nil || string(data) != "keep" {
+					t.Fatalf("previous output changed: %q, %v", data, err)
+				}
+				leftovers, err := filepath.Glob(filepath.Join(dir, ".carnical-sigs-*"))
+				if err != nil || len(leftovers) != 0 {
+					t.Fatalf("temporary outputs remain: %v, %v", leftovers, err)
+				}
+			})
 		}
 	})
 }
