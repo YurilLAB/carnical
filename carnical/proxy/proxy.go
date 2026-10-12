@@ -409,13 +409,13 @@ func (e *Edge) guard(next http.Handler) http.Handler {
 		}
 		var seen *inspect.Request // what the inspectors saw, for the observers
 		hasBody := r.Body != nil && r.Body != http.NoBody
-		isUpload := hasBody && readAsMultipart(r.Header)
 		isForm := hasBody && readAsForm(r.Header)
 		var formBody []byte    // a form body, for the joined reading of repeated parameters
 		var fields []joinParam // and the fields of a multipart one
-		if hasBody && (isUpload || len(e.cfg.Inspectors) > 0 || isForm && !e.cfg.NoJoinedParams) {
+		if hasBody {
 			// Read the whole body (it is already capped) so that it can be looked at, then hand the same bytes on, or the
-			// replacement an inspector made of them.
+			// replacement an inspector made of them. Reading it here also holds it to its limit, and keeps it from taking an
+			// upstream place before it is all in, when the engine does not read it (with the rules off, for one).
 			body, err := io.ReadAll(r.Body)
 			if err != nil {
 				status, msg := http.StatusBadRequest, "the request could not be read"
