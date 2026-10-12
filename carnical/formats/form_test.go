@@ -43,6 +43,7 @@ var formRows = register("form", []row{
 	{name: "PHP space alias", ct: form, body: "user+name=a&user_name=b", want: 5002608},
 	{name: "PHP dot alias", ct: form, body: "user.name=a&user_name=b", want: 5002608},
 	{name: "PHP dot alias reverse ordering", ct: form, body: "user_name=a&user.name=b", want: 5002608},
+	{name: "PHP leading space alias", ct: form, body: "id=1&+id=2", want: 5002608},
 	{name: "PHP normalized container alias", ct: form, body: "user.name[x]=a&user_name[y]=b", want: 5002608},
 	{name: "dots inside bracket keys are preserved", ct: form, body: "user[a.b]=a&user[a_b]=b"},
 	{name: "malformed bracket closing", ct: form, body: "a[b=x", want: 5002608},

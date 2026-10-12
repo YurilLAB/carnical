@@ -43,7 +43,7 @@ func parameterSegment(s string, mangle bool) string {
 
 func ambiguousParameter(roots map[string]*parameterNode, name string) bool {
 	root, rest, nested := strings.Cut(name, "[")
-	canonical := parameterSegment(root, true)
+	canonical := parameterSegment(strings.TrimLeft(root, " "), true) // PHP drops leading spaces before it mangles
 	spelling := parameterSegment(root, false)
 	n := roots[canonical]
 	bad := false
