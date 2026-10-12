@@ -27,6 +27,9 @@ func statusOf(t *testing.T, rep Report, name string) Result {
 	return Result{}
 }
 
+// stopRun stops the run TestRunnerStatuses is in, for a check that is stopped from inside.
+var stopRun context.CancelFunc
+
 func TestRunnerStatuses(t *testing.T) {
 	boom := func(context.Context) Outcome { panic("boom") }
 	slow := func(ctx context.Context) Outcome { <-ctx.Done(); return Outcome{Checked: 1} }
@@ -44,6 +47,11 @@ func TestRunnerStatuses(t *testing.T) {
 		{"a panic", boom, Error, "the check panicked: boom", false},
 		{"out of time", slow, Error, "the check ran out of time", false},
 		{"the run stopped", slow, Error, StoppedNote, true},
+		{"out of time, then the run stopped", func(ctx context.Context) Outcome {
+			<-ctx.Done()
+			stopRun() // the stop comes after the check's own limit, while it is still unwinding
+			return Outcome{Checked: 1}
+		}, Error, "the check ran out of time", false},
 		// What a check wants read beside its result goes with a pass or a failure, and never takes the place of the
 		// reason a check did not run.
 		{"a pass with something to say", func(context.Context) Outcome { return Outcome{Checked: 3, Note: "read with care"} }, Pass, "read with care", false},
@@ -57,6 +65,7 @@ func TestRunnerStatuses(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
+			stopRun = cancel
 			if tt.stopped {
 				cancel()
 			}

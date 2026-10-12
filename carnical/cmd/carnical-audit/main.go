@@ -25,6 +25,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"syscall"
 	"time"
 
@@ -209,7 +210,8 @@ func writeBaselines(dir string, replace bool) int {
 // check that finished first failed or broke: that is a finding, and is not held back until the next run.
 func audited(ctx context.Context, checks []audit.Check, perCheck time.Duration, logFile, statusFile string, allowSkips bool) (code int, stopped bool) {
 	rep := audit.Run(ctx, checks, perCheck)
-	if ctx.Err() == nil {
+	// A stop that lands after the last check finished cut nothing short: the run is complete and is reported.
+	if !slices.ContainsFunc(rep.Results, func(r audit.Result) bool { return r.Note == audit.StoppedNote }) {
 		return report(rep, logFile, statusFile, allowSkips), false
 	}
 	for _, r := range rep.Results {

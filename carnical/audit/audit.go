@@ -14,6 +14,7 @@ package audit
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"runtime/debug"
@@ -147,10 +148,10 @@ func runOne(run context.Context, c Check, limit time.Duration) (res Result) {
 	out := c.Run(ctx)
 	res.Checked, res.Problems = out.Checked, out.Problems
 	switch {
+	case errors.Is(ctx.Err(), context.DeadlineExceeded): // its own limit passed first, whatever came after
+		res.Status, res.Note = Error, "the check ran out of time"
 	case run.Err() != nil:
 		res.Status, res.Note = Error, StoppedNote
-	case ctx.Err() != nil:
-		res.Status, res.Note = Error, "the check ran out of time"
 	case out.SkipReason != "":
 		res.Status, res.Note = Skip, out.SkipReason
 	case len(out.Problems) > 0:
