@@ -7,6 +7,8 @@
 package engine
 
 import (
+	"strings"
+
 	"github.com/corazawaf/coraza/v3/testing/profile"
 )
 
@@ -61,9 +63,55 @@ var _ = profile.RegisterProfile(profile.Profile{
 				},
 			},
 		},
+		{
+			// A body cut by the limit under ProcessPartial ends early and
+			// what was read is inspected; one that arrives cut short is an
+			// error as well.
+			Title: "xml body cut by the limit",
+			Stages: []profile.Stage{
+				{
+					Stage: profile.SubStage{
+						Input: profile.StageInput{
+							URI:    "/index.php",
+							Method: "POST",
+							Headers: map[string]string{
+								"content-type": "application/xml",
+							},
+							Data: `<?xml version="1.0"?><xml><a>test123</a><b>` + strings.Repeat("A", 200) + `</b></xml>`,
+						},
+						Output: profile.ExpectedOutput{
+							TriggeredRules:    []int{102},
+							NonTriggeredRules: []int{200002},
+						},
+					},
+				},
+			},
+		},
+		{
+			Title: "xml body that arrives cut short",
+			Stages: []profile.Stage{
+				{
+					Stage: profile.SubStage{
+						Input: profile.StageInput{
+							URI:    "/index.php",
+							Method: "POST",
+							Headers: map[string]string{
+								"content-type": "application/xml",
+							},
+							Data: `<?xml version="1.0"?><!DOCTYPE x [<?pi it's?>]><x>test123</x>`,
+						},
+						Output: profile.ExpectedOutput{
+							TriggeredRules: []int{200002},
+						},
+					},
+				},
+			},
+		},
 	},
 	Rules: `
 SecRequestBodyAccess On
+SecRequestBodyLimit 150
+SecRequestBodyLimitAction ProcessPartial
 SecRule REQUEST_HEADERS:content-type "application/xml" "id: 100, phase:1, pass, log, ctl:requestBodyProcessor=XML"
 SecRule REQBODY_PROCESSOR "XML" "id: 101,phase:2,log,block"
 SecRule XML:/*|XML://@* "test123" "id:102, phase:2,log,block"

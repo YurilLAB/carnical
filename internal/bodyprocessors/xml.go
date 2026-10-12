@@ -18,13 +18,19 @@ type xmlBodyProcessor struct {
 
 func (*xmlBodyProcessor) ProcessRequest(reader io.Reader, v plugintypes.TransactionVariables, options plugintypes.BodyProcessorOptions) error {
 	values, contents, err := readXML(reader)
-	if err != nil {
-		return err
+	// A body cut by SecRequestBodyLimit under ProcessPartial ends mid-document,
+	// and what was read is inspected. One that arrived that way is malformed:
+	// what was read is still inspected, but the body is also an error, since
+	// the rest of it may reach a backend that reads it differently.
+	if errors.Is(err, errXMLEndedEarly) && v.InboundDataError().Get() == "1" {
+		err = nil
 	}
-	col := v.RequestXML()
-	col.Set("//@*", values)
-	col.Set("/*", contents)
-	return nil
+	if err == nil || errors.Is(err, errXMLEndedEarly) {
+		col := v.RequestXML()
+		col.Set("//@*", values)
+		col.Set("/*", contents)
+	}
+	return err
 }
 
 func (*xmlBodyProcessor) ProcessResponse(reader io.Reader, v plugintypes.TransactionVariables, options plugintypes.BodyProcessorOptions) error {
@@ -38,10 +44,14 @@ func readXML(reader io.Reader) ([]string, []string, error) {
 	dec.Strict = false
 	dec.AutoClose = xml.HTMLAutoClose
 	dec.Entity = xml.HTMLEntity
+	endedEarly := false
 	for {
 		token, err := dec.Token()
-		if err != nil && err != io.EOF && !isUnexpectedEOFXMLSyntaxError(err) {
-			return nil, nil, err
+		if err != nil && err != io.EOF {
+			if !isUnexpectedEOFXMLSyntaxError(err) {
+				return nil, nil, err
+			}
+			endedEarly = true
 		}
 		if token == nil {
 			break
@@ -64,8 +74,13 @@ func readXML(reader io.Reader) ([]string, []string, error) {
 			}
 		}
 	}
+	if endedEarly {
+		return attrs, content, errXMLEndedEarly
+	}
 	return attrs, content, nil
 }
+
+var errXMLEndedEarly = errors.New("xml: unexpected end of the body")
 
 var errXMLEntity = errors.New("xml: entity declarations are not supported")
 

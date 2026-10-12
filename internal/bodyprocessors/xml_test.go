@@ -5,6 +5,7 @@ package bodyprocessors
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 
 	"github.com/corazawaf/coraza/v3/internal/strings"
@@ -101,13 +102,20 @@ func TestXMLUnexpectedEOF(t *testing.T) {
 			<heading>Reminder</heading`,
 			Want: []string{"Tove", "Jani", "Reminder"},
 		},
+		{
+			// Go's scanner reads to the end of the body for a quote in a
+			// processing instruction inside the internal subset.
+			Name:  "aQuoteInAProcessingInstructionInTheDoctype",
+			Input: `<?xml version="1.0"?><!DOCTYPE x [<?pi it's?>]><x>Tove</x>`,
+			Want:  nil,
+		},
 	}
 	for _, tc := range testCases {
 		t.Run(tc.Name, func(t *testing.T) {
 			xmldoc := tc.Input
 			_, contents, err := readXML(bytes.NewReader([]byte(xmldoc)))
-			if err != nil {
-				t.Error(err)
+			if !errors.Is(err, errXMLEndedEarly) {
+				t.Errorf("want errXMLEndedEarly, got %v", err)
 			}
 			if got, want := len(contents), len(tc.Want); got != want {
 				t.Errorf("contents count mismatch, got=%d, want=%d", got, want)
