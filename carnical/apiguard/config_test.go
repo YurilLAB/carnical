@@ -55,7 +55,7 @@ func TestConfigValidation(t *testing.T) {
 		{"required observation ceiling", func(c *Config) { c.Learn.RequiredMinObservations = 1_000_000 }, ""},
 		{"required observation overflow", func(c *Config) { c.Learn.RequiredMinObservations = 1_000_001 }, "requiredMinObservations"},
 		{"negative required observations", func(c *Config) { c.Learn.RequiredMinObservations = -1 }, "requiredMinObservations"},
-		{"minimum client share", func(c *Config) { c.Learn.MaxClientShare = 1 }, ""},
+		{"a client share no evidence can meet", func(c *Config) { c.Learn.MaxClientShare = 6 }, "maxClientShare"},
 		{"maximum client share", func(c *Config) { c.Learn.MaxClientShare = 100 }, ""},
 		{"negative client share", func(c *Config) { c.Learn.MaxClientShare = -1 }, "maxClientShare"},
 		{"minimum required percentage", func(c *Config) { c.Learn.RequiredPercent = 50 }, ""},

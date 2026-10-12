@@ -122,12 +122,23 @@ func rep30() []int {
 }
 
 func TestOwnerSuppliedEvidenceCountsAtOnce(t *testing.T) {
-	e := &Evidence{}
-	if !e.addTrusted(&testRule) || !e.OK {
-		t.Fatalf("a recording vouched for by the owner is not enough: %+v", e)
+	tests := []struct {
+		name string
+		rule evRule
+	}{
+		{"the default rule", testRule},
+		{"the most clients and the smallest share a rule can ask for", evRule{minObs: 30, minClients: maxSlots, maxShare: 7}},
 	}
-	if e.N < testRule.minObs || len(e.Slots) < testRule.minClients {
-		t.Fatalf("%+v", e)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := &Evidence{}
+			if !e.addTrusted(&tt.rule) || !e.OK {
+				t.Fatalf("a recording vouched for by the owner is not enough: %+v", e)
+			}
+			if e.N < tt.rule.minObs || len(e.Slots) < tt.rule.minClients {
+				t.Fatalf("%+v", e)
+			}
+		})
 	}
 }
 

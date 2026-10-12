@@ -399,7 +399,7 @@ func (l LearnConfig) validate() error {
 		v, lo, hi int
 	}{
 		{"minObservations", l.MinObservations, 1, 1_000_000}, {"minClients", l.MinClients, 1, maxSlots},
-		{"maxClientShare", l.MaxClientShare, 1, 100}, {"requiredMinObservations", l.RequiredMinObservations, 1, 1_000_000},
+		{"maxClientShare", l.MaxClientShare, minClientShare, 100}, {"requiredMinObservations", l.RequiredMinObservations, 1, 1_000_000},
 		{"requiredPercent", l.RequiredPercent, 50, 100}, {"maxRoutes", l.MaxRoutes, 1, MaxRoutes},
 		{"maxPositions", l.MaxPositions, 1, 1_000_000}, {"maxNodes", l.MaxNodes, 100, 5_000_000},
 		{"distinctValues", l.DistinctValues, 2, 64},

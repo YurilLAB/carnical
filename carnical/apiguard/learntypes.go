@@ -22,6 +22,10 @@ import (
 // maxSlots is how many clients one piece of evidence follows.
 const maxSlots = 16
 
+// minClientShare is the smallest share, in percent, that evidence can meet. The counts of the clients followed add up to all the
+// sightings, so the busiest of maxSlots clients always holds at least a maxSlots-th of them.
+const minClientShare = (100 + maxSlots - 1) / maxSlots
+
 // ClientSlot is one client's count in an Evidence.
 type ClientSlot struct {
 	C uint32 `json:"c"` // an identifier made from the client's address prefix with a key that belongs to this guard
@@ -42,8 +46,8 @@ type evRule struct {
 	maxShare   uint32 // percent
 }
 
-// trustedClients is how many separate clients an owner-supplied recording stands for. The owner is vouching for it, so it counts as
-// full evidence, spread so that no one of them is over the share.
+// trustedClients is the fewest separate clients an owner-supplied recording stands for. The owner is vouching for it, so it counts
+// as full evidence, spread over more clients when the rule asks for more of them or for a smaller share.
 const trustedClients = 6
 
 // add records weight sightings by a client and reports whether the evidence just became enough.
@@ -87,8 +91,13 @@ func (e *Evidence) add(client uint32, w uint32, r *evRule) (flipped bool) {
 
 // addTrusted records sightings that an owner vouches for: enough to be enforceable at once, as if from several clients.
 func (e *Evidence) addTrusted(r *evRule) (flipped bool) {
-	per := (r.minObs + trustedClients - 1) / trustedClients
-	for k := uint32(0); k < trustedClients; k++ {
+	// Enough clients that the rule's count is met and each one's equal part is within the share.
+	n := uint32(trustedClients)
+	for n < maxSlots && (int64(n) < int64(r.minClients) || uint64(r.maxShare)*uint64(n) < 100) {
+		n++
+	}
+	per := (r.minObs + n - 1) / n
+	for k := uint32(0); k < n; k++ {
 		if e.add(0xFFFF0000|k, per, r) {
 			flipped = true
 		}
