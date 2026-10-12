@@ -413,6 +413,7 @@ func parseCtl(data string, memoizer plugintypes.Memoizer) (ctlFunctionType, stri
 		if len(rxPattern) == 0 {
 			return ctlUnknown, "", 0, "", nil, errors.New("empty regex pattern in ctl collection key")
 		}
+		rxPattern = corazawaf.KeyRegexPattern(collection, rxPattern)
 		var err error
 		if memoizer != nil {
 			re, compileErr := memoizer.Do(rxPattern, func() (any, error) { return regexp.Compile(rxPattern) })
@@ -427,8 +428,6 @@ func parseCtl(data string, memoizer plugintypes.Memoizer) (ctlFunctionType, stri
 			}
 		}
 		colkey = ""
-	} else {
-		colkey = strings.ToLower(colkey)
 	}
 	var act ctlFunctionType
 	switch action {

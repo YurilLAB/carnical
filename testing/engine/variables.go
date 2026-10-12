@@ -65,6 +65,24 @@ var _ = profile.RegisterProfile(profile.Profile{
 				},
 			},
 		},
+		{
+			// Mixed-case ARGS keys, key regexes and exceptions select the
+			// parameter the client sent, whatever the case sensitivity.
+			Title: "mixed-case args keys",
+			Stages: []profile.Stage{
+				{
+					Stage: profile.SubStage{
+						Input: profile.StageInput{
+							URI: "/index.php?Foo=evil",
+						},
+						Output: profile.ExpectedOutput{
+							TriggeredRules:    []int{1200, 1201},
+							NonTriggeredRules: []int{1202, 1203},
+						},
+					},
+				},
+			},
+		},
 	},
 	Rules: `
 SecRule REQBODY_PROCESSOR "" "id: 10, log"
@@ -106,6 +124,12 @@ SecRule ARGS "bbb" "id:9124,phase:1,log"
 SecRuleUpdateTargetById 9124 "!ARGS:t2"
 
 SecAction "id: 99999, log, msg:'%{env.test}'"
+
+SecRule ARGS_NAMES:Foo "@rx ." "id:1200,phase:1,pass,log"
+SecRule ARGS:/^Foo$/ "evil" "id:1201,phase:1,pass,log"
+SecRule ARGS|!ARGS:/^Foo$/ "evil" "id:1202,phase:1,pass,log"
+SecAction "id:1199,phase:1,pass,nolog,ctl:ruleRemoveTargetById=1203;ARGS:/^Foo$/"
+SecRule ARGS "evil" "id:1203,phase:1,pass,log"
 `,
 })
 

@@ -370,17 +370,7 @@ func TestRuleNegativeVariablesEmtpyRule(t *testing.T) {
 	}
 }
 
-func TestVariablesRxAreCaseSensitive(t *testing.T) {
-	rule := NewRule()
-	if err := rule.AddVariable(variables.ArgsGet, "/Som3ThinG/", false); err != nil {
-		t.Error(err)
-	}
-	if rule.variables[0].KeyRx.String() != "Som3ThinG" {
-		t.Error("variable key is not case insensitive")
-	}
-}
-
-func TestVariablesRxAreLowercasedForCaseInsensitiveCollections(t *testing.T) {
+func TestVariablesRxMatchLowercasedKeysOfCaseInsensitiveCollections(t *testing.T) {
 	rule := NewRule()
 	if err := rule.AddVariable(variables.TX, "/MULTIPART_HEADERS_CONTENT_TYPES_.*/", false); err != nil {
 		t.Error(err)
@@ -388,12 +378,12 @@ func TestVariablesRxAreLowercasedForCaseInsensitiveCollections(t *testing.T) {
 	if rule.variables[0].KeyRx == nil {
 		t.Fatal("expected regex to be set")
 	}
-	if rule.variables[0].KeyRx.String() != "multipart_headers_content_types_.*" {
-		t.Errorf("expected lowercased regex for case-insensitive variable TX, got %q", rule.variables[0].KeyRx.String())
+	if !rule.variables[0].KeyRx.MatchString("multipart_headers_content_types_x") {
+		t.Errorf("regex %q for case-insensitive variable TX does not match a lowercased key", rule.variables[0].KeyRx.String())
 	}
 }
 
-func TestVariableNegationRxLowercasedForCaseInsensitiveCollections(t *testing.T) {
+func TestVariableNegationRxMatchesLowercasedKeysOfCaseInsensitiveCollections(t *testing.T) {
 	rule := NewRule()
 	if err := rule.AddVariable(variables.TX, "", false); err != nil {
 		t.Error(err)
@@ -408,8 +398,8 @@ func TestVariableNegationRxLowercasedForCaseInsensitiveCollections(t *testing.T)
 	if ex.KeyRx == nil {
 		t.Fatal("expected regex exception to be set")
 	}
-	if ex.KeyRx.String() != "some_pattern.*" {
-		t.Errorf("expected lowercased regex for case-insensitive variable TX exception, got %q", ex.KeyRx.String())
+	if !ex.KeyRx.MatchString("some_pattern_x") {
+		t.Errorf("regex %q for case-insensitive variable TX exception does not match a lowercased key", ex.KeyRx.String())
 	}
 }
 

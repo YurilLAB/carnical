@@ -131,6 +131,9 @@ func (c *NamedCollectionNames) FindRegex(key *regexp.Regexp) []types.MatchData {
 }
 
 func (c *NamedCollectionNames) FindString(key string) []types.MatchData {
+	if !c.collection.isCaseSensitive {
+		key = strings.ToLower(key)
+	}
 	data, ok := c.collection.data[key]
 	if !ok || len(data) == 0 {
 		return nil

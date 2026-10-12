@@ -19,4 +19,10 @@ func TestCaseSensitiveArgsVariableKeys(t *testing.T) {
 	if rule.variables[0].KeyStr != "Som3ThinG" {
 		t.Error("variable key is not case insensitive")
 	}
+	if err := rule.AddVariable(variables.ArgsGet, "/Som3ThinG/", false); err != nil {
+		t.Error(err)
+	}
+	if rule.variables[1].KeyRx.String() != "Som3ThinG" {
+		t.Error("variable regex key is not case sensitive")
+	}
 }

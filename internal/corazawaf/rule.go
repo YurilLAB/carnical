@@ -550,16 +550,28 @@ func hasRegex(key string) (bool, string) {
 	return utils.HasRegex(key)
 }
 
-// caseSensitiveVariable returns true if the variable is case sensitive
+// caseSensitiveVariable returns true if the variable's keys are case sensitive.
+// Only the ARGS family can be, and only in the coraza.rule.case_sensitive_args_keys
+// build (see ADR-0016); every other collection stores its keys lowercased.
 func caseSensitiveVariable(v variables.RuleVariable) bool {
-	res := false
 	switch v {
 	case variables.Args, variables.ArgsNames,
 		variables.ArgsGet, variables.ArgsPost,
 		variables.ArgsGetNames, variables.ArgsPostNames:
-		res = true
+		return shouldUseCaseSensitiveNamedCollection
 	}
-	return res
+	return false
+}
+
+// KeyRegexPattern returns the pattern to compile for a VARIABLE:/regex/ key
+// or exception. A collection with case-insensitive keys stores them
+// lowercased, so a pattern with uppercase letters is made case-insensitive.
+// Lowercasing the pattern instead would change escapes such as \D, \S and \W.
+func KeyRegexPattern(v variables.RuleVariable, rx string) string {
+	if caseSensitiveVariable(v) || strings.ToLower(rx) == rx {
+		return rx
+	}
+	return "(?i)" + rx
 }
 
 // newRuleVariableParams creates a new ruleVariableParams
@@ -588,9 +600,7 @@ func (r *Rule) AddVariable(v variables.RuleVariable, key string, iscount bool) e
 	}
 	var re *regexp.Regexp
 	if isRegex, rx := hasRegex(key); isRegex {
-		if !caseSensitiveVariable(v) {
-			rx = strings.ToLower(rx)
-		}
+		rx = KeyRegexPattern(v, rx)
 		if vare, err := r.memoizeDo(rx, func() (any, error) { return regexp.Compile(rx) }); err != nil {
 			return err
 		} else {
@@ -635,9 +645,7 @@ func needToSplitConcatenatedVariable(v variables.RuleVariable, ve variables.Rule
 func (r *Rule) AddVariableNegation(v variables.RuleVariable, key string) error {
 	var re *regexp.Regexp
 	if isRegex, rx := hasRegex(key); isRegex {
-		if !caseSensitiveVariable(v) {
-			rx = strings.ToLower(rx)
-		}
+		rx = KeyRegexPattern(v, rx)
 		if vare, err := r.memoizeDo(rx, func() (any, error) { return regexp.Compile(rx) }); err != nil {
 			return err
 		} else {
