@@ -1866,7 +1866,7 @@ func TestPrivateFilesAreReadWithCare(t *testing.T) {
 			{"-api-spec", func() error { _, _, err := configureAPI(fifo, "monitor", "monitor"); return err }},
 			{"-formats-policy", func() error { _, err := configureFormats("monitor", fifo, false); return err }},
 			{"-ddos-ranges", func() error {
-				_, err := configureShield(log, shieldFlags{mode: "monitor", rate: 10, burst: 20, maxConns: 10, maxRaise: 1, ranges: fifo}, nil)
+				_, err := configureShield(log, shieldFlags{mode: "monitor", rate: 10, burst: 20, maxConns: 100, maxRaise: 1, ranges: fifo}, nil)
 				return err
 			}},
 		} {
@@ -1875,8 +1875,8 @@ func TestPrivateFilesAreReadWithCare(t *testing.T) {
 				go func() { done <- tc.read() }()
 				select {
 				case err := <-done:
-					if err == nil {
-						t.Fatal("a FIFO was read")
+					if err == nil || !strings.Contains(err.Error(), "regular file") {
+						t.Fatalf("a FIFO was not refused as not a regular file: %v", err)
 					}
 				case <-time.After(10 * time.Second):
 					t.Fatal("reading a FIFO blocked")
