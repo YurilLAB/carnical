@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -155,6 +156,21 @@ func TestSeenFilterRemembersForOneToTwoPeriods(t *testing.T) {
 	f.rotate()
 	if f.has(hashString("seen5")) {
 		t.Fatal("still remembered after two rotations")
+	}
+	// Through the detector: an address that comes back every hour stays seen, and one that stops is forgotten.
+	d := newDetector(DetectorConfig{})
+	poller, other := netip.MustParseAddr("198.51.100.7"), netip.MustParseAddr("198.51.100.8")
+	start := time.Date(2026, 10, 6, 0, 0, 0, 0, time.UTC).UnixNano()
+	var newAt []int
+	for h := 0; h <= 60; h++ {
+		ns := start + int64(h)*int64(time.Hour)
+		d.observe(ns, other, 1, "fp", 2, "/") // keeps the filter rotating
+		if (h <= 30 || h == 60) && d.observe(ns, poller, 1, "fp", 2, "/") {
+			newAt = append(newAt, h)
+		}
+	}
+	if !slices.Equal(newAt, []int{0, 60}) {
+		t.Fatalf("an address seen every hour until hour 30 was new at hours %v, want [0 60]", newAt)
 	}
 }
 

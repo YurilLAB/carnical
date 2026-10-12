@@ -132,17 +132,27 @@ func bloomIdx(h, i uint64) uint64 {
 	return (h1 + i*h2) % seenBits
 }
 
-func (f *seenFilter) has(h uint64) bool {
-	in := func(b []uint64) bool {
-		for i := uint64(0); i < 3; i++ {
-			j := bloomIdx(h, i)
-			if b[j/64]&(1<<(j%64)) == 0 {
-				return false
-			}
+func bloomHas(b []uint64, h uint64) bool {
+	for i := uint64(0); i < 3; i++ {
+		j := bloomIdx(h, i)
+		if b[j/64]&(1<<(j%64)) == 0 {
+			return false
 		}
+	}
+	return true
+}
+
+func (f *seenFilter) has(h uint64) bool { return bloomHas(f.cur, h) || bloomHas(f.old, h) }
+
+// see reports whether h was seen in the last one or two periods, and records it in the current one: an address is
+// forgotten only one to two periods after it stops coming. One already in the current period costs no write.
+func (f *seenFilter) see(h uint64) bool {
+	if bloomHas(f.cur, h) {
 		return true
 	}
-	return in(f.cur) || in(f.old)
+	seen := bloomHas(f.old, h)
+	f.add(h)
+	return seen
 }
 
 func (f *seenFilter) add(h uint64) {

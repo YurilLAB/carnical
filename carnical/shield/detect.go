@@ -305,9 +305,8 @@ func (d *detector) observe(ns int64, key netip.Addr, fp uint64, fpLabel string, 
 	w.nets.add(maphashPrefix(netOf(key)))
 	w.fps.add(fp, fpLabel, h, 1)
 	w.paths.add(pt, ptLabel, h, 1)
-	isNew := !d.seen.has(h)
+	isNew := !d.seen.see(h)
 	if isNew {
-		d.seen.add(h)
 		w.newSrcs++
 	}
 	if inc := d.incident; inc != nil {
