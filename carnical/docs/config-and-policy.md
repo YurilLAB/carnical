@@ -555,7 +555,7 @@ written by the console's own code (`Policy::blank()`, `Policy::ruleFromForm`,
 | PHP setting | Here |
 |---|---|
 | `mode` | carried. **Unset** (null) means config.php's value, which this program cannot see; the PHP built-in default `monitor` is used and the list says so, because a new site here starts in `block` |
-| `sensitivity`, `threshold` | `standard` is `normal`; `relaxed` and `strict` are carried as the nearest preset and **named as approximate**; a threshold is scaled by the sensitivity exactly as `Engine::sensitiveThreshold` does and carried as the override |
+| `sensitivity`, `threshold` | `standard` is `normal`; `relaxed` and `strict` are carried as the nearest preset and **named as approximate**; a threshold is scaled by the sensitivity exactly as `Engine::sensitiveThreshold` does and carried as the override (at most 1000, which only blocks sooner) |
 | `rule_groups` | the ten with a counterpart are carried; `upload`, `wordpress`, `cve`, `ssti`, `xxe`, `probe`, `other` have none (uploads and WordPress have sections of their own, `cve` is the virtual patches) and are named when they are not `on` |
 | `disabled`, `overrides` | **not carried** and listed with their ids: single rules cannot be switched off here, and the rule set scores a rule by its severity, so a score between cannot be set exactly; a rule group or an exclusion is the nearest |
 | `exclusions` | carried; categories with no group, and targets this model does not have (`uploads`) are dropped and named; **an exclusion that would lose all its targets is dropped, never widened to the whole request**; a path the strict character set refuses is dropped |

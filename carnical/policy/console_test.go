@@ -247,6 +247,17 @@ func TestConsoleExportRows(t *testing.T) {
 				t.Fatalf("%v", p.Threshold)
 			}
 		}},
+		{name: "what a policy here cannot hold is left out and named, not the whole export", in: wrap(`{"mode":"block","sensitivity":"relaxed","threshold":700,"rules":[` +
+			`{"id":"SITE-0001","action":"log","targets":["args"],"operator":"contains","pattern":"` + strings.Repeat("a", 300) + `"},` +
+			`{"id":"SITE-0002","action":"log","targets":["args"],"operator":"pm","pattern":"` + strings.Repeat("w", 65) + `"},` +
+			`{"id":"SITE-0003","action":"log","targets":["path"],"operator":"contains","pattern":"a"},` +
+			`{"id":"SITE-3","action":"log","targets":["path"],"operator":"contains","pattern":"b"}]}`),
+			skipped: [][]string{{"threshold:", "1050", "1000 was used"}, {"SITE-0001", "256 bytes"}, {"SITE-0002", "64 bytes"}, {"SITE-3", "became rule 4"}},
+			check: func(t *testing.T, p Policy) {
+				if p.Threshold == nil || *p.Threshold != 1000 || len(p.CustomRules) != 2 {
+					t.Fatalf("threshold %v, rules %+v", p.Threshold, p.CustomRules)
+				}
+			}},
 		{name: "a threshold out of range", in: wrap(`{"mode":"block","threshold":5000}`), skipped: [][]string{{"threshold:", "1 to 1000"}}, check: func(t *testing.T, p Policy) {
 			if p.Threshold != nil {
 				t.Fatal("a threshold out of range was carried")

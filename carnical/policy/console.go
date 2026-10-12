@@ -46,7 +46,7 @@ func FromConsoleExport(data []byte) (Policy, []string, error) {
 	if err != nil {
 		return Policy{}, nil, invalid("$", "an export is a JSON object")
 	}
-	c := &converter{p: Default(), nextRule: 1, usedIDs: map[int]bool{}}
+	c := &converter{p: Default(), nextRule: 1, usedIDs: map[int]bool{}, carried: map[int]bool{}}
 	pol := doc
 	if v, ok := doc["site_firewall_policy"]; ok {
 		if n, isNum := v.(json.Number); !isNum || n.String() != "1" {
@@ -99,6 +99,7 @@ type converter struct {
 	base     int    // the PHP threshold (5 if unset)
 	nextRule int
 	usedIDs  map[int]bool
+	carried  map[int]bool // the numbers of the rules carried so far
 }
 
 func (c *converter) skip(format string, args ...any) {
@@ -243,10 +244,14 @@ func (c *converter) threshold(pol map[string]any) {
 	}
 	c.base = n
 	stop := phpStop(n, c.sens)
-	c.p.Threshold = &stop
-	if stop != n {
+	if stop > 1000 {
+		// A lower threshold blocks sooner, so this loosens nothing.
+		c.skip("threshold: %d, scaled by the %s sensitivity as the PHP firewall scales it, is %d, more than the 1000 a threshold here can be, so 1000 was used", n, c.sens, stop)
+		stop = 1000
+	} else if stop != n {
 		c.skip("threshold: %d, scaled by the %s sensitivity as the PHP firewall scales it, is %d here", n, c.sens, stop)
 	}
+	c.p.Threshold = &stop
 }
 
 // simple carries the settings that are a single value.
@@ -626,8 +631,12 @@ func (c *converter) rule(name string, m map[string]any) {
 		}
 		rule.Value = s
 	}
-	if _, err := operatorRegex(rule.Operator, rule.Value, rule.Values, rule.CaseSensitive); err != nil {
-		c.skip("%s: its pattern cannot be used here (it %s), so it was left out", name, err.Error())
+	// Validate's own check of the value (with the words as Normalize keeps them), so that a value it refuses, such as a long
+	// contains pattern, leaves this rule out and not the whole export.
+	check, vc := rule, checker{}
+	check.Values = sortedUnique(rule.Values)
+	if validateRuleValue(&vc, name, check) == "" {
+		c.skip("%s: its pattern cannot be used here (it %s), so it was left out", name, vc.problems[0].Message)
 		return
 	}
 	// Action. A block rule with a score adds to the request's total in the PHP firewall; it blocks alone only if its score reaches
@@ -671,12 +680,17 @@ func (c *converter) rule(name string, m map[string]any) {
 		r := rule
 		r.Field = f
 		n := ruleNumber(m)
-		if !first || n == 0 {
+		// SITE-0001 and SITE-1 are the same number, and an export may hold a number twice: the second takes a free one.
+		renumbered := first && n != 0 && c.carried[n]
+		if !first || n == 0 || renumbered {
 			n = c.freeNumber()
 			if n == 0 {
 				c.skip("%s: there are no free rule numbers left, so part of it was left out", name)
 				return
 			}
+		}
+		if renumbered {
+			c.skip("%s: its number is that of an earlier rule, so it became rule %d", name, n)
 		}
 		first = false
 		made = append(made, strconv.Itoa(n))
@@ -686,6 +700,7 @@ func (c *converter) rule(name string, m map[string]any) {
 			return
 		}
 		c.p.CustomRules = append(c.p.CustomRules, r)
+		c.carried[n] = true
 		if decodes && !urlDecoded(f) {
 			c.skip("%s: it URL-decodes %s before matching, which a rule here does only for the path, uri, query and arguments, so a URL-encoded value in %s may not be matched (the rule was carried as it is)", name, f, f)
 		}

@@ -234,10 +234,14 @@ func FuzzFromConsoleExport(f *testing.F) {
 		f.Add(readFixtureBytes("testdata/" + name))
 	}
 	f.Add([]byte(`{"site_firewall_policy":1,"policy":{"rules":[{"id":"SITE-0001","action":"block","score":9,"targets":["a","b","uploads","path"],"operator":"rx","pattern":"(","transforms":["x"]}]}}`))
+	f.Add([]byte(`{"site_firewall_policy":1,"policy":{"mode":"block","sensitivity":"relaxed","threshold":600,"rules":[{"id":"SITE-0001","action":"log","targets":["args"],"operator":"pm","pattern":"aa bb cc"},{"id":"SITE-1","action":"block","targets":["path","args"],"operator":"contains","pattern":"aaaa"}]}}`))
 	f.Add([]byte(`{"site_firewall_policy":1,"policy":{"exclusions":[{"path":"/a/","categories":["x"],"targets":["uploads"]}],"allow_ips":["1.2.3.4/0",5,null]}}`))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		p, skipped, err := FromConsoleExport(data)
 		if err != nil {
+			if strings.Contains(err.Error(), "fault in the converter") {
+				t.Fatalf("converter fault: %v", err)
+			}
 			if len(skipped) != 0 {
 				t.Fatal("an error with a list")
 			}

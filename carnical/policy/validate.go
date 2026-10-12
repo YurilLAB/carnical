@@ -244,7 +244,7 @@ func validateRuleValue(c *checker, at string, r CustomRule) string {
 		}
 		for _, w := range r.Values {
 			if len(w) > MaxPMValueBytes {
-				c.add(at+".values", "a word is longer than %d bytes", MaxPMValueBytes)
+				c.add(at+".values", "has a word longer than %d bytes", MaxPMValueBytes)
 				return ""
 			}
 		}
