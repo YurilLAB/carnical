@@ -79,8 +79,8 @@ type rxProg struct {
 //   - (?#comment) is dropped.
 //   - A repeat bound above RE2's 1000 ({0,4096}) is widened to no bound. Exact for values shorter than the bound, which is the
 //     only difference.
-//   - A pattern that starts \A(?=A)(?=B)rest asserts that A, B and rest each match at the start; it becomes those expressions,
-//     all required of the same value. Exact.
+//   - A pattern that starts \A(?=A)(?=B)rest asserts that A, B and rest each match at the start; it becomes \A(?:A), \A(?:B)
+//     and \Arest, all required of the same value. Exact.
 //   - A lookahead of one character class directly before something that cannot start with any other character, such as
 //     (?=[a-z])(?:cat|curl|...), asserts nothing the next token does not already; it is removed after that has been proved on the
 //     parsed expression. Exact.
@@ -407,15 +407,21 @@ func (t *translator) translateAll(p string, multiline, byteMode bool) ([]string,
 		if topLevelAlternation(rest) {
 			return nil, fmt.Errorf("lookahead in one branch of an alternation has no RE2 equivalent")
 		}
+		looks := len(bodies)
 		if rest != "" {
 			bodies = append(bodies, rest)
 		}
 		t.note("start-anchored lookaheads split into required parts")
 		var out []string
-		for _, b := range bodies {
+		for i, b := range bodies {
 			s, err := t.run(b)
 			if err != nil {
 				return nil, err
+			}
+			if i < looks {
+				// A lookahead's body is grouped, so that every branch of one such as (?=a|b) keeps the anchor. The rest has no
+				// top-level '|' and may end in an open \Q, which a group would swallow.
+				s = `(?:` + s + `)`
 			}
 			out = append(out, pref+`\A`+s)
 		}

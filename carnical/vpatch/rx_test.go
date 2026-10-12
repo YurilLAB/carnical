@@ -92,6 +92,7 @@ func TestRegexTranslation(t *testing.T) {
 		{"start-anchored length wrong", `\A(?=[\s\S]{4}\z)[\s\S]*?x`, "", "abcdx", false},
 		{"start-anchored with only lookaheads", `\A(?=[\s\S]*?foo)(?=[\s\S]*?bar)`, "", "foo bar", true},
 		{"start-anchored with a flag prefix", `(?i)\A(?=[\s\S]*?foo)[\s\S]*?bar`, "", "FOO BAR", true},
+		{"start-anchored lookahead with an alternation anchors every branch", `^(?=admin|root)`, "", "myroot", false},
 		{"redundant one-class lookahead", `x(?=[a-z])(?:cat|curl)`, "", "xcat", true},
 		{"redundant one-class lookahead no", `x(?=[a-z])(?:cat|curl)`, "", "xCAT", false},
 		{"redundant one-class lookahead in a branch", `(?:a(?=[a-z])bc|zz)`, "", "abc", true},
