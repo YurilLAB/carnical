@@ -33,7 +33,29 @@ var _ = profile.RegisterProfile(profile.Profile{
 						},
 						Output: profile.ExpectedOutput{
 							TriggeredRules:    []int{101, 102, 500},
-							NonTriggeredRules: []int{103},
+							NonTriggeredRules: []int{103, 200002},
+						},
+					},
+				},
+			},
+		},
+		{
+			// Entities are not expanded, so a body that declares one is
+			// refused instead of being inspected in pieces.
+			Title: "xml entity declaration",
+			Stages: []profile.Stage{
+				{
+					Stage: profile.SubStage{
+						Input: profile.StageInput{
+							URI:    "/index.php",
+							Method: "POST",
+							Headers: map[string]string{
+								"content-type": "application/xml",
+							},
+							Data: `<?xml version="1.0"?><!DOCTYPE x [<!ENTITY a "test"><!ENTITY b "123">]><x>&a;&b;</x>`,
+						},
+						Output: profile.ExpectedOutput{
+							TriggeredRules: []int{200002},
 						},
 					},
 				},
@@ -48,5 +70,6 @@ SecRule XML:/*|XML://@* "test123" "id:102, phase:2,log,block"
 #REQUEST_BODY must be empty for XML body processor
 SecRule XML:/* "test123" "id:500, log"
 SecRule XML://@* "attribute_value" "id:501, log"
+SecRule REQBODY_ERROR "!@eq 0" "id:200002, phase:2, t:none, log, pass"
 `,
 })

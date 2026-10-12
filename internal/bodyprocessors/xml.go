@@ -4,6 +4,7 @@
 package bodyprocessors
 
 import (
+	"bytes"
 	"encoding/xml"
 	"errors"
 	"io"
@@ -46,6 +47,13 @@ func readXML(reader io.Reader) ([]string, []string, error) {
 			break
 		}
 		switch tok := token.(type) {
+		case xml.Directive:
+			// Entities are not expanded here, so a value an entity holds
+			// would only be seen in pieces, while a backend that expands
+			// them reads it whole. A document that declares one is refused.
+			if declaresEntity(tok) {
+				return nil, nil, errXMLEntity
+			}
 		case xml.StartElement:
 			for _, attr := range tok.Attr {
 				attrs = append(attrs, attr.Value)
@@ -57,6 +65,20 @@ func readXML(reader io.Reader) ([]string, []string, error) {
 		}
 	}
 	return attrs, content, nil
+}
+
+var errXMLEntity = errors.New("xml: entity declarations are not supported")
+
+// declaresEntity reports whether a DOCTYPE directive declares an entity in
+// its internal subset. Go keeps the subset's declarations in the directive.
+func declaresEntity(d xml.Directive) bool {
+	const decl = "<!entity"
+	for i := 0; i+len(decl) <= len(d); i++ {
+		if d[i] == '<' && bytes.EqualFold(d[i:i+len(decl)], []byte(decl)) {
+			return true
+		}
+	}
+	return false
 }
 
 func isUnexpectedEOFXMLSyntaxError(err error) bool {
