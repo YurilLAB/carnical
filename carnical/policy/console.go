@@ -377,7 +377,11 @@ func (c *converter) exclusions(pol map[string]any) {
 			continue
 		}
 		var targets []string
-		tl, hasTargets := asList(m["targets"])
+		tl, ok := asList(m["targets"])
+		if !ok {
+			c.skip("%s: its targets are not a list, and reading them as none would widen it to the whole request, so the exclusion was left out", at)
+			continue
+		}
 		unsupported := false
 		for _, tv := range tl {
 			name, _ := tv.(string)
@@ -389,7 +393,7 @@ func (c *converter) exclusions(pol map[string]any) {
 				c.skip("%s: the target %q is not one this program supports and was left out of the exclusion", at, safeName(name))
 			}
 		}
-		if hasTargets && len(tl) > 0 && len(targets) == 0 && unsupported {
+		if len(tl) > 0 && len(targets) == 0 && unsupported {
 			// Dropping every target would widen the exclusion to the whole request.
 			c.skip("%s: none of its targets is supported, and leaving them all out would widen it to the whole request, so the exclusion was left out", at)
 			continue
@@ -555,6 +559,13 @@ func (c *converter) rule(name string, m map[string]any) {
 		c.skip("%s: more than %d custom rules; this and the rest were left out", name, MaxCustomRules)
 		return
 	}
+	// Read as none, a value that is not a list would drop a condition or a transformation, or move the rule to the path.
+	for _, key := range []string{"also", "transforms", "targets"} {
+		if _, ok := asList(m[key]); !ok {
+			c.skip("%s: its %q field is not a list, so it was left out", name, key)
+			return
+		}
+	}
 	if also, _ := asList(m["also"]); len(also) > 0 {
 		c.skip("%s: it has %d further condition(s) that must all hold; a rule here has one condition, so it was left out", name, len(also))
 		return
@@ -658,12 +669,13 @@ func (c *converter) rule(name string, m map[string]any) {
 	if d, ok := m["description"].(string); ok {
 		rule.Note = cleanNote(d)
 	}
-	targets := stringList(m["targets"])
+	targets, _ := asList(m["targets"])
 	if len(targets) == 0 {
-		targets = []string{"path"}
+		targets = []any{"path"}
 	}
 	var fields []string
-	for _, t := range targets {
+	for _, tv := range targets {
+		t, _ := tv.(string)
 		t = strings.ToLower(t)
 		if _, ok := targetVariable(t, true); ok {
 			fields = append(fields, t)

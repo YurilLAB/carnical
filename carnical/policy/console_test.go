@@ -284,6 +284,17 @@ func TestConsoleExportRows(t *testing.T) {
 					t.Fatalf("an exclusion whose target cannot be carried was carried (widened): %+v", p.Exclusions)
 				}
 			}},
+		{name: "lists written as a PHP array with gaps are left out, not read as none", in: wrap(`{"mode":"block","exclusions":[{"path":"/a/","categories":["sqli"],"targets":{"0":"args","2":"cookies"}}],` +
+			`"rules":[{"id":"SITE-0001","action":"block","targets":["args"],"transforms":{"0":"base64decode","2":"urldecode"},"operator":"contains","pattern":"evil"},` +
+			`{"id":"SITE-0002","action":"block","targets":{"0":"args","2":"cookies"},"operator":"contains","pattern":"evil"},` +
+			`{"id":"SITE-0003","action":"block","targets":["args"],"also":{"1":{"targets":["path"],"operator":"contains","pattern":"x"}},"operator":"contains","pattern":"evil"},` +
+			`{"id":"SITE-0004","action":"block","targets":[5],"operator":"contains","pattern":"evil"}]}`),
+			skipped: [][]string{{"exclusions[1]", "not a list"}, {"SITE-0001", "transforms", "not a list"}, {"SITE-0002", "targets", "not a list"},
+				{"SITE-0003", "also", "not a list"}, {"SITE-0004", "none of the parts"}}, check: func(t *testing.T, p Policy) {
+				if len(p.Exclusions) != 0 || len(p.CustomRules) != 0 {
+					t.Fatalf("carried as if the list were empty: %+v %+v", p.Exclusions, p.CustomRules)
+				}
+			}},
 		{name: "an exclusion with a category that has no group and one that has", in: wrap(`{"mode":"block","exclusions":[{"path":"/a/","categories":["upload","sqli"],"targets":["args"]}]}`),
 			skipped: [][]string{{"exclusions[1]", "upload"}}, check: func(t *testing.T, p Policy) {
 				if len(p.Exclusions) != 1 || !reflect.DeepEqual(p.Exclusions[0].Categories, []string{"sqli"}) {
