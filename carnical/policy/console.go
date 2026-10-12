@@ -675,9 +675,11 @@ func (c *converter) rule(name string, m map[string]any) {
 	}
 	var fields []string
 	for _, tv := range targets {
-		t, _ := tv.(string)
+		t, isText := tv.(string)
 		t = strings.ToLower(t)
-		if _, ok := targetVariable(t, true); ok {
+		if !isText {
+			c.skip("%s: one of the parts it looks at is not named in text, so it does not look there here", name)
+		} else if _, ok := targetVariable(t, true); ok {
 			fields = append(fields, t)
 		} else {
 			c.skip("%s: it looks at %q, which a rule here cannot, so it does not look there here", name, safeName(t))

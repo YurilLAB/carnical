@@ -290,7 +290,7 @@ func TestConsoleExportRows(t *testing.T) {
 			`{"id":"SITE-0003","action":"block","targets":["args"],"also":{"1":{"targets":["path"],"operator":"contains","pattern":"x"}},"operator":"contains","pattern":"evil"},` +
 			`{"id":"SITE-0004","action":"block","targets":[5],"operator":"contains","pattern":"evil"}]}`),
 			skipped: [][]string{{"exclusions[1]", "not a list"}, {"SITE-0001", "transforms", "not a list"}, {"SITE-0002", "targets", "not a list"},
-				{"SITE-0003", "also", "not a list"}, {"SITE-0004", "none of the parts"}}, check: func(t *testing.T, p Policy) {
+				{"SITE-0003", "also", "not a list"}, {"SITE-0004", "not named in text"}, {"SITE-0004", "none of the parts"}}, check: func(t *testing.T, p Policy) {
 				if len(p.Exclusions) != 0 || len(p.CustomRules) != 0 {
 					t.Fatalf("carried as if the list were empty: %+v %+v", p.Exclusions, p.CustomRules)
 				}
