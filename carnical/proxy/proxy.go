@@ -194,6 +194,10 @@ func New(cfg Config) (*Edge, error) {
 		// The budget wrapper is also what applies MaxEvaluations, so this would quietly drop both limits.
 		return nil, errors.New("the evaluation budget must not be negative")
 	}
+	if cfg.MaxFormBody < 0 {
+		// It would refuse every body as too large, and size the read of a chunked one by a negative count.
+		return nil, errors.New("the form body limit must not be negative")
+	}
 	e := &Edge{originTLS: originTLS, hosts: map[string]bool{}, deny: map[string]bool{}}
 	for _, h := range cfg.AllowedHosts {
 		if n := normHost(h); n != "" {

@@ -256,10 +256,28 @@ SecRule RESPONSE_BODY "@contains secret" "id:4001,phase:4,deny,status:418"
 	})
 }
 
-func TestANegativeEvaluationBudgetIsRefused(t *testing.T) {
+func TestNegativeLimitsAreRefused(t *testing.T) {
 	u, _ := url.Parse("http://127.0.0.1:1")
-	if _, err := New(Config{Upstream: u, CRS: crs.DefaultSettings(), Origin: loopback, EvalBudget: -time.Second}); err == nil {
-		t.Fatal("a negative budget, which would also drop the evaluation slots, was accepted")
+	tests := []struct {
+		name string
+		cfg  Config
+	}{
+		{"a negative budget, which would also drop the evaluation slots", Config{EvalBudget: -time.Second}},
+		{"a negative form body limit, which would refuse every body", Config{MaxFormBody: -1}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.cfg.Upstream, tt.cfg.CRS, tt.cfg.Origin = u, crs.DefaultSettings(), loopback
+			if _, err := New(tt.cfg); err == nil {
+				t.Fatal("accepted")
+			}
+		})
+	}
+	cfg := Config{Upstream: u, CRS: crs.DefaultSettings(), Origin: loopback}
+	if e, err := New(cfg); err != nil {
+		t.Fatalf("the defaults were refused: %v", err)
+	} else {
+		e.Close()
 	}
 }
 
