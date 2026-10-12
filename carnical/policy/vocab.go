@@ -136,6 +136,11 @@ const bodyVariables = "REQUEST_BODY|ARGS_POST|ARGS_POST_NAMES|XML:/*|XML://@*"
 //     "_", so X_Api-Key reaches such an application as the same input as X-Api-Key, and the engine keys a header by its own
 //     name. The header is named by a key pattern that takes either character in each place, REQUEST_HEADERS:/^x[-_]api[-_]key$/,
 //     which is how the proxy folds the two spellings for deny_headers.
+//   - an argument or a cookie whose name has no bracket (arg:NAME, cookie:NAME): PHP drops the spaces in front of a name, turns
+//     each "." and " " in it (and a "[" that is never closed) into "_", reads NAME[...] as NAME holding a list, and ends a name
+//     at a NUL, so user.id, user+id, user[id, user_id[] and user_id%00x all reach a PHP application as $_GET['user_id']. The name
+//     is a key pattern that takes each of those spellings, ARGS:/^\x20*user[_.\x20\[]id(?s:\[[^\]\x00]*\].*)?(?s:\x00.*)?$/
+//     (\x20, as a space would end the variable).
 //
 // An exclusion keeps targetVariable: what it takes out of inspection is never widened.
 func ruleVariables(field string) (string, bool) {
@@ -150,8 +155,18 @@ func ruleVariables(field string) (string, bool) {
 	if name, isHeader := strings.CutPrefix(v, "REQUEST_HEADERS:"); isHeader && strings.Contains(name, "-") {
 		return "REQUEST_HEADERS:/^" + strings.ReplaceAll(name, "-", "[-_]") + "$/", true
 	}
+	// An argument or cookie name is made of a-z, 0-9 and . _ [ ] - (argKeyRe): without brackets, "_" and "." are the only
+	// characters the pattern has to spell.
+	for _, variable := range []string{"ARGS:", "REQUEST_COOKIES:"} {
+		if name, keyed := strings.CutPrefix(v, variable); keyed && !strings.ContainsAny(name, "[]") {
+			return variable + `/^\x20*` + phpName.Replace(name) + `(?s:\[[^\]\x00]*\].*)?(?s:\x00.*)?$/`, true
+		}
+	}
 	return v, true
 }
+
+// phpName writes each character PHP reads as "_" in a name as the characters it reads that way.
+var phpName = strings.NewReplacer("_", `[_.\x20\[]`, ".", `[_.\x20\[]`)
 
 // targetVariable returns the SecLang variable (with its key, if it names one value) for a target or field name, or false.
 func targetVariable(name string, allowExtra bool) (string, bool) {

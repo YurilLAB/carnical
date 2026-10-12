@@ -18,10 +18,10 @@ import (
 // The rule it writes are built from the structure of the policy, never from its text. Every value that reaches a line is one
 // of: a number, a word from a fixed list, a variable name from a fixed table, an address or range written by netip, a path
 // made only of the characters in pathRe (which mean nothing to SecLang), a header, argument or cookie name made only of
-// letters, digits and . _ [ ] - (a header's in a key pattern ^...$ with each hyphen written [-_], see ruleVariables), or the
-// text of a regular expression made by rxcheck.go. And each line, once written, is checked (checkRuleLine): one line, four
-// quotation marks, none of them escaped, no control or separator character, short enough for the engine to read. A rule that
-// fails its check is an error, never emitted.
+// letters, digits and . _ [ ] - (in a custom rule, a header's, or an argument's or cookie's without brackets, in a key pattern
+// ^...$, see ruleVariables), or the text of a regular expression made by rxcheck.go. And each line, once written, is checked
+// (checkRuleLine): one line, four quotation marks, none of them escaped, no control or separator character, short enough for
+// the engine to read. A rule that fails its check is an error, never emitted.
 
 // ruleText is the SecLang of one rule, with the number of rules it is.
 type generated struct {

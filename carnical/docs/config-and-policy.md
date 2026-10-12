@@ -407,7 +407,7 @@ useragent`, or `arg:NAME`, `cookie:NAME`, `header:NAME`. The rule runs in phase 
 complete after the request headers (everything but `args`, `argnames`, `arg:`, `body`, `filenames`).
 `uri` and `query` are matched after one round of URL decoding.
 
-Two fields are more than one place in the engine, and a rule reads all of them:
+Three fields are more than one place in the engine, and a rule reads all of them:
 
 - `body` is `REQUEST_BODY|ARGS_POST|ARGS_POST_NAMES|XML:/*|XML://@*`. The engine keeps the body as
   sent only for a form or a body it has no parser for; a JSON or multipart body becomes names and
@@ -419,6 +419,13 @@ Two fields are more than one place in the engine, and a rule reads all of them:
   each hyphen: `header:x-api-key` is `REQUEST_HEADERS:/^x[-_]api[-_]key$/`. PHP, CGI, WSGI and IIS
   turn `-` into `_` in a header's name, so `X_Api-Key` reaches such an application as the same input
   (the proxy folds the two spellings the same way for `deny_headers`).
+- An argument or a cookie whose name has no bracket (`arg:NAME`, `cookie:NAME`) is read under every
+  spelling PHP files under that name: PHP drops the spaces in front of a name, turns each `.` and
+  space (and a `[` that is never closed) into `_`, reads `NAME[...]` as `NAME` holding a list, and
+  ends a name at a NUL, so `user.id`, `user+id`, `user[id`, `user_id[]` and `user_id%00x` all reach a
+  PHP application as `$_GET['user_id']`.
+  `arg:user_id` is `ARGS:/^\x20*user[_.\x20\[]id(?s:\[[^\]\x00]*\].*)?(?s:\x00.*)?$/` (the virtual
+  patches fold the same spellings).
 
 The text of a value reaches the engine inside `"@rx ..."`, where the quote, the backslash, the
 percent sign (it opens a macro, `%{tx.score}`), white space and the backtick mean something to the
