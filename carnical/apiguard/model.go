@@ -57,7 +57,8 @@ type Param struct {
 	In       string  `json:"in"` // path, query, header or cookie
 	Required bool    `json:"required,omitempty"`
 	Schema   *Schema `json:"schema,omitempty"`
-	// Style and Explode say how an array is written in the URL (form with explode: a=1&a=2; form without: a=1,2).
+	// Style and Explode say how an array is written in the URL (form with explode: a=1&a=2; form without: a=1,2). Left out, they
+	// are OpenAPI's defaults: form with explode for a query or cookie parameter, simple (1,2,3) for a path or header one.
 	Style   string `json:"style,omitempty"`
 	Explode *bool  `json:"explode,omitempty"`
 }

@@ -109,16 +109,31 @@ func (p *Param) validateText(vals []string) vkind {
 		return vkNone // an object in a URL is written in styles this guard does not read
 	}
 	if isArray {
-		var delim byte
-		if p.Explode != nil && !*p.Explode {
-			switch p.Style {
-			case "spaceDelimited":
-				delim = ' '
-			case "pipeDelimited":
-				delim = '|'
-			default:
-				delim = ','
+		// OpenAPI's defaults: style form for a query or cookie parameter and simple for a path or header one, and explode only for
+		// form. A simple array is written 1,2,3 whether or not it is exploded.
+		style := p.Style
+		if style == "" {
+			style = "form"
+			if p.In == "path" || p.In == "header" {
+				style = "simple"
 			}
+		}
+		explode := style == "form"
+		if p.Explode != nil {
+			explode = *p.Explode
+		}
+		var delim byte
+		switch {
+		case style == "simple":
+			delim = ','
+		case explode:
+			// Each item is a pair of its own.
+		case style == "spaceDelimited":
+			delim = ' '
+		case style == "pipeDelimited":
+			delim = '|'
+		default:
+			delim = ','
 		}
 		items := make([]any, 0, 8)
 		for _, v := range vals {
@@ -129,6 +144,9 @@ func (p *Param) validateText(vals []string) vkind {
 			for _, part := range parts {
 				if len(items) >= 1000 {
 					return vkLength
+				}
+				if p.In == "header" {
+					part = strings.Trim(part, " \t") // a header list may have spaces around its commas (RFC 9110, section 5.6.1)
 				}
 				items = append(items, bestVariant(s.Items, part))
 			}

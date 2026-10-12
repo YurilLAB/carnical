@@ -192,7 +192,9 @@ parsers read it (`007` is 7, and its bounds apply); a scalar query or header par
 is reported (parameter pollution). A query name that is a declared parameter's in other letters
 (`LIMIT` for `limit`) is held to that parameter too, and counts toward giving it twice, since ASP.NET
 Core and echo bind it to it; a required parameter must still be sent in the spelling the
-description gives it. With `RefuseUnknownParams`, the API key a security scheme puts in
+description gives it. An array parameter is read as its style writes it, with OpenAPI's defaults
+where the description gives none: `a=1&a=2` in a query or cookie, `1,2,3` in a path or header. With
+`RefuseUnknownParams`, the API key a security scheme puts in
 the query is not an unknown parameter. A cookie may come more than once (browsers send one per path it was set on), so every
 value is checked. The guard reads the first 256 query parameters; a query with more is reported on a
 checked route rather than checked in part. A JSON body the guard cannot read is reported rather than

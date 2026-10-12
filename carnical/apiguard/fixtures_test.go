@@ -70,7 +70,7 @@ const shopAPI = `{
     },
     "/orders/{orderId}": {
       "get": {
-        "parameters": [{"name": "orderId", "in": "path", "required": true, "schema": {"type": "string", "pattern": "^[A-Z]{2}-[0-9]{6}$"}}, {"name": "X-Shop-Key", "in": "header", "required": true, "schema": {"type": "string", "minLength": 8}}],
+        "parameters": [{"name": "orderId", "in": "path", "required": true, "schema": {"type": "string", "pattern": "^[A-Z]{2}-[0-9]{6}$"}}, {"name": "X-Shop-Key", "in": "header", "required": true, "schema": {"type": "string", "minLength": 8}}, {"name": "X-Item-Ids", "in": "header", "schema": {"type": "array", "items": {"type": "integer"}, "maxItems": 3}}],
         "responses": {"200": {"description": "ok"}}
       }
     },

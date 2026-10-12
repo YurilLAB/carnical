@@ -86,6 +86,8 @@ func TestRequestsAreHeldToTheApiDescription(t *testing.T) {
 		{"an update that sets a read-only role", mk("PATCH", "/api/v1/users/123e4567-e89b-12d3-a456-426614174000", auth, withJSON(`{"role":"admin"}`)), IDSpecReadOnlyProperty, 403},
 		{"an update that fits", mk("PATCH", "/api/v1/users/123e4567-e89b-12d3-a456-426614174000", auth, withJSON(`{"name":"Alice"}`)), 0, 0},
 		{"a header parameter and a pattern that fit", mk("GET", "/api/v1/orders/AB-123456", withHeader("X-Shop-Key", "12345678")), 0, 0},
+		{"a header array written in the default simple style", mk("GET", "/api/v1/orders/AB-123456", withHeader("X-Shop-Key", "12345678"), withHeader("X-Item-Ids", "4,5")), 0, 0},
+		{"a header array with spaces after its commas", mk("GET", "/api/v1/orders/AB-123456", withHeader("X-Shop-Key", "12345678"), withHeader("X-Item-Ids", "4, 5")), 0, 0},
 		{"a required header that is missing", mk("GET", "/api/v1/orders/AB-123456", auth), IDSpecMissingParam, 400},
 		{"a header that is too short", mk("GET", "/api/v1/orders/AB-123456", withHeader("X-Shop-Key", "123")), IDSpecHeaderParam, 400},
 		{"a path that does not match its pattern", mk("GET", "/api/v1/orders/ab-1", withHeader("X-Shop-Key", "12345678")), IDSpecPathParam, 400},
