@@ -49,6 +49,7 @@ func TestRegexTranslation(t *testing.T) {
 		{"dollar needs the end", `abc$`, "", "abc\nx", false},
 		{"dollar in multi-line mode is the end of a line", `abc$`, "m", "abc\nx", true},
 		{"dollar with an inline m flag", `(?m)abc$`, "", "abc\nx", true},
+		{"dollar outside a scoped m group accepts a final newline", `(?m:x)|abc$`, "", "abc\n", true},
 		{"dollar inside a class is a dollar", `[$]x`, "", "$x", true},
 		{"escaped dollar", `a\$`, "", "a$", true},
 		{"comment group", `a(?#note)b`, "", "ab", true},

@@ -110,7 +110,8 @@ func compileRx(pattern, flags string) (*rxProg, error) {
 			return nil, fmt.Errorf("unknown regular expression flag %q", string(f))
 		}
 	}
-	multiline := fm || hasInlineFlag(pattern, 'm')
+	// The m flag starts the translation in multi-line mode; an inline (?m) or (?m:...) is applied where it is (translator.setFlags).
+	multiline := fm
 	prefix := ""
 	if fi {
 		prefix += "i"
@@ -307,39 +308,34 @@ func cleanReErr(err error) string {
 	return s
 }
 
-// hasInlineFlag reports whether the pattern switches flag f on anywhere with an inline group such as (?m) or (?im:...).
-func hasInlineFlag(p string, f byte) bool {
-	for i := 0; i+2 < len(p); i++ {
-		if p[i] == '\\' {
-			i++
-			continue
-		}
-		if p[i] != '(' || p[i+1] != '?' {
-			continue
-		}
-		for j := i + 2; j < len(p); j++ {
-			c := p[j]
-			if c == f {
-				return true
-			}
-			if c == '-' {
-				break
-			}
-			if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z') {
-				break
-			}
-		}
-	}
-	return false
-}
-
 // A translator rewrites one pattern. It is used once.
 type translator struct {
-	byteMode      bool
+	byteMode bool
+	// multiline is whether multi-line mode is on at the point being translated, and scopes holds its value outside each group
+	// that is open there: an inline (?m) lasts to the end of the group it is in, as in PCRE and RE2.
 	multiline     bool
+	scopes        []bool
 	sawHighEscape bool
 	counts        map[string]bool
 	looks         []lookahead
+}
+
+// open records that a group opens: the flags set inside it end with it.
+func (t *translator) open() {
+	t.scopes = append(t.scopes, t.multiline)
+}
+
+// setFlags applies inline flags such as "im-s" to multi-line mode.
+func (t *translator) setFlags(flags string) {
+	on := true
+	for i := 0; i < len(flags); i++ {
+		switch flags[i] {
+		case '-':
+			on = false
+		case 'm':
+			t.multiline = on
+		}
+	}
 }
 
 // A lookahead is a (?=[class]) that was replaced by an empty named group so that it can be found again in the parsed expression
@@ -384,13 +380,14 @@ func (t *translator) translateAll(p string, multiline, byteMode bool) ([]string,
 				}
 			}
 			pref, body = p[:end+1], p[end+1:]
+			t.setFlags(p[2:end])
 		}
 	}
 	anchor := ""
 	switch {
 	case strings.HasPrefix(body, `\A`):
 		anchor = `\A`
-	case strings.HasPrefix(body, "^") && !multiline:
+	case strings.HasPrefix(body, "^") && !t.multiline:
 		anchor = "^"
 	}
 	if anchor != "" && strings.HasPrefix(body[len(anchor):], "(?=") {
@@ -413,7 +410,10 @@ func (t *translator) translateAll(p string, multiline, byteMode bool) ([]string,
 		}
 		t.note("start-anchored lookaheads split into required parts")
 		var out []string
+		outer := t.multiline
 		for i, b := range bodies {
+			// Each part starts in the mode the pattern has there: a flag set inside one lookahead ends with it.
+			t.multiline, t.scopes = outer, t.scopes[:0]
 			s, err := t.run(b)
 			if err != nil {
 				return nil, err
@@ -599,6 +599,14 @@ func (t *translator) run(p string) (string, error) {
 				return "", err
 			}
 			i += n
+			lastQuant = false
+		case c == ')':
+			// The group closes, and so does the reach of any flag set inside it.
+			if n := len(t.scopes); n > 0 {
+				t.multiline, t.scopes = t.scopes[n-1], t.scopes[:n-1]
+			}
+			b.WriteByte(c)
+			i++
 			lastQuant = false
 		case c == '*' || c == '+' || c == '?':
 			switch {
@@ -825,13 +833,16 @@ func (t *translator) group(b *strings.Builder, p string, i int) (int, error) {
 	case strings.HasPrefix(rest, "(*"):
 		return 0, fmt.Errorf("PCRE backtracking verb has no RE2 equivalent")
 	case !strings.HasPrefix(rest, "(?"):
+		t.open()
 		b.WriteByte('(')
 		return 1, nil
 	case strings.HasPrefix(rest, "(?:"):
+		t.open()
 		b.WriteString("(?:")
 		return 3, nil
 	case strings.HasPrefix(rest, "(?>"):
 		t.note("atomic group made a plain group")
+		t.open()
 		b.WriteString("(?:")
 		return 3, nil
 	case strings.HasPrefix(rest, "(?#"):
@@ -866,6 +877,7 @@ func (t *translator) group(b *strings.Builder, p string, i int) (int, error) {
 		t.looks = append(t.looks, lookahead{ranges: ranges})
 		return end + 1 - i, nil
 	case strings.HasPrefix(rest, "(?P<") || strings.HasPrefix(rest, "(?<"):
+		t.open()
 		b.WriteString("(?")
 		return 2, nil
 	case strings.HasPrefix(rest, "(?P=") || strings.HasPrefix(rest, "(?P>") || strings.HasPrefix(rest, "(?&") || strings.HasPrefix(rest, "(?R"):
@@ -890,6 +902,11 @@ func (t *translator) group(b *strings.Builder, p string, i int) (int, error) {
 				return 0, fmt.Errorf("inline flag %q has no RE2 equivalent", string(f))
 			}
 		}
+		// (?flags: opens a group that the flags are scoped to; (?flags) changes them for the rest of the enclosing group.
+		if rest[j] == ':' {
+			t.open()
+		}
+		t.setFlags(rest[2:j])
 		b.WriteString(rest[:j+1])
 		return j + 1, nil
 	}
