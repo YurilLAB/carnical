@@ -71,6 +71,8 @@ func OriginGuard(zm Map, policy proxy.OriginPolicy) Check {
 						out.Checked++
 						if a.Overlaps(pf) {
 							out.Problems = append(out.Problems, fmt.Sprintf("the allowed range %s overlaps %s in the %s zone", a, pf, z.Name))
+						} else if v4, ok := nat64Range(a); ok && v4.Overlaps(pf) {
+							out.Problems = append(out.Problems, fmt.Sprintf("the allowed range %s reaches %s through NAT64, which overlaps %s in the %s zone", a, v4, pf, z.Name))
 						}
 					}
 				}
@@ -79,6 +81,23 @@ func OriginGuard(zm Map, policy proxy.OriginPolicy) Check {
 			return out
 		},
 	}
+}
+
+// nat64Prefix is the well-known NAT64 prefix (RFC 6052): on a network with a translator, 64:ff9b::a.b.c.d is a.b.c.d,
+// so an allowed range inside it reaches IPv4 addresses that no IPv4 prefix comparison sees.
+var nat64Prefix = netip.MustParsePrefix("64:ff9b::/96")
+
+// nat64Range is the IPv4 range an allowed IPv6 range reaches through a translator on the well-known NAT64 prefix, if it
+// reaches any. A range as wide as the prefix or wider reaches all of IPv4.
+func nat64Range(a netip.Prefix) (netip.Prefix, bool) {
+	if !a.Addr().Is6() || !a.Overlaps(nat64Prefix) {
+		return netip.Prefix{}, false
+	}
+	if a.Bits() <= nat64Prefix.Bits() {
+		return netip.PrefixFrom(netip.IPv4Unspecified(), 0), true
+	}
+	b := a.Masked().Addr().As16()
+	return netip.PrefixFrom(netip.AddrFrom4([4]byte(b[12:])), a.Bits()-nat64Prefix.Bits()), true
 }
 
 // Dialer opens a connection; net.Dialer.DialContext fits.
