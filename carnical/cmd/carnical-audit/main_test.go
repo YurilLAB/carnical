@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/YurilLAB/coraza/carnical/audit"
+	"github.com/YurilLAB/coraza/carnical/audit/host"
 	"github.com/YurilLAB/coraza/carnical/proxy"
 )
 
@@ -260,6 +262,38 @@ func TestConsoleLinesAreEscaped(t *testing.T) {
 				t.Fatalf("consoleSafe(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
+	}
+}
+
+// planted is a machine with one setuid file, which the baseline cannot read, under a name its owner chose.
+type planted struct{ name string }
+
+func (p planted) ReadFile(path string) ([]byte, error) {
+	switch path {
+	case "/proc/self/mounts":
+		return []byte("/dev/vda / ext4 rw,relatime 0 0\n"), nil
+	case p.name:
+		return nil, errors.New("larger than the checks read")
+	}
+	return nil, fs.ErrNotExist
+}
+func (planted) Glob(string) ([]string, error)   { return nil, nil }
+func (planted) Readlink(string) (string, error) { return "", fs.ErrNotExist }
+func (planted) Stat(string) (host.Info, error)  { return host.Info{}, fs.ErrNotExist }
+func (p planted) Run(context.Context, string, ...string) ([]byte, error) {
+	return []byte(p.name + "\x00"), nil
+}
+
+// Not a row of TestConsoleLinesAreEscaped: the name reaches the console through -write-baseline's own errors.
+func TestWriteBaselineErrorsAreEscaped(t *testing.T) {
+	var stderr bytes.Buffer
+	name := "/home/u/x\r\x1b[2Krecorded the baselines\x1b[8m"
+	if code := writeBaselines(planted{name}, &stderr, t.TempDir(), false); code != 1 {
+		t.Fatalf("exit %d, want 1", code)
+	}
+	out := strings.TrimSuffix(stderr.String(), "\n")
+	if strings.ContainsAny(out, "\r\n\x1b") || !strings.Contains(out, `x\r\x1b[2Krecorded`) {
+		t.Fatalf("the file name reached the console unescaped: %q", out)
 	}
 }
 

@@ -20,6 +20,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"os"
@@ -75,7 +76,7 @@ func run() int {
 		return 0
 	}
 	if *writeBaseline {
-		return writeBaselines(*baselineDir, *force) // the baselines are of this machine, not of the zones
+		return writeBaselines(host.OS{}, os.Stderr, *baselineDir, *force) // the baselines are of this machine, not of the zones
 	}
 	if *zonesFile == "" {
 		fmt.Fprintln(os.Stderr, "carnical-audit: -zones is required")
@@ -190,20 +191,20 @@ func hostCatalogue(zm audit.Map, baselineDir string) []audit.Check {
 	}
 }
 
-func writeBaselines(dir string, replace bool) int {
-	var src host.OS
+func writeBaselines(src host.Source, stderr io.Writer, dir string, replace bool) int {
+	// An error can name a file any user on the machine named, such as a setuid file the scan found.
+	fail := func(err error) int {
+		fmt.Fprintln(stderr, "carnical-audit:", consoleSafe(err.Error()))
+		return 1
+	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		fmt.Fprintln(os.Stderr, "carnical-audit:", err)
-		return 1
+		return fail(err)
 	}
-	ctx := context.Background()
 	if err := host.WriteIntegrity(src, filepath.Join(dir, "integrity.json"), host.IntegrityFiles, replace); err != nil {
-		fmt.Fprintln(os.Stderr, "carnical-audit:", err)
-		return 1
+		return fail(err)
 	}
-	if err := host.WriteSUID(ctx, src, filepath.Join(dir, "suid.json"), replace); err != nil {
-		fmt.Fprintln(os.Stderr, "carnical-audit:", err)
-		return 1
+	if err := host.WriteSUID(context.Background(), src, filepath.Join(dir, "suid.json"), replace); err != nil {
+		return fail(err)
 	}
 	fmt.Println("recorded the baselines in", dir, "- copy them somewhere an attacker on this machine cannot reach")
 	return 0
