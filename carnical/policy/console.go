@@ -574,6 +574,11 @@ func (c *converter) rule(name string, m map[string]any) {
 		c.skip("%s: it only matches values of at least %d characters; a rule here cannot say that, so it was left out", name, n)
 		return
 	}
+	// A transformation that is not text would be dropped, and the rule would then match the value it was meant to decode first.
+	if tl, _ := asList(m["transforms"]); len(stringList(tl)) != len(tl) {
+		c.skip("%s: one of its transformations is not named in text, so it was left out", name)
+		return
+	}
 	decodes := false
 	for _, t := range stringList(m["transforms"]) {
 		if t != "urldecode" && t != "lowercase" && t != "none" {
