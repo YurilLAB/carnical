@@ -415,7 +415,15 @@ func text(s string, n int, cut bool) string {
 		return ""
 	}
 	if cut {
-		s = scrubAddresses(clip(s, 4*n))
+		pre := clip(s, 4*n)
+		if pre != clip(s, 4*n+1) {
+			// The window ended inside the text, perhaps inside an address that would then no longer read as one and go
+			// uncut; once the scrub shortens what comes before it, it could land inside the n that are sent.
+			for len(pre) > 0 && isAddrChar(pre[len(pre)-1]) { // address characters are ASCII, never part of a longer character
+				pre = pre[:len(pre)-1]
+			}
+		}
+		s = scrubAddresses(pre)
 	}
 	return clip(s, n)
 }

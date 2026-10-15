@@ -165,6 +165,9 @@ func TestEventFieldsAndLimits(t *testing.T) {
 		{"control characters survive (the reader shows them as pictures)", func(e *Event) { e.Path = "/a\x1b[31m\nb" }, "path", eq("/a\x1b[31m\nb")},
 		{"html is escaped by the encoder, not altered", func(e *Event) { e.Path = "/<script>" }, "path", eq("/<script>")},
 		{"why is scrubbed when addresses are cut", func(e *Event) { e.Why = "3 blocked from 203.0.113.7" }, "why", eq("3 blocked from 203.0.113.0")},
+		{"why does not carry an address the clip cut in two", func(e *Event) {
+			e.Why = "1::1:" + strings.Repeat("a", 1161) + " 2001:db8:abcd:1234:5678:9abc:def0:4321"
+		}, "why", eq("1:: ")},
 		{"path is not scrubbed", func(e *Event) { e.Path = "/ip/203.0.113.7" }, "path", eq("/ip/203.0.113.7")},
 		{"time in another zone is sent as UTC", func(e *Event) { e.Time = nowAt().In(time.FixedZone("x", 10*3600)) }, "t", eq("2026-10-03T08:00:00Z")},
 		{"fractions of a second are dropped", func(e *Event) { e.Time = nowAt().Add(999 * time.Millisecond) }, "t", eq("2026-10-03T08:00:00Z")},
