@@ -244,7 +244,9 @@ func mountTable(mounts []byte) map[string]mount {
 		if len(f) < 4 {
 			continue
 		}
-		last[unescapeMount(f[1])] = mount{f[2], f[3]} // a later line for the same mount point is the one in force
+		// A later line for the same mount point is usually the one in force. The table is in mount order, so a mount moved
+		// over another (which needs root, as does anything that defeats this check) can be listed before the mount it covers.
+		last[unescapeMount(f[1])] = mount{f[2], f[3]}
 	}
 	return last
 }

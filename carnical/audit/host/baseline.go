@@ -193,7 +193,9 @@ func ParseMounts(data []byte) map[string]map[string]bool {
 		for _, o := range strings.Split(f[3], ",") {
 			opts[o] = true
 		}
-		out[f[1]] = opts // a later line for the same mount point is the one in force
+		// A later line for the same mount point is usually the one in force. The table is in mount order, so a mount moved
+		// over another (which needs root, as does anything that defeats this check) can be listed before the mount it covers.
+		out[f[1]] = opts
 	}
 	return out
 }
