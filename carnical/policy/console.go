@@ -627,6 +627,11 @@ func (c *converter) rule(name string, m map[string]any) {
 	switch operator {
 	case OpPM:
 		words := stringList(m["pattern"])
+		// Dropping a word that is not text would carry the rule matching less than it says.
+		if pl, _ := asList(m["pattern"]); len(words) != len(pl) {
+			c.skip("%s: one of its words is not text, so it was left out", name)
+			return
+		}
 		if len(words) == 0 {
 			if s, ok := m["pattern"].(string); ok {
 				words = strings.Fields(s)

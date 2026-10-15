@@ -301,6 +301,12 @@ func TestConsoleExportRows(t *testing.T) {
 					t.Fatalf("carried without its transformation: %+v", p.CustomRules)
 				}
 			}},
+		{name: "a pm rule with a word that is not text is left out, not narrowed", in: wrap(`{"mode":"block","rules":[{"id":"SITE-0001","action":"block","targets":["args"],"operator":"pm","pattern":["evil",5]}]}`),
+			skipped: [][]string{{"SITE-0001", "words is not text"}}, check: func(t *testing.T, p Policy) {
+				if len(p.CustomRules) != 0 {
+					t.Fatalf("carried with fewer words: %+v", p.CustomRules)
+				}
+			}},
 		{name: "an exclusion with a category that has no group and one that has", in: wrap(`{"mode":"block","exclusions":[{"path":"/a/","categories":["upload","sqli"],"targets":["args"]}]}`),
 			skipped: [][]string{{"exclusions[1]", "upload"}}, check: func(t *testing.T, p Policy) {
 				if len(p.Exclusions) != 1 || !reflect.DeepEqual(p.Exclusions[0].Categories, []string{"sqli"}) {
