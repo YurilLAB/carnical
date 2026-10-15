@@ -246,6 +246,23 @@ func TestReportOutput(t *testing.T) {
 	}
 }
 
+func TestConsoleLinesAreEscaped(t *testing.T) {
+	tests := []struct{ name, in, want string }{
+		{"a plain line", "fail  host-suid  1 cases", "fail  host-suid  1 cases"},
+		{"letters from other scripts print", "/srv/café/ファイル is a new setuid or setgid file", "/srv/café/ファイル is a new setuid or setgid file"},
+		{"a terminal escape in a file name", "/tmp/a\x1b[2K\x1b[1Ahost-suid pass\r is a new setuid or setgid file", `/tmp/a\x1b[2K\x1b[1Ahost-suid pass\r is a new setuid or setgid file`},
+		{"a name that is not UTF-8", "/tmp/\xff is new", `/tmp/\xff is new`},
+		{"a tab", "a\tb", `a\tb`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := consoleSafe(tt.in); got != tt.want {
+				t.Fatalf("consoleSafe(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
 // Not a row of TestReportOutput: a stop is decided around the run, before any report is built.
 func TestAStoppedRun(t *testing.T) {
 	failing := audit.Check{Name: "failing-check", Run: func(context.Context) audit.Outcome {

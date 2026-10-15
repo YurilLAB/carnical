@@ -26,8 +26,12 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/YurilLAB/coraza/carnical/audit"
 	"github.com/YurilLAB/coraza/carnical/audit/host"
@@ -224,6 +228,17 @@ func audited(ctx context.Context, checks []audit.Check, perCheck time.Duration, 
 	return 0, true
 }
 
+// consoleSafe returns a line as it is when every character in it prints, and escaped otherwise. Problems name things on
+// the host (a setuid file, a running program) that an unprivileged user can name, and control characters in such a name
+// would rewrite what the operator's terminal shows. The log and the status file are JSON, which escapes them already.
+func consoleSafe(s string) string {
+	if utf8.ValidString(s) && !strings.ContainsFunc(s, func(r rune) bool { return !unicode.IsPrint(r) }) {
+		return s
+	}
+	q := strconv.Quote(s)
+	return q[1 : len(q)-1]
+}
+
 func report(rep audit.Report, logFile, statusFile string, allowSkips bool) int {
 	counts := rep.Counts()
 	outputFailed := false
@@ -232,12 +247,12 @@ func report(rep audit.Report, logFile, statusFile string, allowSkips bool) int {
 		if r.Note != "" {
 			line += " (" + r.Note + ")"
 		}
-		if _, err := fmt.Println(line); err != nil {
+		if _, err := fmt.Println(consoleSafe(line)); err != nil {
 			fmt.Fprintln(os.Stderr, "carnical-audit: the console:", err)
 			outputFailed = true
 		}
 		for _, p := range r.Problems {
-			if _, err := fmt.Println("        -", p); err != nil {
+			if _, err := fmt.Println("        -", consoleSafe(p)); err != nil {
 				fmt.Fprintln(os.Stderr, "carnical-audit: the console:", err)
 				outputFailed = true
 			}
