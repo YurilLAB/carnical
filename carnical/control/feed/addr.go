@@ -134,14 +134,20 @@ func cutRunFrom(s string, i, j int) (cut string, from, to int, ok bool) {
 		run = run[1:]
 		from++
 	}
+	// The run without a sentence's full stop; then without any colon or full stop after it, but for the "::" an address
+	// can end in ("2001:db8:abcd:1234::: slow down"); then without every colon.
 	var core string
-	for _, trim := range []string{".", ".:"} {
-		core = strings.TrimRight(run, trim)
+	bare := strings.TrimRight(run, ".:")
+	tries := []string{strings.TrimRight(run, ".")}
+	if strings.HasPrefix(run[len(bare):], "::") {
+		tries = append(tries, bare+"::")
+	}
+	for _, core = range append(tries, bare) {
 		if len(core) < 3 {
 			continue
 		}
 		if c, good := CutAddress(core); good {
-			if c == core {
+			if alreadyCut(core, c) {
 				return "", 0, 0, false
 			}
 			return c, from, from + len(core), true
@@ -158,6 +164,15 @@ func cutRunFrom(s string, i, j int) (cut string, from, to int, ok bool) {
 		}
 	}
 	return "", 0, 0, false
+}
+
+// alreadyCut says whether text names the same IPv6 address as its cut, however it is spelt: cutting it again would only
+// respell it, and a second scrub must leave the first one's output as it is. An IPv4 address written in IPv6 form is
+// still rewritten as IPv4.
+func alreadyCut(text, cut string) bool {
+	a, _ := parseAddr(text)
+	b, _ := parseAddr(cut)
+	return text == cut || a.Is6() && a == b
 }
 
 func isAddrChar(c byte) bool {
