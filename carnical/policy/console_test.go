@@ -407,6 +407,8 @@ func TestConsoleExportRows(t *testing.T) {
 					t.Fatalf("%+v", p.CustomRules)
 				}
 			}},
+		{name: "a part a rule or an exclusion cannot use, written twice, is named once", in: wrap(`{"mode":"block","exclusions":[{"path":"/a/","categories":["sqli"],"targets":["args","bogus","Bogus"]}],"rules":[{"id":"SITE-0001","action":"block","targets":["args","bogus","Bogus"],"operator":"contains","pattern":"evil"}]}`),
+			skipped: [][]string{{"exclusions[1]", `"bogus"`}, {"SITE-0001", `"bogus"`}}},
 		{name: "a setting this program does not know", in: wrap(`{"mode":"block","telepathy":true}`), skipped: [][]string{{"telepathy:", "not a setting"}}},
 		{name: "a part of the export this program does not know", in: `{"site_firewall_policy":1,"policy":{"mode":"block"},"extra":1}`, skipped: [][]string{{"extra:"}}},
 		{name: "bookkeeping is ignored", in: wrap(`{"mode":"block","schema":1,"rev":9,"updated":"x","by":"y","compiled":null}`), clean: true},

@@ -398,6 +398,7 @@ func (c *converter) exclusions(pol map[string]any) {
 			continue
 		}
 		unsupported, nonText := false, false
+		named := map[string]bool{}
 		for _, tv := range tl {
 			name, isText := tv.(string)
 			name = strings.ToLower(name)
@@ -408,7 +409,10 @@ func (c *converter) exclusions(pol map[string]any) {
 				targets = append(targets, name)
 			} else {
 				unsupported = true
-				c.skip("%s: the target %q is not one this program supports and was left out of the exclusion", at, safeName(name))
+				if !named[name] {
+					named[name] = true
+					c.skip("%s: the target %q is not one this program supports and was left out of the exclusion", at, safeName(name))
+				}
 			}
 		}
 		if nonText {
@@ -706,6 +710,7 @@ func (c *converter) rule(name string, m map[string]any) {
 	}
 	var fields []string
 	nonText := false
+	named := map[string]bool{}
 	for _, tv := range targets {
 		t, isText := tv.(string)
 		t = strings.ToLower(t)
@@ -713,7 +718,8 @@ func (c *converter) rule(name string, m map[string]any) {
 			nonText = true
 		} else if _, ok := targetVariable(t, true); ok {
 			fields = append(fields, t)
-		} else {
+		} else if !named[t] {
+			named[t] = true
 			c.skip("%s: it looks at %q, which a rule here cannot, so it does not look there here", name, safeName(t))
 		}
 	}
