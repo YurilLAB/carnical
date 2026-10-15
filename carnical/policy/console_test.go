@@ -488,6 +488,9 @@ func TestConsoleExportLimits(t *testing.T) {
 		if len(skipped) > 500 {
 			t.Fatalf("%d lines", len(skipped))
 		}
+		if !skippedHas(skipped, "1501 more line(s) were not listed") {
+			t.Fatalf("the list does not say it was cut: %s", skipped[len(skipped)-1])
+		}
 	})
 	t.Run("what is said never repeats a long value in full", func(t *testing.T) {
 		long := strings.Repeat("L", 500)

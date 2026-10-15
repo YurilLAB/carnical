@@ -69,6 +69,9 @@ func FromConsoleExport(data []byte) (Policy, []string, error) {
 		return Policy{}, nil, invalid("$", "this is not an exported site policy")
 	}
 	c.convert(pol)
+	if c.unsaid > 0 {
+		c.skipped = append(c.skipped, fmt.Sprintf("%d more line(s) were not listed: the list holds %d, and what they name (a setting left out, or a rule carried as log only or on fewer parts) is not shown", c.unsaid, maxSkipped-1))
+	}
 	p := c.p.Normalize()
 	if err := p.Validate(); err != nil {
 		return Policy{}, nil, fmt.Errorf("the converted policy is not valid (a fault in the converter, not in the export): %w", err)
@@ -101,12 +104,18 @@ type converter struct {
 	nextRule int
 	usedIDs  map[int]bool
 	carried  map[int]bool // the numbers of the rules carried so far
+	unsaid   int          // the lines past maxSkipped, said as one last line
 }
 
+// maxSkipped is how many lines the list holds, the last of them saying how many more there were.
+const maxSkipped = 500
+
 func (c *converter) skip(format string, args ...any) {
-	if len(c.skipped) < 500 {
+	if len(c.skipped) < maxSkipped-1 {
 		c.skipped = append(c.skipped, fmt.Sprintf(format, args...))
+		return
 	}
+	c.unsaid++
 }
 
 // asMap reads a value that PHP wrote as an object: an empty one is written [] by PHP's json_encode.
