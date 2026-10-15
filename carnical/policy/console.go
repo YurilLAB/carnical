@@ -53,12 +53,17 @@ func FromConsoleExport(data []byte) (Policy, []string, error) {
 		if n, isNum := v.(json.Number); !isNum || n.String() != "1" {
 			return Policy{}, nil, invalid("site_firewall_policy", "an export of another format, which this program does not read")
 		}
+		var unknown []string
 		for k := range doc {
 			switch k {
 			case "site_firewall_policy", "exported", "site", "engine", "rev", "policy":
 			default:
-				c.skip("%s: a part of the export this program does not know, left out", safeName(k))
+				unknown = append(unknown, k)
 			}
+		}
+		sort.Strings(unknown) // the same export gives the same report
+		for _, k := range unknown {
+			c.skip("%s: a part of the export this program does not know, left out", safeName(k))
 		}
 		inner, ok := doc["policy"].(map[string]any)
 		if !ok {

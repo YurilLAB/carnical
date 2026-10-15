@@ -494,6 +494,16 @@ func TestConsoleExportLimits(t *testing.T) {
 			t.Fatalf("the list does not say it was cut: %s", skipped[len(skipped)-1])
 		}
 	})
+	t.Run("the same export gives the same report", func(t *testing.T) {
+		in := []byte(`{"site_firewall_policy":1,"policy":{"mode":"block"},"zeta":1,"alpha":2,"mid":3,"beta":4,"omega":5}`)
+		_, first, err := FromConsoleExport(in)
+		wantValid(t, err)
+		for range 20 {
+			if _, again, _ := FromConsoleExport(in); !reflect.DeepEqual(again, first) {
+				t.Fatalf("the report changed: %v, then %v", first, again)
+			}
+		}
+	})
 	t.Run("what is said never repeats a long value in full", func(t *testing.T) {
 		long := strings.Repeat("L", 500)
 		_, skipped, err := FromConsoleExport([]byte(`{"site_firewall_policy":1,"policy":{"mode":"block","allow_paths":["` + long + `"],"telepathy":1,"rule_groups":{"` + long + `":"off"}}}`))
