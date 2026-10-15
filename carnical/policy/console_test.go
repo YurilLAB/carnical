@@ -288,7 +288,7 @@ func TestConsoleExportRows(t *testing.T) {
 			`"rules":[{"id":"SITE-0001","action":"block","targets":["args"],"transforms":{"0":"base64decode","2":"urldecode"},"operator":"contains","pattern":"evil"},` +
 			`{"id":"SITE-0002","action":"block","targets":{"0":"args","2":"cookies"},"operator":"contains","pattern":"evil"},` +
 			`{"id":"SITE-0003","action":"block","targets":["args"],"also":{"1":{"targets":["path"],"operator":"contains","pattern":"x"}},"operator":"contains","pattern":"evil"},` +
-			`{"id":"SITE-0004","action":"block","targets":[5],"operator":"contains","pattern":"evil"}]}`),
+			`{"id":"SITE-0004","action":"block","targets":[5,6],"operator":"contains","pattern":"evil"}]}`),
 			skipped: [][]string{{"exclusions[1]", "not a list"}, {"SITE-0001", "transforms", "not a list"}, {"SITE-0002", "targets", "not a list"},
 				{"SITE-0003", "also", "not a list"}, {"SITE-0004", "not named in text"}, {"SITE-0004", "none of the parts"}}, check: func(t *testing.T, p Policy) {
 				if len(p.Exclusions) != 0 || len(p.CustomRules) != 0 {
@@ -305,6 +305,12 @@ func TestConsoleExportRows(t *testing.T) {
 			skipped: [][]string{{"SITE-0001", "words is not text"}}, check: func(t *testing.T, p Policy) {
 				if len(p.CustomRules) != 0 {
 					t.Fatalf("carried with fewer words: %+v", p.CustomRules)
+				}
+			}},
+		{name: "an exclusion's category or target that is not text is named as such and dropped", in: wrap(`{"mode":"block","exclusions":[{"path":"/a/","categories":["sqli",7,8],"targets":["args",5,6]}]}`),
+			skipped: [][]string{{"exclusions[1]", "categories is not named in text"}, {"exclusions[1]", "targets is not named in text"}}, check: func(t *testing.T, p Policy) {
+				if len(p.Exclusions) != 1 || !reflect.DeepEqual(p.Exclusions[0].Categories, []string{"sqli"}) || !reflect.DeepEqual(p.Exclusions[0].Targets, []string{"args"}) {
+					t.Fatalf("%+v", p.Exclusions)
 				}
 			}},
 		{name: "an exclusion with a category that has no group and one that has", in: wrap(`{"mode":"block","exclusions":[{"path":"/a/","categories":["upload","sqli"],"targets":["args"]}]}`),
@@ -430,6 +436,13 @@ func TestConsoleExportRows(t *testing.T) {
 				if !skippedHas(skipped, want...) {
 					t.Errorf("no line has %q in\n%s", want, strings.Join(skipped, "\n"))
 				}
+			}
+			seen := map[string]bool{}
+			for _, line := range skipped {
+				if seen[line] {
+					t.Errorf("a line is given twice: %s", line)
+				}
+				seen[line] = true
 			}
 			if r.clean && len(skipped) != 0 {
 				t.Errorf("the list should be empty: %v", skipped)

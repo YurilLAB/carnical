@@ -360,14 +360,20 @@ func (c *converter) exclusions(pol map[string]any) {
 		}
 		var cats []string
 		var dropped []string
+		nonText := false
 		cl, _ := asList(m["categories"])
 		for _, cv := range cl {
-			name, _ := cv.(string)
-			if _, ok := groupByName[name]; ok {
+			name, isText := cv.(string)
+			if !isText {
+				nonText = true
+			} else if _, ok := groupByName[name]; ok {
 				cats = append(cats, name)
 			} else {
 				dropped = append(dropped, safeName(name))
 			}
+		}
+		if nonText {
+			c.skip("%s: one or more of its categories is not named in text and was left out of the exclusion", at)
 		}
 		if len(dropped) > 0 {
 			c.skip("%s: the categories %s have no rule group here and were left out of the exclusion", at, strings.Join(dropped, ", "))
@@ -382,16 +388,22 @@ func (c *converter) exclusions(pol map[string]any) {
 			c.skip("%s: its targets are not a list, and reading them as none would widen it to the whole request, so the exclusion was left out", at)
 			continue
 		}
-		unsupported := false
+		unsupported, nonText := false, false
 		for _, tv := range tl {
-			name, _ := tv.(string)
+			name, isText := tv.(string)
 			name = strings.ToLower(name)
-			if _, ok := targetVariable(name, false); ok {
+			if !isText {
+				// Still unsupported, so that a list with no target in text is left out and not widened.
+				unsupported, nonText = true, true
+			} else if _, ok := targetVariable(name, false); ok {
 				targets = append(targets, name)
 			} else {
 				unsupported = true
 				c.skip("%s: the target %q is not one this program supports and was left out of the exclusion", at, safeName(name))
 			}
+		}
+		if nonText {
+			c.skip("%s: one or more of its targets is not named in text and was left out of the exclusion", at)
 		}
 		if len(tl) > 0 && len(targets) == 0 && unsupported {
 			// Dropping every target would widen the exclusion to the whole request.
@@ -684,16 +696,20 @@ func (c *converter) rule(name string, m map[string]any) {
 		targets = []any{"path"}
 	}
 	var fields []string
+	nonText := false
 	for _, tv := range targets {
 		t, isText := tv.(string)
 		t = strings.ToLower(t)
 		if !isText {
-			c.skip("%s: one of the parts it looks at is not named in text, so it does not look there here", name)
+			nonText = true
 		} else if _, ok := targetVariable(t, true); ok {
 			fields = append(fields, t)
 		} else {
 			c.skip("%s: it looks at %q, which a rule here cannot, so it does not look there here", name, safeName(t))
 		}
+	}
+	if nonText {
+		c.skip("%s: one or more of the parts it looks at is not named in text, so it does not look there here", name)
 	}
 	if len(fields) == 0 {
 		c.skip("%s: none of the parts of the request it looks at can be used here, so it was left out", name)
