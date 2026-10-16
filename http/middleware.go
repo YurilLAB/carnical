@@ -7,23 +7,74 @@
 package http
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/corazawaf/coraza/v3"
 	"github.com/corazawaf/coraza/v3/experimental"
 	"github.com/corazawaf/coraza/v3/types"
 )
 
+// errBodyDetached is returned by a read of the request body after its transaction was closed.
+var errBodyDetached = errors.New("coraza: request body read after its transaction was closed")
+
+// requestBody is the body the handler gets once the transaction has buffered it: the buffered part,
+// then the rest of the original body. The buffer belongs to the transaction, which is closed when the
+// handler returns, but whoever was given the body may still be reading it then: http.Transport goes
+// on writing a request body after RoundTrip returns when the server answers before reading it all.
+// detach waits for a read of the buffer in progress and makes every later read fail, so that no read
+// sees a buffer that has been reset, or reused by another transaction, and none ends the body early
+// as if it were complete.
+type requestBody struct {
+	mu       sync.Mutex
+	buffered io.Reader // the transaction's buffer, nil once read to its end
+	rest     io.Reader // the original body, beyond what the transaction buffered
+	detached bool
+}
+
+func (b *requestBody) Read(p []byte) (int, error) {
+	b.mu.Lock()
+	if b.detached {
+		b.mu.Unlock()
+		return 0, errBodyDetached
+	}
+	if b.buffered != nil {
+		n, err := b.buffered.Read(p)
+		if err == io.EOF {
+			b.buffered, err = nil, nil
+		}
+		if n > 0 || err != nil || b.buffered != nil {
+			b.mu.Unlock()
+			return n, err
+		}
+	}
+	b.mu.Unlock()
+	// The original body is read outside the lock: detach must not wait for a client that sends slowly.
+	return b.rest.Read(p)
+}
+
+// Close leaves the original body open, as net/http closes it once the handler returns.
+func (b *requestBody) Close() error { return nil }
+
+func (b *requestBody) detach() {
+	b.mu.Lock()
+	b.detached = true
+	b.mu.Unlock()
+}
+
 // processRequest fills all transaction variables from an http.Request object
 // Most implementations of Coraza will probably use http.Request objects
 // so this will implement all phase 0, 1 and 2 variables
 // Note: This function will stop after an interruption
 // Note: Do not manually fill any request variables
-func processRequest(tx types.Transaction, req *http.Request) (*types.Interruption, error) {
+// When the transaction buffers the body, req.Body is replaced and the replacement is returned: it
+// must be detached before the transaction is closed.
+func processRequest(tx types.Transaction, req *http.Request) (*types.Interruption, *requestBody, error) {
 	var (
 		client string
 		cport  int
@@ -63,9 +114,10 @@ func processRequest(tx types.Transaction, req *http.Request) (*types.Interruptio
 
 	in = tx.ProcessRequestHeaders()
 	if in != nil {
-		return in, nil
+		return in, nil, nil
 	}
 
+	var body *requestBody
 	if tx.IsRequestBodyAccessible() {
 		// We only do body buffering if the transaction requires request
 		// body inspection, otherwise we just let the request follow its
@@ -73,28 +125,29 @@ func processRequest(tx types.Transaction, req *http.Request) (*types.Interruptio
 		if req.Body != nil && req.Body != http.NoBody {
 			it, _, err := tx.ReadRequestBodyFrom(req.Body)
 			if err != nil {
-				return nil, fmt.Errorf("failed to append request body: %s", err.Error())
+				return nil, nil, fmt.Errorf("failed to append request body: %s", err.Error())
 			}
 
 			if it != nil {
-				return it, nil
+				return it, nil, nil
 			}
 
 			rbr, err := tx.RequestBodyReader()
 			if err != nil {
-				return nil, fmt.Errorf("failed to get the request body: %s", err.Error())
+				return nil, nil, fmt.Errorf("failed to get the request body: %s", err.Error())
 			}
 
 			// Adds all remaining bytes beyond the coraza limit to its buffer
 			// It happens when the partial body has been processed and it did not trigger an interruption
-			bodyReader := io.MultiReader(rbr, req.Body)
+			body = &requestBody{buffered: rbr, rest: req.Body}
 			// req.Body is transparently reinizialied with a new io.ReadCloser.
 			// The http handler will be able to read it.
-			req.Body = io.NopCloser(bodyReader)
+			req.Body = body
 		}
 	}
 
-	return tx.ProcessRequestBody()
+	it, err := tx.ProcessRequestBody()
+	return it, body, err
 }
 
 func WrapHandler(waf coraza.WAF, h http.Handler) http.Handler {
@@ -136,10 +189,16 @@ func WrapHandler(waf coraza.WAF, h http.Handler) http.Handler {
 		// ProcessRequest is just a wrapper around ProcessConnection, ProcessURI,
 		// ProcessRequestHeaders and ProcessRequestBody.
 		// It fails if any of these functions returns an error and it stops on interruption.
-		if it, err := processRequest(tx, r); err != nil {
+		it, body, err := processRequest(tx, r)
+		if body != nil {
+			// Deferred after the transaction's close, so it runs before it.
+			defer body.detach()
+		}
+		if err != nil {
 			tx.DebugLogger().Error().Err(err).Msg("Failed to process request")
 			return
-		} else if it != nil {
+		}
+		if it != nil {
 			w.WriteHeader(obtainStatusCodeFromInterruptionOrDefault(it, http.StatusOK))
 			return
 		}

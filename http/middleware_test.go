@@ -10,6 +10,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -32,7 +33,7 @@ func TestProcessRequest(t *testing.T) {
 	req, _ := http.NewRequest("POST", "https://www.coraza.io/test", strings.NewReader("test=456"))
 	waf, _ := coraza.NewWAF(coraza.NewWAFConfig())
 	tx := waf.NewTransaction().(*corazawaf.Transaction)
-	if _, err := processRequest(tx, req); err != nil {
+	if _, _, err := processRequest(tx, req); err != nil {
 		t.Fatal(err)
 	}
 	if tx.Variables().RequestMethod().Get() != "POST" {
@@ -48,7 +49,7 @@ func TestProcessRequestEngineOff(t *testing.T) {
 	// TODO(jcchavezs): Shall we make RuleEngine a first class method in WAF config?
 	waf, _ := coraza.NewWAF(coraza.NewWAFConfig().WithDirectives("SecRuleEngine OFF"))
 	tx := waf.NewTransaction().(*corazawaf.Transaction)
-	if _, err := processRequest(tx, req); err != nil {
+	if _, _, err := processRequest(tx, req); err != nil {
 		t.Fatal(err)
 	}
 	if tx.Variables().RequestMethod().Get() != "POST" {
@@ -66,7 +67,7 @@ func TestProcessRequestMultipart(t *testing.T) {
 
 	req := createMultipartRequest(t)
 
-	if _, err := processRequest(tx, req); err != nil {
+	if _, _, err := processRequest(tx, req); err != nil {
 		t.Fatal(err)
 	}
 
@@ -95,7 +96,7 @@ SecRule &REQUEST_HEADERS:Transfer-Encoding "!@eq 0" "id:1,phase:1,deny"
 	req, _ := http.NewRequest("GET", "https://www.coraza.io/test", nil)
 	req.TransferEncoding = []string{"chunked"}
 
-	it, err := processRequest(tx, req)
+	it, _, err := processRequest(tx, req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +122,7 @@ SecRule REQUEST_HEADERS:Transfer-Encoding "@contains identity" "id:1,phase:1,den
 	req, _ := http.NewRequest("GET", "https://www.coraza.io/test", nil)
 	req.TransferEncoding = []string{"chunked", "identity"}
 
-	it, err := processRequest(tx, req)
+	it, _, err := processRequest(tx, req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +213,7 @@ func TestChainEvaluation(t *testing.T) {
 		t.Errorf("Description HTTP request parsing failed")
 	}
 
-	_, err = processRequest(tx, req)
+	_, _, err = processRequest(tx, req)
 	if err != nil {
 		t.Errorf("Failed to load the HTTP request")
 	}
@@ -258,6 +259,7 @@ type httpTest struct {
 	reqURI                  string
 	reqBody                 string
 	echoReqBody             bool
+	readReqBodyLate         bool // the request body is read only after the handler has returned
 	reqBodyLimit            int
 	shouldRejectOnBodyLimit bool
 	respHeaders             map[string]string
@@ -300,6 +302,14 @@ func TestHttpServer(t *testing.T) {
 			expectedProto:           "HTTP/1.1",
 			expectedStatus:          403,
 			expectedRespHeadersKeys: expectedBlockingHeaders,
+		},
+		"request body read after the handler returned": {
+			reqURI:                  "/hello",
+			reqBody:                 "name=alice",
+			readReqBodyLate:         true,
+			expectedProto:           "HTTP/1.1",
+			expectedStatus:          201,
+			expectedRespHeadersKeys: expectedNoBlockingHeaders,
 		},
 		"request body larger than limit (process partial)": {
 			reqURI:      "/hello",
@@ -458,6 +468,7 @@ func runAgainstWAF(t *testing.T, tCase httpTest, waf coraza.WAF) {
 	t.Helper()
 	serverErrC := make(chan error, 1)
 	defer close(serverErrC)
+	late, lateErrC := make(chan struct{}), make(chan error, 1)
 
 	// Spin up the test server
 	ts := httptest.NewUnstartedServer(WrapHandler(waf, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -471,6 +482,14 @@ func runAgainstWAF(t *testing.T, tCase httpTest, waf coraza.WAF) {
 			w.Header().Set(k, v)
 		}
 		w.WriteHeader(201)
+		if tCase.readReqBodyLate {
+			// As http.Transport does when the server answers before it has written the whole body.
+			go func() {
+				<-late
+				_, err := io.ReadAll(req.Body)
+				lateErrC <- err
+			}()
+		}
 		if tCase.echoReqBody {
 			buf, err := io.ReadAll(req.Body)
 			if err != nil {
@@ -534,6 +553,14 @@ func runAgainstWAF(t *testing.T, tCase httpTest, waf coraza.WAF) {
 	err = res.Body.Close()
 	if err != nil {
 		t.Errorf("failed to close the body: %v", err)
+	}
+
+	if tCase.readReqBodyLate {
+		// The whole response arrived, so the handler has returned and the transaction is closed.
+		close(late)
+		if err := <-lateErrC; !errors.Is(err, errBodyDetached) {
+			t.Errorf("a request body read after the transaction was closed returned %v, want %v", err, errBodyDetached)
+		}
 	}
 
 	select {
