@@ -53,6 +53,8 @@ real application traffic before changing production policy. CLI options override
 values, including encrypted fields; invalid ciphertext still fails startup.
 To protect a small or often attacked site more tightly against floods, add `"ddos": "strict"` to
 the `flags` object (or `"relaxed"` for an API); see [strengths](ddos.md#strengths).
+To limit how fast one client may log in or call an API, add rate rules, as in
+`"limit": "POST /login 5/m; /api 600/m"`; see [rate rules](proxy-reference.md#rate-rules).
 
 ## What is encrypted
 

@@ -139,7 +139,7 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 				if err := os.WriteFile(path, []byte(tc.data), 0600); err != nil {
 					t.Fatal(err)
 				}
-				_, err := loadSiteConfig(path, flags)
+				_, _, err := loadSiteConfig(path, flags)
 				if (err != nil) != tc.bad {
 					t.Fatalf("error %v, want invalid=%v", err, tc.bad)
 				}
@@ -161,12 +161,12 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 				}
 				t.Fatal(err)
 			}
-			if _, err := loadSiteConfig(link, flag.NewFlagSet("site", flag.ContinueOnError)); err == nil {
+			if _, _, err := loadSiteConfig(link, flag.NewFlagSet("site", flag.ContinueOnError)); err == nil {
 				t.Fatal("symlink accepted as configuration")
 			}
 		})
 		t.Run("nonregular file", func(t *testing.T) {
-			if _, err := loadSiteConfig(t.TempDir(), flag.NewFlagSet("site", flag.ContinueOnError)); err == nil {
+			if _, _, err := loadSiteConfig(t.TempDir(), flag.NewFlagSet("site", flag.ContinueOnError)); err == nil {
 				t.Fatal("directory accepted as config")
 			}
 		})
@@ -308,7 +308,7 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 				if err := flags.Parse([]string{"-upstream=http://override.test", "-config-key-file=" + keyPath}); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := loadSiteConfig(configPath, flags); err != nil {
+				if _, _, err := loadSiteConfig(configPath, flags); err != nil {
 					t.Fatal(err)
 				}
 				if flags.Lookup("upstream").Value.String() != "http://override.test" {
@@ -1168,6 +1168,21 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 		{name: "custom API prefix", mode: "off", apiRate: 1, apiPaths: "/internal", target: "/internal/orders", statuses: []int{200, 429}},
 		{name: "API prefix requires a segment boundary", mode: "off", apiRate: 1, target: "/apiary", statuses: []int{200, 200}},
 		{name: "API and login budgets are separate", mode: "off", apiRate: 1, extraArgs: []string{"-wordpress", "-login-per-minute", "1"}, targets: []string{"/wp-login.php", "/api", "/wp-login.php", "/api"}, statuses: []int{200, 200, 429, 429}},
+		{name: "a -limit rule refuses past its count", mode: "off", extraArgs: []string{"-limit", "POST /api 1/m"}, statuses: []int{200, 429}, logRule: `"rule":5000047`,
+			says: `"rate_limits":["POST /api 1/1m (flag)"]`},
+		{name: "a site configuration limit", mode: "off", site: `{"version":1,"flags":{"upstream":"$ORIGIN","origin-allow":"127.0.0.1/32","limit":"POST /api 1/m"}}`,
+			statuses: []int{200, 429}, logRule: `"rule":5000047`, says: `"rate_limits":["POST /api 1/1m (site configuration)"]`},
+		{name: "a -limit replaces the site configuration's", mode: "off", site: `{"version":1,"flags":{"upstream":"$ORIGIN","origin-allow":"127.0.0.1/32","limit":"POST /api 1/m"}}`,
+			extraArgs: []string{"-limit", "GET /api 1/m"}, statuses: []int{200, 200}, says: `"msg":"site configuration limit replaced by the command line"`},
+		{name: "rate limits are listed with where they come from", extraArgs: []string{"-check", "-wordpress", "-api-per-minute", "60", "-api-rate-paths", "/API,/v1",
+			"-limit", "POST /login,/register 5/m", "-limit", "get /search 30/10s monitor"}, preflight: true,
+			says: `"rate_limits":["POST */wp-login.php 10/1m (-wordpress)","/api,/v1 60/1m (-api-per-minute)","POST /login,/register 5/1m (flag)","GET /search 30/10s monitor (flag)"]`},
+		{name: "a login limit a local policy switches on is listed", extraArgs: []string{"-check", "-policy", protectionFixture(t, "policy.json", `{"wordpress":{"enabled":true,"login_per_minute":5}}`)},
+			preflight: true, says: `"rate_limits":["POST */wp-login.php 5/1m (-policy)"]`},
+		{name: "a -limit rule that does not read refuses startup", extraArgs: []string{"-check", "-limit", "/api 600/m; PSOT /login 5/m"}, fails: true,
+			says: `-limit rule 2 ("PSOT /login 5/m"): "PSOT" is not an HTTP method (did you mean POST?)`},
+		{name: "repeated -limit flags are numbered together", extraArgs: []string{"-check", "-limit", "/api 600/m", "-limit", "/api 600/m"}, fails: true,
+			says: `-limit rule 2 ("/api 600/m"): repeats rule 1`},
 		{name: "negative API limit refuses startup", mode: "off", apiRate: -1, fails: true},
 		{name: "excess API limit refuses startup", mode: "off", apiRate: 100001, fails: true},
 		{name: "invalid API prefix refuses startup", mode: "off", apiRate: 1, apiPaths: "/api?x=1", fails: true},
@@ -2305,7 +2320,7 @@ func TestFloodFlagsBecomeShieldSettings(t *testing.T) {
 				if err := os.WriteFile(path, []byte(`{"version":1,"flags":`+tt.site+`}`), 0o600); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := loadSiteConfig(path, fs); err != nil {
+				if _, _, err := loadSiteConfig(path, fs); err != nil {
 					t.Fatal(err)
 				}
 			}

@@ -52,6 +52,7 @@ shutdown, containers and platform support.
 | `-policy` | No file | Local site settings; flags override matching fields, body ceilings still apply. |
 | `-vpatch-pack` | No file | Reviewed local signature pack; monitor first, then select block mode and software scope. |
 | `-api-per-minute` | Disabled | One sliding-minute budget per verified client across the selected API routes. |
+| `-limit` | None | Per-client rate rules, as in `-limit 'POST /login 5/m; /api 600/m'`; see [rate rules](docs/proxy-reference.md#rate-rules). |
 | `-ddos` | `on` | Flood detection, connection/request budgets and bounded IDS signals; add a strength, `relaxed`, `normal` or `strict`, as in `-ddos strict` or `-ddos monitor,strict`. |
 | `-crowdsec-api` | Disabled | Optional CrowdSec IP/CIDR bans, enforced independently of inspection modes. |
 | `-trusted-proxies` | Empty | Only actual CDN/load-balancer peers may supply client identity headers. |

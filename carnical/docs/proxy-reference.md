@@ -64,26 +64,30 @@ protection does. A connection `-max-conns-per-ip` refuses is closed at once and 
 most once a second with how many refusals were not logged; the address is in the line only with
 `-log-details`.
 
-The login limit and `-api-per-minute` are rate rules with a table of clients each, so one cannot use up
-the other's room. Each client has a sliding window of ten slots of six seconds: while the table holds a
-client, no minute holds more requests from it than its limit, and a client is held back at most one slot
-(six seconds) longer than an exact log of its requests would hold it. A request that matches both rules
-goes on only if both have room, and a refused request is counted by neither. A refusal is `429` with
-`Cache-Control: no-store` and a `Retry-After` that is the exact number of seconds, rounded up, until the
-request would be admitted.
-A table holds at most 50,000 clients. When it is full, the client admitted least recently makes room for
-a new one, so whoever fills a table locks no other network out; an idle client goes first, and when a
-client still inside its window has to go, rule 5000041 says so, at most once every ten seconds with how
-many such evictions were not logged. A dropped client comes back with a fresh window, and no client is
-ever refused for what its neighbours sent: a source able to fill a table already has more addresses than
-the table holds (one IPv6 /48 is 65,536 clients), each with a budget of its own, so the per-client limits
-do not bound what a whole network sends; the network budgets of `-ddos` do. Refusals (5000022 for
-logins, 5000042 for API quotas) are logged at most once a second per rule, and the next line logged says
-how many refusals were not.
+Responses get `nosniff`, lose software banners and prevent caching when they set cookies or serve
+HTML from a stylesheet address. Connection limits and a 100-stream HTTP/2 cap bound transport work.
 
-A program that embeds the proxy can add its own rate rules in `proxy.Config.Limits`, read from text by
-`proxy.ParseRateRules`. A rule is `[METHODS] PATHS COUNT/WINDOW [monitor]`, and rules are separated by
-`;`, as in `POST /login,/register 10/m; /api 600/m; GET /search 30/10s monitor`:
+## Rate rules
+
+`-limit` limits how often one client may make the requests a rule matches. Each client is an IPv4
+address or an IPv6 /64, the verified one behind `-trusted-proxies`. A rule is
+`[METHODS] PATHS COUNT/WINDOW [monitor]`; give several separated by `;` or as repeated flags:
+
+```sh
+carnical -upstream http://127.0.0.1:8081 -limit 'POST /login 5/m'
+carnical -upstream http://127.0.0.1:8081 -limit 'POST /login,/register 10/m; /api 600/m'
+carnical -upstream http://127.0.0.1:8081 -limit 'GET /search 30/10s monitor' -limit '* / 3k/m'
+```
+
+In a site file it is one JSON string, `"limit": "POST /login 5/m; /api 600/m"`. `-limit` on the
+command line replaces the site file's rules as a whole, as every flag replaces its site value, and the
+start-up log says `site configuration limit replaced by the command line`. The start-up log, and
+`-check`, list every rate rule that applies, normalized and in the order they are applied, with where
+it comes from, as in `"rate_limits":["POST */wp-login.php 10/1m (-wordpress)","POST /login 5/1m (flag)","GET /search 30/10s monitor (flag)"]`;
+the `-limit` rules all come from the command line (`flag`) or all from the site file (`site configuration`).
+`-api-per-minute` and the login limit of `-wordpress` are rate rules too, listed as `(-api-per-minute)`
+and `(-wordpress)`, or `(-policy)` when a local policy switches the WordPress protections on. A program that embeds the proxy sets the rules in `proxy.Config.Limits`, read from
+text by `proxy.ParseRateRules`; a signed or local policy cannot add or remove them.
 
 - METHODS is `*` or methods separated by commas, in any case. GET also counts HEAD; with no methods or
   `*` every method counts. A method is letters only, at most 16 of them, so a hyphenated method such as
@@ -109,20 +113,36 @@ A program that embeds the proxy can add its own rate rules in `proxy.Config.Limi
   rather than taken as a method name.
 
 There are at most 32 rules, 16 paths in a rule and 100 in all, the text is at most 4 KiB, also when
-written out in full (`1k/h` is written `1000/1h`), and a rule written twice is refused. An error names
-the rule by its number and text and says what is wrong, with a suggestion for a likely misspelling, as
-in `-limit rule 1 ("PSOT /login 5/m"): "PSOT" is not an HTTP method (did you mean POST?)`. `proxy.New` checks rules built without `ParseRateRules` the same way and
-keeps its own copy.
+written out in full (`1k/h` is written `1000/1h`), and a rule written twice is refused. The proxy does
+not start with a rule it cannot read: the error names the rule by its number among all the `-limit`
+values and its text, and says what is wrong, with a suggestion for a likely misspelling, as in
+`-limit rule 1 ("PSOT /login 5/m"): "PSOT" is not an HTTP method (did you mean POST?)`. `proxy.New`
+checks rules built without `ParseRateRules` the same way and keeps its own copy.
 
-Each rule has its own table of clients and its own budget, counted after the login and API limits, with
-the same window, eviction and `Retry-After` as they have. A request goes on only if every enforcing rule
-it matches has room, and is then counted by all of them; one that a rule refuses is counted by none.
-A refusal is logged as rule 5000047 with the rule's text ("rate limit exceeded: POST /login 5/1m"),
-which comes from the configuration and never from the request. The rules apply whatever the `-ddos`
-mode, and with the flood protection off.
+Each rule, the login limit and `-api-per-minute` included, has its own table of clients and its own
+budget, so one cannot use up another's room. A client has a sliding window of ten slots, each a tenth
+of the rule's window: while the table holds a client, it is never admitted more than COUNT requests in
+any span of the window, and it is held back at most a tenth of the window (six seconds for a minute)
+longer than an exact log of its requests would hold it. A request goes on only if every enforcing rule
+it matches has room, and is then counted by all of them; one that a rule refuses is counted by none. A
+refusal is `429` with `Cache-Control: no-store` and a `Retry-After` that is the exact number of
+seconds, rounded up, until the request would be admitted; the request never reaches the application.
+A refusal is logged as rule 5000022 for logins, 5000042 for API quotas and 5000047 for a `-limit` rule,
+with the rule's text ("rate limit exceeded: POST /login 5/1m"), which comes from the configuration and
+never from the request. The rules apply whatever the `-ddos` mode, and with the flood protection off.
 
-Responses get `nosniff`, lose software banners and prevent caching when they set cookies or serve
-HTML from a stylesheet address. Connection limits and a 100-stream HTTP/2 cap bound transport work.
+A table holds at most 50,000 clients, and the tables of all the rate rules together at most 200,000:
+with more than four rules, each holds 200,000 divided by their number, so 25,000 with eight and 5,882
+with the most there can be (the login limit, `-api-per-minute` and 32 `-limit` rules). When a table is
+full, the client admitted least recently makes room for a new one, so whoever fills a table locks no
+other network out; an idle client goes first, and when a client still inside its window has to go, rule
+5000041 says so, at most once every ten seconds with how many such evictions were not logged. A dropped
+client comes back with a fresh window, and no client is ever refused for what its neighbours sent: a
+source able to fill a table already has more addresses than the table holds (one IPv6 /48 is 65,536
+clients, a /51 is 8,192), each with a budget of its own, so the per-client limits do not bound what a
+whole network sends; the network budgets of `-ddos` do. Refusals, and the reports of
+monitor rules, are logged at most once a second per rule, and the next line logged says how many were
+not.
 
 ## Monitoring
 

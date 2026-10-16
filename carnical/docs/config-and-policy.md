@@ -41,6 +41,32 @@ For example, this policy blocks with the normal sensitivity and restricts visito
 This is an operator-managed file, not a signed envelope. Keep it writable only by administrators
 and deploy the same reviewed file to each replica.
 
+## Rate rules and flood strength in the site file
+
+The site file of `-config` (written by `carnical setup`) holds flags by name in its `flags` object.
+The rate rules and the strength of the flood protection are two of them:
+
+```json
+{"version":1,"flags":{"upstream":"http://127.0.0.1:8081","origin-allow":"127.0.0.1/32",
+  "limit":"POST /login 5/m; /api 600/m","ddos":"strict"}}
+```
+
+`"limit"` is one JSON string of [rate rules](proxy-reference.md#rate-rules) separated by `;`, as
+`-limit` takes them; there is no array form. `"ddos"` is a mode, a
+[strength](ddos.md#strengths) or one of each, as in `"strict"` or `"monitor,strict"`.
+
+A setting comes from, first to last:
+
+1. the flag on the command line;
+2. the same flag in the site file;
+3. for a `-ddos-*` setting, the strength `-ddos` names;
+4. the built-in default.
+
+A flag on the command line replaces the site file's value as a whole: `-limit` does not add to the
+site file's rules, and the start-up log says `site configuration limit replaced by the command line`
+when it replaces them, and `-ddos monitor` over `"ddos": "strict"` is `monitor,normal`. A local
+`-policy` and signed configuration cannot set either: they are operator settings.
+
 ## Part 1. The configuration channel (`config/`)
 
 ### What it stops

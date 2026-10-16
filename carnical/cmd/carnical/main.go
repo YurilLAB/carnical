@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -108,6 +109,8 @@ func runFlags(args []string, private map[string]string) error {
 	loginRate := flags.Int("login-per-minute", 10, "with -wordpress, POSTs to wp-login.php one address may make a minute")
 	apiRate := flags.Int("api-per-minute", 0, "shared API requests per verified client address in a sliding minute (0 = disabled; maximum 100000)")
 	apiPaths := flags.String("api-rate-paths", "/api,/graphql", "plain path prefixes sharing -api-per-minute, matched by path segment; / covers every route")
+	limits := &limitFlag{}
+	flags.Var(limits, "limit", "per-client rate limits: [METHODS] PATHS COUNT/WINDOW [monitor], separated by ';' or given as repeated flags, as in 'POST /login 5/m; /api 600/m' (windows s, m or h, as in 5/m, 100/10s or 1k/h)")
 	scriptNames := flags.Bool("allow-script-names", false, "allow uploads named like scripts (shell.php, .htaccess); refused by default")
 	scriptContent := flags.Bool("allow-script-content", false, "allow uploads that contain a PHP, ASP or JSP opening tag; refused by default")
 	keepBanners := flags.Bool("keep-banners", false, "keep X-Powered-By and Server headers from the application")
@@ -157,12 +160,18 @@ func runFlags(args []string, private map[string]string) error {
 	if flags.NArg() != 0 {
 		return errors.New("unexpected positional arguments; use named flags")
 	}
+	limitSource := "flag"
+	if !setFlags(flags)["limit"] {
+		limitSource = "site configuration"
+	}
+	limitReplaced := false
 	if *configFile != "" {
-		encrypted, err := loadSiteConfig(*configFile, flags)
+		encrypted, replaced, err := loadSiteConfig(*configFile, flags)
 		if err != nil {
 			return err
 		}
 		maps.Copy(private, encrypted)
+		limitReplaced = slices.Contains(replaced, "limit")
 	}
 	if *checkOrigin && !*check {
 		return errors.New("-check-origin requires -check")
@@ -246,6 +255,10 @@ func runFlags(args []string, private map[string]string) error {
 	}
 
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	if limitReplaced {
+		// The rules of -limit are one setting, as every flag is: the command line's do not add to the site's.
+		log.Info("site configuration limit replaced by the command line")
+	}
 	cs, err := configureCrowdSec(crowdSecFlags{api: *csAPI, keyFile: *csKey, caFile: *csCA, origins: *csOrigins,
 		interval: *csInterval, timeout: *csTimeout, maxStale: *csStale, failOpen: *csFailOpen, maxDecisions: *csLimit})
 	if err != nil {
@@ -278,7 +291,7 @@ func runFlags(args []string, private map[string]string) error {
 		MaxUpstreamInFlight: *maxUpstream, LogDetails: *details, EvalBudget: *evalBudget, MaxEvaluations: *maxEval, MaxFormBody: *maxForm,
 		AllowedHosts: splitList(*hosts), Paths: proxy.PathPolicy{AllowEncodedSlash: *encodedSlash, AllowPathParams: *pathParams},
 		DenyHeaders: splitList(*denyHeaders), WordPress: proxy.WordPressPolicy{Enabled: *wordpress, AllowXMLRPC: *xmlrpc, LoginPerMinute: *loginRate},
-		APIRate:   proxy.APIRatePolicy{PerMinute: *apiRate, Paths: splitList(*apiPaths)},
+		APIRate: proxy.APIRatePolicy{PerMinute: *apiRate, Paths: splitList(*apiPaths)}, Limits: limits.rules,
 		Uploads:   proxy.UploadPolicy{AllowExecutableNames: *scriptNames, AllowScriptContent: *scriptContent},
 		Responses: proxy.ResponsePolicy{KeepBanners: *keepBanners, KeepCaching: *keepCaching}, MaxConnsPerIP: *maxConns,
 		AllowRequestEncoding: *requestEncoding, NoJoinedParams: !*joinRepeated, Shield: guard, CrowdSec: cs,
@@ -369,8 +382,9 @@ func runFlags(args []string, private map[string]string) error {
 		originTLS: originTLS, host: *upstreamHost, systemd: *fromSystemd, probe: *checkOrigin, probeHTTP: *checkOriginHTTP}); err != nil {
 		return err
 	}
+	rateLimits := rateLimitAttrs(cfg, explicit, limitSource)
 	if *check {
-		log.Info("configuration checked", append([]any{"mode", cfg.CRS.Mode, "formats_mode", effectiveFormatsMode, "origin_checked", *checkOrigin, "origin_http_checked", *checkOriginHTTP, "origin_client_identity", originTLS.Certificate != nil, "tls", *certFile != "", "sandbox_applied", false}, ddosLogAttrs(*ddos, explicit)...)...)
+		log.Info("configuration checked", slices.Concat([]any{"mode", cfg.CRS.Mode, "formats_mode", effectiveFormatsMode, "origin_checked", *checkOrigin, "origin_http_checked", *checkOriginHTTP, "origin_client_identity", originTLS.Certificate != nil, "tls", *certFile != "", "sandbox_applied", false}, ddosLogAttrs(*ddos, explicit), rateLimits)...)
 		return nil
 	}
 	if err := ctx.Err(); err != nil {
@@ -429,9 +443,9 @@ func runFlags(args []string, private map[string]string) error {
 	stopStats := startFormatStats(log, formatInspector, *formatsStats)
 	defer stopStats()
 	health := &runtimeHealth{available: func() bool { return cs == nil || *csFailOpen || !cs.Stats().Stale }}
-	log.Info("listening", append([]any{"addr", ln.Addr().String(), "crs", crs.Version(), "mode", cfg.CRS.Mode, "paranoia", cfg.CRS.ParanoiaLevel,
+	log.Info("listening", slices.Concat([]any{"addr", ln.Addr().String(), "crs", crs.Version(), "mode", cfg.CRS.Mode, "paranoia", cfg.CRS.ParanoiaLevel,
 		"inbound_threshold", cfg.CRS.InboundThreshold, "tls", *certFile != "", "confined", *confine, "formats_mode", effectiveFormatsMode, "request_encoding", *requestEncoding,
-		"health_enabled", healthListener != nil}, ddosLogAttrs(*ddos, explicit)...)...)
+		"health_enabled", healthListener != nil}, ddosLogAttrs(*ddos, explicit), rateLimits)...)
 	return serveRuntime(ctx, server, ln, healthListener, health, lifecycle, log)
 }
 
