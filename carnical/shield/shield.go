@@ -150,7 +150,9 @@ type Config struct {
 	KnownAfter  int
 	KnownMinAge time.Duration
 	KnownFor    time.Duration
-	// MaxSources bounds how many addresses are remembered (default 262,144; about 30 MB).
+	// MaxSources bounds how many addresses are remembered (default 262,144), and a quarter as many networks. At the
+	// default, the two tables hold about 55 MB of live heap with the address table full, about 70 MB with both full; with
+	// the default GOGC the heap in use grows to about twice that.
 	MaxSources int
 
 	// Trusted are the load balancers or CDN in front of the proxy: their connections bypass per-source and per-network

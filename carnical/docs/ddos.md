@@ -180,9 +180,14 @@ challenge shown, so people who are shown it and answer it add nothing to the cou
 empty icon, so their browsers ask for no `/favicon.ico`, which an attack budget would refuse. One
 answer can be sent many times, so answers take back no more than the address was shown, and never a refusal
 or a wrong answer; a bot behind an address whose people answer is counted for what it is shown
-beyond their answers. An IPv6 address is counted and banned with its
-/64; a trusted proxy peer is never refused for a ban, even one on a /64 it shares. In monitor mode nothing is banned: an address over
-its own limit is refused with 429 as at any other time. When the address table is full, an entry
+beyond their answers. An IPv6 address is counted and banned with its /64; a trusted proxy peer is
+never refused for a ban, even one on a /64 it shares.
+In monitor mode nothing is banned: an address over its own limit is refused with 429 as at any other
+time. The shield remembers at most 262,144 addresses and 65,536 networks (/24 or /48): with the
+address table full they hold about 55 MB of live heap, and about 70 MB when the addresses are spread
+over enough networks to fill the network table too. With Go's default garbage collector setting
+(`GOGC=100`) the heap in use grows to about twice that (about 105 MB and 130 MB measured), which is the
+figure to size a memory limit from. When the address table is full, an entry
 without standing is forgotten first; a ban or a known client's standing goes only when every entry
 in the sample of 32 has one. Rule IDs are 5004001
 (address rate), 5004002 (network rate), 5004003 (attack cluster), 5004004 (unknown-client budget),
