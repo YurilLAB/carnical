@@ -243,3 +243,72 @@ application keeps up is declared but held off only in part, as above. And the mi
 traffic over the threshold that it mostly refuses is unlike the site's own clients by fingerprint, not for five minutes at
 most; the site's own clients, however much of their traffic the attack's budgets refuse, let it end after the five minutes.
 The other simulations gave the same results as before, within 0.1 point.
+
+## 2026-10-16: Three strengths of protection
+
+`shield.Preset` gives the configuration of three strengths: `normal` is the default configuration, `strict` is meant for a
+small site or one that is often attacked, and `relaxed` for an API or a site with many visitors behind a carrier's addresses.
+Only settings that make the protection stronger or weaker differ. The number of connections and the challenge's difficulty
+are the same at every strength.
+
+| Setting | relaxed | normal | strict |
+|---|---|---|---|
+| Per-address rate and burst | 100/s, 400 | 50/s, 200 | 20/s, 80 |
+| Per-network rate | 1,000/s | 500/s | 500/s |
+| Highest raise of a limit (`MaxScale`) | 50x | 20x | 10x |
+| Known clients during an attack (factor, at least) | 2x, 50/s | 2x, 50/s | 2x, 50/s |
+| Strangers during an attack (factor, at least) | 2x, 20/s | 1x, 10/s | 0.5x, 5/s |
+| New connections per address (rate, burst) | 40/s, 120 | 20/s, 60 | 10/s, 30 |
+| Ban after, for | 60 refusals, 5 min | 30, 10 min | 15, 30 min |
+| Attack threshold (rate factor, sigmas, seconds to confirm, floor) | 6x, 10, 5 s, 50/s | 4x, 8, 3 s, 20/s | 3x, 6, 2 s, 10/s |
+
+The strict ceiling of 10x is above the 5.7x that the shared addresses of the busy site needed (above). A ceiling of 5 was
+considered and rejected because it is below that measurement.
+
+Each strength is tested on its own subtest of the simulations above (`TestSimulatedAttacks` and
+`TestASiteWithMuchTrafficIsNotLimitedAsIfItWereSmall`). The bars are the same as for the default configuration. One of the
+design's values was changed. The design gave relaxed a known client's budget during an attack of 4x, at least 100/s. With
+it, the botnet that first earned standing (above) was detected after 6 s, but 5.79% of its requests were admitted after
+that, and only 79.2% of returning and 86.0% of new visitors were served. With the default configuration and only that
+budget doubled, the figures were 5.79%, 79.4% and 85.5%, so the doubled budget alone caused it. Relaxed keeps the normal
+budget of 2x, at least 50/s. With it, relaxed gave the results below; its other rows did not change.
+
+| Scenario (simulation, as above) | Strength | Detected after | Attack admitted after detection | Returning visitors served | New visitors served |
+|---|---|---|---|---|---|
+| 20,000 addresses, 5,000 req/s, cache-busting `/` | relaxed | 6 s | 0.10% | 100% | 100% |
+| | normal | 4 s | 0.10% | 100% | 100% |
+| | strict | 3 s | 0.10% | 99.4% | 95.1% |
+| 30,000 addresses copying Chrome, 3,000 req/s to `/search` | relaxed | 6 s | 0.17% | 100% | 100% |
+| | normal | 4 s | 0.17% | 100% | 100% |
+| | strict | 3 s | 0.17% | 100% | 99.3% |
+| 2,000 addresses that earned standing, copying Chrome, 3,000 req/s to `/search` | relaxed | 6 s | 3.64% | 98.8% | 99.1% |
+| | normal | 4 s | 3.63% | 98.8% | 98.8% |
+| | strict | 3 s | 3.62% | 97.4% | 97.1% |
+| A newsletter's crowd to one article | normal | treated as an attack after 10 s | — | 100% | 100% |
+| | strict | treated as an attack after 7 s | — | 100% | 100% |
+| Flash crowd of real people, 10x the visits | relaxed | never (stays "normal") | — | — | 100% |
+| | normal | never (stays "elevated") | — | — | 100% |
+
+On the busy site, after 25 minutes from a start, returning visitors were served in full in the following minute under
+relaxed and normal. Under relaxed the per-address limit had risen 3.8x and the per-network limit 1.7x, and 97.5% of
+returning visitors were served over the 25 minutes. Under normal the figures were 5.7x, 3.1x and 86.1%.
+
+Some cases fall outside what the strengths promise, and the tests do not hold them to it. They were measured once:
+
+- Under strict, the flash crowd stayed "elevated".
+- Under relaxed, the newsletter's crowd was not treated as an attack, and all of it was served.
+- Under strict, the busy site's per-address limit rose 6.1x and its per-network limit 1.9x. 69.2% of returning visitors
+  were served over the 25 minutes and 99.9% in the minute after. Strict is not meant for a site this busy.
+- The newsletter's crowd was measured with one address per person. A challenge shown counts as a tenth of a refusal
+  toward a ban, even when it is solved, so an address shared by many people of a crowd taken for an attack, such as a
+  carrier's or an office's, can be banned. In the same crowd with 30% of it behind four shared `100.64.0.x` addresses, every
+  visitor with an address of their own was served under normal and strict. Of the visitors behind the shared addresses,
+  41.4% were served under normal and 15.8% under strict, and all four addresses were banned under both: for 10 minutes
+  under normal, and for 30 minutes under strict, which bans after half as many refusals. This predates the strengths.
+
+Each new case was checked against a broken strength, and it failed:
+
+- With strict and relaxed set to monitor only, both botnet cases failed under each of them.
+- With strict refusing strangers instead of challenging them, 17.2% of the newsletter's crowd was served.
+- With relaxed limits fixed at 1x, 91.8% of the busy site's returning visitors were served.
+- With the flash-crowd check reversed, both of its cases failed.

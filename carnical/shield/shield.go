@@ -177,6 +177,82 @@ func DefaultConfig() Config {
 	return c
 }
 
+// Preset is the configuration of a protection strength: "normal" is the zero Config, which stands for DefaultConfig;
+// "strict" limits each address and strangers during an attack more tightly, bans sooner and for longer, and declares an
+// attack on a smaller rise, for a small site or one that is often attacked (in a crowd it takes for an attack, an
+// address many people share, such as a carrier's, can be banned for 30 minutes); "relaxed" does the opposite, for an API
+// or a site with many visitors behind one carrier's addresses. Only the fields that make the protection stronger or
+// weaker are set; the zero fields mean their defaults, and the capacity of the connection limits and the challenge's
+// difficulty are the same at every strength. A name it does not know is an error, which suggests the one meant.
+func Preset(name string) (Config, error) {
+	switch name {
+	case "normal":
+		return Config{}, nil
+	case "strict":
+		return Config{
+			RequestRate: 20, RequestBurst: 80, // the default burst of four seconds' rate; the network's 500 is unchanged
+			UnknownFactor: 0.5, MinUnknownRate: 5,
+			ConnRate: 10, ConnBurst: 30,
+			BanAfter: 15, BanFor: 30 * time.Minute,
+			// MaxScale 10 still covers the 5.7x a busy site's shared addresses were measured to need (flood-validation.md).
+			Detector: DetectorConfig{MaxScale: 10, RateFactor: 3, Sigmas: 6, Confirm: 2, MinAttackRate: 10},
+		}, nil
+	case "relaxed":
+		return Config{
+			RequestRate: 100, RequestBurst: 400, SubnetRate: 1000,
+			// KnownFactor and MinKnownRate keep their defaults: doubled, they let a botnet that first earned standing
+			// through (flood-validation.md).
+			UnknownFactor: 2, MinUnknownRate: 20,
+			ConnRate: 40, ConnBurst: 120,
+			BanAfter: 60, BanFor: 5 * time.Minute,
+			Detector: DetectorConfig{MaxScale: 50, RateFactor: 6, Sigmas: 10, Confirm: 5, MinAttackRate: 50},
+		}, nil
+	}
+	err := fmt.Sprintf("shield: unknown strength %q: want relaxed, normal or strict", name)
+	if s := closest(name, "relaxed", "normal", "strict"); s != "" {
+		err += " (did you mean " + s + "?)"
+	}
+	return Config{}, errors.New(err)
+}
+
+// closest is the word of words within two edits of s, or "" if there is none. Longer input is not compared: it is no typo
+// of a short word, and comparing it would cost its length squared.
+func closest(s string, words ...string) string {
+	if len(s) > 16 {
+		return ""
+	}
+	best, bestD := "", 3
+	for _, w := range words {
+		if len(w) > 16 {
+			continue
+		}
+		if d := editDistance(s, w); d < bestD {
+			best, bestD = w, d
+		}
+	}
+	return best
+}
+
+// editDistance is the Levenshtein distance between two short strings, in bytes.
+func editDistance(a, b string) int {
+	var prev, cur [17]int
+	for j := 0; j <= len(b); j++ {
+		prev[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		cur[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			cur[j] = min(prev[j]+1, cur[j-1]+1, prev[j-1]+cost)
+		}
+		prev = cur
+	}
+	return prev[len(b)]
+}
+
 func (c *Config) defaults() {
 	f := func(p *float64, v float64) {
 		if *p == 0 {

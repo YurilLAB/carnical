@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -499,6 +500,51 @@ func TestConfigValidation(t *testing.T) {
 			tt.mod(&c)
 			if err := c.Validate(); (err == nil) != tt.ok {
 				t.Fatalf("Validate() = %v", err)
+			}
+		})
+	}
+}
+
+// The strengths' names, and that each is a configuration New accepts; what each does to a flood and to a crowd is in
+// sim_test.go.
+func TestPreset(t *testing.T) {
+	tests := []struct {
+		name, err string // err is "" when the name is known
+	}{
+		{"normal", ""},
+		{"strict", ""},
+		{"relaxed", ""},
+		{"stict", `unknown strength "stict": want relaxed, normal or strict (did you mean strict?)`},
+		{"Relaxed", "(did you mean relaxed?)"},
+		{"norm", "(did you mean normal?)"},
+		{"", `unknown strength "": want relaxed, normal or strict`},
+		{"aggressive", `unknown strength "aggressive": want relaxed, normal or strict`},
+		{"strict,relaxed", `unknown strength "strict,relaxed": want relaxed, normal or strict`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, err := Preset(tt.name)
+			if tt.err != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.err) {
+					t.Fatalf("Preset(%q) = %v, want an error with %q", tt.name, err, tt.err)
+				}
+				if !strings.Contains(tt.err, "did you mean") && strings.Contains(err.Error(), "did you mean") {
+					t.Fatalf("Preset(%q) = %v: suggests a name that is not close", tt.name, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := c.Validate(); err != nil {
+				t.Fatal(err)
+			}
+			c.defaults()
+			if tt.name == "normal" && !reflect.DeepEqual(c, DefaultConfig()) {
+				t.Fatalf("normal is %+v, want DefaultConfig %+v", c, DefaultConfig())
+			}
+			if tt.name != "normal" && reflect.DeepEqual(c, DefaultConfig()) {
+				t.Fatalf("%s is the default configuration", tt.name)
 			}
 		})
 	}

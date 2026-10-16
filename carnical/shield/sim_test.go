@@ -12,6 +12,8 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"net/url"
+	"runtime/debug"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -96,6 +98,42 @@ func newSim(t *testing.T, mod func(*Config)) *sim {
 		m.known = append(m.known, &simVisitor{addr: m.legitAddr(), browser: i % len(browsers)})
 	}
 	return m
+}
+
+// underRace says whether the test binary was built with the race detector. The simulations run several times slower
+// under it and on one goroutine, so what they find is in their values, not in how requests run concurrently: under it
+// only some run, so that `go test -race ./shield` stays well within go test's ten minutes. The tests without -race run
+// them all.
+func underRace() bool {
+	bi, ok := debug.ReadBuildInfo()
+	return ok && slices.Contains(bi.Settings, debug.BuildSetting{Key: "-race", Value: "true"})
+}
+
+// strengths is names, the -ddos strengths a simulation runs under, but only normal under the race detector.
+func strengths(names ...string) []string {
+	if underRace() {
+		return []string{"normal"}
+	}
+	return names
+}
+
+// notUnderRace skips a simulation under the race detector (see underRace).
+func notUnderRace(t *testing.T) {
+	if underRace() {
+		t.Skip("a simulation on one goroutine; run without -race")
+	}
+}
+
+// strength makes newSim start from the -ddos strength named (see Preset).
+func strength(t *testing.T, name string) func(*Config) {
+	return func(c *Config) {
+		p, err := Preset(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.Now, p.ChallengeBits, p.Labeler = c.Now, c.ChallengeBits, c.Labeler
+		*c = p
+	}
 }
 
 // legitAddr is a fresh address for a person: the site's audience is mostly in a few countries' networks.
@@ -312,21 +350,28 @@ func TestSimulatedAttacks(t *testing.T) {
 	}
 	python := []string{"User-Agent", "python-requests/2.32.3", "Accept", "*/*", "Accept-Encoding", "gzip, deflate", "Connection", "keep-alive"}
 
+	// Each strength of -ddos, from the most lenient, must hold off the botnets below.
+	all := strengths("relaxed", "normal", "strict")
+
 	t.Run("a botnet of 20,000 addresses in 30 countries, 5,000 requests a second, cache-busting the home page", func(t *testing.T) {
-		m := newSim(t, nil)
-		m.warm(10)
-		bots := botnet(20_000, m.r)
-		res := m.run(90, 5000, func(i int) {
-			m.do("attack", bots[m.r.IntN(len(bots))], "/?r="+strconv.Itoa(m.r.IntN(1e9)), false, python)
-		})
-		t.Log(res)
-		t.Logf("incident: %d addresses, %d networks, %d countries/networks labelled; refused %d, banned %d; reasons: %q",
-			res.inc.Sources, res.inc.Networks, res.inc.DistinctLabels, res.inc.Refused, res.inc.Banned, res.inc.Reasons)
-		if res.detectedAfter < 0 || res.detectedAfter > 10 || res.attackAdmitted > 0.02 || res.known < 0.98 || res.new < 0.9 {
-			t.Fatal("protection below the bar")
-		}
-		if res.inc.Sources < 17_000 || res.inc.Sources > 23_000 || res.inc.DistinctLabels < 25 {
-			t.Fatalf("the record misjudges the attack's spread: %+v", res.inc)
+		for _, name := range all {
+			t.Run(name, func(t *testing.T) {
+				m := newSim(t, strength(t, name))
+				m.warm(10)
+				bots := botnet(20_000, m.r)
+				res := m.run(90, 5000, func(i int) {
+					m.do("attack", bots[m.r.IntN(len(bots))], "/?r="+strconv.Itoa(m.r.IntN(1e9)), false, python)
+				})
+				t.Log(res)
+				t.Logf("incident: %d addresses, %d networks, %d countries/networks labelled; refused %d, banned %d; reasons: %q",
+					res.inc.Sources, res.inc.Networks, res.inc.DistinctLabels, res.inc.Refused, res.inc.Banned, res.inc.Reasons)
+				if res.detectedAfter < 0 || res.detectedAfter > 10 || res.attackAdmitted > 0.02 || res.known < 0.98 || res.new < 0.9 {
+					t.Fatal("protection below the bar")
+				}
+				if res.inc.Sources < 17_000 || res.inc.Sources > 23_000 || res.inc.DistinctLabels < 25 {
+					t.Fatalf("the record misjudges the attack's spread: %+v", res.inc)
+				}
+			})
 		}
 	})
 
@@ -344,16 +389,20 @@ func TestSimulatedAttacks(t *testing.T) {
 	})
 
 	t.Run("bots that copy a real browser exactly, loading a search page from 30,000 addresses", func(t *testing.T) {
-		m := newSim(t, nil)
-		m.warm(10)
-		bots := botnet(30_000, m.r)
-		res := m.run(90, 3000, func(i int) {
-			m.do("attack", bots[m.r.IntN(len(bots))], "/search?q="+strconv.Itoa(m.r.IntN(1e9)), true, browsers[0])
-		})
-		t.Log(res)
-		t.Logf("reasons: %q", res.inc.Reasons)
-		if res.detectedAfter < 0 || res.detectedAfter > 12 || res.attackAdmitted > 0.03 || res.known < 0.98 || res.new < 0.85 {
-			t.Fatal("protection below the bar")
+		for _, name := range all {
+			t.Run(name, func(t *testing.T) {
+				m := newSim(t, strength(t, name))
+				m.warm(10)
+				bots := botnet(30_000, m.r)
+				res := m.run(90, 3000, func(i int) {
+					m.do("attack", bots[m.r.IntN(len(bots))], "/search?q="+strconv.Itoa(m.r.IntN(1e9)), true, browsers[0])
+				})
+				t.Log(res)
+				t.Logf("reasons: %q", res.inc.Reasons)
+				if res.detectedAfter < 0 || res.detectedAfter > 12 || res.attackAdmitted > 0.03 || res.known < 0.98 || res.new < 0.85 {
+					t.Fatal("protection below the bar")
+				}
+			})
 		}
 	})
 
@@ -394,10 +443,14 @@ func TestSimulatedAttacks(t *testing.T) {
 		})
 	}
 	t.Run("a botnet that earned standing before it attacks, copying a real browser", func(t *testing.T) {
-		res := patient(t, nil)
-		t.Log(res)
-		if res.detectedAfter < 0 || res.detectedAfter > 12 || res.attackAdmitted > 0.05 || res.known < 0.95 || res.new < 0.85 {
-			t.Fatal("protection below the bar")
+		for _, name := range all {
+			t.Run(name, func(t *testing.T) {
+				res := patient(t, strength(t, name))
+				t.Log(res)
+				if res.detectedAfter < 0 || res.detectedAfter > 12 || res.attackAdmitted > 0.05 || res.known < 0.95 || res.new < 0.85 {
+					t.Fatal("protection below the bar")
+				}
+			})
 		}
 	})
 	t.Run("the same botnet with standing unbudgeted (control: the standing budget is what holds it)", func(t *testing.T) {
@@ -408,33 +461,44 @@ func TestSimulatedAttacks(t *testing.T) {
 		}
 	})
 
+	// Under strict, as under normal, the crowd is taken for an attack; the people in it must still be served.
 	t.Run("a newsletter sends a crowd to one article whose assets are on another host (taken for an attack, people still served)", func(t *testing.T) {
-		m := newSim(t, nil)
-		m.warm(10)
-		crowd := func(i int) {
-			v := &simVisitor{addr: m.legitAddr(), browser: m.r.IntN(len(browsers))}
-			m.do("legit new", v, "/blog/big-news", true, browsers[v.browser])
-		}
-		res := m.run(90, 150, crowd) // within what the origin can serve: the question is only what the shield does
-		t.Logf("highest state %v; %s; reasons %q", res.maxState, res, m.s.Snapshot().Reasons)
-		if all := m.tally("legit new").rate(); all < 0.95 {
-			t.Fatalf("only %.1f%% of the crowd was served", 100*all)
+		for _, name := range strengths("normal", "strict") {
+			t.Run(name, func(t *testing.T) {
+				m := newSim(t, strength(t, name))
+				m.warm(10)
+				crowd := func(i int) {
+					v := &simVisitor{addr: m.legitAddr(), browser: m.r.IntN(len(browsers))}
+					m.do("legit new", v, "/blog/big-news", true, browsers[v.browser])
+				}
+				res := m.run(90, 150, crowd) // within what the origin can serve: the question is only what the shield does
+				t.Logf("highest state %v; %s; reasons %q", res.maxState, res, m.s.Snapshot().Reasons)
+				if all := m.tally("legit new").rate(); all < 0.95 {
+					t.Fatalf("only %.1f%% of the crowd was served", 100*all)
+				}
+			})
 		}
 	})
 
+	// strict is not held to this: it is meant to declare an attack on a smaller rise, and the people in a crowd it takes
+	// for one are served through the challenge, as the newsletter case above shows.
 	t.Run("a flash crowd of real people (negative control: not an attack)", func(t *testing.T) {
-		m := newSim(t, nil)
-		m.warm(10)
-		res := result{detectedAfter: -1}
-		for sec := 0; sec < 120; sec++ {
-			m.second(4, 40, 0, nil) // ten times the visits, almost all new, every browser, pages and assets
-			if st := m.s.State(); st > res.maxState {
-				res.maxState = st
-			}
-		}
-		t.Logf("highest state %v; new visitors served %.1f%%", res.maxState, 100*m.tally("legit new").rate())
-		if res.maxState == Attack {
-			t.Fatalf("a crowd of people was taken for an attack: %q", m.s.Snapshot().Reasons)
+		for _, name := range strengths("relaxed", "normal") {
+			t.Run(name, func(t *testing.T) {
+				m := newSim(t, strength(t, name))
+				m.warm(10)
+				res := result{detectedAfter: -1}
+				for sec := 0; sec < 120; sec++ {
+					m.second(4, 40, 0, nil) // ten times the visits, almost all new, every browser, pages and assets
+					if st := m.s.State(); st > res.maxState {
+						res.maxState = st
+					}
+				}
+				t.Logf("highest state %v; new visitors served %.1f%%", res.maxState, 100*m.tally("legit new").rate())
+				if res.maxState == Attack {
+					t.Fatalf("a crowd of people was taken for an attack: %q", m.s.Snapshot().Reasons)
+				}
+			})
 		}
 	})
 
@@ -806,27 +870,34 @@ func TestASiteWithMuchTrafficIsNotLimitedAsIfItWereSmall(t *testing.T) {
 	}
 	python := []string{"User-Agent", "python-requests/2.32.3", "Accept", "*/*", "Accept-Encoding", "gzip, deflate", "Connection", "keep-alive"}
 
+	// strict is not held to this: it is for a small site, and lowers the ceiling of the raise to 10.
 	t.Run("visitors behind shared addresses are served, because each address's limit follows its own traffic", func(t *testing.T) {
-		m := busy(t, nil)
-		for i := 0; i < busyWarm; i++ {
-			m.second(m.kv, m.nv, 0, nil)
-		}
-		snap := m.s.Snapshot()
-		t.Logf("state %v, usual %.0f requests a second; per-address limit raised %.1fx, per-network %.1fx; legit served %.2f%%",
-			snap.State, snap.BaselineRate, snap.RequestScale, snap.NetworkScale, 100*m.tally("legit known").rate())
-		if snap.State == Attack {
-			t.Fatalf("ordinary busy traffic was taken for an attack: %q", snap.Reasons)
-		}
-		m.stats = map[string]*tally{}
-		for i := 0; i < 60; i++ {
-			m.second(m.kv, m.nv, 0, nil)
-		}
-		if got := m.tally("legit known").rate(); got < 0.995 {
-			t.Fatalf("only %.2f%% of returning visitors (half of them behind shared addresses) were served", 100*got)
+		notUnderRace(t)
+		for _, name := range strengths("relaxed", "normal") {
+			t.Run(name, func(t *testing.T) {
+				m := busy(t, strength(t, name))
+				for i := 0; i < busyWarm; i++ {
+					m.second(m.kv, m.nv, 0, nil)
+				}
+				snap := m.s.Snapshot()
+				t.Logf("state %v, usual %.0f requests a second; per-address limit raised %.1fx, per-network %.1fx; legit served %.2f%%",
+					snap.State, snap.BaselineRate, snap.RequestScale, snap.NetworkScale, 100*m.tally("legit known").rate())
+				if snap.State == Attack {
+					t.Fatalf("ordinary busy traffic was taken for an attack: %q", snap.Reasons)
+				}
+				m.stats = map[string]*tally{}
+				for i := 0; i < 60; i++ {
+					m.second(m.kv, m.nv, 0, nil)
+				}
+				if got := m.tally("legit known").rate(); got < 0.995 {
+					t.Fatalf("only %.2f%% of returning visitors (half of them behind shared addresses) were served", 100*got)
+				}
+			})
 		}
 	})
 
 	t.Run("an address that has sent nothing has only the limit it was given, however busy the others are", func(t *testing.T) {
+		notUnderRace(t)
 		m := busy(t, nil)
 		for i := 0; i < busyWarm; i++ {
 			m.second(m.kv, m.nv, 0, nil)
@@ -851,6 +922,7 @@ func TestASiteWithMuchTrafficIsNotLimitedAsIfItWereSmall(t *testing.T) {
 	})
 
 	t.Run("control: with the limits fixed, the same visitors are refused", func(t *testing.T) {
+		notUnderRace(t)
 		m := busy(t, func(c *Config) { c.Detector.MaxScale = 1 })
 		for i := 0; i < 8*60; i++ {
 			m.second(m.kv, m.nv, 0, nil)
@@ -888,6 +960,7 @@ func TestASiteWithMuchTrafficIsNotLimitedAsIfItWereSmall(t *testing.T) {
 	})
 
 	t.Run("a sudden tripling of real traffic is not an attack", func(t *testing.T) {
+		notUnderRace(t)
 		m := busy(t, nil)
 		for i := 0; i < 8*60; i++ {
 			m.second(m.kv, m.nv, 0, nil)
