@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"net/url"
+	"reflect"
 	"runtime"
 	"slices"
 	"strconv"
@@ -595,8 +596,22 @@ func TestWordPressPolicy(t *testing.T) {
 
 func TestAPIRatePolicy(t *testing.T) {
 	on := func(c *Config) { ruleSetOff(c); c.APIRate = APIRatePolicy{PerMinute: 2} }
+	// limit sets rate rules, as -limit writes them, after the other changes.
+	limit := func(text string, changes ...func(*Config)) func(*Config) {
+		rules, err := ParseRateRules(text)
+		if err != nil {
+			panic(err)
+		}
+		return func(c *Config) {
+			ruleSetOff(c)
+			for _, change := range changes {
+				change(c)
+			}
+			c.Limits = rules
+		}
+	}
 	tests := []struct {
-		name, target string
+		name, target string // a target may start with a method other than GET, as in "POST /api"
 		change       func(*Config)
 		want         []int
 	}{
@@ -615,13 +630,35 @@ func TestAPIRatePolicy(t *testing.T) {
 		{"nested matrix parameters", "/api;v=1/orders;v=2", func(c *Config) { on(c); c.Paths.AllowPathParams = true; c.APIRate.Paths = []string{"/api/orders"} }, []int{200, 200, 429}},
 		{"repeated slash normalization", "/api//orders", func(c *Config) { on(c); c.APIRate.Paths = []string{"/api/orders"} }, []int{200, 200, 429}},
 		{"disabled", "/api", ruleSetOff, []int{200, 200, 200}},
+		{"a POST rule", "POST /api", limit("POST /api 2/m"), []int{200, 200, 429}},
+		{"a POST rule leaves GET unlimited", "/api", limit("POST /api 2/m"), []int{200, 200, 200}},
+		{"a GET rule also counts HEAD", "HEAD /api", limit("GET /api 2/m"), []int{200, 200, 429}},
+		{"a HEAD rule leaves GET unlimited", "/api", limit("HEAD /api 2/m"), []int{200, 200, 200}},
+		{"a rule for every method", "DELETE /x", limit("* / 2/m"), []int{200, 200, 429}},
+		{"a rule's path counts what is under it", "/api/x", limit("/api 2/m"), []int{200, 200, 429}},
+		{"a rule's path needs a segment boundary", "/apiary", limit("/api 2/m"), []int{200, 200, 200}},
+		{"a rule's path ignores case", "/API/X", limit("/api 2/m"), []int{200, 200, 429}},
+		{"a rule's path after matrix parameters", "/api;v=1/x", limit("/api/x 2/m", func(c *Config) { c.Paths.AllowPathParams = true }), []int{200, 200, 429}},
+		{"a rule with several paths", "/b/c", limit("/a,/b 2/m"), []int{200, 200, 429}},
+		{"a monitor rule never refuses", "/api", limit("/api 2/m monitor"), []int{200, 200, 200}},
+		{"a rule counts its path behind index.php", "POST /index.php/login", limit("POST /login 2/m"), []int{200, 200, 429}},
+		{"the API limit counts its path behind index.php", "/Index.php//api/orders", on, []int{200, 200, 429}},
+		{"a rule counts its path behind another PHP script", "POST /App_Dev.PHP/login", limit("POST /login 2/m"), []int{200, 200, 429}},
+		{"a front controller alone is not the path", "POST /index.php", limit("POST /login 2/m"), []int{200, 200, 200}},
+		{"a script named like the path is not the path", "POST /login.php", limit("POST /login 2/m"), []int{200, 200, 200}},
+		{"a rule counts its path with a format suffix", "POST /login.json", limit("POST /login 2/m"), []int{200, 200, 429}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			s := start(t, tc.change)
+			method, target, found := strings.Cut(tc.target, " ")
+			request := get(tc.target)
+			if found {
+				request = strings.Replace(get(target, "Content-Length: 0\r\n"), "GET ", method+" ", 1)
+			}
 			accepted := 0
 			for _, want := range tc.want {
-				status, reply := s.raw(t, get(tc.target))
+				status, reply := s.raw(t, request)
 				if status != want {
 					t.Fatalf("status %d, want %d", status, want)
 				}
@@ -800,6 +837,44 @@ func TestAPIRatePolicy(t *testing.T) {
 			t.Fatalf("logged %q, want %q", logged, want)
 		}
 	})
+	t.Run("rate rules log their own text, and a monitor rule reports only what it would refuse", func(t *testing.T) {
+		seen := &matches{}
+		rules, err := ParseRateRules("POST /login 1/m; / 2/m monitor")
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := start(t, func(c *Config) { ruleSetOff(c); c.OnMatch = seen.record; c.Limits = rules })
+		rules[0].Count, rules[0].Paths[0] = 100, "/elsewhere" // too late to change anything
+		now := int64(time.Hour)
+		s.edge.now = func() int64 { return now }
+		login := "POST /login HTTP/1.1\r\n" + preamble + "Content-Length: 0\r\nConnection: close\r\n\r\n"
+		var statuses []int
+		// The refused login is not counted by the monitor rule either, which has room for the first /page. Nor does it
+		// count what it would refuse: two hours on, the /page it would refuse at 30s is not in its window once the two
+		// before it leave at 66s, so the /page at 68s is one it would let through, and only the one at 30s is reported.
+		page := get("/page")
+		for _, step := range []struct {
+			after   time.Duration
+			request string
+		}{{0, login}, {0, login}, {0, page}, {0, page}, {0, page}, {time.Second, page},
+			{2 * time.Hour, page}, {0, page}, {30 * time.Second, page}, {36 * time.Second, page}, {2 * time.Second, page}} {
+			now += int64(step.after)
+			status, _ := s.raw(t, step.request)
+			statuses = append(statuses, status)
+		}
+		if want := []int{200, 429, 200, 200, 200, 200, 200, 200, 200, 200, 200}; !equalInts(statuses, want) || len(s.up.requests()) != 10 {
+			t.Fatalf("statuses %v, want %v; %d at the origin", statuses, want, len(s.up.requests()))
+		}
+		var logged []string
+		for _, m := range seen.all() {
+			logged = append(logged, fmt.Sprint(m.RuleID, " ", m.Disruptive, " ", m.Message))
+		}
+		want := []string{"5000047 true rate limit exceeded: POST /login 1/1m", "5000048 false rate limit would be exceeded: / 2/1m",
+			"5000048 false rate limit would be exceeded: / 2/1m (1 more not logged)", "5000048 false rate limit would be exceeded: / 2/1m"}
+		if strings.Join(logged, "\n") != strings.Join(want, "\n") {
+			t.Fatalf("logged %q, want %q", logged, want)
+		}
+	})
 	t.Run("trusted ranges cannot be changed by the caller after construction", func(t *testing.T) {
 		trusted := []netip.Prefix{netip.MustParsePrefix("192.0.2.1/32")}
 		s := start(t, func(c *Config) { on(c); c.TrustedProxies = trusted })
@@ -819,6 +894,35 @@ func TestAPIRatePolicy(t *testing.T) {
 			if _, err := p.normalized(); err == nil {
 				t.Fatalf("accepted %+v", p)
 			}
+		}
+		// Rate rules built without ParseRateRules are checked as strictly.
+		ok := RateRule{Paths: []string{"/x"}, Count: 1, Window: time.Minute}
+		for _, tc := range []struct {
+			name  string
+			rules func() []RateRule
+		}{
+			{"no path", func() []RateRule { r := ok; r.Paths = nil; return []RateRule{r} }},
+			{"a path without a slash", func() []RateRule { r := ok; r.Paths = []string{"x"}; return []RateRule{r} }},
+			{"a path with a comma", func() []RateRule { r := ok; r.Paths = []string{"/a,b"}; return []RateRule{r} }},
+			{"a misspelt method", func() []RateRule { r := ok; r.Methods = []string{"PSOT"}; return []RateRule{r} }},
+			{"a count of 0", func() []RateRule { r := ok; r.Count = 0; return []RateRule{r} }},
+			{"a window of two hours", func() []RateRule { r := ok; r.Window = 2 * time.Hour; return []RateRule{r} }},
+			{"a window that is not whole seconds", func() []RateRule { r := ok; r.Window = 1500 * time.Millisecond; return []RateRule{r} }},
+			{"a repeated rule", func() []RateRule { return []RateRule{ok, ok} }},
+			{"33 rules", func() []RateRule {
+				rules := make([]RateRule, 33)
+				for i := range rules {
+					rules[i] = ok
+					rules[i].Paths = []string{fmt.Sprintf("/r%d", i)}
+				}
+				return rules
+			}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				if _, err := New(Config{Upstream: mustURL("http://origin.example"), CRS: crs.Settings{Mode: crs.ModeOff}, Limits: tc.rules()}); err == nil || !strings.HasPrefix(err.Error(), "rate limit ") {
+					t.Fatalf("New: %v", err)
+				}
+			})
 		}
 	})
 }
@@ -1160,6 +1264,130 @@ func FuzzSlidingRateBudget(f *testing.F) {
 			if len(l.index) != len(admitted) || len(l.slab) > capacity || !slices.Equal(listed, order) {
 				t.Fatalf("table %d clients in order %v, model %d in order %v", len(l.index), listed, len(admitted), order)
 			}
+		}
+	})
+}
+
+// joinRules is rules as ParseRateRules reads them back.
+func joinRules(rules []RateRule) string {
+	texts := make([]string, len(rules))
+	for i, r := range rules {
+		texts[i] = r.String()
+	}
+	return strings.Join(texts, "; ")
+}
+
+// manyRules is n rules, each with paths paths of its own.
+func manyRules(n, paths int) string {
+	rules := make([]string, n)
+	for i := range rules {
+		list := make([]string, paths)
+		for j := range list {
+			list[j] = fmt.Sprintf("/r%d/p%d", i, j)
+		}
+		rules[i] = strings.Join(list, ",") + " 1/m"
+	}
+	return strings.Join(rules, "; ")
+}
+
+func TestRateRules(t *testing.T) {
+	const how = "write [METHODS] PATHS COUNT/WINDOW, such as POST /login 5/m"
+	const units = "use s, m or h, such as 5/m, 100/10s or 1k/h"
+	// 32 rules of 125 bytes each, 4031 bytes in all, that String writes out as 4158.
+	long := make([]string, 32)
+	for i := range long {
+		long[i] = fmt.Sprintf("/%s%02d 1k/h", strings.Repeat("a", 117), i)
+	}
+	longRules := strings.Join(long, ";")
+	tests := []struct {
+		name, text string
+		want       string // the rules normalized, or the whole error
+		fails      bool
+	}{
+		{"a login limit", "POST /login 5/m", "POST /login 5/1m", false},
+		{"every method", "/api 600/m", "/api 600/1m", false},
+		{"methods in any case, and a monitor", "get,head /s 30/10s monitor", "GET,HEAD /s 30/10s monitor", false},
+		{"a star and thousands", "* / 3k/m", "/ 3000/1m", false},
+		{"several rules and paths", "POST /login,/register 10/m; /api 600/m", "POST /login,/register 10/1m; /api 600/1m", false},
+		{"empty rules are skipped", ";;/x 1/s", "/x 1/1s", false},
+		{"tabs, case and repeats normalized", "\tpost,POST\t/Login,/login  1K/60m ; ", "POST /login 1000/1h", false},
+		{"methods it does not know", "MKCOL,propfind,TRACE /dav 5/3600s", "MKCOL,PROPFIND,TRACE /dav 5/1h", false},
+		{"the bounds", "/x 1000000/1s; /y 1/h; /z 1/1s", "/x 1000000/1s; /y 1/1h; /z 1/1s", false},
+		{"a monitor copy of a rule", "POST /a 1/m; POST /a 1/m monitor", "POST /a 1/1m; POST /a 1/1m monitor", false},
+		{"32 rules and 96 paths", manyRules(32, 3), "", false},
+		{"no rate", "POST /login 5", `-limit rule 1 ("POST /login 5"): no rate; ` + how, true},
+		{"no path", "; 5/m", `-limit rule 1 ("5/m"): no path; ` + how, true},
+		{"an unknown unit", "/x 5/x", `-limit rule 1 ("/x 5/x"): "5/x": unknown window unit "x"; ` + units, true},
+		{"a unit near m", "/x 5/mn", `-limit rule 1 ("/x 5/mn"): "5/mn": unknown window unit "mn"; ` + units + " (did you mean m?)", true},
+		{"min", "/x 5/min", `-limit rule 1 ("/x 5/min"): "5/min": unknown window unit "min"; ` + units + " (did you mean m?)", true},
+		{"a window of seconds without its unit", "/x 5/60", `-limit rule 1 ("/x 5/60"): "5/60": the window needs a unit, s, m or h; write 5/60s or 5/1m`, true},
+		{"a window too long for seconds without its unit", "/x 5/7200", `-limit rule 1 ("/x 5/7200"): "5/7200": the window needs a unit, s, m or h; write 5/s, 5/m or 5/h`, true},
+		{"a unit near two", "/x 5/ms", `-limit rule 1 ("/x 5/ms"): "5/ms": unknown window unit "ms"; ` + units, true},
+		{"a window of two hours", "/x 5/2h", `-limit rule 1 ("/x 5/2h"): the window must be between 1s and 1h`, true},
+		{"a window of nothing", "/x 5/0s", `-limit rule 1 ("/x 5/0s"): the window must be between 1s and 1h`, true},
+		{"a count of 0", "/x 0/m", `-limit rule 1 ("/x 0/m"): the count must be a whole number from 1 to 1000000, optionally with k (to switch a rule off, remove it)`, true},
+		{"a count too large", "/x 1000001/m", `-limit rule 1 ("/x 1000001/m"): the count must be a whole number from 1 to 1000000, optionally with k (to switch a rule off, remove it)`, true},
+		{"thousands past 32 bits", "/x 4294968k/m", `-limit rule 1 ("/x 4294968k/m"): the count must be a whole number from 1 to 1000000, optionally with k (to switch a rule off, remove it)`, true},
+		{"thousands too large", "/x 1001k/m", `-limit rule 1 ("/x 1001k/m"): the count must be a whole number from 1 to 1000000, optionally with k (to switch a rule off, remove it)`, true},
+		{"a fraction", "/x 1.5k/m", `-limit rule 1 ("/x 1.5k/m"): the count must be a whole number from 1 to 1000000, optionally with k (to switch a rule off, remove it)`, true},
+		{"a path without a slash", "/x 1/m; login 5/m", `-limit rule 2 ("login 5/m"): "login" is not a path; paths start with /, as in /login`, true},
+		{"a path with a trailing slash", "POST /api/ 5/m", `-limit rule 1 ("POST /api/ 5/m"): path "/api/" must be a plain absolute path without a trailing slash, query, %-encoding or ; parameters`, true},
+		{"an encoded path", "/a%2fb 5/m", `-limit rule 1 ("/a%2fb 5/m"): path "/a%2fb" must be a plain absolute path without a trailing slash, query, %-encoding or ; parameters`, true},
+		{"paths given apart", "POST /a /b 5/m", `-limit rule 1 ("POST /a /b 5/m"): "/b": write several paths with commas, as in /login,/register`, true},
+		{"a misspelt method", "PSOT /login 5/m", `-limit rule 1 ("PSOT /login 5/m"): "PSOT" is not an HTTP method (did you mean POST?)`, true},
+		{"a method near two", "PET /x 1/m", `-limit rule 1 ("PET /x 1/m"): "PET" is not an HTTP method (did you mean GET or PUT?)`, true},
+		{"a method with a digit", "G3T /x 1/m", `-limit rule 1 ("G3T /x 1/m"): "G3T" is not an HTTP method (did you mean GET?)`, true},
+		{"a star among methods", "GET,* /x 1/m", `-limit rule 1 ("GET,* /x 1/m"): "*" is not an HTTP method`, true},
+		{"nine methods", "GET,POST,PUT,PATCH,DELETE,HEAD,OPTIONS,MKCOL,COPY /x 1/m", `-limit rule 1 ("GET,POST,PUT,PATCH,DELETE,HEAD,OPTIONS,MKCOL,COPY /x 1/m"): at most 8 methods in a rule`, true},
+		{"a misspelt monitor", "POST /login 5/m monitr", `-limit rule 1 ("POST /login 5/m monitr"): unknown word "monitr" (did you mean monitor?)`, true},
+		{"monitor before the paths", "monitor /login 5/m", `-limit rule 1 ("monitor /login 5/m"): "monitor" goes after the rate, as in /login 5/m monitor`, true},
+		{"monitor before the methods", "Monitor POST /login 5/m", `-limit rule 1 ("Monitor POST /login 5/m"): "monitor" goes after the rate, as in /login 5/m monitor`, true},
+		{"monitor among the methods", "GET,monitor /x 1/m", `-limit rule 1 ("GET,monitor /x 1/m"): "monitor" goes after the rate, as in /login 5/m monitor`, true},
+		{"two rates", "/x 5/m 10/s", `-limit rule 1 ("/x 5/m 10/s"): two rates; split them into two rules`, true},
+		{"a repeated rule", "/x 5/m; /y 1/s; /X 5/1m", `-limit rule 3 ("/X 5/1m"): repeats rule 1`, true},
+		{"33 rules", manyRules(33, 1), `-limit rule 33 ("/r32/p0 1/m"): at most 32 rules`, true},
+		{"17 paths in a rule", manyRules(1, 17), `-limit rule 1 ("` + manyRules(1, 17)[:77] + `..."): at most 16 paths in a rule (100 in all)`, true},
+		{"101 paths in all", manyRules(7, 15), `-limit rule 7 ("` + strings.Split(manyRules(7, 15), "; ")[6][:77] + `..."): at most 100 paths in all the rules (this rule brings them to 105)`, true},
+		{"more than 4 KiB", "/x 1/m;" + strings.Repeat(" ", 4090), "-limit is longer than 4 KiB", true},
+		{"more than 4 KiB written out", longRules, "-limit is longer than 4 KiB when written out in full, as in 1000/1h for 1k/h", true},
+		{"nothing", " ; ;", "-limit: no rule; " + how, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rules, err := ParseRateRules(tt.text)
+			if tt.fails {
+				if err == nil || err.Error() != tt.want {
+					t.Fatalf("error %v, want %s", err, tt.want)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if text := joinRules(rules); tt.want != "" && text != tt.want {
+				t.Fatalf("read as %q, want %q", text, tt.want)
+			}
+			// What String writes reads back as the same rules.
+			again, err := ParseRateRules(joinRules(rules))
+			if err != nil || !reflect.DeepEqual(again, rules) {
+				t.Fatalf("read back as %+v (%v), want %+v", again, err, rules)
+			}
+		})
+	}
+}
+
+func FuzzRateRules(f *testing.F) {
+	for _, seed := range []string{"POST /login 5/m", "get,head /s 30/10s monitor; * / 3k/m", ";;/x 1/s", "PSOT /a,/b 1k/h", "/x 5/mn monitr"} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, text string) {
+		rules, err := ParseRateRules(text)
+		if err != nil {
+			return
+		}
+		again, err := ParseRateRules(joinRules(rules))
+		if err != nil || !reflect.DeepEqual(again, rules) {
+			t.Fatalf("%q read back as %+v (%v), want %+v", text, again, err, rules)
 		}
 	})
 }

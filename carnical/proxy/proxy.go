@@ -86,6 +86,10 @@ type Config struct {
 	WordPress WordPressPolicy
 	// APIRate limits requests across configured API path prefixes, by the verified client address. Zero disables it.
 	APIRate APIRatePolicy
+	// Limits are per-client rate rules (see RateRule and ParseRateRules), each with its own budget, counted after the
+	// WordPress login limit and APIRate. A request goes on only if every enforcing rule it matches has room, and is then
+	// counted by all of them; a monitor rule only reports. At most 32 rules. A signed policy does not change them.
+	Limits []RateRule
 	// Uploads says what is refused in a file upload.
 	Uploads UploadPolicy
 	// Responses says what the proxy changes in the application's responses.
@@ -195,6 +199,13 @@ func New(cfg Config) (*Edge, error) {
 		return nil, fmt.Errorf("API rate policy: %w", err)
 	}
 	cfg.APIRate = apiRate
+	// Config is an API: the rules are checked again, as a caller may build them without ParseRateRules, and copied, so a
+	// caller cannot change them after construction.
+	limits, at, err := normalizeRateRules(cfg.Limits)
+	if err != nil {
+		return nil, fmt.Errorf("rate limit %d (%q): %w", at+1, excerpt(cfg.Limits[at].String()), err)
+	}
+	cfg.Limits = limits
 	if cfg.EvalBudget < 0 {
 		// The budget wrapper is also what applies MaxEvaluations, so this would quietly drop both limits.
 		return nil, errors.New("the evaluation budget must not be negative")

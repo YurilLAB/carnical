@@ -4,6 +4,7 @@ package proxy
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/netip"
@@ -42,6 +43,8 @@ const (
 	idMethodOverride      = 5000044
 	idEvalBudget          = 5000045
 	idEvalBusy            = 5000046
+	idLimitRule           = 5000047
+	idLimitMonitor        = 5000048
 	idUpstreamFailed      = 5000050
 	idUpstreamBindRetry   = 5000051
 	idUpstreamReclaimed   = 5000052
@@ -238,7 +241,9 @@ func (e *Edge) checkRequest(w http.ResponseWriter, r *http.Request, client netip
 }
 
 // APIRatePolicy gives each client its own sliding-minute budget, shared across all matching prefixes and HTTP methods.
-// Paths are plain paths compared without ASCII case distinctions: /api matches /api and /api/... but not /apiary.
+// Paths are plain paths compared without ASCII case distinctions: /api matches /api and /api/... but not /apiary, and
+// also /index.php/api/... or any other PHP script in the first segment followed by /api/..., which PHP front controllers
+// route as /api/....
 // Empty uses /api and /graphql. Case, slash and matrix normalization are conservative quota matching, not route rewriting.
 // PerMinute is 1..100000 when enabled; zero disables the policy. State is local to one Edge and is lost on restart.
 type APIRatePolicy struct {
@@ -255,27 +260,19 @@ func (p APIRatePolicy) normalized() (APIRatePolicy, error) {
 	} else {
 		p.Paths = append([]string(nil), p.Paths...)
 	}
-	if len(p.Paths) > 100 {
-		return p, errors.New("at most 100 path prefixes are allowed")
+	if len(p.Paths) > maxRatePaths {
+		return p, fmt.Errorf("at most %d path prefixes are allowed", maxRatePaths)
 	}
-	for i, prefix := range p.Paths {
-		if prefix == "" || len(prefix) > 2048 || prefix[0] != '/' || path.Clean(prefix) != prefix || strings.ContainsAny(prefix, "%?;#\\") || (PathPolicy{}).check(prefix) != nil {
-			return p, errors.New("prefixes must be plain absolute paths without query, encoding, parameters or trailing slashes")
-		}
-		p.Paths[i] = strings.ToLower(prefix)
+	paths, err := normalizePrefixes(p.Paths)
+	if err != nil {
+		return p, err
 	}
+	p.Paths = paths
 	return p, nil
 }
 
 // matches reports whether a route path (see routePath) is under one of the prefixes.
-func (p APIRatePolicy) matches(route string) bool {
-	for _, prefix := range p.Paths {
-		if prefix == "/" || route == prefix || strings.HasPrefix(route, prefix+"/") {
-			return true
-		}
-	}
-	return false
-}
+func (p APIRatePolicy) matches(route string) bool { return matchesPrefix(p.Paths, route) }
 
 // routePath is a decoded path as an application is likely to route it: empty segments, a trailing slash and path
 // parameters removed, backslashes as slashes, in lower case. It accounts conservatively for sites that permit encoded
@@ -295,8 +292,9 @@ type compiledRule struct {
 	match   func(r *http.Request, route string) bool
 	count   int           // requests a client may make in a window
 	window  time.Duration // the window's length
+	monitor bool          // only report what the rule would refuse
 	id      int
-	message string // fixed text: never request data
+	message string // fixed text, from the configuration: never request data
 	table   *windowLimiter
 	// A flood of refusals must not become a flood of log lines: a rule logs at most one refusal a second, and the next
 	// line it logs says how many were not.
@@ -307,8 +305,8 @@ type compiledRule struct {
 // neverLogged is a log second long before any clock reading.
 const neverLogged = -1 << 62
 
-// compileLimits builds the rate rules a configuration asks for, each with its own table: the WordPress login limit, then
-// the API limit.
+// compileLimits builds the rate rules a configuration asks for, each with its own table: the WordPress login limit, the
+// API limit, then cfg.Limits in their order. There are at most 34 (see maxRateRules), which checkLimits relies on.
 func compileLimits(cfg Config) []*compiledRule {
 	var rules []*compiledRule
 	if cfg.WordPress.Enabled {
@@ -328,6 +326,17 @@ func compileLimits(cfg Config) []*compiledRule {
 			message: "too many API requests from one address",
 			match:   func(_ *http.Request, route string) bool { return api.matches(route) }})
 	}
+	for i := range cfg.Limits {
+		limit := &cfg.Limits[i]
+		rule := &compiledRule{count: limit.Count, window: limit.Window, monitor: limit.Monitor, id: idLimitRule,
+			message: "rate limit exceeded: " + limit.String(), match: limit.matches}
+		if limit.Monitor {
+			enforcing := *limit
+			enforcing.Monitor = false
+			rule.id, rule.message = idLimitMonitor, "rate limit would be exceeded: "+enforcing.String()
+		}
+		rules = append(rules, rule)
+	}
 	for _, rule := range rules {
 		rule.table = newWindowLimiter(rule.count, rule.window, min(rateKeysPerRule, rateKeysInAll/len(rules)))
 		rule.logSecond.Store(neverLogged)
@@ -344,20 +353,48 @@ func (e *Edge) clock() int64 {
 	return monotonic()
 }
 
-// checkLimits counts a request against every rate rule it matches, all or nothing: it goes on only if each of them has
-// room, and a refused request is counted by none of them, so a refusal by one rule never uses up another's budget. The
-// tables are locked in rule order, so two requests cannot each hold one the other waits for.
+// checkLimits counts a request against every rate rule it matches, all or nothing: it goes on only if each enforcing
+// rule has room, and a refused request is counted by none of them, so a refusal by one rule never uses up another's
+// budget. The tables are locked in rule order, so two requests cannot each hold one the other waits for. A monitor rule
+// then counts the request as it would if it enforced, and reports what it would refuse.
 func (e *Edge) checkLimits(w http.ResponseWriter, r *http.Request, client netip.Addr, route string) bool {
-	var matched uint64 // there are far fewer rules than 64
+	var enforced, watched uint64 // there are far fewer rules than 64
 	for i, rule := range e.rules {
-		if rule.match(r, route) {
-			matched |= 1 << i
+		switch {
+		case !rule.match(r, route):
+		case rule.monitor:
+			watched |= 1 << i
+		default:
+			enforced |= 1 << i
 		}
 	}
-	if matched == 0 {
+	if enforced|watched == 0 {
 		return true
 	}
 	key, now := shield.SourceKey(client), e.clock()
+	if enforced != 0 && !e.enforceLimits(w, r, key, now, enforced) {
+		return false
+	}
+	for i, rule := range e.rules {
+		if watched&(1<<i) == 0 {
+			continue
+		}
+		rule.table.mu.Lock()
+		ok, _ := rule.table.check(key, now)
+		evicted := ok && rule.table.admit(key, now)
+		rule.table.mu.Unlock()
+		if evicted {
+			e.reportEvicted(now, 1)
+		}
+		if !ok {
+			e.logLimit(r, rule, now)
+		}
+	}
+	return true
+}
+
+// enforceLimits decides a request for the enforcing rules in matched, and answers it when one of them refuses it.
+func (e *Edge) enforceLimits(w http.ResponseWriter, r *http.Request, key netip.Addr, now int64, matched uint64) bool {
 	for i, rule := range e.rules {
 		if matched&(1<<i) != 0 {
 			rule.table.mu.Lock()
@@ -394,18 +431,35 @@ func (e *Edge) checkLimits(w http.ResponseWriter, r *http.Request, client netip.
 	// The client may come back once the request is in no rule's way: in whole seconds, rounded up.
 	w.Header().Set("Retry-After", strconv.FormatInt(max((wait+int64(time.Second)-1)/int64(time.Second), 1), 10))
 	w.Header().Set("Cache-Control", "no-store")
-	second := now / int64(time.Second)
-	if previous := refused.logSecond.Load(); second != previous && refused.logSecond.CompareAndSwap(previous, second) {
-		message := refused.message
-		if n := refused.unlogged.Swap(0); n > 0 {
-			message += " (" + strconv.FormatInt(n, 10) + " more refusals not logged)"
-		}
-		e.refuse(w, r, http.StatusTooManyRequests, refused.id, message)
-	} else {
-		refused.unlogged.Add(1)
-		http.Error(w, http.StatusText(http.StatusTooManyRequests), http.StatusTooManyRequests)
-	}
+	e.logLimit(r, refused, now)
+	http.Error(w, http.StatusText(http.StatusTooManyRequests), http.StatusTooManyRequests)
 	return false
+}
+
+// logLimit records a refusal by a rate rule, or what a monitor rule would refuse. A flood of refusals must not become a
+// flood of log lines: a rule logs at most one a second, and the next line it logs says how many were not.
+func (e *Edge) logLimit(r *http.Request, rule *compiledRule, now int64) {
+	if e.cfg.OnMatch == nil {
+		return
+	}
+	second := now / int64(time.Second)
+	if previous := rule.logSecond.Load(); second == previous || !rule.logSecond.CompareAndSwap(previous, second) {
+		rule.unlogged.Add(1)
+		return
+	}
+	m := Match{RuleID: rule.id, Severity: "CRITICAL", Message: rule.message, Disruptive: !rule.monitor}
+	if rule.monitor {
+		m.Severity = "WARNING"
+	}
+	if n := rule.unlogged.Swap(0); n > 0 && rule.monitor {
+		m.Message += " (" + strconv.FormatInt(n, 10) + " more not logged)"
+	} else if n > 0 {
+		m.Message += " (" + strconv.FormatInt(n, 10) + " more refusals not logged)"
+	}
+	if e.cfg.LogDetails {
+		m.ClientIP, m.URI = r.RemoteAddr, r.RequestURI
+	}
+	e.cfg.OnMatch(m)
 }
 
 // reportEvicted logs that a full rate-limit table dropped clients that were still counting to make room for new ones, at

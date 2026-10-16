@@ -497,8 +497,8 @@ because it is the operator's), plus the sections for components that are not in 
 `VPatch`, `APIMode`, `API`, `BodyFormats`, and `Revision`, `Hash`, `Notes`.
 
 `Compiled.ApplyTo(*proxy.Config)` sets those and leaves everything else (the upstream, the origin
-guard, trusted proxies, the limits that belong to the machine, the operator's upload directory)
-alone.
+guard, trusted proxies, the limits that belong to the machine, the rate rules in `Limits`, the
+operator's upload directory) alone, so a signed policy can neither add nor drop a rate rule.
 
 Mode: `block` is `SecRuleEngine On`, `monitor` is `DetectionOnly`, `off` is `Off`.
 

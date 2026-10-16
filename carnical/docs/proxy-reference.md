@@ -65,6 +65,46 @@ do not bound what a whole network sends; the network budgets of `-ddos` do. Refu
 logins, 5000042 for API quotas) are logged at most once a second per rule, and the next line logged says
 how many refusals were not.
 
+A program that embeds the proxy can add its own rate rules in `proxy.Config.Limits`, read from text by
+`proxy.ParseRateRules`. A rule is `[METHODS] PATHS COUNT/WINDOW [monitor]`, and rules are separated by
+`;`, as in `POST /login,/register 10/m; /api 600/m; GET /search 30/10s monitor`:
+
+- METHODS is `*` or methods separated by commas, in any case. GET also counts HEAD; with no methods or
+  `*` every method counts. A method is letters only, at most 16 of them, so a hyphenated method such as
+  VERSION-CONTROL cannot be named (leave the methods out to count it). A method that is not GET, HEAD,
+  POST, PUT, PATCH, DELETE or OPTIONS but is one or two edits from one of them is refused as a
+  misspelling; other names, such as WebDAV's MKCOL, are accepted.
+- PATHS are plain path prefixes separated by commas, matched as the `-api-per-minute` paths are: by
+  path segment, without ASCII case, after removing empty segments, a trailing slash and `;`
+  parameters. `/api` counts `/api` and `/api/orders` but not `/apiary`; `/` counts every path. A path
+  also counts itself with a format suffix of letters and digits, which Rails routes to the same action:
+  `/login` counts `/login.json` and `/login.xml`, but not a script such as `/login.php`. It also
+  counts itself as the path info after a PHP script in the first segment, which a front controller
+  routes the same way: `/login` counts `/index.php/login` (Laravel, Symfony, Drupal, WordPress) and
+  `/app.php/login` (older Symfony), but not `/index.php` or `/login.php`, for `-api-rate-paths` too.
+  A script deeper in the path, as in `/blog/index.php/login`, is not looked through. Routing that the
+  query chooses, such as WordPress's `?rest_route=/wp/v2/users`, is not seen; a rule for `/` or for
+  the script (`/index.php`) counts it.
+- COUNT is 1 to 1,000,000, optionally with `k` for thousands (`3k`). WINDOW is `s`, `m` or `h` with an
+  optional whole multiplier (`10s`, `5m`), from 1s to 1h.
+- `monitor` makes a rule report, as rule 5000048 ("rate limit would be exceeded: ..."), a request it
+  would refuse, and let it through. It counts the requests that the enforcing rules let through,
+  exactly as it would if it enforced. It goes after the rate: `monitor` anywhere before it is refused
+  rather than taken as a method name.
+
+There are at most 32 rules, 16 paths in a rule and 100 in all, the text is at most 4 KiB, also when
+written out in full (`1k/h` is written `1000/1h`), and a rule written twice is refused. An error names
+the rule by its number and text and says what is wrong, with a suggestion for a likely misspelling, as
+in `-limit rule 1 ("PSOT /login 5/m"): "PSOT" is not an HTTP method (did you mean POST?)`. `proxy.New` checks rules built without `ParseRateRules` the same way and
+keeps its own copy.
+
+Each rule has its own table of clients and its own budget, counted after the login and API limits, with
+the same window, eviction and `Retry-After` as they have. A request goes on only if every enforcing rule
+it matches has room, and is then counted by all of them; one that a rule refuses is counted by none.
+A refusal is logged as rule 5000047 with the rule's text ("rate limit exceeded: POST /login 5/1m"),
+which comes from the configuration and never from the request. The rules apply whatever the `-ddos`
+mode, and with the flood protection off.
+
 Responses get `nosniff`, lose software banners and prevent caching when they set cookies or serve
 HTML from a stylesheet address. Connection limits and a 100-stream HTTP/2 cap bound transport work.
 
@@ -77,7 +117,8 @@ expanded CRS text and inspector panic details. Treat it as sensitive logging.
 Format totals are process-local blocked/monitored findings. The default `-formats-stats-interval 1m`
 logs changed snapshots; `0` disables reporting, and graceful shutdown flushes a final changed
 snapshot. See [format monitoring](formats.md#monitoring-and-logs). Login limits use 5000022, API quotas
-5000042, a full rate-limit table 5000041 and inspector failures 5000040.
+5000042, other rate rules 5000047 (5000048 for a monitor rule), a full rate-limit table 5000041 and
+inspector failures 5000040.
 
 See [attack coverage](attacks.md) and [security findings](../../docs/security-findings.md) for
 application-dependent limits and verified fixes.
