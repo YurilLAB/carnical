@@ -2,6 +2,8 @@ package proxy
 
 import (
 	"context"
+	"io"
+	"net/http"
 	"sync/atomic"
 	"time"
 
@@ -124,7 +126,19 @@ func (t *budgetTx) Interruption() *types.Interruption {
 	if t.refused != nil {
 		return t.refused
 	}
-	return t.Transaction.Interruption()
+	return asRefusal(t.Transaction.Interruption())
+}
+
+// asRefusal makes sure an interruption is answered with a refusal. The HTTP middleware answers only a deny with its status:
+// any other interruption (drop, redirect) gets an empty 200, so the visitor would be told all went well, and a redirect
+// would not even send its Location. Those actions are refused when the rules are compiled (crs/refuse.go); this is the
+// second line, and so is answering a deny whose status is not an error with 403, as the middleware does for no status.
+// Only an interruption that needs it is copied: the engine's own is left as it is.
+func asRefusal(it *types.Interruption) *types.Interruption {
+	if it == nil || it.Action == "deny" && it.Status >= 400 {
+		return it
+	}
+	return &types.Interruption{RuleID: it.RuleID, Action: "deny", Status: http.StatusForbidden, Data: it.Data}
 }
 
 // run gives one evaluation phase a slot and its budget. It reports false if no slot came free in time.
@@ -161,28 +175,28 @@ func (t *budgetTx) ProcessRequestHeaders() (it *types.Interruption) {
 	if !t.run(func() { it = t.Transaction.ProcessRequestHeaders() }) {
 		return t.refuse()
 	}
-	return it
+	return asRefusal(it)
 }
 
 func (t *budgetTx) ProcessRequestBody() (it *types.Interruption, err error) {
 	if !t.run(func() { it, err = t.Transaction.ProcessRequestBody() }) {
 		return t.refuse(), nil
 	}
-	return it, err
+	return asRefusal(it), err
 }
 
 func (t *budgetTx) ProcessResponseHeaders(code int, proto string) (it *types.Interruption) {
 	if !t.run(func() { it = t.Transaction.ProcessResponseHeaders(code, proto) }) {
 		return t.refuse()
 	}
-	return it
+	return asRefusal(it)
 }
 
 func (t *budgetTx) ProcessResponseBody() (it *types.Interruption, err error) {
 	if !t.run(func() { it, err = t.Transaction.ProcessResponseBody() }) {
 		return t.refuse(), nil
 	}
-	return it, err
+	return asRefusal(it), err
 }
 
 // WriteResponseBody runs the response body rules itself when a response reaches the body limit with
@@ -193,12 +207,30 @@ func (t *budgetTx) WriteResponseBody(b []byte) (it *types.Interruption, n int, e
 	if t.respLimit > 0 && (t.respOver || t.resp+int64(len(b)) < t.respLimit) {
 		it, n, err = t.Transaction.WriteResponseBody(b)
 		t.resp += int64(n)
-		return it, n, err
+		return asRefusal(it), n, err
 	}
 	if !t.run(func() { it, n, err = t.Transaction.WriteResponseBody(b) }) {
 		return t.refuse(), 0, nil
 	}
 	t.respOver = true
 	t.resp += int64(n)
-	return it, n, err
+	return asRefusal(it), n, err
+}
+
+// The body writes and reads below run the body rules themselves when a body reaches its limit with ProcessPartial, so
+// their interruption is answered as a refusal too.
+
+func (t *budgetTx) WriteRequestBody(b []byte) (*types.Interruption, int, error) {
+	it, n, err := t.Transaction.WriteRequestBody(b)
+	return asRefusal(it), n, err
+}
+
+func (t *budgetTx) ReadRequestBodyFrom(r io.Reader) (*types.Interruption, int, error) {
+	it, n, err := t.Transaction.ReadRequestBodyFrom(r)
+	return asRefusal(it), n, err
+}
+
+func (t *budgetTx) ReadResponseBodyFrom(r io.Reader) (*types.Interruption, int, error) {
+	it, n, err := t.Transaction.ReadResponseBodyFrom(r)
+	return asRefusal(it), n, err
 }

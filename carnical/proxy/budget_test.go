@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -16,6 +17,7 @@ import (
 	"github.com/YurilLAB/coraza/carnical/crs"
 	"github.com/corazawaf/coraza/v3"
 	"github.com/corazawaf/coraza/v3/experimental"
+	"github.com/corazawaf/coraza/v3/types"
 )
 
 func bigForm(kib int) string {
@@ -372,6 +374,70 @@ func TestBodiesAreCappedAndAnEngineErrorIsNotAnEmpty200(t *testing.T) {
 			}
 			if got := len(s.up.requests()) > 0; got != tt.reaches {
 				t.Fatalf("reached the application: %v, want %v", got, tt.reaches)
+			}
+		})
+	}
+}
+
+// interruptingTx stands for an engine transaction whose every phase and body write ends with it.
+type interruptingTx struct {
+	types.Transaction
+	it *types.Interruption
+}
+
+func (s interruptingTx) ProcessRequestHeaders() *types.Interruption             { return s.it }
+func (s interruptingTx) ProcessRequestBody() (*types.Interruption, error)       { return s.it, nil }
+func (s interruptingTx) ProcessResponseHeaders(int, string) *types.Interruption { return s.it }
+func (s interruptingTx) ProcessResponseBody() (*types.Interruption, error)      { return s.it, nil }
+func (s interruptingTx) Interruption() *types.Interruption                      { return s.it }
+func (s interruptingTx) WriteRequestBody([]byte) (*types.Interruption, int, error) {
+	return s.it, 0, nil
+}
+func (s interruptingTx) WriteResponseBody([]byte) (*types.Interruption, int, error) {
+	return s.it, 0, nil
+}
+func (s interruptingTx) ReadRequestBodyFrom(io.Reader) (*types.Interruption, int, error) {
+	return s.it, 0, nil
+}
+func (s interruptingTx) ReadResponseBodyFrom(io.Reader) (*types.Interruption, int, error) {
+	return s.it, 0, nil
+}
+
+// No rule can end a request with drop or redirect any more (crs/refuse.go), so only a stand-in for the engine's
+// transaction can show that the middleware would still be handed a refusal, and not an interruption it answers with an
+// empty 200.
+func TestEveryInterruptionReachesTheMiddlewareAsARefusal(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		it   *types.Interruption
+		want *types.Interruption
+	}{
+		{"no interruption", nil, nil},
+		{"a deny keeps its status", &types.Interruption{RuleID: 7, Action: "deny", Status: 418},
+			&types.Interruption{RuleID: 7, Action: "deny", Status: 418}},
+		{"a drop", &types.Interruption{RuleID: 7, Action: "drop"}, &types.Interruption{RuleID: 7, Action: "deny", Status: 403}},
+		{"a redirect", &types.Interruption{RuleID: 7, Action: "redirect", Status: 302, Data: "https://elsewhere.test/"},
+			&types.Interruption{RuleID: 7, Action: "deny", Status: 403, Data: "https://elsewhere.test/"}},
+		{"a deny with a success status", &types.Interruption{RuleID: 7, Action: "deny", Status: 200},
+			&types.Interruption{RuleID: 7, Action: "deny", Status: 403}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tx := &budgetTx{Transaction: interruptingTx{it: tc.it}, ctx: &budgetCtx{Context: t.Context()}, d: time.Minute}
+			first := func(it *types.Interruption, _ ...any) *types.Interruption { return it }
+			for what, it := range map[string]*types.Interruption{
+				"request headers":       tx.ProcessRequestHeaders(),
+				"request body":          first(tx.ProcessRequestBody()),
+				"request body write":    first(tx.WriteRequestBody(nil)),
+				"request body read":     first(tx.ReadRequestBodyFrom(strings.NewReader(""))),
+				"response headers":      tx.ProcessResponseHeaders(200, "HTTP/1.1"),
+				"response body":         first(tx.ProcessResponseBody()),
+				"response body write":   first(tx.WriteResponseBody(nil)),
+				"response body read":    first(tx.ReadResponseBodyFrom(strings.NewReader(""))),
+				"the transaction's own": tx.Interruption(),
+			} {
+				if (it == nil) != (tc.want == nil) || it != nil && *it != *tc.want {
+					t.Errorf("%s: %+v, want %+v", what, it, tc.want)
+				}
 			}
 		})
 	}

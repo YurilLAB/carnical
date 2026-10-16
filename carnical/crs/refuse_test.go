@@ -19,6 +19,9 @@ func TestRulesThatRunProgramsOrChangeTheEnvironmentDoNotCompile(t *testing.T) {
 		{"geoLookup", `SecRule REMOTE_ADDR "@geoLookup" "id:1,phase:2,deny"`, false},
 		{"exec", `SecRule ARGS "@contains x" "id:1,phase:2,pass,exec:/bin/true"`, false},
 		{"setenv", `SecRule ARGS "@contains x" "id:1,phase:2,pass,setenv:A=%{ARGS.a}"`, false},
+		{"drop", `SecRule ARGS "@contains x" "id:1,phase:2,drop"`, false},
+		{"redirect", `SecRule ARGS "@contains x" "id:1,phase:2,redirect:https://example.test/"`, false},
+		{"the default action drop", "SecDefaultAction \"phase:2,log,drop\"\n" + `SecRule ARGS "@contains x" "id:1"`, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

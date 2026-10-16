@@ -15,7 +15,10 @@ import (
 //   - the setenv action changes the environment of the whole process, with a value taken from the request, so one site's
 //     visitor could set what every other site's rules and the proxy itself see;
 //   - @rbl opens network connections to names built from the request, and leaves a goroutine behind when it times out;
-//   - @geoLookup is a stub that matches everything.
+//   - @geoLookup is a stub that matches everything;
+//   - the drop and redirect actions end a request in a way the HTTP middleware does not answer with a refusal: it sends
+//     an empty 200 instead, without the Location a redirect asks for, so a rule meant to stop a request would only hide
+//     the application's answer from a visitor who is then told all went well.
 //
 // Rules are ours (the Core Rule Set and what the policy compiler writes), so none of these is used today. They are
 // replaced here with versions that refuse to compile, so that a rule using one fails when the rule set is built and the
@@ -28,11 +31,19 @@ func init() {
 		})
 	}
 	for _, name := range []string{"exec", "setenv"} {
-		plugins.RegisterAction(name, func() plugintypes.Action { return refusedAction{name} })
+		plugins.RegisterAction(name, func() plugintypes.Action { return refusedAction{name, plugintypes.ActionTypeNondisruptive} })
+	}
+	// These keep their type, so that what the parser checks of disruptive actions (one per rule, one in SecDefaultAction)
+	// is checked as before, and the refusal is what stops the rule.
+	for _, name := range []string{"drop", "redirect"} {
+		plugins.RegisterAction(name, func() plugintypes.Action { return refusedAction{name, plugintypes.ActionTypeDisruptive} })
 	}
 }
 
-type refusedAction struct{ name string }
+type refusedAction struct {
+	name string
+	typ  plugintypes.ActionType
+}
 
 func (a refusedAction) Init(plugintypes.RuleMetadata, string) error {
 	return fmt.Errorf("the %s action is not available", a.name)
@@ -40,4 +51,4 @@ func (a refusedAction) Init(plugintypes.RuleMetadata, string) error {
 
 func (refusedAction) Evaluate(plugintypes.RuleMetadata, plugintypes.TransactionState) {}
 
-func (refusedAction) Type() plugintypes.ActionType { return plugintypes.ActionTypeNondisruptive }
+func (a refusedAction) Type() plugintypes.ActionType { return a.typ }
