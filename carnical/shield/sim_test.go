@@ -3,6 +3,7 @@
 package shield
 
 import (
+	"cmp"
 	"fmt"
 	"math"
 	"math/rand/v2"
@@ -609,6 +610,96 @@ func TestSimulatedAttacks(t *testing.T) {
 		t.Log(res)
 		if res.detectedAfter < 0 || res.detectedAfter > 12 || res.known < 0.95 || res.new < 0.9 {
 			t.Fatal("protection below the bar")
+		}
+	})
+
+	for _, tc := range []struct {
+		name        string
+		bots, rate  int
+		minutes     int
+		banFor      time.Duration
+		programs    int     // 64 when 0
+		pre         int     // seconds of the flood at 150 requests a second, which the site is not yet hurt by, first
+		initialRate float64 // the -ddos-baseline-rate of a restart into the flood, with no warm-up
+	}{
+		{"a flood that rotates its look and shows only harm, going on longer than the evidence time-out", 200_000, 2000, 5, 0, 0, 0, 0},
+		// One request a second from each address: each is banned within a minute, its ban's refusals are then most of the
+		// flood, and when the bans run out the addresses are refused and banned again.
+		{"the same flood from 1,000 addresses, banned and going on after their bans run out", 1_000, 1000, 6, 3 * time.Minute, 0, 0, 0},
+		// Fifteen seconds over the threshold, with no evidence yet, must not teach the baseline the flood's programs: they
+		// would then be the site's own, whose traffic does not hold an attack.
+		{"the same flood from eight programs, after fifteen seconds that do not hurt", 200_000, 2000, 5, 0, 8, 15, 0},
+		// The baseline knows no fingerprint, so nothing tells the site's own clients from the flood.
+		{"the same flood after a restart into it with the usual rate given", 200_000, 2000, 5, 0, 0, 0, 32},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newSim(t, func(c *Config) {
+				c.Detector.EvidenceTimeout, c.BanFor, c.Detector.InitialRate = 2*time.Minute, tc.banFor, tc.initialRate
+			})
+			if tc.initialRate == 0 {
+				m.warm(10)
+			}
+			bots := botnet(tc.bots, m.r)
+			programs := cmp.Or(tc.programs, 64)
+			flood := func(int) {
+				ua := []string{"User-Agent", "bot/" + strconv.Itoa(m.r.IntN(programs)), "Accept", "*/*"}
+				m.do("attack", bots[m.r.IntN(len(bots))], "/"+randomWord(m.r), false, ua)
+			}
+			if tc.pre > 0 {
+				if res := m.run(tc.pre, 150, flood); res.maxState != Elevated {
+					t.Fatalf("the first %d seconds put the site in state %v, not elevated, so the test proves nothing", tc.pre, res.maxState)
+				}
+			}
+			// Once mitigated the application is well again, so the harm that declared the attack is gone while the flood is not.
+			res := m.run(tc.minutes*60, tc.rate, flood)
+			t.Log(res)
+			if n := len(m.s.Snapshot().Recent); n > 0 || m.s.State() != Attack {
+				t.Fatalf("the attack ended %d times while the flood went on, leaving the application to it each time", n)
+			}
+			if res.detectedAfter < 0 || res.detectedAfter > 12 || res.known < 0.95 || res.new < 0.9 {
+				t.Fatal("protection below the bar")
+			}
+			// One address goes on at 400 requests a second: over the threshold, and mostly refused, but by its own limit and
+			// then its ban, which hold it whether there is an attack or not, so it must not hold the attack.
+			one := &simVisitor{addr: netip.MustParseAddr("203.0.113.1")}
+			ended := -1
+			for sec := 0; sec < 3*60 && ended < 0; sec++ {
+				m.second(m.kv, m.nv, 400, func(int) { m.do("attack", one, "/", false, python) })
+				if m.s.State() != Attack {
+					ended = sec
+				}
+			}
+			t.Logf("the attack ended %d seconds after the flood stopped", ended)
+			if ended < 0 {
+				t.Fatal("the attack did not end after the flood stopped, held by one address that its own limit holds")
+			}
+		})
+	}
+
+	// The flood is over and the frozen baseline is what the attack's budgets are sized from: when the app's own users then
+	// grow past its threshold, the budgets refuse much of their traffic, which must not keep the attack for ever.
+	t.Run("a flood that stops before the app's own users grow to eight times their usual (negative control: the attack ends)", func(t *testing.T) {
+		m := newSim(t, func(c *Config) { c.Detector.EvidenceTimeout = 2 * time.Minute })
+		m.app = []string{"User-Agent", "ExampleApp/5.2 (iOS 18.6; iPhone16,2) Alamofire/5.9", "Accept", "application/json", "Accept-Encoding", "gzip, br"}
+		m.capacity = 10_000
+		m.warm(10)
+		bots := botnet(20_000, m.r)
+		if res := m.run(60, 5000, func(int) {
+			m.do("attack", bots[m.r.IntN(len(bots))], "/?r="+strconv.Itoa(m.r.IntN(1e9)), false, python)
+		}); res.detectedAfter < 0 {
+			t.Fatal("the flood was not declared an attack, so the test proves nothing")
+		}
+		ended := -1
+		for sec := 0; sec < 6*60 && ended < 0; sec++ {
+			m.second(8*m.kv, 8*m.nv, 0, nil)
+			if m.s.State() != Attack {
+				ended = sec
+			}
+		}
+		t.Logf("the attack ended %d seconds after the flood stopped; returning users served %.1f%%, new %.1f%%",
+			ended, 100*m.tally("legit known").rate(), 100*m.tally("legit new").rate())
+		if ended < 0 {
+			t.Fatalf("the app's own users, grown past the frozen threshold, held the attack: %q", m.s.Snapshot().Reasons)
 		}
 	})
 

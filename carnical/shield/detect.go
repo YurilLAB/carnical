@@ -82,7 +82,16 @@ type DetectorConfig struct {
 	LimitMargin, MaxScale float64
 	// EvidenceTimeout ends an attack that has gone on this long (default 5 minutes) without any of the evidence that
 	// declared it (concentration, spread, harm), even if the traffic has not fallen: a baseline that stopped learning
-	// when the attack began must never be able to hold a site in "attack" for ever.
+	// when the attack began must never be able to hold a site in "attack" for ever. The mitigation counts as evidence
+	// while the traffic is still over the threshold of the baseline from before the attack, at least half of it is
+	// refused or shown the challenge, and the share of it whose fingerprint the baseline knew is less than half what
+	// it was: once a flood that only showed harm is held off, the application is well again, and the attack must not
+	// end, and let the flood back in, while the flood goes on. The site's own clients, whose traffic may grow past the
+	// frozen threshold once the flood is over, still look as they did, and so do not hold the attack however much of
+	// their traffic the attack's budgets refuse. What an address's or a network's own limit refuses is left out of
+	// both, traffic and refusals: it is held whether there is an attack or not, and one address sending more than its
+	// limit must not hold a site in "attack" for ever. So are the refusals of banned addresses, unless they come from at
+	// least MinClusterSources addresses: the bans of a botnet are the attack's mitigation.
 	EvidenceTimeout time.Duration
 	// MinHistory is how long the detector must have been running before it can declare an attack (default 60 seconds): with
 	// less data nothing is known about what is usual. Until Warmup has passed, only a rise of 2.5 times RateFactor counts.
@@ -150,30 +159,39 @@ const (
 	aggSeconds  = 10
 	topKeys     = 16
 	baseKeys    = 64
+	// minShare is the usual share below which the baseline forgets a fingerprint or target (see learnShares), and below
+	// which a fingerprint it still holds is not one it knows: a flood's fingerprints enter at a sliver in the seconds before
+	// the flood crosses the threshold.
+	minShare = 0.002
 )
 
 type window struct {
 	sec                                      int64
 	reqs, newSrcs, engaged                   uint32
+	familiar                                 uint32 // of reqs, those whose fingerprint is usually at least minShare
 	done, errs, latN                         uint32
 	refused, challenged, solved, banned      uint32
+	held                                     uint32 // of refused, those held by an address's or network's own limit
+	banRefused                               uint32 // of refused, those of banned addresses
 	connsIn, connsRefused                    uint32
 	connClosed, earlyCloses, securityRejects uint32
 	maxSrc, maxNet                           uint32  // the most an address's, and a network's, limit was raised in this second, in thousandths
 	lat                                      float64 // milliseconds, summed over latN
 	srcs, nets                               hll
 	connSrcs                                 hll // the addresses that opened connections, admitted or refused
+	banSrcs                                  hll // the banned addresses that were refused
 	fps, paths                               topK
 }
 
 func (w *window) reset(sec int64) {
-	srcs, nets, connSrcs, fps, paths := w.srcs, w.nets, w.connSrcs, w.fps, w.paths
+	srcs, nets, connSrcs, banSrcs, fps, paths := w.srcs, w.nets, w.connSrcs, w.banSrcs, w.fps, w.paths
 	srcs.reset()
 	nets.reset()
 	connSrcs.reset()
+	banSrcs.reset()
 	fps.reset()
 	paths.reset()
-	*w = window{sec: sec, srcs: srcs, nets: nets, connSrcs: connSrcs, fps: fps, paths: paths}
+	*w = window{sec: sec, srcs: srcs, nets: nets, connSrcs: connSrcs, banSrcs: banSrcs, fps: fps, paths: paths}
 }
 
 // share is one fingerprint or target and its part of the traffic over the last ten seconds.
@@ -187,11 +205,13 @@ type share struct {
 // aggregate is the last ten seconds.
 type aggregate struct {
 	rate, srcs, nets, newShare, newSrcs  float64
+	familiar                             float64 // the share of requests whose fingerprint is usually at least minShare
 	engagement                           float64 // -1 when too few new sources to tell
 	errRatio, lat                        float64 // -1 when nothing completed
 	connRate, connRefused, connSrcs      float64
 	closed, earlyCloses, securityRejects float64
-	refused, challenged                  float64
+	refused, challenged, held            float64
+	banRefused, banSrcs                  float64 // the refusals of banned addresses, and how many addresses they came from
 	served                               float64 // requests a second the application answered without an error
 	scaleSrc, scaleNet                   float64 // the most an address's, and a network's, limit was raised in the ten seconds
 	fps, paths                           []share
@@ -199,6 +219,7 @@ type aggregate struct {
 
 type baseline struct {
 	rate, rateVar, srcs, newShare, errRatio, lat, connRate, connSrcs float64
+	familiar                                                         float64 // the share of requests whose fingerprint is at least minShare of fps
 	errSlow                                                          float64 // errRatio averaged slowTau times slower
 	lastSample                                                       float64
 	sampled                                                          bool
@@ -245,6 +266,7 @@ type detector struct {
 	scratchS   hll
 	scratchN   hll
 	scratchC   hll
+	scratchB   hll
 	incident   *incidentAcc
 	history    []Incident
 
@@ -281,9 +303,9 @@ type detector struct {
 
 func newDetector(cfg DetectorConfig) *detector {
 	cfg.defaults()
-	d := &detector{cfg: cfg, seen: newSeenFilter(), scratchS: newHLL(10), scratchN: newHLL(8), scratchC: newHLL(10)}
+	d := &detector{cfg: cfg, seen: newSeenFilter(), scratchS: newHLL(10), scratchN: newHLL(8), scratchC: newHLL(10), scratchB: newHLL(6)}
 	for i := range d.ring {
-		d.ring[i] = window{srcs: newHLL(10), nets: newHLL(8), connSrcs: newHLL(10), fps: newTopK(topKeys), paths: newTopK(topKeys)}
+		d.ring[i] = window{srcs: newHLL(10), nets: newHLL(8), connSrcs: newHLL(10), banSrcs: newHLL(6), fps: newTopK(topKeys), paths: newTopK(topKeys)}
 	}
 	d.base = baseline{rate: cfg.InitialRate, fps: map[uint64]float64{}, paths: map[uint64]float64{}}
 	if cfg.InitialRate > 0 {
@@ -317,6 +339,13 @@ func (d *detector) observe(ns int64, key netip.Addr, fp uint64, fpLabel string, 
 	w.nets.add(maphashPrefix(netOf(key)))
 	w.fps.add(fp, fpLabel, h, 1)
 	w.paths.add(pt, ptLabel, h, 1)
+	usual := d.base.fps
+	if d.state == Attack {
+		usual = d.frozen.fps
+	}
+	if usual[fp] >= minShare {
+		w.familiar++
+	}
 	isNew := !d.seen.see(h)
 	if isNew {
 		w.newSrcs++
@@ -420,11 +449,12 @@ func (d *detector) advance(ns int64) {
 // aggregate sums the last aggSeconds closed windows (the current, open one is not included).
 func (d *detector) aggregate() aggregate {
 	var a aggregate
-	var reqs, newSrcs, engaged, done, errs, latN, conns, connsRef, refused, challenged, maxSrc, maxNet, closed, earlyCloses, securityRejects float64
+	var reqs, newSrcs, engaged, familiar, done, errs, latN, conns, connsRef, refused, challenged, held, banRefused, maxSrc, maxNet, closed, earlyCloses, securityRejects float64
 	var lat float64
 	d.scratchS.reset()
 	d.scratchN.reset()
 	d.scratchC.reset()
+	d.scratchB.reset()
 	type acc struct {
 		count float64
 		label string
@@ -449,6 +479,7 @@ func (d *detector) aggregate() aggregate {
 		reqs += float64(w.reqs)
 		newSrcs += float64(w.newSrcs)
 		engaged += float64(w.engaged)
+		familiar += float64(w.familiar)
 		done += float64(w.done)
 		errs += float64(w.errs)
 		latN += float64(w.latN)
@@ -459,12 +490,15 @@ func (d *detector) aggregate() aggregate {
 		earlyCloses += float64(w.earlyCloses)
 		securityRejects += float64(w.securityRejects)
 		refused += float64(w.refused)
+		held += float64(w.held)
+		banRefused += float64(w.banRefused)
 		maxSrc = math.Max(maxSrc, float64(w.maxSrc))
 		maxNet = math.Max(maxNet, float64(w.maxNet))
 		challenged += float64(w.challenged)
 		d.scratchS.merge(&w.srcs)
 		d.scratchN.merge(&w.nets)
 		d.scratchC.merge(&w.connSrcs)
+		d.scratchB.merge(&w.banSrcs)
 		merge(fps, &w.fps)
 		merge(paths, &w.paths)
 	}
@@ -478,12 +512,18 @@ func (d *detector) aggregate() aggregate {
 	a.closed, a.earlyCloses, a.securityRejects = closed/aggSeconds, earlyCloses/aggSeconds, securityRejects/aggSeconds
 	a.refused = refused / aggSeconds
 	a.challenged = challenged / aggSeconds
+	a.held = held / aggSeconds
+	a.banRefused = banRefused / aggSeconds
+	if banRefused > 0 {
+		a.banSrcs = d.scratchB.estimate()
+	}
 	a.served = (done - errs) / aggSeconds
 	a.newSrcs = newSrcs
 	if reqs > 0 {
 		a.srcs = d.scratchS.estimate()
 		a.nets = d.scratchN.estimate()
 		a.newShare = newSrcs / reqs
+		a.familiar = familiar / reqs
 	}
 	a.engagement = -1
 	if newSrcs >= 20 {
@@ -615,7 +655,19 @@ func (d *detector) evaluate(ns int64) {
 		} else {
 			d.quiet = 0
 		}
-		if evidence {
+		// What an address's or network's own limit holds is held whether there is an attack or not: only what the
+		// attack's budgets and bans hold keeps the attack, or one address that sends more than its limit could keep it for
+		// ever. The bans of a handful of addresses are left out for the same reason. And the site's own clients, whose
+		// traffic may grow past the frozen threshold once the flood is over, must not keep it either, however much of it
+		// the budgets refuse: they are told from a flood by their fingerprints, which the baseline knew.
+		held := a.held
+		if a.banSrcs < float64(d.cfg.MinClusterSources) {
+			held += a.banRefused
+		}
+		rest := a.rate - held
+		// A baseline that knows no fingerprint, after a restart into a flood with InitialRate, cannot tell them apart.
+		unlike := d.frozen.familiar <= 0 || a.familiar < 0.5*d.frozen.familiar
+		if mitigating := rest >= thr && a.refused-held+a.challenged >= 0.5*rest && unlike; evidence || mitigating {
 			d.noEvidence = 0
 		} else {
 			d.noEvidence++
@@ -759,6 +811,15 @@ func (d *detector) learn(a aggregate, gate, hurt bool) {
 	ew(&b.newShare, a.newShare)
 	ew(&b.connRate, a.connRate)
 	ew(&b.connSrcs, a.connSrcs)
+	// Nor are the fingerprints and targets learnt from a second over the threshold: a flood that runs there for a while
+	// before it hurts would otherwise teach the baseline its fingerprints, which would then pass for the site's own, and
+	// the site's own clients do not hold an attack (see evaluate).
+	if gate {
+		return
+	}
+	if a.rate > 0 {
+		ew(&b.familiar, a.familiar)
+	}
 	learnShares(b.fps, a.fps, alpha)
 	learnShares(b.paths, a.paths, alpha)
 }
@@ -775,7 +836,7 @@ func learnShares(m map[uint64]float64, now []share, alpha float64) {
 		m[s.key] += alpha * s.share
 	}
 	for k, v := range m {
-		if v < 0.002 && !slices.ContainsFunc(now, func(s share) bool { return s.key == k }) {
+		if v < minShare && !slices.ContainsFunc(now, func(s share) bool { return s.key == k }) {
 			delete(m, k)
 		}
 	}
@@ -794,7 +855,7 @@ func learnShares(m map[uint64]float64, now []share, alpha float64) {
 func (d *detector) startAttack(ns int64, a aggregate, reasons []string, fpAttack, pathAttack bool) {
 	d.state, d.since, d.quiet, d.noEvidence, d.run = Attack, ns, 0, 0, 0
 	d.epoch++
-	d.frozen = baseline{rate: d.base.rate, rateVar: d.base.rateVar, srcs: d.base.srcs, newShare: d.base.newShare, errRatio: d.base.errRatio, lat: d.base.lat,
+	d.frozen = baseline{rate: d.base.rate, rateVar: d.base.rateVar, srcs: d.base.srcs, newShare: d.base.newShare, familiar: d.base.familiar, errRatio: d.base.errRatio, lat: d.base.lat,
 		connRate: d.base.connRate, connSrcs: d.base.connSrcs, fps: cloneMap(d.base.fps), paths: cloneMap(d.base.paths)}
 	d.incident = &incidentAcc{start: ns, peak: a.rate, baseRate: d.base.rate, srcs: newHLL(14), nets: newHLL(12),
 		labels: newTopK(32), labelSet: newHLL(10)}

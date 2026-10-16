@@ -600,8 +600,20 @@ func retryAfter(wait, most float64) int {
 func (s *Shield) refuse(ns int64, d Decision, info *attackInfo, id, status, retry int) Decision {
 	d.Action, d.ID, d.Status, d.RetryAfter = Refuse, id, status, retry
 	s.counters.refused.Add(1)
+	held, banned := id == idRate || id == idSubnetRate, id == idBanned
+	var h uint64
+	if banned {
+		h = hashAddr(d.key)
+	}
 	s.det.note(ns, func(w *window, inc *incidentAcc) {
 		w.refused++
+		switch {
+		case held:
+			w.held++
+		case banned:
+			w.banRefused++
+			w.banSrcs.add(h)
+		}
 		if inc != nil {
 			inc.refused++
 		}

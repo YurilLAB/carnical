@@ -72,7 +72,9 @@ Volume alone is logged as elevated traffic; it does not declare an attack.
 The volume threshold is the largest of four times the baseline, baseline plus eight standard
 deviations, and 20 requests/second. The baseline has a ten-minute time constant, updates whenever no
 attack has been declared (elevated volume without attack evidence included) and grows by at most two
-times per step. Deviation is measured from nonoverlapping ten-second windows.
+times per step. Deviation is measured from nonoverlapping ten-second windows. The usual fingerprints
+and targets are learned only from seconds under the threshold, so a flood that runs over it for a
+while before there is evidence does not teach the baseline its look.
 
 The baseline is held back while the application is failing compared with its own error ratio over
 about an hour (a six-times-slower average): in those seconds the usual error ratio and latency can
@@ -120,7 +122,21 @@ limits and never puts the whole site into attack mode. An attack does not end wh
 goes on.
 
 An attack lasts at least one minute and ends after 30 quiet seconds. It can also end after five
-minutes without the evidence that triggered it. The first 60 seconds are a history period; during
+minutes without the evidence that triggered it. The mitigation counts as such evidence while the
+rate is still over the threshold of the baseline from before the attack, at least half the requests
+are refused or shown the challenge, and fewer than half as many of them as before the attack come
+with a client fingerprint that was at least 0.2% of the usual requests (when the baseline knew no
+fingerprint, as after a restart into the flood with `-ddos-baseline-rate`, the last condition is
+left out). A flood that only showed harm, which the mitigation
+takes away, is then held for as long as it goes on, while the site's own clients, who still look as
+they did, never hold an attack: when they grow past the old threshold after a flood has ended (a
+night's attack followed by the day's peak), the attack ends after the five minutes even though the
+attack's limits refuse much of their traffic. A flood that copies the site's own mix of clients is
+told from them only by the evidence above. What an address's or a network's own limit refuses is
+left out of both the rate and the refusals for this, since it is held whether there is an attack or
+not: one address sending more than its limit does not hold the attack. So are the refusals of banned
+addresses, unless they come from at least 20 addresses in ten seconds: the bans of a botnet hold the
+attack, the ban of a single address does not. The first 60 seconds are a history period; during
 the remaining five-minute learning period, only a tenfold rise qualifies. Set `-ddos-baseline-rate`
 when restarting into a flood; learned baseline state is not persisted. The flag seeds the rate only
 and skips its learning period: the usual fingerprints, targets, addresses and application health
