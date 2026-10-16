@@ -15,7 +15,7 @@
 //     small shared budget for requests that look like the attack (its fingerprints and targets) and a budget for clients
 //     the shield does not know, while clients it knows (that used the site normally before the attack) and browsers
 //     that answered a challenge go on as usual. Addresses that keep being refused during an attack are banned for a
-//     while, here and, with a Banner, in the kernel's firewall.
+//     while: their connections are reset at accept and their requests refused. A Banner, if set, is told of each ban.
 //   - Answers (Done): what the application answered and how quickly, which is how clients become known, and how the
 //     detector sees that the application is in trouble.
 //
@@ -83,8 +83,11 @@ type response struct {
 	cookie                      *http.Cookie
 }
 
-// Banner asks something outside the process (the kernel's firewall, see package netguard) to drop a network's packets
-// for a while. It must return quickly; the shield calls it from a background goroutine with a deadline.
+// Banner is told of each address range the shield bans, so that something outside the process that the integrator runs
+// (a firewall) can drop the range's packets for a while too, before they cost the proxy a connection. Nothing in this
+// repository implements it: without one, a ban holds in this process only, which resets the range's connections at
+// accept and refuses its requests. It must return quickly; the shield calls it from a background goroutine with a
+// deadline.
 type Banner interface {
 	Ban(ctx context.Context, p netip.Prefix, ttl time.Duration, reason string) error
 }
@@ -160,7 +163,8 @@ type Config struct {
 	Trusted []netip.Prefix
 	// Detector tunes attack detection.
 	Detector DetectorConfig
-	// Banner, if set, is asked to ban in the kernel the addresses the shield bans, except a range that holds a Trusted one.
+	// Banner, if set, is told of the ranges the shield bans (an IPv4 address, an IPv6 /64), except a range that holds a
+	// Trusted one, to drop them outside the process too (see Banner).
 	Banner Banner
 	// Labeler, if set, names the country or network of the addresses in an attack, for the attack's record.
 	Labeler Labeler
@@ -763,7 +767,7 @@ func (s *Shield) mark(ns int64, key netip.Addr, info *attackInfo, shown bool) {
 		bits = 64
 	}
 	p := netip.PrefixFrom(key, bits)
-	// The kernel would drop every packet from the range, a trusted proxy's in it too: the ban then holds only here, where
+	// A firewall would drop every packet from the range, a trusted proxy's in it too: the ban then holds only here, where
 	// the proxy's own requests pass it.
 	for _, t := range s.cfg.Trusted {
 		if t.Overlaps(p) {
