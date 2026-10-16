@@ -155,7 +155,9 @@ func (s *Shield) verify(r *http.Request, key netip.Addr, now time.Time) Decision
 		resp: &response{cookie: cookie, location: to, contentType: "text/plain; charset=utf-8", body: "Thank you.\n"}}
 }
 
-// challengePage is the page a browser gets instead of the site during an attack.
+// challengePage is the page a browser gets instead of the site during an attack. It names an empty icon, so that a
+// browser shown it does not ask for /favicon.ico: that request, not a page load, would be refused by the attack's budget
+// and counted toward the address's ban for each person shown the page, even one who answers it.
 func (s *Shield) challengePage(r *http.Request, key netip.Addr, now time.Time) (body, nonce string) {
 	nb := make([]byte, 16)
 	rand.Read(nb)
@@ -163,7 +165,7 @@ func (s *Shield) challengePage(r *http.Request, key netip.Addr, now time.Time) (
 	token := s.token(key, now) // base64url: nothing in it needs escaping
 	verify := VerifyPath + "?t=" + token + "&to=" + jsEscape(urlEscape(safeReturn(r.URL.RequestURI())))
 	var b strings.Builder
-	b.WriteString(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>One moment</title>`)
+	b.WriteString(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><link rel="icon" href="data:,"><title>One moment</title>`)
 	b.WriteString(`<style>body{font:16px/1.5 system-ui,sans-serif;max-width:34rem;margin:15vh auto;padding:0 16px;color:#1d1d1f;background:#fff}@media (prefers-color-scheme:dark){body{color:#e8e8e8;background:#141414}}</style></head><body>`)
 	b.WriteString(`<h1>One moment</h1><p>This site is receiving an unusual amount of traffic. Your browser is doing a short calculation to show that it is not part of it, and the page will continue by itself in a few seconds.</p>`)
 	b.WriteString(`<noscript><p>This check needs JavaScript. Please switch it on, or try again in a few minutes.</p></noscript>`)

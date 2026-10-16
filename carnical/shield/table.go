@@ -110,11 +110,13 @@ type source struct {
 	newAt       int64
 	lastTpl     uint64
 	distinct    uint8
+	shown       uint8 // the challenge shown since the last strike (see showsPerStrike)
 	good        uint16
 	goodFirst   int64
 	knownUntil  int64
 	knownAt     int64 // when the client became known
 	strikes     uint16
+	fromShown   uint16 // the strikes that the challenge shown made, which right answers can take back (see forgive)
 	strikeEpoch uint32
 	bannedUntil int64
 	earned      earned

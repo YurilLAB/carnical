@@ -134,7 +134,8 @@ type Config struct {
 	// answered the challenge is not held to it: the challenge is how people get in when a crowd is taken for an attack.
 	KnownFactor, MinKnownRate float64
 	// BanAfter is how many requests refused during an attack get an address banned (default 30, at most 65535), for
-	// BanFor (default 10 minutes). The count starts again after each ban.
+	// BanFor (default 10 minutes). Each challenge shown counts as a tenth of a refusal, and each right answer to it takes
+	// back one shown. The count starts again after each ban.
 	BanAfter int
 	BanFor   time.Duration
 	// NoChallenge refuses unknown browsers during an attack instead of asking them to answer a challenge.
@@ -497,7 +498,11 @@ func (s *Shield) Admit(r *http.Request, client netip.Addr) Decision {
 		s.det.noteScales(scaleSrc, scaleNet)
 	}
 	if r.URL.Path == VerifyPath {
-		return s.verify(r, key, now)
+		v := s.verify(r, key, now)
+		if v.ID == idChallengeSolved && info != nil && !s.cfg.MonitorOnly && !trusted {
+			s.forgive(ns, key, info)
+		}
+		return v
 	}
 	if info == nil || s.cfg.MonitorOnly || trusted {
 		s.counters.allowed.Add(1)
@@ -530,8 +535,10 @@ func (s *Shield) Admit(r *http.Request, client netip.Addr) Decision {
 	if inCluster {
 		id = idCluster
 	}
+	// Showing the challenge is not a refusal: a browser can answer it, and many people behind one address are each shown
+	// it. It counts as a tenth of one, so that a flood of page loads is banned as a flood of other requests is.
 	if !s.cfg.NoChallenge && isNavigation(r) {
-		s.strike(ns, key, info)
+		s.mark(ns, key, info, true)
 		s.counters.challenged.Add(1)
 		s.det.note(ns, func(w *window, inc *incidentAcc) {
 			w.challenged++
@@ -581,20 +588,38 @@ func (s *Shield) refuse(ns int64, d Decision, info *attackInfo, id, status, retr
 	return d
 }
 
+// showsPerStrike is how many times the challenge shown to an address counts as one refusal toward its ban. The people
+// behind one shared address are each shown it about once before they answer it, so it takes some 300 of them (BanAfter
+// 30) to get the address banned; a bot that loads pages at an address's own limit (50 a second) is banned in six seconds.
+const showsPerStrike = 10
+
 // strike counts a refusal against an address during an attack, and bans it when it has had enough.
-func (s *Shield) strike(ns int64, key netip.Addr, info *attackInfo) {
+func (s *Shield) strike(ns int64, key netip.Addr, info *attackInfo) { s.mark(ns, key, info, false) }
+
+// mark counts a refusal, or the challenge shown (a tenth of one), against an address during an attack, and bans it when
+// it has had enough.
+func (s *Shield) mark(ns int64, key netip.Addr, info *attackInfo, shown bool) {
 	ban := false
 	s.sources.do(key, ns, func(src *source) {
 		if src.strikeEpoch != info.epoch {
-			src.strikeEpoch, src.strikes = info.epoch, 0
+			src.strikeEpoch, src.strikes, src.fromShown, src.shown = info.epoch, 0, 0, 0
+		}
+		if shown {
+			if src.shown++; src.shown < showsPerStrike {
+				return
+			}
+			src.shown = 0
 		}
 		if src.strikes < 65535 {
 			src.strikes++
+			if shown {
+				src.fromShown++
+			}
 		}
 		// Counting starts again, so an address that goes on after its ban runs out is banned again. Its standing goes
 		// with the ban: being known, and the higher limit it had earned.
 		if int(src.strikes) >= s.cfg.BanAfter {
-			src.bannedUntil, src.knownUntil, src.strikes, ban = ns+int64(s.cfg.BanFor), 0, 0, true
+			src.bannedUntil, src.knownUntil, src.strikes, src.fromShown, src.shown, ban = ns+int64(s.cfg.BanFor), 0, 0, 0, 0, true
 			src.earned = earned{}
 		}
 	})
@@ -628,6 +653,21 @@ func (s *Shield) strike(ns int64, key netip.Addr, info *attackInfo) {
 	default: // the helper is behind; the ban still holds in this process
 		s.counters.banErrors.Add(1)
 	}
+}
+
+// forgive takes back one challenge shown to an address during an attack, for a right answer to it: the many people
+// behind one address who are each shown it and answer it add nothing toward its ban. An answer sent many times takes
+// back no more than the address was shown, and never a refusal or a wrong answer.
+func (s *Shield) forgive(ns int64, key netip.Addr, info *attackInfo) {
+	s.sources.do(key, ns, func(src *source) {
+		switch {
+		case src.strikeEpoch != info.epoch: // nothing counted in this attack yet
+		case src.shown > 0:
+			src.shown--
+		case src.fromShown > 0:
+			src.fromShown, src.strikes, src.shown = src.fromShown-1, src.strikes-1, showsPerStrike-1
+		}
+	})
 }
 
 func (s *Shield) banWorker() {
@@ -671,7 +711,7 @@ func (s *Shield) Write(w http.ResponseWriter, r *http.Request, d Decision) {
 	case Challenge:
 		body, nonce := s.challengePage(r, d.key, s.now())
 		h.Set("Content-Type", "text/html; charset=utf-8")
-		h.Set("Content-Security-Policy", "default-src 'none'; script-src 'nonce-"+nonce+"'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+		h.Set("Content-Security-Policy", "default-src 'none'; script-src 'nonce-"+nonce+"'; style-src 'unsafe-inline'; img-src data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
 		h.Set("Referrer-Policy", "no-referrer")
 		h.Set("Retry-After", "5")
 		w.WriteHeader(d.Status)

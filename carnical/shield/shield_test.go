@@ -586,6 +586,62 @@ func TestABanIsRenewedWithinOneAttack(t *testing.T) {
 			})
 		}
 	})
+	// What counts toward a ban (BanAfter 3) from one address, while a browser there holds the answer to a challenge: a
+	// refusal (r) does, and showing the challenge to someone (c) counts as a tenth of one. A right answer (s), which can be
+	// sent again, takes back one challenge shown, never more than were shown, and never a refusal. At the end, the browser
+	// that answered is served unless the address was banned.
+	t.Run("what counts toward a ban", func(t *testing.T) {
+		for _, tc := range []struct {
+			name  string
+			steps string
+			want  Action
+		}{
+			{"the challenge shown 29 times", strings.Repeat("c", 29), Allow},
+			{"the challenge shown 30 times, ten for each refusal", strings.Repeat("c", 30), Refuse},
+			{"the challenge shown 30 times, each answered", strings.Repeat("cs", 30), Allow},
+			{"the challenge page loaded by 30 browsers, each answered", strings.Repeat("bs", 30), Allow},
+			{"the challenge shown 29 times, answered 29 times, shown 29 times", strings.Repeat("c", 29) + strings.Repeat("s", 29) + strings.Repeat("c", 29), Allow},
+			{"the answer sent ten times after one challenge shown, then 30 shown", "c" + strings.Repeat("s", 10) + strings.Repeat("c", 30), Refuse},
+			{"a refusal and the challenge shown 20 times", "r" + strings.Repeat("c", 20), Refuse},
+			{"refusals", "rrr", Refuse},
+			{"the same answer sent again between refusals", "rsrsr", Refuse},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				now := now
+				s := newTestShield(t, &now, func(c *Config) { c.BanAfter = 3 })
+				s.det.info.Store(&attackInfo{epoch: 1, since: now.UnixNano(), fps: map[uint64]bool{}, paths: map[uint64]bool{}})
+				s.Admit(req("GET", "/api", "Accept", "application/json"), netip.MustParseAddr("192.0.2.1")) // the budget's one request
+				tok := s.token(key, now)
+				answer := req("GET", VerifyPath+"?t="+tok+"&n="+solve(tok, 8), "User-Agent", "browser A")
+				cookie := s.Admit(answer, key).resp.cookie
+				for i, step := range tc.steps {
+					r, want := req("GET", "/api", "Accept", "application/json"), idUnknown
+					switch step {
+					case 'b': // a browser shown the page asks for /favicon.ico unless the page names an icon its policy allows
+						w := httptest.NewRecorder()
+						page := req("GET", "/", "User-Agent", "visitor "+strconv.Itoa(i), "Accept", "text/html", "Sec-Fetch-Mode", "navigate")
+						s.Write(w, page, s.Admit(page, key))
+						if strings.Contains(w.Body.String(), `<link rel="icon" href="data:,">`) && strings.Contains(w.Header().Get("Content-Security-Policy"), "img-src data:") {
+							continue
+						}
+						r = req("GET", "/favicon.ico", "Accept", "image/*", "Sec-Fetch-Mode", "no-cors", "Sec-Fetch-Dest", "image")
+					case 'c':
+						r, want = req("GET", "/", "User-Agent", "visitor "+strconv.Itoa(i), "Accept", "text/html"), idChallenge
+					case 's':
+						r, want = answer, idChallengeSolved
+					}
+					if d := s.Admit(r, key); d.ID != want {
+						t.Fatalf("step %d (%c): rule %d, want %d", i, step, d.ID, want)
+					}
+				}
+				r := req("GET", "/", "User-Agent", "browser A", "Accept", "text/html")
+				r.AddCookie(cookie)
+				if d := s.Admit(r, key); d.Action != tc.want {
+					t.Fatalf("the browser that answered got %+v", d)
+				}
+			})
+		}
+	})
 	// Nor does a client that became known shortly before the attack lose its standing for its connections (the reserved
 	// share, and keeping an idle connection), which mitigation takes from it.
 	t.Run("monitor mode keeps a recent client known", func(t *testing.T) {

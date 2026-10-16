@@ -144,3 +144,22 @@ after 10, 2.2 after 15, 3.8 after 20, 10 after 30 and the ceiling of 20 after 40
 ceiling of 4 it stops at 4 and with 1 it never moves. The site stays in its normal state throughout: an address that
 asked for 300 requests a second instead made the detector report a rise within ten seconds. Eleven deliberate breaks of the
 ceiling, of the limit on a sudden rise and of the flag each fail a test.
+
+## 2026-10-16: Showing the challenge counts for a tenth of a refusal
+
+Each challenge page shown during an attack counted toward the address's ban, as a refusal does. At an address many people
+share (a carrier's NAT, an office), 30 people each shown the challenge once got the address banned for ten minutes, the
+browsers that had answered it with the rest. Reproduced: a browser that answered and was served was refused (rule 5004008)
+after 30 others at its address were shown the challenge. Now ten pages shown count as one refusal, so it takes some 300
+people. Not counting them at all was tried first: a bot that sent page loads under its own limit was then never banned, and
+was shown the challenge for ever, each page costing about two and a half times what a refusal does, on a connection left open.
+Reproduced: one address loading `/` 20 times a second was shown it on 1,999 of 2,000 requests and never banned. Now it is
+banned after 300, in 15 seconds. Counted at a tenth, the people who answer still added up: with a ban after 3 refusals, 30
+people behind one address who were each shown the challenge and answered it got the address banned, so a right answer now
+takes back one challenge shown. A browser shown a page that names no icon also asks for `/favicon.ico`, which the attack's
+budget refused as a full refusal, so 30 people who answered still got the address banned: the page now names an empty icon,
+which its Content-Security-Policy allows. A client can send one answer as often as it likes, so answers take back no more than the
+address was shown, and never a refusal. In the simulation of 2,000 addresses with standing that copy Chrome (above), 3.6% of
+the attack was admitted after detection, against 3.2%, with 98.8% of returning and new visitors served as before: those bots
+send about one request a second each, and are no longer banned for the challenge they are shown. The other simulations gave
+the same results.
