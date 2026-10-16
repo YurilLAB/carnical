@@ -299,11 +299,28 @@ func New(cfg Config) (*Edge, error) {
 	return e, nil
 }
 
+// RateTotals are the rate rules' running totals since the edge was made.
+type RateTotals struct {
+	// Refused is how many requests a rate rule refused (monitor rules refuse none).
+	Refused int64
+	// EvictedLive is how many clients a full rate-limit table dropped while they were still counting, each of which starts
+	// again with a full allowance.
+	EvictedLive int64
+}
+
+// RateTotals returns the rate rules' totals, for a periodic report: the log has at most one line a second for each rule.
+func (e *Edge) RateTotals() RateTotals {
+	return RateTotals{Refused: e.rateRefused.Load(), EvictedLive: e.evictedLive.Load()}
+}
+
 // ServeHTTP implements http.Handler.
 func (e *Edge) ServeHTTP(w http.ResponseWriter, r *http.Request) { e.handler.ServeHTTP(w, r) }
 
-// Close releases the compiled rules.
+// Close logs the rate-rule refusals not logged yet and releases the compiled rules.
 func (e *Edge) Close() error {
+	for _, rule := range e.rules {
+		e.flushLimit(rule)
+	}
 	if c, ok := e.waf.(experimental.WAFCloser); ok {
 		return c.Close()
 	}

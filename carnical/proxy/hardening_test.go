@@ -921,9 +921,77 @@ func TestAPIRatePolicy(t *testing.T) {
 		for _, m := range seen.all() {
 			logged = append(logged, fmt.Sprint(m.RuleID, " ", m.Message))
 		}
-		want := []string{"5000042 too many API requests from one address", "5000042 too many API requests from one address (4 more refusals not logged)"}
+		want := []string{"5000042 too many API requests from one address", "5000042 too many API requests from one address (4 more refusals not logged)",
+			"5000042 too many API requests from one address"}
 		if strings.Join(logged, "\n") != strings.Join(want, "\n") {
 			t.Fatalf("logged %q, want %q", logged, want)
+		}
+	})
+	t.Run("refusals not logged are counted in a line that names no client, and are not lost at close", func(t *testing.T) {
+		for _, tc := range []struct {
+			name, rule string
+			refused    int
+			id         int
+			more       string
+			total      int64 // what RateTotals counts as refused
+		}{
+			{"an enforcing rule", "/ 1/m", 429, idLimitRule, "more refusals not logged", 9},
+			{"a monitor rule", "/ 1/m monitor", 200, idLimitMonitor, "more not logged", 0},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				seen := &matches{}
+				rules, err := ParseRateRules(tc.rule)
+				if err != nil {
+					t.Fatal(err)
+				}
+				s := start(t, func(c *Config) {
+					ruleSetOff(c)
+					c.Limits, c.OnMatch, c.LogDetails = rules, seen.record, true
+					c.TrustedProxies = []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")}
+				})
+				now := int64(time.Hour)
+				s.edge.now = func() int64 { return now }
+				from := func(client string, n int) {
+					for i := range n {
+						want := tc.refused
+						if i == 0 {
+							want = 200
+						}
+						if status, _ := s.raw(t, get("/page", "X-Forwarded-For: "+client+"\r\n")); status != want {
+							t.Fatalf("request %d from %s: %d, want %d", i+1, client, status, want)
+						}
+					}
+				}
+				from("192.0.2.66", 6) // one let through, one logged, four not
+				// The count does not wait for the rule's next line: it is logged within a second or so.
+				for deadline := time.Now().Add(5 * time.Second); len(seen.all()) < 2; time.Sleep(10 * time.Millisecond) {
+					if time.Now().After(deadline) {
+						t.Fatalf("the count was not logged on its own: %+v", seen.all())
+					}
+				}
+				now += int64(time.Second)
+				from("192.0.2.77", 5) // one let through, one logged after the four are, three not
+				if err := s.edge.Close(); err != nil {
+					t.Fatal(err)
+				}
+				if got := s.edge.RateTotals(); got != (RateTotals{Refused: tc.total}) {
+					t.Fatalf("totals %+v, want %d refused", got, tc.total)
+				}
+				var logged []string
+				for _, m := range seen.all() {
+					if m.RuleID != tc.id {
+						t.Fatalf("logged rule %d", m.RuleID)
+					}
+					client, _, _ := strings.Cut(m.ClientIP, ":")
+					_, count, _ := strings.Cut(m.Message, " (")
+					logged = append(logged, client+" "+count)
+				}
+				// The counts name no client, though details are on, and they add up to every refusal but those logged.
+				want := []string{"192.0.2.66 ", " 4 " + tc.more + ")", "192.0.2.77 ", " 3 " + tc.more + ")"}
+				if strings.Join(logged, "|") != strings.Join(want, "|") {
+					t.Fatalf("logged %q, want %q", logged, want)
+				}
+			})
 		}
 	})
 	t.Run("rate rules log their own text, and a monitor rule reports only what it would refuse", func(t *testing.T) {
@@ -959,7 +1027,8 @@ func TestAPIRatePolicy(t *testing.T) {
 			logged = append(logged, fmt.Sprint(m.RuleID, " ", m.Disruptive, " ", m.Message))
 		}
 		want := []string{"5000047 true rate limit exceeded: POST /login 1/1m", "5000048 false rate limit would be exceeded: / 2/1m",
-			"5000048 false rate limit would be exceeded: / 2/1m (1 more not logged)", "5000048 false rate limit would be exceeded: / 2/1m"}
+			"5000048 false rate limit would be exceeded: / 2/1m (1 more not logged)", "5000048 false rate limit would be exceeded: / 2/1m",
+			"5000048 false rate limit would be exceeded: / 2/1m"}
 		if strings.Join(logged, "\n") != strings.Join(want, "\n") {
 			t.Fatalf("logged %q, want %q", logged, want)
 		}

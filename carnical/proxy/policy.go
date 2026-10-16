@@ -296,10 +296,11 @@ type compiledRule struct {
 	id      int
 	message string // fixed text, from the configuration: never request data
 	table   *windowLimiter
-	// A flood of refusals must not become a flood of log lines: a rule logs at most one refusal a second, and the next
-	// line it logs says how many were not.
+	// A flood of refusals must not become a flood of log lines: a rule logs at most one refusal a second. How many were not
+	// is said in a line of its own, with no client in it (see flushLimit).
 	logSecond atomic.Int64
 	unlogged  atomic.Int64
+	flushDue  atomic.Bool // a flush of unlogged is scheduled
 }
 
 // neverLogged is a log second long before any clock reading.
@@ -437,7 +438,8 @@ func (e *Edge) enforceLimits(w http.ResponseWriter, r *http.Request, key netip.A
 }
 
 // logLimit records a refusal by a rate rule, or what a monitor rule would refuse. A flood of refusals must not become a
-// flood of log lines: a rule logs at most one a second, and the next line it logs says how many were not.
+// flood of log lines: a rule logs at most one a second. The ones it does not log are counted, and the count is logged in a
+// line of its own a second later at most, before the rule's next line, or when the edge is closed (see flushLimit).
 func (e *Edge) logLimit(r *http.Request, rule *compiledRule, now int64) {
 	if e.cfg.OnMatch == nil {
 		return
@@ -445,19 +447,33 @@ func (e *Edge) logLimit(r *http.Request, rule *compiledRule, now int64) {
 	second := now / int64(time.Second)
 	if previous := rule.logSecond.Load(); second == previous || !rule.logSecond.CompareAndSwap(previous, second) {
 		rule.unlogged.Add(1)
+		if rule.flushDue.CompareAndSwap(false, true) {
+			time.AfterFunc(time.Second, func() { rule.flushDue.Store(false); e.flushLimit(rule) })
+		}
 		return
 	}
+	e.flushLimit(rule)
 	m := Match{RuleID: rule.id, Severity: "CRITICAL", Message: rule.message, Disruptive: !rule.monitor}
 	if rule.monitor {
 		m.Severity = "WARNING"
 	}
-	if n := rule.unlogged.Swap(0); n > 0 && rule.monitor {
-		m.Message += " (" + strconv.FormatInt(n, 10) + " more not logged)"
-	} else if n > 0 {
-		m.Message += " (" + strconv.FormatInt(n, 10) + " more refusals not logged)"
-	}
 	if e.cfg.LogDetails {
 		m.ClientIP, m.URI = r.RemoteAddr, r.RequestURI
+	}
+	e.cfg.OnMatch(m)
+}
+
+// flushLimit logs how many of a rule's refusals were not logged, if any. The refusals may be any clients', so the line names
+// none, even with LogDetails: added to the next refusal's line, the count would read as that client's.
+func (e *Edge) flushLimit(rule *compiledRule) {
+	n := rule.unlogged.Swap(0)
+	if n == 0 || e.cfg.OnMatch == nil {
+		return
+	}
+	m := Match{RuleID: rule.id, Severity: "CRITICAL", Disruptive: !rule.monitor,
+		Message: rule.message + " (" + strconv.FormatInt(n, 10) + " more refusals not logged)"}
+	if rule.monitor {
+		m.Severity, m.Message = "WARNING", rule.message+" ("+strconv.FormatInt(n, 10)+" more not logged)"
 	}
 	e.cfg.OnMatch(m)
 }

@@ -147,7 +147,12 @@ refusal is `429` with `Cache-Control: no-store` and a `Retry-After` that is the 
 seconds, rounded up, until the request would be admitted; the request never reaches the application.
 A refusal is logged as rule 5000022 for logins, 5000042 for API quotas and 5000047 for a `-limit` rule,
 with the rule's text ("rate limit exceeded: POST /login 5/1m"), which comes from the configuration and
-never from the request. The rules apply whatever the `-ddos` mode, and with the flood protection off.
+never from the request. Each rule logs at most one refusal a second; how many it did not log follows
+in a line of its own ("... (37 more refusals not logged)") within about a second, before the rule's
+next refusal is logged, and when the proxy stops. That line names no client, even with `-log-details`,
+as the refusals it counts may be from many. `Edge.RateTotals` gives the running totals of refusals and
+of clients evicted while still counting. The rules apply whatever the `-ddos` mode, and with the flood
+protection off.
 
 A table holds at most 50,000 clients, and the tables of all the rate rules together at most 200,000:
 with more than four rules, each holds 200,000 divided by their number, so 25,000 with eight and 5,882
