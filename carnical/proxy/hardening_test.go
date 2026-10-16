@@ -132,6 +132,14 @@ func TestRefusalsHoldWithTheRuleSetOffAndAreRecorded(t *testing.T) {
 		{"an identity request encoding", get("/page", "Content-Encoding: identity\r\n"), nil, 200, 0},
 		{"two Content-Type headers", get("/page", "Content-Type: text/plain\r\n", "Content-Type: application/json\r\n"), nil, 400, idAmbiguousType},
 		{"an upload whose type only PHP and the rules read as multipart", strings.Replace(uploadRequest(multipartBody(filePart("shell.php", "x"))), "data; boundary", "data, boundary", 1), nil, 400, idAmbiguousType},
+		// Go and the rule set take these parts for files, whose content is no argument; PHP takes them for fields.
+		{"a part only filename* names as a file", uploadRequest(multipartBody("Content-Disposition: form-data; name=\"q\"; filename*=UTF-8''a.txt\r\n\r\n1 union select password from users")), nil, 400, idAmbiguousType},
+		{"a part whose filename has a space before its '='", uploadRequest(multipartBody("Content-Disposition: form-data; name=\"q\"; filename =\"a.txt\"\r\n\r\n1 union select password from users")), nil, 400, idAmbiguousType},
+		// PHP takes this part for a file; Go and the rule set, which cannot parse its Content-Disposition, filename* and
+		// all, for a field.
+		{"a file whose Content-Disposition only PHP can parse", uploadRequest(multipartBody("Content-Disposition: form-data; name=\"q\";; filename=\"a.txt\"; filename*=UTF-8''a.txt\r\n\r\n1 union select password from users")), nil, 400, idAmbiguousType},
+		{"a file named by filename and filename*", uploadRequest(multipartBody("Content-Disposition: form-data; name=\"q\"; filename=\"a.txt\"; filename*=UTF-8''a.txt\r\n\r\ntext")), nil, 200, 0},
+		{"an empty file input", uploadRequest(multipartBody(filePart("", ""))), nil, 200, 0},
 		{"a chunked JSON body over the form limit", "POST /api HTTP/1.1\r\n" + preamble + "Content-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n1388\r\n" +
 			strings.Repeat("1", 5000) + "\r\n0\r\n\r\n", func(c *Config) { c.MaxFormBody = 4 << 10 }, 413, 0},
 		{"a header the site does not accept", get("/page", "Next-Action: abc\r\n"), func(c *Config) { c.DenyHeaders = []string{"next-action"} }, 400, idInternalHeader},

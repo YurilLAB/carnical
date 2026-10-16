@@ -2,7 +2,9 @@ package proxy
 
 import (
 	"bytes"
+	"io"
 	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -27,6 +29,10 @@ var (
 	// Opening tags of server-side scripts. <?xml is not one.
 	scriptRe = regexp.MustCompile(`(?i)<\?php|<\?=|<%@|<%=|<script\s+language\s*=\s*["']?php`)
 	phpExt   = regexp.MustCompile(`^php[0-9]?$`)
+	// A parameter whose name starts with filename*, extended (filename*=) or continued (filename*0=), which Go reads
+	// and PHP does not; and any file name at all, without which no part is a file to anyone.
+	extendedFilenameRe = regexp.MustCompile(`(?i)filename[ \t]*\*`)
+	anyFilenameRe      = regexp.MustCompile(`(?i)filename`)
 )
 
 var executableExt = map[string]bool{
@@ -141,6 +147,111 @@ func scanUpload(body []byte, boundary string, p UploadPolicy) (id int, reason st
 		return idUploadScript, "an uploaded file contains the opening tag of a server-side script"
 	}
 	return 0, ""
+}
+
+// multipartParts reads the parts of a multipart body as the rule set and PHP do, and returns what to refuse, or 0.
+//
+// A part is a file to Go's parser, and so to the rule set, when its Content-Disposition parses and names one as Go
+// reads it, and to PHP only when it has a non-empty plain filename parameter as PHP reads it: PHP knows nothing of
+// filename* (RFC 7578 forbids it in form data), matches "filename" only right before its '=', and reads parameters Go
+// refuses to parse, such as a repeated one. Where they disagree the part's content is a file to one and a field to the
+// other, so either the rules do not read as an argument what the application takes for one, or the rules read as an
+// argument what the form limit does not count; it is refused (idAmbiguousType).
+//
+// Everything in the body but the content of its files (the fields the rules read as arguments, names, file names, part
+// headers and boundaries) is held to the form body limit, as ModSecurity holds it to SecRequestBodyNoFilesLimit: only
+// files may make a body larger (idMultipartFields). A body over the limit that cannot be read to its end as parts is
+// over it: what was not read could be anything.
+func multipartParts(body []byte, boundary string, limit int64) int {
+	over := int64(len(body)) > limit // otherwise what is not a file is smaller than the whole body
+	if !over && !anyFilenameRe.Match(body) {
+		return 0
+	}
+	mr := multipart.NewReader(bytes.NewReader(body), boundary)
+	var files int64 // the content of the parts that are files to all of them
+	for {
+		part, err := mr.NextRawPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			if over {
+				return idMultipartFields
+			}
+			return 0
+		}
+		cd := part.Header.Get("Content-Disposition")
+		file := phpFileName(cd)
+		if file != goFileName(part, cd) {
+			return idAmbiguousType
+		}
+		n, err := io.Copy(io.Discard, part)
+		if err != nil {
+			if over {
+				return idMultipartFields
+			}
+			return 0
+		}
+		if file {
+			files += n
+		}
+	}
+	if over && int64(len(body))-files > limit {
+		return idMultipartFields
+	}
+	return 0
+}
+
+// goFileName reports whether Go and the rule set take a part for a file: its Content-Disposition parses, and names a
+// file or has a filename* parameter, which the rule set decodes in charsets Go does not. Neither reads a file name in
+// a Content-Disposition that does not parse.
+func goFileName(part *multipart.Part, cd string) bool {
+	if _, _, err := mime.ParseMediaType(cd); err != nil {
+		return false
+	}
+	return part.FileName() != "" || extendedFilenameRe.MatchString(cd)
+}
+
+// phpFileName reports whether PHP finds a file name that is not empty in a Content-Disposition: the value of its last
+// parameter named "filename", in any case. PHP splits the parameters at ';' and each at its first '=', outside quotes
+// of either kind, skips the spaces before a parameter and not those after its name, and reads a value after any spaces,
+// up to its closing quote if it is quoted. An empty name is an empty upload to PHP (UPLOAD_ERR_NO_FILE), whose content
+// it discards, and a field to Go and the rules, so the part is counted as a field.
+func phpFileName(cd string) bool {
+	file := false
+	for rest := cd; rest != ""; {
+		var pair string
+		pair, rest = phpWord(rest, ';')
+		pair = strings.TrimLeft(pair, " \t\r\n\v\f")
+		key, value := phpWord(pair, '=')
+		if len(key) == len(pair) || !strings.EqualFold(key, "filename") {
+			continue // no '=', or another parameter
+		}
+		value = strings.TrimLeft(value, " \t\r\n\v\f")
+		if q := value; q != "" && (q[0] == '"' || q[0] == '\'') {
+			value, _ = phpWord(q[1:], q[0])
+		}
+		file = value != ""
+	}
+	return file
+}
+
+// phpWord splits s at the first stop that is outside quotes, as PHP's php_ap_getword does: a quote of either kind runs
+// to the same quote, and a backslash before that quote does not end it. It returns s and "" when there is no stop.
+func phpWord(s string, stop byte) (word, rest string) {
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; c {
+		case stop:
+			return s[:i], s[i+1:]
+		case '"', '\'':
+			for i++; i < len(s) && s[i] != c; i++ {
+				if s[i] == '\\' && i+1 < len(s) && s[i+1] == c {
+					i++
+				}
+			}
+		}
+	}
+	return s, ""
 }
 
 // scriptInFile reports a script opening tag in anything a multipart parser could take for a file's content, since the

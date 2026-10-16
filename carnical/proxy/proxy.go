@@ -114,7 +114,10 @@ type Config struct {
 	NoJoinedParams bool
 	// MaxFormBody is the largest request body that is not a file upload (default 128 KiB). Evaluating a body costs
 	// time in proportion to its size, and the engine does not apply its own limit for bodies without files, so the
-	// proxy does. A multipart/form-data body may be as large as CRS.RequestBodyLimit.
+	// proxy does. A multipart/form-data body may be as large as CRS.RequestBodyLimit, but everything in it other than
+	// the content of its files is held to MaxFormBody, as ModSecurity's SecRequestBodyNoFilesLimit holds it (refused
+	// with 413, rule 5000012). A part the rules take for a file and PHP for a field, or the other way round, is refused
+	// with 400 (rule 5000005).
 	MaxFormBody int64
 	// ResponseHeaderTimeout is how long the upstream has to start answering (default 30 seconds). Raise it, and
 	// WriteTimeout past it, for long polling, where the application holds a request until it has something to say.
@@ -572,6 +575,14 @@ func (e *Edge) guard(next http.Handler) http.Handler {
 				}
 				if id, why := scanUpload(body, boundary, e.cfg.Uploads); id != 0 {
 					e.refuse(w, r, http.StatusForbidden, id, why)
+					return
+				}
+				switch multipartParts(body, boundary, e.cfg.MaxFormBody) {
+				case idAmbiguousType:
+					e.refuse(w, r, http.StatusBadRequest, idAmbiguousType, "a multipart part that the rules read as a file and PHP as a field")
+					return
+				case idMultipartFields:
+					e.refuse(w, r, http.StatusRequestEntityTooLarge, idMultipartFields, "the fields of a multipart body that are not files are over the form body limit")
 					return
 				}
 				if !e.cfg.NoJoinedParams {

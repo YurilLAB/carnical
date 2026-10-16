@@ -33,6 +33,7 @@ const (
 	idAmbiguousType       = 5000005
 	idUploadName          = 5000010
 	idUploadScript        = 5000011
+	idMultipartFields     = 5000012
 	idWordPressPHP        = 5000020
 	idXMLRPC              = 5000021
 	idRateLimited         = 5000022

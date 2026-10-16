@@ -140,7 +140,7 @@ func runFlags(args []string, private map[string]string) error {
 	readTimeout := flags.Duration("read-timeout", 0, "how long a client has to send a whole request, headers and body; raise it for large uploads over slow connections (0 = 30s; else 1s to 23h)")
 	writeTimeout := flags.Duration("write-timeout", 0, "how long a request may take from the end of its headers to the end of its response, so longer than -read-timeout and -upstream-timeout; raise it for large downloads and Server-Sent Events, and with -upstream-timeout for long polling (0 = -read-timeout plus 90s, 2m by default; else 1s to 24h)")
 	upstreamTimeout := flags.Duration("upstream-timeout", 0, "how long the upstream has to start its response, so shorter than -write-timeout (the default of 30s too); raise both for long polling (0 = 30s; else 1s to 24h)")
-	maxForm := flags.Int64("max-form-body", 128<<10, "largest request body that is not a file upload, in bytes; uploads may be as large as -max-body")
+	maxForm := flags.Int64("max-form-body", 128<<10, "largest request body that is not a file upload, in bytes, and the most an upload may hold besides the content of its files; uploads may be as large as -max-body")
 	details := flags.Bool("log-details", false, "log client address, URI, matched data and macro-expanded messages (may contain credentials)")
 	certFile := flags.String("tls-cert", "", "TLS certificate file")
 	keyFile := flags.String("tls-key", "", "TLS key file (not accessible to everyone or writable by its group, as 0600 or 0640)")

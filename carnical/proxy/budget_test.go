@@ -346,11 +346,18 @@ func TestBodiesAreCappedAndAnEngineErrorIsNotAnEmpty200(t *testing.T) {
 		return "POST /submit HTTP/1.1\r\n" + preamble + "Content-Type: application/x-www-form-urlencoded\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n" +
 			strconv.FormatInt(int64(len(body)), 16) + "\r\n" + body + "\r\n0\r\n\r\n"
 	}
-	multipart := func(n int) string {
-		b := "--XX\r\nContent-Disposition: form-data; name=\"f\"; filename=\"a.txt\"\r\nContent-Type: text/plain\r\n\r\n" + strings.Repeat("y", n) + "\r\n--XX--\r\n"
+	upload := func(b string) string {
 		return "POST /upload HTTP/1.1\r\n" + preamble + "Content-Type: multipart/form-data; boundary=XX\r\nContent-Length: " + strconv.Itoa(len(b)) +
 			"\r\nConnection: close\r\n\r\n" + b
 	}
+	file := func(n int) string {
+		return "--XX\r\nContent-Disposition: form-data; name=\"f\"; filename=\"a.txt\"\r\nContent-Type: text/plain\r\n\r\n" + strings.Repeat("y", n) + "\r\n"
+	}
+	field := func(n int) string {
+		return "--XX\r\nContent-Disposition: form-data; name=\"t\"\r\n\r\n" + strings.Repeat("z", n) + "\r\n"
+	}
+	multipart := func(n int) string { return upload(file(n) + "--XX--\r\n") }
+	pad := strings.Repeat("z", 1000)
 	tests := []struct {
 		name    string
 		request string
@@ -363,6 +370,16 @@ func TestBodiesAreCappedAndAnEngineErrorIsNotAnEmpty200(t *testing.T) {
 		{"a chunked form over the limit, which has no length to check up front", chunked(form(5000)), 413, false},
 		{"an upload may exceed the form limit", multipart(20000), 200, true},
 		{"an upload over the body limit", multipart(70000), 413, false},
+		// The fields of a multipart body that are not files are a form, and are held to its limit.
+		{"a multipart field over the form limit", upload(field(5000) + "--XX--\r\n"), 413, false},
+		{"multipart fields together over the form limit", upload(field(1500) + field(1500) + field(1500) + "--XX--\r\n"), 413, false},
+		{"multipart fields under the form limit beside a large file", upload(field(1500) + file(20000) + field(1500) + "--XX--\r\n"), 200, true},
+		{"a multipart body over the form limit that cannot be read as parts", upload(field(1000) + file(20000)), 413, false},
+		// Everything but the content of the files is held to the form limit: part headers, names and file names too.
+		{"a file whose part headers are over the form limit", upload("--XX\r\nContent-Disposition: form-data; name=\"f\"; filename=\"a.txt\"\r\nX-A: " + pad + "\r\nX-B: " + pad + "\r\nX-C: " + pad + "\r\nX-D: " + pad + "\r\nX-E: " + pad + "\r\n\r\ny\r\n--XX--\r\n"), 413, false},
+		{"files whose names are over the form limit together", upload(strings.Repeat("--XX\r\nContent-Disposition: form-data; name=\""+strings.Repeat("n", 1000)+"\"; filename=\""+strings.Repeat("z", 1000)+".txt\"\r\n\r\ny\r\n", 3) + "--XX--\r\n"), 413, false},
+		// PHP reads a part that only filename* names as a file as a field, so it is refused rather than left uncounted.
+		{"a field named as a file only by filename*, over the form limit", upload("--XX\r\nContent-Disposition: form-data; name=\"t\"; filename*=utf-8''a.txt\r\n\r\n" + strings.Repeat("z", 20000) + "\r\n--XX--\r\n"), 400, false},
 		{"a malformed chunk", "POST /submit HTTP/1.1\r\n" + preamble + "Content-Type: application/x-www-form-urlencoded\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\nZZ\r\nabc\r\n", 400, false},
 	}
 	for _, tt := range tests {
