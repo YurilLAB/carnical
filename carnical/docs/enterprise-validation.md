@@ -56,6 +56,12 @@ Normal and race runs of `./proxy ./cmd/carnical` pass, with final focused normal
 
 These quotas apply to one process, use IP identity, and reset on restart. They do not provide distributed or authenticated-principal rate accounting. Capacity exhaustion is an explicit refusal, trading admission availability for bounded enforcement.
 
+Superseded on 2026-10-16: the shared event ring let clients within their limits fill it and refuse
+everyone with 503. Each rate rule now keeps its own per-client window, a full table makes room by
+dropping the client admitted least recently instead of refusing, and a refusal's `Retry-After` is
+the exact wait, not 60. See [rate rules](proxy-reference.md#rate-rules) and
+[ADR-0083](../../docs/adr/0083-carnical-rate-rules-and-protection-strengths.md).
+
 ## URL query protection (2026-10-05)
 
 Five new live reproductions returned 200 before the change for malformed escapes, raw semicolons, NUL, invalid UTF-8 and prototype parameter names. They now return 400 with no origin request. The compiled executable suite has 56 passing cases, checking ordinary encoded values/arrays, unchanged origin request targets, monitored duplicates/semicolons, configurable duplicate blocking, query byte/count caps and continued JSON body enforcement after a monitored query cap.
