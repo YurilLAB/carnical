@@ -367,7 +367,7 @@ proxy answers with it); a finding in monitor is logged and the request goes on.
 | 5003011 | authentication rate limited | AuthRate | 429 | high | Too many requests to an authentication endpoint from one address (credential stuffing, password guessing). |
 | 5003020 | mass assignment suspected | MassAssign | 403 | medium | A write body sets a privileged property (role, admin, price and the like). A warning only: nothing says clients never send it. |
 | 5003021 | mass assignment | MassAssign | 403 | high | A write body sets a privileged property that the description or the learned model says this API's clients never send, or could not be read to look for one where they list what clients send. |
-| 5003990 | internal error | - | - | high | The guard failed on this request and did not inspect it. Never blocks. |
+| 5003990 | internal error | - | 503 | high | The guard failed on this request and did not inspect it. Refused in enforce, reported in monitor. |
 
 **Level 1: the API's own description**
 
@@ -413,7 +413,7 @@ therefore cost least, and a refusal of a privileged property is reported before 
 
 ## 8. Failures and limits of the guard itself
 
-* A failure inside the guard (a panic, which the tests and the fuzzing did not find) is reported as `5003990`, which does not block, and counted in `Stats.Panics`; the request goes on to the rule set. `Observe` never blocks and never panics.
+* A failure inside the guard (a panic, which the tests and the fuzzing did not find) is reported as `5003990` and counted in `Stats.Panics`. With `Mode` enforce the request is refused with 503, since the guard cannot vouch for a request it did not check; in monitor the request goes on to the rule set. `Observe` never blocks and never panics.
 * The guard is safe for many requests at once. The rate table is split into 64 locks; the learned routes have a lock each, and the table of routes is locked for writing only when a route appears or goes; what a request is checked against is an immutable view swapped in whole. Tests run with `-race`.
 * Nothing from a request is put in a verdict, a log line or an error. A test sends canary strings in every place a request has and looks for them in every message.
 * The rate table's size is fixed when the Guard is made; `SetConfig` changes everything else on the next request.

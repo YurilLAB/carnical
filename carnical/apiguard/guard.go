@@ -182,19 +182,24 @@ func (in *inspection) emitF(f finding, own Mode) bool {
 	return in.report(f, m)
 }
 
-// Inspect looks at one request. It never panics: a failure inside the guard is reported as a verdict that does not block, so a bug
-// here is a missing check, which the log shows, and not a refused customer.
+// Inspect looks at one request. It never panics: a failure inside the guard is the verdict IDInternalError, under the guard's own
+// mode. In enforce it refuses the request (503), as the guard cannot say the request is one it would let through; in monitor it
+// is reported and the request goes on, as any other finding would.
 func (g *Guard) Inspect(r *inspect.Request) (res inspect.Result) {
+	mode := ModeMonitor
 	defer func() {
 		if p := recover(); p != nil {
 			g.st.panics.Add(1)
-			res = inspect.Result{Verdicts: []inspect.Verdict{finding{id: IDInternalError, detail: "the request was not checked"}.verdict(ModeMonitor)}}
+			in := &inspection{g: g}
+			in.report(finding{id: IDInternalError, detail: "the request was not checked"}, mode)
+			res = inspect.Result{Verdicts: in.verdicts}
 		}
 	}()
 	if r == nil {
 		return inspect.Result{}
 	}
 	cfg := g.config()
+	mode = cfg.Mode
 	if cfg.Mode < ModeMonitor {
 		return inspect.Result{}
 	}
@@ -679,7 +684,7 @@ type Stats struct {
 	APIRequests uint64 // of those, the ones taken to be API requests
 	Refused     uint64 // findings that blocked
 	Flagged     uint64 // findings that were only reported
-	Panics      uint64 // failures inside the guard, which fail open
+	Panics      uint64 // failures inside the guard: refused under enforce, reported under monitor (5003990)
 	Observed    uint64 // requests learned from
 	ByVerdict   map[int]uint64
 

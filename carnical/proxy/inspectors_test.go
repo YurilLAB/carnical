@@ -7,9 +7,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/YurilLAB/coraza/carnical/apiguard"
 	"github.com/YurilLAB/coraza/carnical/inspect"
+	"github.com/YurilLAB/coraza/carnical/vpatch"
 )
 
 // fakeInspector runs a function, so that each test says what its inspector does.
@@ -136,27 +140,78 @@ func TestInspectorsRunOnARequestWithNoBody(t *testing.T) {
 }
 
 func TestAnInspectorThatPanicsRefusesTheRequestAndNotTheProxy(t *testing.T) {
+	// armed makes the clocks below panic, so that the guard and the engine fail inside Inspect, where a bug of theirs would.
+	var armed atomic.Bool
+	clock := func() time.Time {
+		if armed.Load() {
+			panic("SECRET_INSPECTOR_CREDENTIAL")
+		}
+		return time.Now()
+	}
+	guard := func(mode apiguard.Mode) inspect.Inspector {
+		g, err := apiguard.New(apiguard.Config{Mode: mode, Clock: clock})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return g
+	}
+	patches := func(mode vpatch.Mode) inspect.Inspector {
+		e := vpatch.New(vpatch.Options{Mode: mode, Now: clock})
+		rep := e.Load([]vpatch.Signature{{ID: "NEVER", Category: "other", Severity: "high", Description: "a path never asked for",
+			Condition: vpatch.Condition{Operator: "contains", Pattern: "/never", Targets: []string{"path"}}}})
+		if rep.LoadedTotal != 1 {
+			t.Fatalf("the signature was not loaded: %+v", rep)
+		}
+		return e
+	}
 	boom := fakeInspector{"boom", func(r *inspect.Request) inspect.Result {
-		if r.Path == "/boom" {
+		if armed.Load() {
 			panic(r.RawQuery)
 		}
 		return inspect.Result{}
 	}}
-	var seen matches
-	s := start(t, func(c *Config) { ruleSetOff(c); c.Inspectors = []inspect.Inspector{boom}; c.OnMatch = seen.record })
-	if status, _ := s.raw(t, get("/boom?token=SECRET_INSPECTOR_CREDENTIAL")); status != http.StatusServiceUnavailable {
-		t.Fatalf("a panicking inspector: %d, want 503", status)
+	tests := []struct {
+		name       string
+		inspector  inspect.Inspector
+		want       int
+		id         int
+		disruptive bool
+	}{
+		{"an inspector with no recovery of its own", boom, http.StatusServiceUnavailable, idInspectorFailed, true},
+		{"the API guard in enforce", guard(apiguard.ModeEnforce), http.StatusServiceUnavailable, apiguard.IDInternalError, true},
+		{"the API guard in monitor", guard(apiguard.ModeMonitor), http.StatusOK, apiguard.IDInternalError, false},
+		{"the virtual patches in block", patches(vpatch.ModeBlock), http.StatusServiceUnavailable, vpatch.IDInternalError, true},
+		{"the virtual patches in monitor", patches(vpatch.ModeMonitor), http.StatusOK, vpatch.IDInternalError, false},
 	}
-	if got := seen.all(); len(got) != 1 || got[0].RuleID != idInspectorFailed || got[0].RuleID == idAPIRateLimited || !strings.Contains(got[0].Message, "inspector failed") {
-		t.Fatalf("what was recorded: %+v", got)
-	}
-	for _, m := range seen.all() {
-		if strings.Contains(m.Message+m.ExpandedMessage, "SECRET_INSPECTOR_CREDENTIAL") {
-			t.Fatal("default failure log exposes panic data")
-		}
-	}
-	if status, _ := s.raw(t, get("/fine")); status != 200 {
-		t.Fatalf("the proxy did not carry on: %d", status)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var seen matches
+			s := start(t, func(c *Config) {
+				ruleSetOff(c)
+				c.Inspectors = []inspect.Inspector{tt.inspector}
+				c.OnMatch = seen.record
+			})
+			armed.Store(true)
+			status, _ := s.raw(t, get("/api/boom?token=SECRET_INSPECTOR_CREDENTIAL"))
+			armed.Store(false)
+			if status != tt.want {
+				t.Fatalf("status %d, want %d", status, tt.want)
+			}
+			if reached := len(s.up.requests()) > 0; reached != (tt.want == http.StatusOK) {
+				t.Fatalf("reached the application: %v", reached)
+			}
+			if got := seen.all(); len(got) != 1 || got[0].RuleID != tt.id || got[0].Disruptive != tt.disruptive {
+				t.Fatalf("what was recorded: %+v", got)
+			}
+			for _, m := range seen.all() {
+				if strings.Contains(m.Message+m.ExpandedMessage, "SECRET_INSPECTOR_CREDENTIAL") {
+					t.Fatal("default failure log exposes panic data")
+				}
+			}
+			if status, _ := s.raw(t, get("/api/fine")); status != 200 {
+				t.Fatalf("the proxy did not carry on: %d", status)
+			}
+		})
 	}
 }
 

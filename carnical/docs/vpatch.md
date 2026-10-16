@@ -95,6 +95,10 @@ reads them, the last of each, and the body is offered raw as well.
 At most 1,024 cookies and 1,024 header values are read, the Host first. A request with more reports
 rule 5100003, which `BlockOnWorkLimit` also makes refuse requests in block mode.
 
+A failure inside the engine on one request (a panic, which the tests and the fuzzing did not find) is
+reported as rule 5100004 and counted in `Stats().Panics`. In block mode the request is refused with
+503, since it was not checked; in monitor mode it goes on, as any other finding would.
+
 Signatures written for PCRE are translated so that RE2 matches at least what PCRE would: `\s`
 includes the vertical tab, and an expression that counts characters that may be above 0x7F
 (`[^\n]{256,}`, `..`) is also run on the value's bytes, which is what PCRE counts, and matches if

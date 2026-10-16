@@ -40,6 +40,9 @@ const (
 	// IDInputLimit is the verdict for a request with more cookies or header values than the engine reads, so that not every
 	// value was checked.
 	IDInputLimit = 5100003
+	// IDInternalError is the verdict for a request the engine failed on (a panic) and did not check. In block mode it refuses
+	// the request with 503, as an unchecked request is not let through; in monitor mode it is reported and the request goes on.
+	IDInternalError = 5100004
 
 	idBase  = 5100000
 	idFirst = idBase + 1000
@@ -130,7 +133,7 @@ type Engine struct {
 	cache     []atomic.Uint64
 	cacheMask uint64
 
-	requests, evaluated, hitsN, blocked, limited, truncated atomic.Uint64
+	requests, evaluated, hitsN, blocked, limited, truncated, panics atomic.Uint64
 }
 
 type rxResult struct {
@@ -229,13 +232,14 @@ type Stats struct {
 	// Requests is how many requests were matched, SignaturesEvaluated how many signatures were fully evaluated (the candidates
 	// the index nominated plus the unindexed ones), Matches how many signature matches there were, Blocked how many requests
 	// Inspect told the proxy to refuse, WorkLimited how many ran out of work allowance and Truncated how many had a value or
-	// a count cut to the engine's bounds.
+	// a count cut to the engine's bounds. Panics is how many requests the engine failed on (see IDInternalError).
 	Requests            uint64
 	SignaturesEvaluated uint64
 	Matches             uint64
 	Blocked             uint64
 	WorkLimited         uint64
 	Truncated           uint64
+	Panics              uint64
 	LoadedAt            time.Time
 }
 
@@ -782,7 +786,7 @@ func (e *Engine) Stats() Stats {
 	st := Stats{
 		Signatures: len(s.sigs), ByTier: map[string]int{}, Unindexed: len(s.unindexed), Literals: s.literals, LoadedAt: s.loadedAt,
 		Requests: e.requests.Load(), SignaturesEvaluated: e.evaluated.Load(), Matches: e.hitsN.Load(), Blocked: e.blocked.Load(),
-		WorkLimited: e.limited.Load(), Truncated: e.truncated.Load(),
+		WorkLimited: e.limited.Load(), Truncated: e.truncated.Load(), Panics: e.panics.Load(),
 	}
 	for t, n := range s.byTier {
 		st.ByTier[t] = n
@@ -793,10 +797,23 @@ func (e *Engine) Stats() Stats {
 
 // Inspect implements inspect.Inspector: it matches the request and turns each match into a verdict. Whether a verdict blocks
 // follows the signature's action, its tier and the engine's mode; the message names the signature, its CVEs and what it
-// recognises, and never anything from the request.
-func (e *Engine) Inspect(r *inspect.Request) inspect.Result {
+// recognises, and never anything from the request. It never panics: a failure inside the engine is the verdict
+// IDInternalError, which refuses the request in block mode and is only reported in monitor mode.
+func (e *Engine) Inspect(r *inspect.Request) (res inspect.Result) {
+	defer func() {
+		if p := recover(); p != nil {
+			e.panics.Add(1)
+			block := e.opts.Mode == ModeBlock
+			v := inspect.Verdict{ID: IDInternalError, Severity: "high", Block: block,
+				Message: "virtual patch: the engine failed on the request and did not check it"}
+			if block {
+				v.Status = 503
+				e.blocked.Add(1)
+			}
+			res = inspect.Result{Verdicts: []inspect.Verdict{v}}
+		}
+	}()
 	m := e.run(r, false)
-	var res inspect.Result
 	if len(m.hits) == 0 && !m.limited && m.overflow == 0 {
 		return res
 	}

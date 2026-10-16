@@ -79,7 +79,7 @@ var verdictTable = []VerdictInfo{
 	{IDAuthRateLimited, "authentication rate limited", 0, "AuthRate", 429, "high", "Too many requests to an authentication endpoint from one address (credential stuffing, password guessing)."},
 	{IDMassAssignFlagged, "mass assignment suspected", 0, "MassAssign", 403, "medium", "A write body sets a privileged property (role, admin, price and the like). A warning only: nothing says clients never send it."},
 	{IDMassAssignRefused, "mass assignment", 0, "MassAssign", 403, "high", "A write body sets a privileged property that the description or the learned model says this API's clients never send, or could not be read to look for one where they list what clients send."},
-	{IDInternalError, "internal error", 0, "-", 0, "high", "The guard failed on this request and did not inspect it. Never blocks."},
+	{IDInternalError, "internal error", 0, "-", 503, "high", "The guard failed on this request and did not inspect it. Refused in enforce, reported in monitor."},
 
 	{IDSpecUnknownRoute, "unknown route", 1, "Spec", 404, "medium", "No route in the description matches the path."},
 	{IDSpecMethodNotAllowed, "method not allowed on route", 1, "Spec", 405, "medium", "The path is in the description but not with this method."},
