@@ -21,8 +21,18 @@ import (
 
 const maxRangesBytes = 256 << 20
 
-// maxLimitRaise is the highest -ddos-max-raise: beyond it the limit of an address is no limit.
-const maxLimitRaise = 100
+// The ranges of the flood flags. The highest values are far beyond any one site's need, so that a value above them is a
+// typo, and low enough that every limit the shield derives from them, multiplied by the largest raise, is a finite number.
+const (
+	minFloodRate    = 0.01       // -ddos-rate, -ddos-known-rate, -ddos-known-factor and -ddos-baseline-rate
+	maxFloodRate    = 1_000_000  // -ddos-rate and -ddos-known-rate, requests a second
+	maxFloodBurst   = 10_000_000 // -ddos-burst, requests
+	minFloodConns   = 16         // -ddos-max-conns, connections
+	maxFloodConns   = 10_000_000
+	maxKnownFactor  = 1000       // -ddos-known-factor
+	maxBaselineRate = 10_000_000 // -ddos-baseline-rate, requests a second to the whole site
+	maxLimitRaise   = 100        // -ddos-max-raise: beyond it the limit of an address is no limit
+)
 
 // The words -ddos takes: a mode, a strength, or one of each.
 var (
@@ -49,14 +59,14 @@ type shieldFlags struct {
 func declareShieldFlags(fs *flag.FlagSet) *shieldFlags {
 	f := &shieldFlags{}
 	fs.StringVar(&f.mode, "ddos", "on", "flood protection: on, monitor or off, optionally with a strength relaxed, normal or strict (as in -ddos strict or -ddos monitor,strict); -ddos-* flags you set override the strength")
-	fs.Float64Var(&f.rate, "ddos-rate", 0, "the least requests a second one address may make at all times (0 = the strength's: 20 strict, 50 normal, 100 relaxed); raised for an address that is answered well at a higher pace, as one with many visitors behind it is")
-	fs.Float64Var(&f.burst, "ddos-burst", 0, "requests one address may make at once (0 = the strength's: 80 strict, 200 normal, 400 relaxed)")
-	fs.IntVar(&f.maxConns, "ddos-max-conns", 0, "the least connections held open at once (0 = 20000), raised with the site's average; a fifth are kept for clients that used the site before")
-	fs.Float64Var(&f.knownFactor, "ddos-known-factor", 0, "during an attack, returning visitors who earned standing share this many times the site's usual requests a second before they are treated like strangers (0 = 2)")
-	fs.Float64Var(&f.knownRate, "ddos-known-rate", 0, "the least requests a second that returning visitors with standing share during an attack (0 = 50)")
+	fs.Float64Var(&f.rate, "ddos-rate", 0, fmt.Sprintf("the least requests a second one address may make at all times, %v to %d (0 = the strength's: 20 strict, 50 normal, 100 relaxed); raised for an address that is answered well at a higher pace, as one with many visitors behind it is", minFloodRate, maxFloodRate))
+	fs.Float64Var(&f.burst, "ddos-burst", 0, fmt.Sprintf("requests one address may make at once, 1 to %d (0 = the strength's: 80 strict, 200 normal, 400 relaxed, and at least a tenth of -ddos-rate)", maxFloodBurst))
+	fs.IntVar(&f.maxConns, "ddos-max-conns", 0, fmt.Sprintf("the least connections held open at once, %d to %d (0 = 20000), raised with the site's average; a fifth are kept for clients that used the site before", minFloodConns, maxFloodConns))
+	fs.Float64Var(&f.knownFactor, "ddos-known-factor", 0, fmt.Sprintf("during an attack, returning visitors who earned standing share this many times the site's usual requests a second before they are treated like strangers, %v to %d (0 = 2)", minFloodRate, maxKnownFactor))
+	fs.Float64Var(&f.knownRate, "ddos-known-rate", 0, fmt.Sprintf("the least requests a second that returning visitors with standing share during an attack, %v to %d (0 = 50)", minFloodRate, maxFloodRate))
 	fs.Float64Var(&f.maxRaise, "ddos-max-raise", 0, fmt.Sprintf("the most times -ddos-rate an address, or a network, may earn by its own well-answered requests, 1 to %d (default: the strength's, 10 strict, 20 normal, 50 relaxed); 1 keeps every address at -ddos-rate", maxLimitRaise))
 	fs.BoolVar(&f.challenge, "ddos-challenge", true, "during an attack, ask unknown browsers to pass a short JavaScript check instead of refusing them")
-	fs.Float64Var(&f.baseline, "ddos-baseline-rate", 0, "the site's usual requests a second, to start from instead of learning it, so a restart during an attack is not fooled (0 = learn it)")
+	fs.Float64Var(&f.baseline, "ddos-baseline-rate", 0, fmt.Sprintf("the site's usual requests a second, %v to %d, to start from instead of learning it, so a restart during an attack is not fooled (0 = learn it)", minFloodRate, maxBaselineRate))
 	fs.StringVar(&f.ranges, "ddos-ranges", "", "address-range table (ip2asn TSV) naming the countries and networks an attack comes from, in the attack logs")
 	return f
 }
@@ -168,6 +178,10 @@ func configureShield(log *slog.Logger, f shieldFlags, set map[string]bool, trust
 	if err != nil {
 		return nil, err
 	}
+	// A value out of range is refused with protection off too, so that -check does not pass what switching it on fails.
+	if err := checkShieldRanges(f, set); err != nil {
+		return nil, err
+	}
 	if mode == "off" {
 		if f.ranges != "" {
 			return nil, errors.New("-ddos-ranges needs -ddos on or monitor")
@@ -212,25 +226,8 @@ func shieldSettings(f shieldFlags, set map[string]bool, trusted []netip.Prefix) 
 	if mode == "off" {
 		return shield.Config{}, errors.New("-ddos off has no flood protection settings")
 	}
-	given := func(name string, v float64) bool { return set[name] && v != 0 }
-	for _, c := range []struct {
-		name      string
-		value     float64
-		lo, hi    float64
-		zeroMeans string
-		unit      string
-	}{
-		// A raise of 0 would be no raise at all, not the strength's, so it is refused.
-		{"ddos-max-raise", f.maxRaise, 1, maxLimitRaise, "", ""},
-	} {
-		// The comparisons are written so that a number that is not one fails them.
-		if set[c.name] && !(c.value >= c.lo && c.value <= c.hi) && (c.value != 0 || c.zeroMeans == "") {
-			msg := fmt.Sprintf("-%s must be a number from %s to %s%s", c.name, number(c.lo), number(c.hi), c.unit)
-			if c.zeroMeans != "" {
-				msg += " (0 = " + c.zeroMeans + ")"
-			}
-			return shield.Config{}, errors.New(msg)
-		}
+	if err := checkShieldRanges(f, set); err != nil {
+		return shield.Config{}, err
 	}
 	cfg, err := shield.Preset(strength)
 	if err != nil {
@@ -243,16 +240,37 @@ func shieldSettings(f shieldFlags, set map[string]bool, trusted []netip.Prefix) 
 		}
 		return v
 	}
+	given := func(name string, v float64) bool { return set[name] && v != 0 }
 	cfg.MonitorOnly, cfg.Trusted = mode == "monitor", trusted
+	burstChanged := false
 	if given("ddos-rate", f.rate) {
 		cfg.RequestRate = f.rate
 		cfg.SubnetRate = math.Max(or(cfg.SubnetRate, def.SubnetRate), 10*f.rate)
+		// A burst must be at least a tenth of the rate: a rate given alone brings its own.
+		if !given("ddos-burst", f.burst) && f.rate/10 > or(cfg.RequestBurst, def.RequestBurst) {
+			cfg.RequestBurst, burstChanged = f.rate/10, true
+		}
 	}
 	if given("ddos-burst", f.burst) {
-		cfg.RequestBurst = f.burst
+		if rate := or(cfg.RequestRate, def.RequestRate); f.burst < rate/10 {
+			of := fmt.Sprintf("the request rate of -ddos %s (%s)", strength, number(rate))
+			if given("ddos-rate", f.rate) {
+				of = fmt.Sprintf("-ddos-rate (%s)", number(rate))
+			}
+			return shield.Config{}, fmt.Errorf("-ddos-burst (%s) must be at least a tenth of %s: use -ddos-burst %s or more", number(f.burst), of, number(math.Ceil(rate/10)))
+		}
+		cfg.RequestBurst, burstChanged = f.burst, true
+	}
+	if burstChanged {
+		// Every request also takes from its network's bucket, whose burst would otherwise cap the address's.
+		cfg.SubnetBurst = math.Max(or(cfg.SubnetBurst, def.SubnetBurst), 10*cfg.RequestBurst)
 	}
 	if given("ddos-max-conns", float64(f.maxConns)) {
 		cfg.MaxConns = f.maxConns
+		// The floor may not be above the most it can grow to, so a floor above the strength's ceiling is the ceiling.
+		if f.maxConns > max(cfg.MaxConnsCeiling, def.MaxConnsCeiling) {
+			cfg.MaxConnsCeiling = f.maxConns
+		}
 	}
 	if given("ddos-known-factor", f.knownFactor) {
 		cfg.KnownFactor = f.knownFactor
@@ -273,6 +291,37 @@ func shieldSettings(f shieldFlags, set map[string]bool, trusted []netip.Prefix) 
 		return shield.Config{}, fmt.Errorf("-ddos %s: %w", strength, err)
 	}
 	return cfg, nil
+}
+
+// checkShieldRanges refuses a -ddos-* flag in set whose value is outside its range, naming the flag and the range. A
+// rate, burst, number of connections or known-client budget of 0 stands for the strength's value.
+func checkShieldRanges(f shieldFlags, set map[string]bool) error {
+	for _, c := range []struct {
+		name      string
+		value     float64
+		lo, hi    float64
+		zeroMeans string
+		unit      string
+	}{
+		{"ddos-rate", f.rate, minFloodRate, maxFloodRate, "the strength's value", " requests a second"},
+		{"ddos-burst", f.burst, 1, maxFloodBurst, "the strength's value", " requests"},
+		{"ddos-max-conns", float64(f.maxConns), minFloodConns, maxFloodConns, "the strength's value", " connections"},
+		{"ddos-known-factor", f.knownFactor, minFloodRate, maxKnownFactor, "the strength's value", ""},
+		{"ddos-known-rate", f.knownRate, minFloodRate, maxFloodRate, "the strength's value", " requests a second"},
+		{"ddos-baseline-rate", f.baseline, minFloodRate, maxBaselineRate, "learn it", " requests a second"},
+		// A raise of 0 would be no raise at all, not the strength's, so it is refused.
+		{"ddos-max-raise", f.maxRaise, 1, maxLimitRaise, "", ""},
+	} {
+		// The comparisons are written so that a number that is not one fails them.
+		if set[c.name] && !(c.value >= c.lo && c.value <= c.hi) && (c.value != 0 || c.zeroMeans == "") {
+			msg := fmt.Sprintf("-%s must be a number from %s to %s%s", c.name, number(c.lo), number(c.hi), c.unit)
+			if c.zeroMeans != "" {
+				msg += " (0 = " + c.zeroMeans + ")"
+			}
+			return errors.New(msg)
+		}
+	}
+	return nil
 }
 
 // number writes a flag's value as it would be typed.

@@ -275,7 +275,9 @@ A setting comes from, first to last:
 
 A flag that is not given leaves the strength's value, and so does a 0 for `-ddos-rate`,
 `-ddos-burst`, `-ddos-max-conns`, `-ddos-known-factor` and `-ddos-known-rate`. A rate given
-raises the network's rate to at least ten times it.
+alone brings a burst of at least a tenth of it and a network rate of at least ten times it, and a
+burst raises its network's to at least ten times it, so `-ddos-rate 5000` is all a busy API needs.
+A `-ddos-max-conns` above 250,000 raises the most the connection limit can grow to with it.
 `-ddos` on the command line replaces the site file's as a whole: `-ddos monitor` over a site's
 `"ddos": "strict"` is `monitor,normal`. The start-up log (and `-check`) says which applies:
 `"ddos"` is the mode, `"ddos_strength"` the strength and `"ddos_overrides"` the flags that change
@@ -314,13 +316,16 @@ previous defects. Those results measure their recorded workload, not production 
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `-ddos` | `on` | `on`, `monitor` or `off`, with a strength `relaxed`, `normal` or `strict` (`-ddos strict`, `-ddos monitor,strict`). |
-| `-ddos-rate`, `-ddos-burst` | The strength's | Per-address request floors, with bounded automatic growth. |
+| `-ddos-rate`, `-ddos-burst` | The strength's | Per-address request floors, with bounded automatic growth: 0.01 to 1,000,000 a second, and 1 to 10,000,000 requests at least a tenth of the rate. |
 | `-ddos-max-raise` | The strength's | The most times its configured limit an address, or a network, may earn by its own well-answered requests (1 to 100). 1 keeps the limits fixed. |
-| `-ddos-max-conns` | 20000 | Global connection floor, with bounded automatic growth and reserved capacity. |
-| `-ddos-known-factor`, `-ddos-known-rate` | 2, 50 | During an attack, the budget returning visitors with standing share: this many times the usual request rate, and at least this many a second. Raise them on a site whose regulars come in crowds. |
+| `-ddos-max-conns` | 20000 | Global connection floor, with bounded automatic growth and reserved capacity (16 to 10,000,000, still at most 80% of the process's file-descriptor limit). |
+| `-ddos-known-factor`, `-ddos-known-rate` | 2, 50 | During an attack, the budget returning visitors with standing share: this many times the usual request rate (0.01 to 1,000), and at least this many a second (0.01 to 1,000,000). Raise them on a site whose regulars come in crowds. |
 | `-ddos-challenge` | true | Enable browser challenges during an attack. |
-| `-ddos-baseline-rate` | 0 | Learn the baseline; a positive value seeds the site's usual requests/second. |
+| `-ddos-baseline-rate` | 0 | Learn the baseline; a value from 0.01 to 10,000,000 seeds the site's usual requests/second. |
 | `-ddos-ranges` | None | ip2asn-style country/network labels for attack logs. |
+
+A value outside its range is refused at start-up with the flag's name and range, with `-ddos off`
+too; a negative one is never taken for the default.
 
 Single-address load tests need `-ddos off` or a suitable request floor to avoid measuring their own
 quota exhaustion. Flood tests need realistic client populations.

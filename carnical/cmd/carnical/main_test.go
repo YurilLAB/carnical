@@ -1042,12 +1042,14 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 		{name: "live local rules switched off", mode: "block", extraArgs: []string{"-mode", "block", "-local-rules-off", "5006012, 5006013"}, method: "GET", target: "/actuator/env", status: 200},
 		{name: "live local rule off keeps the others", mode: "block", extraArgs: []string{"-mode", "block", "-local-rules-off", "5006012"}, method: "GET", target: "/wp-admin/install.php", status: 403, logRule: `"rule":5006013`},
 		{name: "known visitor budget flags", mode: "block", extraArgs: []string{"-ddos", "on", "-ddos-known-factor", "4", "-ddos-known-rate", "100"}, method: "GET", target: "/page", status: 200},
-		{name: "negative known visitor budget", mode: "block", extraArgs: []string{"-ddos", "on", "-ddos-known-rate", "-1"}, fails: true},
-		{name: "negative known visitor factor", mode: "block", extraArgs: []string{"-ddos", "on", "-ddos-known-factor", "-1"}, fails: true},
+		{name: "negative known visitor budget", mode: "block", extraArgs: []string{"-ddos", "on", "-ddos-known-rate", "-1"}, fails: true, says: "-ddos-known-rate must be a number from 0.01 to 1000000"},
+		{name: "negative known visitor factor", mode: "block", extraArgs: []string{"-ddos", "on", "-ddos-known-factor", "-1"}, fails: true, says: "-ddos-known-factor must be a number from 0.01 to 1000"},
 		{name: "site config names a protection strength", site: `{"version":1,"flags":{"upstream":"$ORIGIN","origin-allow":"127.0.0.1/32","ddos":"strict","ddos-rate":60}}`, extraArgs: []string{"-check"}, preflight: true,
 			says: `"ddos":"on","ddos_strength":"strict","ddos_overrides":["-ddos-rate"]`},
 		{name: "flood flags with protection off are reported", extraArgs: []string{"-check", "-ddos", "off", "-ddos-rate", "10"}, preflight: true,
 			says: `"msg":"flood protection flags have no effect with -ddos off","flags":["-ddos-rate"]`},
+		{name: "a flood flag out of range is refused with protection off too", extraArgs: []string{"-check", "-ddos", "off", "-ddos-rate", "-5"}, fails: true,
+			says: "-ddos-rate must be a number from 0.01 to 1000000 requests a second"},
 		{name: "address limits kept fixed", mode: "block", extraArgs: []string{"-ddos", "on", "-ddos-max-raise", "1"}, method: "GET", target: "/page", status: 200},
 		{name: "address limit raise below one", mode: "block", extraArgs: []string{"-ddos", "on", "-ddos-max-raise", "0.5"}, fails: true},
 		{name: "address limit raise of zero", mode: "block", extraArgs: []string{"-ddos", "on", "-ddos-max-raise", "0"}, fails: true},
@@ -2195,6 +2197,12 @@ func TestFloodFlagsBecomeShieldSettings(t *testing.T) {
 		}
 		return msg
 	}
+	rateErr := rangeErr("ddos-rate", "0.01", "1000000", " requests a second", "the strength's value")
+	burstErr := rangeErr("ddos-burst", "1", "10000000", " requests", "the strength's value")
+	connsErr := rangeErr("ddos-max-conns", "16", "10000000", " connections", "the strength's value")
+	knownFactorErr := rangeErr("ddos-known-factor", "0.01", "1000", "", "the strength's value")
+	knownRateErr := rangeErr("ddos-known-rate", "0.01", "1000000", " requests a second", "the strength's value")
+	baselineErr := rangeErr("ddos-baseline-rate", "0.01", "10000000", " requests a second", "learn it")
 	raiseErr := rangeErr("ddos-max-raise", "1", "100", "", "")
 	for _, tt := range []struct {
 		name string
@@ -2222,6 +2230,17 @@ func TestFloodFlagsBecomeShieldSettings(t *testing.T) {
 		{name: "the command line's -ddos replaces the site's", args: []string{"-ddos", "monitor"}, site: `{"ddos":"strict"}`, want: today(monitor)},
 		{name: "zero is the strength's value", args: []string{"-ddos", "strict", "-ddos-rate", "0", "-ddos-burst", "0", "-ddos-max-conns", "0",
 			"-ddos-known-factor", "0", "-ddos-known-rate", "0", "-ddos-baseline-rate", "0"}, want: preset("strict", nil)},
+		{name: "a rate given alone brings its burst", args: []string{"-ddos-rate", "5000"},
+			want: today(func(c *shield.Config) {
+				c.RequestRate, c.SubnetRate, c.RequestBurst, c.SubnetBurst = 5000, 50000, 500, 5000
+			})},
+		{name: "a burst raises its network's", args: []string{"-ddos-burst", "5000"},
+			want: today(func(c *shield.Config) { c.RequestBurst, c.SubnetBurst = 5000, 50000 })},
+		{name: "a burst below its network's leaves it", args: []string{"-ddos-burst", "100"},
+			want: today(func(c *shield.Config) { c.RequestBurst = 100 })},
+		{name: "connections above the ceiling raise it", args: []string{"-ddos-max-conns", "300000"},
+			want: today(func(c *shield.Config) { c.MaxConns, c.MaxConnsCeiling = 300000, 300000 })},
+		{name: "the fewest connections", args: []string{"-ddos-max-conns", "16"}, want: today(func(c *shield.Config) { c.MaxConns = 16 })},
 		{name: "known visitors' budget", args: []string{"-ddos-known-factor", "4", "-ddos-known-rate", "100"},
 			want: today(func(c *shield.Config) { c.KnownFactor, c.MinKnownRate = 4, 100 })},
 		{name: "fixed limits", args: []string{"-ddos-max-raise", "1"}, want: today(func(c *shield.Config) { c.Detector.MaxScale = 1 })},
@@ -2246,6 +2265,27 @@ func TestFloodFlagsBecomeShieldSettings(t *testing.T) {
 			err: "-ddos needs on, monitor or off, a strength relaxed, normal or strict, or one of each, as in -ddos monitor,strict"},
 		{name: "a word twice", args: []string{"-ddos", "strict,strict"}, err: `-ddos: "strict,strict" names strict twice`},
 		{name: "an empty word", args: []string{"-ddos", "on,"}, err: `-ddos: "on," has an empty part`},
+		{name: "a negative rate", args: []string{"-ddos-rate", "-1"}, err: rateErr},
+		{name: "a rate below the least", args: []string{"-ddos-rate", "0.001"}, err: rateErr},
+		{name: "a rate above the most", args: []string{"-ddos-rate", "1e308"}, err: rateErr},
+		{name: "a rate that is not a number", args: []string{"-ddos-rate", "NaN"}, err: rateErr},
+		{name: "a site's rate that is negative", site: `{"ddos-rate":-1}`, err: rateErr},
+		{name: "a burst below one", args: []string{"-ddos-burst", "0.5"}, err: burstErr},
+		{name: "a burst above the most", args: []string{"-ddos-burst", "10000001"}, err: burstErr},
+		{name: "a burst under a tenth of the rate", args: []string{"-ddos-rate", "5000", "-ddos-burst", "200"},
+			err: "-ddos-burst (200) must be at least a tenth of -ddos-rate (5000): use -ddos-burst 500 or more"},
+		{name: "a burst under a tenth of the strength's rate", args: []string{"-ddos", "relaxed", "-ddos-burst", "5"},
+			err: "-ddos-burst (5) must be at least a tenth of the request rate of -ddos relaxed (100): use -ddos-burst 10 or more"},
+		{name: "too few connections", args: []string{"-ddos-max-conns", "10"}, err: connsErr},
+		{name: "too many connections", args: []string{"-ddos-max-conns", "10000001"}, err: connsErr},
+		{name: "negative connections", args: []string{"-ddos-max-conns", "-1"}, err: connsErr},
+		{name: "a negative known factor", args: []string{"-ddos-known-factor", "-1"}, err: knownFactorErr},
+		{name: "a known factor above the most", args: []string{"-ddos-known-factor", "1000.5"}, err: knownFactorErr},
+		{name: "a negative known rate", args: []string{"-ddos-known-rate", "-3"}, err: knownRateErr},
+		{name: "a known rate above the most", args: []string{"-ddos-known-rate", "1000001"}, err: knownRateErr},
+		{name: "a negative baseline", args: []string{"-ddos-baseline-rate", "-5"}, err: baselineErr},
+		{name: "a baseline above the most", args: []string{"-ddos-baseline-rate", "1e308"}, err: baselineErr},
+		{name: "a baseline that is not a number", args: []string{"-ddos-baseline-rate", "NaN"}, err: baselineErr},
 		{name: "a raise below one", args: []string{"-ddos-max-raise", "0.99"}, err: raiseErr},
 		{name: "a raise of zero, which would be none", args: []string{"-ddos-max-raise", "0"}, err: raiseErr},
 		{name: "a negative raise", args: []string{"-ddos-max-raise", "-3"}, err: raiseErr},
