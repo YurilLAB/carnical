@@ -23,9 +23,11 @@ type UploadPolicy struct {
 }
 
 var (
-	// Every filename= and filename*= in the body, wherever it is: if the proxy and the application disagree about where
-	// one part ends and the next begins, a name that only one of them sees is still found.
-	filenameRe = regexp.MustCompile(`(?i)filename\*?[ \t]*=[ \t]*(?:"([^"\r\n]*)"|([^;\s"]*))`)
+	// Every filename=, filename*= and filename*N= in the body, wherever it is: if the proxy and the application
+	// disagree about where one part ends and the next begins, a name that only one of them sees is still found. The
+	// value is read as most parsers read it, double-quoted up to the next quote or bare up to a ';', a space or a
+	// quote; executablePHPName reads it again as PHP does.
+	filenameRe = regexp.MustCompile(`(?i)filename(\*[0-9]*\*?)?[ \t]*=[ \t]*(?:"([^"\r\n]*)"|([^;\s"]*))`)
 	// Opening tags of server-side scripts. <?xml is not one.
 	scriptRe = regexp.MustCompile(`(?i)<\?php|<\?=|<%@|<%=|<script\s+language\s*=\s*["']?php`)
 	phpExt   = regexp.MustCompile(`^php[0-9]?$`)
@@ -45,19 +47,36 @@ var executableExt = map[string]bool{
 var executableNames = map[string]bool{".htaccess": true, ".htpasswd": true, ".user.ini": true, "web.config": true, "php.ini": true}
 
 // executableName reports whether an uploaded file's name would be run, or would change how the server runs files.
-func executableName(raw string) bool {
+// extended says the name is the value of filename*=, which RFC 5987 encodes as charset'language'percent-encoded. strict
+// says the name is in a part's headers, where one that does not parse is refused.
+func executableName(raw string, extended, strict bool) bool {
 	name := raw
-	// RFC 5987: filename*=UTF-8''%73hell.php
-	if i := strings.Index(name, "''"); i >= 0 && i < 20 {
-		name = name[i+2:]
-	}
-	if dec, err := url.PathUnescape(name); err == nil {
+	if extended {
+		// filename*=UTF-8''%73hell.php. Browsers do not send it in a form, so one that does not parse is refused rather
+		// than guessed at.
+		_, rest, ok := strings.Cut(name, "'")
+		if ok {
+			_, name, ok = strings.Cut(rest, "'")
+		}
+		dec, err := url.PathUnescape(name)
+		if !ok || err != nil {
+			return strict
+		}
+		name = dec
+	} else if dec, err := url.PathUnescape(name); err == nil {
 		name = dec
 	}
 	name = strings.ToLower(name)
 	if strings.IndexFunc(name, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0 {
 		return true // a NUL or control character in a name is only ever there to end it early
 	}
+	// Quotes are dropped, as applications that clean a name drop them: x.php" is saved as x.php.
+	name = strings.Map(func(r rune) rune {
+		if r == '"' || r == '\'' {
+			return -1
+		}
+		return r
+	}, name)
 	name = strings.ReplaceAll(name, "\\", "/")
 	if i := strings.LastIndex(name, "/"); i >= 0 {
 		name = name[i+1:]
@@ -129,21 +148,51 @@ func searchedBoundary(contentType string) string {
 
 // scanUpload looks through a multipart body. It returns what to report, or id 0 if nothing is wrong.
 func scanUpload(body []byte, boundary string, p UploadPolicy) (id int, reason string) {
+	if p.AllowExecutableNames && p.AllowScriptContent {
+		return 0, ""
+	}
+	delim := []byte("--" + boundary)
+	if nulInHeaders(body, delim) {
+		// With script names allowed, the refusal still keeps PHP from finding a file's content where the proxy does not.
+		if p.AllowExecutableNames {
+			return idUploadScript, "an upload's part headers hold a NUL byte, which hides where a file's content starts from some parsers"
+		}
+		return idUploadName, "an upload's part headers hold a NUL byte, which hides a file's name from some parsers"
+	}
 	if !p.AllowExecutableNames {
-		for _, m := range filenameRe.FindAllSubmatch(body, -1) {
-			name := string(m[1])
-			if len(m[1]) == 0 {
-				name = string(m[2])
+		const why = "an uploaded file has the name of a script or a server configuration file"
+		// A name that parsers could read differently is refused only where a parser reads headers: the same text in a
+		// file's content, such as a saved mail or a log, is not a name to anyone.
+		heads := inHeaders{blocks: newHeaderBlocks(body, delim)}
+		for _, m := range filenameRe.FindAllSubmatchIndex(body, -1) {
+			strict := heads.at(m[0])
+			var key []byte // the '*' and what follows it, if there is one
+			if m[2] >= 0 {
+				key = body[m[2]:m[3]]
 			}
-			if executableName(name) {
-				return idUploadName, "an uploaded file has the name of a script or a server configuration file"
+			if bytes.ContainsAny(key, "0123456789") {
+				if strict {
+					return idUploadName, why // RFC 2231 splits a name over filename*0=, filename*1=: no browser sends it
+				}
+				continue
 			}
+			v := 6 // the bare value, or else the double-quoted one
+			if m[4] >= 0 {
+				v = 4
+			}
+			name := body[m[v]:m[v+1]]
+			if executableName(string(name), len(key) > 0, strict) {
+				return idUploadName, why
+			}
+		}
+		if executablePHPName(body, delim) {
+			return idUploadName, why
 		}
 	}
 	if p.AllowScriptContent || boundary == "" {
 		return 0, ""
 	}
-	if scriptInFile(body, []byte("--"+boundary)) {
+	if scriptInFile(body, delim) {
 		return idUploadScript, "an uploaded file contains the opening tag of a server-side script"
 	}
 	return 0, ""
@@ -254,17 +303,89 @@ func phpWord(s string, stop byte) (word, rest string) {
 	return s, ""
 }
 
-// scriptInFile reports a script opening tag in anything a multipart parser could take for a file's content, since the
+// headerBlocks finds, in order, the places a multipart parser could read as a part's header block, since the
 // application's parser may not find the parts where the proxy would. Parsers take a delimiter only at the start of a
 // line and end a part's headers at the first blank line, CRLF or LF, and PHP reads a delimiter line among the headers
-// as one more header line. So a part may start at any delimiter, its content starts after the first blank line that
-// follows, and it is a file if "filename" is in its headers (or, as before, anywhere up to its first CRLF blank line
-// before the next delimiter). The content runs to the next delimiter every parser ends a part at: one after a CRLF and
-// followed by a CRLF or "--". Stretches that overlap are matched as one, so no byte is matched twice.
+// as one more header line. So a block may start at the start of the body or after any delimiter, and runs to the
+// first blank line after it, or on to the first CRLF blank line before the next delimiter (or, as before, LF blank
+// line), as a parser that knows only one of them reads it.
+type headerBlocks struct {
+	body, delim        []byte
+	crlfBlank, lfBlank seeker
+	start              int // where the next block starts, or -1 after the last
+}
+
+func newHeaderBlocks(body, delim []byte) headerBlocks {
+	return headerBlocks{
+		body: body, delim: delim,
+		crlfBlank: seeker{body: body, at: -1, find: func(b []byte) int { return bytes.Index(b, []byte("\n\r\n")) }},
+		lfBlank:   seeker{body: body, at: -1, find: func(b []byte) int { return bytes.Index(b, []byte("\n\n")) }},
+	}
+}
+
+// next returns the next block: it runs from start to head, and the content after it starts at content. A block whose
+// headers do not end runs to the end of the body, with content -1, and is the last.
+func (h *headerBlocks) next() (start, head, content int) {
+	start, h.start = h.start, -1
+	next := len(h.body)
+	if i := bytes.Index(h.body[start:], h.delim); i >= 0 {
+		next = start + i
+		h.start = next + len(h.delim)
+	}
+	blank, sep := h.crlfBlank.next(start), 3
+	if lf := h.lfBlank.next(start); lf < blank {
+		blank, sep = lf, 2
+	}
+	if blank == len(h.body) {
+		h.start = -1 // no header block ends after here
+		return start, len(h.body), -1
+	}
+	head = blank
+	if hd, _, ok := cutHeader(h.body[start:next]); ok {
+		head = max(head, start+len(hd))
+	}
+	return start, head, blank + sep
+}
+
+// inHeaders says, for places asked about in increasing order, whether one is in a header block.
+type inHeaders struct {
+	blocks headerBlocks
+	end    int // where the blocks taken in so far end
+}
+
+func (h *inHeaders) at(i int) bool {
+	for h.blocks.start >= 0 && h.blocks.start <= i {
+		_, head, _ := h.blocks.next()
+		h.end = max(h.end, head)
+	}
+	return i < h.end
+}
+
+// nulInHeaders reports a NUL byte in a header block. PHP reads header lines as C strings, so a NUL ends a line early:
+// the line after it can be joined to the one before, and a line that starts with one ends the headers. Where the
+// proxy and PHP would then read a name or a part differently, the body is refused; no client sends a NUL there.
+func nulInHeaders(body, delim []byte) bool {
+	blocks := newHeaderBlocks(body, delim)
+	checked := 0 // blocks overlap, so no byte is looked at twice
+	for blocks.start >= 0 {
+		start, head, content := blocks.next()
+		if content >= 0 {
+			head = min(head, content) // PHP's headers end at the first blank line, LF or CRLF
+		}
+		if from := max(start, checked); from < head && bytes.IndexByte(body[from:head], 0) >= 0 {
+			return true
+		}
+		checked = max(checked, head)
+	}
+	return false
+}
+
+// scriptInFile reports a script opening tag in anything a multipart parser could take for a file's content: what
+// follows the first blank line after the start of a header block (see headerBlocks) whose headers hold "filename". The
+// content runs to the next delimiter every parser ends a part at: one after a CRLF and followed by a CRLF or "--".
+// Stretches that overlap are matched as one, so no byte is matched twice.
 func scriptInFile(body, delim []byte) bool {
 	line := append([]byte("\r\n"), delim...)
-	crlfBlank := seeker{body: body, at: -1, find: func(b []byte) int { return bytes.Index(b, []byte("\n\r\n")) }}
-	lfBlank := seeker{body: body, at: -1, find: func(b []byte) int { return bytes.Index(b, []byte("\n\n")) }}
 	names := seeker{body: body, at: -1, find: indexFilename}
 	ends := seeker{body: body, at: -1, find: func(b []byte) int {
 		for i := 0; ; i++ {
@@ -278,25 +399,15 @@ func scriptInFile(body, delim []byte) bool {
 			}
 		}
 	}}
+	blocks := newHeaderBlocks(body, delim)
 	from, to := 0, 0 // file content found and not yet matched
-	for start := 0; ; {
-		next := len(body)
-		if i := bytes.Index(body[start:], delim); i >= 0 {
-			next = start + i
-		}
-		blank, sep := crlfBlank.next(start), 3
-		if lf := lfBlank.next(start); lf < blank {
-			blank, sep = lf, 2
-		}
-		if blank == len(body) {
-			break // no header block ends after here
-		}
-		head := blank
-		if h, _, ok := cutHeader(body[start:next]); ok {
-			head = max(head, start+len(h))
+	for blocks.start >= 0 {
+		start, head, content := blocks.next()
+		if content < 0 {
+			break
 		}
 		if names.next(start) < head {
-			content, end := blank+sep, len(body)
+			end := len(body)
 			if e := ends.next(content); e < len(body) {
 				end = e + 2 // up to the delimiter itself
 			}
@@ -308,10 +419,6 @@ func scriptInFile(body, delim []byte) bool {
 			}
 			to = max(to, end)
 		}
-		if next == len(body) {
-			break
-		}
-		start = next + len(delim)
 	}
 	return scriptRe.Match(body[from:to])
 }
@@ -334,19 +441,133 @@ func (s *seeker) next(from int) int {
 	return s.at
 }
 
-// indexFilename finds "filename", in any case.
+// indexFilename finds "filename", in any case, also split over lines that PHP joins (see phpLine).
 func indexFilename(b []byte) int {
-	const word = "filename"
-	for i := 0; i+len(word) <= len(b); i++ {
-		k := 0
-		for k < len(word) && b[i+k]|0x20 == word[k] { // every byte of word is a lower-case letter
-			k++
-		}
-		if k == len(word) {
-			return i
+	for i := range b {
+		if b[i]|0x20 == 'f' { // only 'f' and 'F' give 'f'
+			if l := (phpLine{body: b, at: i}); l.match("filename") {
+				return i
+			}
 		}
 	}
 	return -1
+}
+
+// executablePHPName reports a filename that PHP's rfc1867 parser reads as executable, or one in a part's headers with a
+// quote or backslash that does not parse cleanly, which another parser may read differently. PHP takes filename only
+// as a whole key right before '=' and skips white space after it. A value in double or single quotes runs to the
+// closing quote, and a backslash before a backslash or that quote stands for the character after it. A bare value
+// runs to white space or a ';', and a backslash before a backslash stands for it. Values read here do not overlap, so
+// the body is read once.
+func executablePHPName(body, delim []byte) bool {
+	heads := inHeaders{blocks: newHeaderBlocks(body, delim)}
+	for i := 0; i < len(body); i++ {
+		if body[i]|0x20 != 'f' {
+			continue
+		}
+		l := phpLine{body: body, at: i}
+		if !l.match("filename=") {
+			continue
+		}
+		name, clean := l.value()
+		if !clean && heads.at(i) || executableName(name, false, true) {
+			return true
+		}
+		i = l.at - 1
+	}
+	return false
+}
+
+// phpLine reads a multipart header line as PHP does. PHP splits lines at LF, dropping a CR before it, and joins to a
+// header line each line after it that is not empty and either starts with white space or holds no ':'.
+type phpLine struct {
+	body []byte
+	at   int // the next byte to read
+}
+
+// next returns the line's next byte, or false at its end.
+func (l *phpLine) next() (byte, bool) {
+	for l.at < len(l.body) {
+		c := l.body[l.at]
+		if c == '\r' && l.at+1 < len(l.body) && l.body[l.at+1] == '\n' {
+			l.at++
+			continue
+		}
+		if c != '\n' {
+			l.at++
+			return c, true
+		}
+		line := l.body[l.at+1:]
+		if end := bytes.IndexByte(line, '\n'); end >= 0 {
+			line = bytes.TrimSuffix(line[:end], []byte("\r"))
+		}
+		if len(line) == 0 || !isCSpace(line[0]) && bytes.IndexByte(line, ':') >= 0 {
+			return 0, false
+		}
+		l.at++
+	}
+	return 0, false
+}
+
+// match reads word, whose letters are lower case, in any case.
+func (l *phpLine) match(word string) bool {
+	for k := 0; k < len(word); k++ {
+		c, ok := l.next()
+		if 'A' <= c && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		if !ok || c != word[k] {
+			return false
+		}
+	}
+	return true
+}
+
+// value reads a parameter's value after its '=' as PHP's php_ap_getword_conf does. It reports false when the value has
+// a quote that is not closed, or a quote in a bare value: PHP and other parsers would end it in different places.
+func (l *phpLine) value() (string, bool) {
+	c, ok := l.next()
+	for ok && isCSpace(c) {
+		c, ok = l.next()
+	}
+	var name []byte
+	if ok && (c == '"' || c == '\'') {
+		quote := c
+		for {
+			if c, ok = l.next(); !ok {
+				return "", false
+			}
+			if c == quote {
+				return string(name), true
+			}
+			if c == '\\' {
+				after := *l
+				if d, ok := after.next(); ok && (d == '\\' || d == quote) {
+					*l, c = after, d
+				}
+			}
+			name = append(name, c)
+		}
+	}
+	for ok && !isCSpace(c) && c != ';' {
+		if c == '"' || c == '\'' {
+			return "", false
+		}
+		if c == '\\' {
+			after := *l
+			if d, ok := after.next(); ok && d == '\\' {
+				*l = after
+			}
+		}
+		name = append(name, c)
+		c, ok = l.next()
+	}
+	return string(name), true
+}
+
+// isCSpace is C's isspace.
+func isCSpace(c byte) bool {
+	return c == ' ' || '\t' <= c && c <= '\r'
 }
 
 // cutHeader splits a part into its header block and its content at the first blank line, accepting LF as well as CRLF.

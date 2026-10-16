@@ -570,6 +570,9 @@ func uploadRequest(body string) string {
 func TestUploadPolicy(t *testing.T) {
 	jpeg := "\xff\xd8\xff\xe0\x00\x10JFIF\x00 an ordinary picture \xff\xd9"
 	shell := "GIF89a<?php system($_GET['c']); ?>"
+	disposition := func(params, content string) string {
+		return "Content-Disposition: form-data; name=\"f\"; " + params + "\r\n\r\n" + content
+	}
 	tests := []struct {
 		name    string
 		body    string
@@ -596,9 +599,29 @@ func TestUploadPolicy(t *testing.T) {
 		{"a path in the name", multipartBody(filePart("..\\..\\shell.php", "x")), UploadPolicy{}, idUploadName},
 		{"an RFC 5987 name", multipartBody("Content-Disposition: form-data; name=\"f\"; filename*=UTF-8''%73hell.php\r\n\r\nx"), UploadPolicy{}, idUploadName},
 		{"an unquoted name", multipartBody("Content-Disposition: form-data; name=f; filename=shell.php\r\n\r\nx"), UploadPolicy{}, idUploadName},
+		{"a single-quoted script name", multipartBody(disposition("filename='shell.php'", "x")), UploadPolicy{}, idUploadName},
+		{"a single-quoted htaccess", multipartBody(disposition("filename='.htaccess'", "x")), UploadPolicy{}, idUploadName},
+		{"a single-quoted user.ini", multipartBody(disposition("filename='.user.ini'", "x")), UploadPolicy{}, idUploadName},
+		{"a single-quoted phtml", multipartBody(disposition("filename='shell.phtml'", "x")), UploadPolicy{}, idUploadName},
+		{"a single-quoted picture", multipartBody(disposition("filename='photo.jpg'", jpeg)), UploadPolicy{}, 0},
+		{"an escaped quote before the extension", multipartBody(filePart(`x\".php`, "x")), UploadPolicy{}, idUploadName},
+		{"an escaped quote after the extension", multipartBody(filePart(`x.php\"`, "x")), UploadPolicy{}, idUploadName},
+		{"an escaped quote in a picture's name", multipartBody(filePart(`a\"b.jpg`, jpeg)), UploadPolicy{}, 0},
+		{"a quote that is not closed", multipartBody(disposition(`filename="photo.jpg`, jpeg)), UploadPolicy{}, idUploadName},
+		{"two quotes before the extension", multipartBody(filePart("shell.asp;''.jpg", "x")), UploadPolicy{}, idUploadName},
+		{"a name continued on the next line", multipartBody(disposition("filename=shell\r\n.php", "x")), UploadPolicy{}, idUploadName},
+		{"a text file with a name before a line of text", multipartBody(filePart("notes.txt", "filename=report\nsee below")), UploadPolicy{}, 0},
+		{"a name split by RFC 2231", multipartBody(disposition(`filename*0="shell.p"; filename*1="hp"`, "x")), UploadPolicy{}, idUploadName},
+		{"a name continued on a line with a colon after a NUL", multipartBody(disposition("file\r\nname=shell.php\x00: x", shell)), UploadPolicy{}, idUploadName},
+		{"a filename key split by a NUL", multipartBody(disposition("fi\x00x\r\nlename=shell.php", shell)), UploadPolicy{}, idUploadName},
+		{"a binary file in a body with LF line ends", "--XX\nContent-Disposition: form-data; name=\"f\"; filename=\"a.png\"\nContent-Type: image/png\n\n\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\r\n\r\nrest\n--XX--\n", UploadPolicy{}, 0},
+		{"a line that starts with a NUL and ends the headers", multipartBody("Content-Disposition: form-data; name=\"f\"; filename=\"a.gif\"\r\n\x00\r\n" + shell), UploadPolicy{AllowExecutableNames: true}, idUploadScript},
+		{"a file that quotes a header", multipartBody(filePart("har.json", `{"value": "attachment; filename=\"report.pdf\""}`)), UploadPolicy{}, 0},
+		{"a saved mail with a name split by RFC 2231", multipartBody(filePart("mail.eml", `Content-Disposition: attachment; filename*0="report"; filename*1=".pdf"`)), UploadPolicy{}, 0},
 		{"a picture with a script in it", multipartBody(filePart("photo.jpg", shell)), UploadPolicy{}, idUploadScript},
 		{"a script far into a large file", multipartBody(filePart("photo.jpg", jpeg+strings.Repeat("A", 50000)+"<?= `id` ?>")), UploadPolicy{}, idUploadScript},
 		{"an asp tag", multipartBody(filePart("photo.jpg", "x<%@ Page Language=\"C#\" %>")), UploadPolicy{}, idUploadScript},
+		{"a script in a file whose filename key is continued on the next line", multipartBody(disposition("file\r\nname=\"a.gif\"", shell)), UploadPolicy{}, idUploadScript},
 		{"a script after a boundary in the middle of a line", multipartBody(filePart("photo.jpg", "GIF89a--XX\r\n\r\n<?php system($_GET['c']); ?>")), UploadPolicy{}, idUploadScript},
 		{"script names allowed", multipartBody(filePart("shell.php", "x")), UploadPolicy{AllowExecutableNames: true}, 0},
 		{"script content allowed", multipartBody(filePart("photo.jpg", shell)), UploadPolicy{AllowScriptContent: true}, 0},
