@@ -176,7 +176,7 @@ func ddosLogAttrs(f shieldFlags, set map[string]bool) []any {
 func configureShield(log *slog.Logger, f shieldFlags, set map[string]bool, trusted []netip.Prefix) (*shield.Shield, error) {
 	mode, _, err := parseDDoS(f.mode)
 	if err != nil {
-		return nil, err
+		return nil, refuseFlag("ddos", err)
 	}
 	// A value out of range is refused with protection off too, so that -check does not pass what switching it on fails.
 	if err := checkShieldRanges(f, set); err != nil {
@@ -184,7 +184,7 @@ func configureShield(log *slog.Logger, f shieldFlags, set map[string]bool, trust
 	}
 	if mode == "off" {
 		if f.ranges != "" {
-			return nil, errors.New("-ddos-ranges needs -ddos on or monitor")
+			return nil, refuseFlag("ddos-ranges", errors.New("-ddos-ranges needs -ddos on or monitor"))
 		}
 		if given := ddosOverrides(f, set); len(given) > 0 {
 			log.Warn("flood protection flags have no effect with -ddos off", "flags", given)
@@ -257,7 +257,8 @@ func shieldSettings(f shieldFlags, set map[string]bool, trusted []netip.Prefix) 
 			if given("ddos-rate", f.rate) {
 				of = fmt.Sprintf("-ddos-rate (%s)", number(rate))
 			}
-			return shield.Config{}, fmt.Errorf("-ddos-burst (%s) must be at least a tenth of %s: use -ddos-burst %s or more", number(f.burst), of, number(math.Ceil(rate/10)))
+			return shield.Config{}, refuseFlag("ddos-burst", fmt.Errorf("-ddos-burst (%s) must be at least a tenth of %s: use -ddos-burst %s or more",
+				number(f.burst), of, number(math.Ceil(rate/10))))
 		}
 		cfg.RequestBurst, burstChanged = f.burst, true
 	}
@@ -318,7 +319,7 @@ func checkShieldRanges(f shieldFlags, set map[string]bool) error {
 			if c.zeroMeans != "" {
 				msg += " (0 = " + c.zeroMeans + ")"
 			}
-			return errors.New(msg)
+			return refuseFlag(c.name, errors.New(msg))
 		}
 	}
 	return nil

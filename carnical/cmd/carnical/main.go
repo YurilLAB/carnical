@@ -106,8 +106,8 @@ func runFlags(args []string, private map[string]string) error {
 	denyHeaders := flags.String("deny-headers", "", "comma-separated headers whose presence refuses the request, such as Next-Action on a site with no server actions")
 	wordpress := flags.Bool("wordpress", false, "protect a WordPress site: no scripts from upload and cache directories, xmlrpc.php off, login attempts limited")
 	xmlrpc := flags.Bool("allow-xmlrpc", false, "with -wordpress, leave xmlrpc.php reachable")
-	loginRate := flags.Int("login-per-minute", 10, "with -wordpress, POSTs to wp-login.php one address may make a minute")
-	apiRate := flags.Int("api-per-minute", 0, "shared API requests per verified client address in a sliding minute (0 = disabled; maximum 100000)")
+	loginRate := flags.Int("login-per-minute", 10, "with -wordpress, POSTs to wp-login.php one address may make a minute, 1 to 100000")
+	apiRate := flags.Int("api-per-minute", 0, "shared API requests per verified client address in a sliding minute, 1 to 100000 (0 = disabled)")
 	apiPaths := flags.String("api-rate-paths", "/api,/graphql", "plain path prefixes sharing -api-per-minute, matched by path segment; / covers every route")
 	limits := &limitFlag{}
 	flags.Var(limits, "limit", "per-client rate limits: [METHODS] PATHS COUNT/WINDOW [monitor], separated by ';' or given as repeated flags, as in 'POST /login 5/m; /api 600/m' (windows s, m or h, as in 5/m, 100/10s or 1k/h)")
@@ -165,13 +165,18 @@ func runFlags(args []string, private map[string]string) error {
 		limitSource = "site configuration"
 	}
 	limitReplaced := false
+	site := map[string]bool{} // the flags the site configuration gave, which the command line did not
 	if *configFile != "" {
+		given := setFlags(flags)
 		encrypted, replaced, err := loadSiteConfig(*configFile, flags)
 		if err != nil {
 			return err
 		}
 		maps.Copy(private, encrypted)
 		limitReplaced = slices.Contains(replaced, "limit")
+		for name := range setFlags(flags) {
+			site[name] = !given[name]
+		}
 	}
 	if *checkOrigin && !*check {
 		return errors.New("-check-origin requires -check")
@@ -220,7 +225,10 @@ func runFlags(args []string, private map[string]string) error {
 	}
 	trusted, err := proxy.ParseTrusted(*trustedList)
 	if err != nil {
-		return err
+		return fromSite(refuseFlag("trusted-proxies", fmt.Errorf("-trusted-proxies: %w", err)), site, private)
+	}
+	if err := checkRateFlags(*loginRate, *apiRate, *apiPaths, setFlags(flags)); err != nil {
+		return fromSite(err, site, private)
 	}
 	origin, err := proxy.ParseOriginAllow(*originAllow)
 	if err != nil {
@@ -277,7 +285,7 @@ func runFlags(args []string, private map[string]string) error {
 	explicit := setFlags(flags)
 	guard, err := configureShield(log, *ddos, explicit, trusted)
 	if err != nil {
-		return err
+		return fromSite(err, site, private)
 	}
 	if guard != nil {
 		defer guard.Close()
@@ -315,6 +323,9 @@ func runFlags(args []string, private map[string]string) error {
 	if apiInspector != nil {
 		cfg.Inspectors = append(cfg.Inspectors, apiInspector)
 		log.Info("API contract loaded", "mode", *apiSpecMode, "sha256", apiReport.Hash, "routes", apiReport.Routes, "warnings", apiReport.Warnings, "warnings_dropped", apiReport.WarningsDropped)
+	}
+	for _, warning := range rateFlagWarnings(cfg, explicit) {
+		log.Warn(warning)
 	}
 	edge, err := proxy.New(cfg)
 	if err != nil {

@@ -440,6 +440,13 @@ func editDistance(a, b string) int {
 	return prev[len(b)]
 }
 
+// CheckPathPrefix reports what is wrong with a path prefix of APIRatePolicy.Paths or RateRule.Paths, if anything, so that
+// a caller can name the setting it came from.
+func CheckPathPrefix(prefix string) error {
+	_, err := normalizePrefixes([]string{prefix})
+	return err
+}
+
 // normalizePrefixes checks path prefixes and returns them in lower case: plain absolute paths, with no trailing slash,
 // query, percent-encoding or path parameters, which are matched by path segment against a request's routePath.
 func normalizePrefixes(paths []string) ([]string, error) {

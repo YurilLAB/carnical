@@ -86,7 +86,12 @@ start-up log says `site configuration limit replaced by the command line`. The s
 it comes from, as in `"rate_limits":["POST */wp-login.php 10/1m (-wordpress)","POST /login 5/1m (flag)","GET /search 30/10s monitor (flag)"]`;
 the `-limit` rules all come from the command line (`flag`) or all from the site file (`site configuration`).
 `-api-per-minute` and the login limit of `-wordpress` are rate rules too, listed as `(-api-per-minute)`
-and `(-wordpress)`, or `(-policy)` when a local policy switches the WordPress protections on. A program that embeds the proxy sets the rules in `proxy.Config.Limits`, read from
+and `(-wordpress)`, or `(-policy)` when a local policy switches the WordPress protections on. Their
+flags are checked at start-up: `-login-per-minute` is 1 to 100,000 (default 10), `-api-per-minute` 0 (off)
+or 1 to 100,000, and `-api-rate-paths` (default `/api,/graphql`) up to 100 plain path prefixes, an
+error naming the one at fault, as in `-api-rate-paths: "/v1/" has a trailing slash; write /v1`. The log
+warns when `-login-per-minute` is given without `-wordpress`, or `-api-rate-paths` with
+`-api-per-minute 0`, as neither then changes anything. A program that embeds the proxy sets the rules in `proxy.Config.Limits`, read from
 text by `proxy.ParseRateRules`; a signed or local policy cannot add or remove them.
 
 - METHODS is `*` or methods separated by commas, in any case. GET also counts HEAD; with no methods or

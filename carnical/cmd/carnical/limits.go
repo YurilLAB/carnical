@@ -49,6 +49,53 @@ func (l *limitFlag) String() string {
 // Get makes -limit a string to the site configuration, which gives it as a JSON string.
 func (l *limitFlag) Get() any { return l.String() }
 
+// The ranges of -login-per-minute and -api-per-minute, and the most -api-rate-paths, as the proxy takes them.
+const (
+	maxLoginRate = 100_000
+	maxAPIRate   = 100_000
+	maxAPIPaths  = 100
+)
+
+// checkRateFlags checks -login-per-minute, -api-per-minute and -api-rate-paths before the proxy does, so that an error
+// names the flag and the value at fault. set holds the flags given.
+func checkRateFlags(loginRate, apiRate int, apiPaths string, set map[string]bool) error {
+	if loginRate < 1 || loginRate > maxLoginRate {
+		return refuseFlag("login-per-minute", fmt.Errorf("-login-per-minute must be from 1 to %d", maxLoginRate))
+	}
+	if apiRate < 0 || apiRate > maxAPIRate {
+		return refuseFlag("api-per-minute", fmt.Errorf("-api-per-minute must be 0 (off) or from 1 to %d", maxAPIRate))
+	}
+	paths := splitList(apiPaths)
+	switch {
+	case set["api-rate-paths"] && len(paths) == 0:
+		// The proxy would take no prefixes for its own, /api and /graphql, which is not what was written.
+		return refuseFlag("api-rate-paths", errors.New("-api-rate-paths has no path; give path prefixes separated by commas, such as /api,/graphql"))
+	case len(paths) > maxAPIPaths:
+		return refuseFlag("api-rate-paths", fmt.Errorf("-api-rate-paths: at most %d paths", maxAPIPaths))
+	}
+	for _, p := range paths {
+		if trimmed := strings.TrimRight(p, "/"); trimmed != p && trimmed != "" && proxy.CheckPathPrefix(trimmed) == nil {
+			return refuseFlag("api-rate-paths", fmt.Errorf("-api-rate-paths: %q has a trailing slash; write %s", p, trimmed))
+		}
+		if err := proxy.CheckPathPrefix(p); err != nil {
+			return refuseFlag("api-rate-paths", fmt.Errorf("-api-rate-paths: %w", err))
+		}
+	}
+	return nil
+}
+
+// rateFlagWarnings are the rate flags given that cfg, the configuration as it will run, makes no use of.
+func rateFlagWarnings(cfg proxy.Config, set map[string]bool) []string {
+	var out []string
+	if set["login-per-minute"] && !cfg.WordPress.Enabled {
+		out = append(out, "-login-per-minute has no effect without -wordpress")
+	}
+	if set["api-rate-paths"] && cfg.APIRate.PerMinute == 0 {
+		out = append(out, "-api-rate-paths has no effect with -api-per-minute 0")
+	}
+	return out
+}
+
 // rateLimitAttrs are the start-up log's field for the rate limits cfg holds once the flags, the site configuration and
 // a local policy are applied: each rule as text, normalized, followed by where it comes from, in the order the proxy
 // applies them. A monitor rule ends in "monitor", as it is written. set holds the flags given; limitSource is where the
@@ -57,9 +104,6 @@ func rateLimitAttrs(cfg proxy.Config, set map[string]bool, limitSource string) [
 	rules := []string{}
 	if wp := cfg.WordPress; wp.Enabled {
 		login, source := wp.LoginPerMinute, "-wordpress"
-		if login <= 0 {
-			login = 10 // as the proxy takes it
-		}
 		if !set["wordpress"] {
 			source = "-policy" // nothing else switches it on
 		}

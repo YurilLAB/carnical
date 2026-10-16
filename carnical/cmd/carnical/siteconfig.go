@@ -17,6 +17,33 @@ import (
 
 const maxSiteConfigBytes = 64 << 10
 
+// flagError is the refusal of one flag's value, so that a value that came from the site configuration can be said to
+// have (see fromSite). Its text is the refusal's own, which names the flag as typed on the command line.
+type flagError struct {
+	name string // the flag, without its dash
+	err  error
+}
+
+func (e *flagError) Error() string { return e.err.Error() }
+func (e *flagError) Unwrap() error { return e.err }
+
+// refuseFlag is err as the refusal of the value of the flag name.
+func refuseFlag(name string, err error) error { return &flagError{name: name, err: err} }
+
+// fromSite is err, a refusal of a flag's value (see flagError), said to be about the site configuration's flag when the
+// value came from the file (site holds the flags it gave that the command line did not), as a value the flag itself
+// refuses when the file is read is. As there, the reason is left out for a setting the file can store encrypted.
+func fromSite(err error, site map[string]bool, private map[string]string) error {
+	var refused *flagError
+	if !errors.As(err, &refused) || !site[refused.name] {
+		return err
+	}
+	if _, encrypted := private[refused.name]; encrypted || privateSiteFlag(refused.name) {
+		return fmt.Errorf("invalid site configuration flag %q", refused.name)
+	}
+	return fmt.Errorf("invalid site configuration flag %q: %w", refused.name, err)
+}
+
 // loadSiteConfig uses registered CLI types and validators rather than a second
 // set of defaults. Explicit CLI flags override file settings. Files are operator
 // configuration, never customer-submitted or automatically fetched. It returns
