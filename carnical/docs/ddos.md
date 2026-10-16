@@ -26,10 +26,15 @@ separate from request-history tables, so address-history eviction cannot reset o
 The last socket closes its subnet entry. Trusted proxy peers may use the reserved share and bypass
 source/subnet limits, but still share the global cap.
 
-Refused connections are reset. HTTP refusals return 429 or 503 with `Retry-After`, `Cache-Control:
-no-store` and `Connection: close`, except on a trusted proxy's connection, which carries other
+Refused connections are reset. HTTP refusals carry `Retry-After`: on a 429 for an address's or a
+network's own limit it is the seconds until the next request fits that limit (1 to 3600); on the
+403 of a ban, the seconds left on the ban; on a 503 for an attack's shared budget it is 5, an
+estimate, as on the challenge page. The 403 for a wrong answer to the challenge has none, since a
+browser may try again at once. Refusals, that 403 among them, also carry `Cache-Control: no-store`
+and `Connection: close`, except on a trusted proxy's connection, which carries other
 visitors' requests and stays open unless the refused request is HTTP/1 with a body still to read
-(`Shield.ConnContext`, set by `Edge.Server`). Logs are bounded
+(`Shield.ConnContext`, set by `Edge.Server`). The challenge page is not a refusal and leaves the
+connection open. Logs are bounded
 rather than written for each Shield refusal. A failed reset/socket option does not turn a refusal
 into admission.
 

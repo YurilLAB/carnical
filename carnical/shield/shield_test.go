@@ -648,6 +648,38 @@ func TestABanIsRenewedWithinOneAttack(t *testing.T) {
 			})
 		}
 	})
+	// A banned address is told when the ban runs out; a refusal for the attack's shared budget gives an estimate.
+	t.Run("Retry-After", func(t *testing.T) {
+		for _, tc := range []struct {
+			name     string
+			refusals int           // before the request looked at; three get the address banned
+			after    time.Duration // between them and it
+			status   int
+			want     string
+		}{
+			{"a ban", 3, 0, http.StatusForbidden, "600"},
+			{"a ban a second later", 3, time.Second, http.StatusForbidden, "599"},
+			{"the last moment of a ban", 3, 10*time.Minute - time.Millisecond, http.StatusForbidden, "1"},
+			{"the attack's budget", 0, 0, http.StatusServiceUnavailable, "5"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				now := now
+				s := newTestShield(t, &now, func(c *Config) { c.BanAfter = 3 })
+				s.det.info.Store(&attackInfo{epoch: 1, since: now.UnixNano(), fps: map[uint64]bool{}, paths: map[uint64]bool{}})
+				api := func() *http.Request { return req("GET", "/api", "Accept", "application/json") }
+				s.Admit(api(), netip.MustParseAddr("192.0.2.1")) // the budget's one request
+				for i := 0; i < tc.refusals; i++ {
+					s.Admit(api(), key)
+				}
+				now = now.Add(tc.after)
+				w := httptest.NewRecorder()
+				s.Write(w, api(), s.Admit(api(), key))
+				if w.Code != tc.status || w.Header().Get("Retry-After") != tc.want {
+					t.Fatalf("status %d, Retry-After %q, want %d and %q", w.Code, w.Header().Get("Retry-After"), tc.status, tc.want)
+				}
+			})
+		}
+	})
 	// Nor does a client that became known shortly before the attack lose its standing for its connections (the reserved
 	// share, and keeping an idle connection), which mitigation takes from it.
 	t.Run("monitor mode keeps a recent client known", func(t *testing.T) {
@@ -974,6 +1006,37 @@ func TestPerAddressAndPerNetworkLimitsApplyOutsideAnAttack(t *testing.T) {
 			t.Fatal("a trusted address was limited")
 		}
 	}
+	// A refusal for an address's or a network's own limit says when its next token comes, at the rate it is held to.
+	t.Run("Retry-After is the wait for the next token", func(t *testing.T) {
+		for _, tc := range []struct {
+			name   string
+			mod    func(*Config)
+			second string        // where the second request comes from, the first being from 203.0.113.1
+			after  time.Duration // between the two
+			want   string
+		}{
+			{"one a second", func(c *Config) { c.RequestRate, c.RequestBurst = 1, 1 }, "203.0.113.1", 0, "1"},
+			{"one every five seconds", func(c *Config) { c.RequestRate, c.RequestBurst = 0.2, 1 }, "203.0.113.1", 0, "5"},
+			{"two of the five seconds gone", func(c *Config) { c.RequestRate, c.RequestBurst = 0.2, 1 }, "203.0.113.1", 2 * time.Second, "3"},
+			{"the network's limit", func(c *Config) { c.RequestRate, c.RequestBurst, c.SubnetRate, c.SubnetBurst = 0.2, 1, 0.5, 1 }, "203.0.113.2", 0, "2"},
+			{"at most an hour", func(c *Config) { c.RequestRate, c.RequestBurst = 0.0001, 1 }, "203.0.113.1", 0, "3600"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				now := now
+				s := newTestShield(t, &now, tc.mod)
+				if d := s.Admit(req("GET", "/"), netip.MustParseAddr("203.0.113.1")); d.Action != Allow {
+					t.Fatalf("the first request was refused: %+v", d)
+				}
+				now = now.Add(tc.after)
+				d := s.Admit(req("GET", "/"), netip.MustParseAddr(tc.second))
+				w := httptest.NewRecorder()
+				s.Write(w, req("GET", "/"), d)
+				if w.Code != http.StatusTooManyRequests || w.Header().Get("Retry-After") != tc.want {
+					t.Fatalf("status %d, Retry-After %q, want %q", w.Code, w.Header().Get("Retry-After"), tc.want)
+				}
+			})
+		}
+	})
 	// The shield's own clock (no Config.Now) is not the wall clock: when that is set back an hour (an NTP correction, a
 	// virtual machine restored), an address that has spent its burst gets its limit back as time passes, not an hour later.
 	t.Run("a step back of the wall clock does not stop the limits", func(t *testing.T) {

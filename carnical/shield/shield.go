@@ -461,6 +461,7 @@ func (s *Shield) Admit(r *http.Request, client netip.Addr) Decision {
 	earn := s.det.earn.Load()
 	scaleSrc, scaleNet := 1.0, 1.0
 	var banned, known, rateOK, engaged bool
+	retry := 0
 	s.sources.do(key, ns, func(src *source) {
 		src.last = ns
 		switch {
@@ -473,6 +474,12 @@ func (s *Shield) Admit(r *http.Request, client netip.Addr) Decision {
 		known = s.isKnown(src, ns, info)
 		scaleSrc = s.raise(src.earned.roll(earn, s.cfg.RequestRate), s.cfg.RequestRate)
 		rateOK = trusted || src.req.take(ns, s.cfg.RequestRate*scaleSrc, s.cfg.RequestBurst*scaleSrc)
+		switch {
+		case banned && !trusted:
+			retry = retryAfter(float64(src.bannedUntil-ns)/1e9, math.MaxInt32)
+		case !rateOK:
+			retry = retryAfter(src.req.wait(s.cfg.RequestRate*scaleSrc), 3600)
+		}
 	})
 	if engaged {
 		s.det.count(ns, func(w *window) { w.engaged++ })
@@ -481,9 +488,9 @@ func (s *Shield) Admit(r *http.Request, client netip.Addr) Decision {
 	switch {
 	// An IPv6 ban covers the client's /64, which a trusted proxy may share with the address that earned it.
 	case banned && !trusted:
-		return s.refuse(ns, d, info, idBanned, http.StatusForbidden, 0)
+		return s.refuse(ns, d, info, idBanned, http.StatusForbidden, retry)
 	case !rateOK:
-		return s.refuse(ns, d, info, idRate, http.StatusTooManyRequests, 1)
+		return s.refuse(ns, d, info, idRate, http.StatusTooManyRequests, retry)
 	}
 	if !trusted {
 		subOK := true
@@ -491,9 +498,12 @@ func (s *Shield) Admit(r *http.Request, client netip.Addr) Decision {
 			n.last = ns
 			scaleNet = s.raise(n.earned.roll(earn, s.cfg.SubnetRate), s.cfg.SubnetRate)
 			subOK = n.req.take(ns, s.cfg.SubnetRate*scaleNet, s.cfg.SubnetBurst*scaleNet)
+			if !subOK {
+				retry = retryAfter(n.req.wait(s.cfg.SubnetRate*scaleNet), 3600)
+			}
 		})
 		if !subOK {
-			return s.refuse(ns, d, info, idSubnetRate, http.StatusTooManyRequests, 1)
+			return s.refuse(ns, d, info, idSubnetRate, http.StatusTooManyRequests, retry)
 		}
 		s.det.noteScales(scaleSrc, scaleNet)
 	}
@@ -575,6 +585,16 @@ func (s *Shield) isKnown(src *source, ns int64, info *attackInfo) bool {
 	return info == nil || src.knownAt < info.since-int64(s.cfg.KnownMinAge)
 }
 
+// retryAfter is a wait in seconds as a Retry-After value: rounded up to whole seconds, at least 1 and at most most.
+func retryAfter(wait, most float64) int {
+	if !(wait < most) { // NaN too
+		return int(most)
+	}
+	return max(1, int(math.Ceil(wait)))
+}
+
+// refuse refuses a request with status and, if retry is positive, a Retry-After of retry seconds. During an attack the
+// refusal counts toward the address's ban.
 func (s *Shield) refuse(ns int64, d Decision, info *attackInfo, id, status, retry int) Decision {
 	d.Action, d.ID, d.Status, d.RetryAfter = Refuse, id, status, retry
 	s.counters.refused.Add(1)

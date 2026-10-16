@@ -188,3 +188,14 @@ func (b *bucket) take(now int64, rate, burst float64) bool {
 	}
 	return false
 }
+
+// wait is the seconds until the bucket holds a token again at rate, from its last use.
+func (b *bucket) wait(rate float64) float64 {
+	if b.tokens >= 1 {
+		return 0
+	}
+	if rate <= 0 {
+		return math.Inf(1)
+	}
+	return (1 - b.tokens) / rate
+}
