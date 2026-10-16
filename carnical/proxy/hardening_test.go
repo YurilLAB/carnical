@@ -1515,6 +1515,46 @@ func TestOneAddressCannotHoldManyConnectionsOpen(t *testing.T) {
 			t.Fatal("a place freed in the /64 was not reused")
 		}
 	})
+	t.Run("refusals are logged at most once a second, with the address only when asked", func(t *testing.T) {
+		for _, details := range []bool{false, true} {
+			t.Run(fmt.Sprintf("LogDetails %v", details), func(t *testing.T) {
+				var mu sync.Mutex
+				var logged []Match
+				e, err := New(Config{Upstream: mustURL("http://127.0.0.1:1"), CRS: crs.DefaultSettings(), Origin: loopback, MaxConnsPerIP: 1,
+					LogDetails: details, OnMatch: func(m Match) { mu.Lock(); logged = append(logged, m); mu.Unlock() }})
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { e.Close() })
+				now := int64(time.Hour)
+				e.now = func() int64 { return now }
+				state := e.Server("").ConnState
+				state(&limitConn{remote: "192.0.2.1:1000"}, http.StateNew) // holds the address's one place
+				refuse := func(n int) {
+					for i := 0; i < n; i++ {
+						c := &limitConn{remote: "192.0.2.1:" + strconv.Itoa(2000+i)}
+						if state(c, http.StateNew); !c.closed {
+							t.Fatal("a connection over the limit was kept")
+						}
+					}
+				}
+				refuse(1000)
+				now += int64(time.Second)
+				refuse(1)
+				mu.Lock()
+				defer mu.Unlock()
+				wantIP := ""
+				if details {
+					wantIP = "192.0.2.1"
+				}
+				if len(logged) != 2 || logged[0].ClientIP != wantIP || logged[1].ClientIP != wantIP ||
+					logged[1].Message != "an address holds too many connections open (999 more refusals not logged)" {
+					t.Fatalf("logged %d lines, the first two %+v; want two, the second counting 999 not logged, with the address %q",
+						len(logged), logged[:min(2, len(logged))], wantIP)
+				}
+			})
+		}
+	})
 	t.Run("a connection taken over for an upgrade counts until it closes", func(t *testing.T) {
 		l := newConnLimiter(1, nil, nil)
 		tunnel := &limitConn{remote: "192.0.2.1:1000"}

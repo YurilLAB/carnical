@@ -174,6 +174,8 @@ type Edge struct {
 	evictedLive       atomic.Int64 // clients dropped from a full rate-limit table while still counting
 	rateRefused       atomic.Int64 // requests a rate rule refused
 	conns             *connLimiter
+	connLogSecond     atomic.Int64 // the last second a connection refused by MaxConnsPerIP was reported (see reportTooManyConns)
+	connUnlogged      atomic.Int64
 }
 
 type contextKey struct{}
@@ -264,6 +266,7 @@ func New(cfg Config) (*Edge, error) {
 	e.cfg = cfg
 	e.rules = compileLimits(cfg)
 	e.evictLogSecond.Store(neverLogged)
+	e.connLogSecond.Store(neverLogged)
 	for _, h := range cfg.DenyHeaders {
 		e.deny[strings.ReplaceAll(strings.ToLower(strings.TrimSpace(h)), "_", "-")] = true
 	}
@@ -336,11 +339,7 @@ func (e *Edge) Server(addr string) *http.Server {
 		if limit == 0 {
 			limit = 128
 		}
-		e.conns = newConnLimiter(limit, e.cfg.TrustedProxies, func(ip netip.Addr) {
-			if e.cfg.OnMatch != nil {
-				e.cfg.OnMatch(Match{RuleID: idTooManyConns, Severity: "WARNING", Message: "an address holds too many connections open", Disruptive: true})
-			}
-		})
+		e.conns = newConnLimiter(limit, e.cfg.TrustedProxies, e.reportTooManyConns)
 		srv.ConnState = e.conns.state
 	}
 	if sh := e.cfg.Shield; sh != nil {
@@ -356,6 +355,28 @@ func (e *Edge) Server(addr string) *http.Server {
 		srv.ConnContext = func(ctx context.Context, c net.Conn) context.Context { return sh.ConnContext(connContext(ctx, c), c) }
 	}
 	return srv
+}
+
+// reportTooManyConns reports a connection refused because its address holds too many open. One client can open them as
+// fast as it likes, and the server runs this in its accept loop, so at most one is logged a second, and the next line logged
+// says how many were not.
+func (e *Edge) reportTooManyConns(ip netip.Addr) {
+	if e.cfg.OnMatch == nil {
+		return
+	}
+	second := e.clock() / int64(time.Second)
+	if previous := e.connLogSecond.Load(); second == previous || !e.connLogSecond.CompareAndSwap(previous, second) {
+		e.connUnlogged.Add(1)
+		return
+	}
+	m := Match{RuleID: idTooManyConns, Severity: "WARNING", Message: "an address holds too many connections open", Disruptive: true}
+	if n := e.connUnlogged.Swap(0); n > 0 {
+		m.Message += " (" + strconv.FormatInt(n, 10) + " more refusals not logged)"
+	}
+	if e.cfg.LogDetails {
+		m.ClientIP = ip.String()
+	}
+	e.cfg.OnMatch(m)
 }
 
 // reportEval reports a phase of rule evaluation that found no slot or ran out of its budget. Under a flood of expensive

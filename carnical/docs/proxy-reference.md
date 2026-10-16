@@ -60,7 +60,9 @@ are matched as PHP routes them, ignoring empty segments, a trailing slash, path 
 `wp-login.php` and `xmlrpc.php` are matched in any directory, so a site installed under `/blog/` is covered
 as well; the upload/cache restrictions cover `/wp-content/` at the root only.
 Login attempts, `-api-per-minute` and `-max-conns-per-ip` count an IPv6 /64 as one address, as the flood
-protection does.
+protection does. A connection `-max-conns-per-ip` refuses is closed at once and logged as rule 5000030, at
+most once a second with how many refusals were not logged; the address is in the line only with
+`-log-details`.
 
 The login limit and `-api-per-minute` are rate rules with a table of clients each, so one cannot use up
 the other's room. Each client has a sliding window of ten slots of six seconds: while the table holds a
