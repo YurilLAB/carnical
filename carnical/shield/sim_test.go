@@ -63,6 +63,7 @@ type sim struct {
 	kv, nv   int          // visits a second by returning and by new visitors
 	shared   []netip.Addr // addresses with many visitors behind them (a company, a mobile carrier)
 	app      []string     // when set, every visit is the mobile app calling one API endpoint
+	ua       [][]string   // when set, the browsers visitors use in place of browsers, index for index
 	natShare float64      // the share of returning visits that come through them
 }
 
@@ -180,6 +181,9 @@ func (m *sim) visit(class string, v *simVisitor) {
 		return
 	}
 	h := browsers[v.browser]
+	if m.ua != nil {
+		h = m.ua[v.browser]
+	}
 	m.do(class, v, "/blog/post-"+strconv.Itoa(m.r.IntN(40)), true, h)
 	for _, a := range []string{"/static/site.css", "/static/site.js", "/img/" + strconv.Itoa(m.r.IntN(60)) + ".jpg"} {
 		m.do(class, v, a, false, h)
@@ -413,6 +417,45 @@ func TestSimulatedAttacks(t *testing.T) {
 		t.Logf("highest state %v; new visitors served %.1f%%", res.maxState, 100*m.tally("legit new").rate())
 		if res.maxState == Attack {
 			t.Fatalf("a crowd of people was taken for an attack: %q", m.s.Snapshot().Reasons)
+		}
+	})
+
+	t.Run("a new browser release that half the visitors take up, then a flash crowd (negative control: not an attack)", func(t *testing.T) {
+		m := newSim(t, nil)
+		m.warm(10)
+		// Chrome 142 comes out after the baseline has warmed up, and half the visitors, returning and new, move to it.
+		chrome := append([]string(nil), browsers[0]...)
+		chrome[1] = strings.ReplaceAll(chrome[1], "Chrome/141.0", "Chrome/142.0")
+		chrome[7] = `"Chromium";v="142"`
+		m.ua = [][]string{chrome, chrome, chrome, browsers[1], browsers[2], browsers[3]}
+		for sec := 0; sec < 30*60; sec++ {
+			m.second(m.kv, m.nv, 0, nil)
+		}
+		fp, _ := fingerprint(func() *http.Request {
+			r := simRequest("/")
+			for i := 0; i+1 < len(chrome); i += 2 {
+				r.Header.Set(chrome[i], chrome[i+1])
+			}
+			r.Header.Set("Accept", "*/*")
+			r.Header.Set("Sec-Fetch-Mode", "no-cors")
+			return r
+		}())
+		m.s.det.mu.Lock()
+		learnt := m.s.det.base.fps[fp]
+		m.s.det.mu.Unlock()
+		if learnt < 0.2 {
+			t.Errorf("after half an hour the new browser's assets are usually %.1f%% of requests, want about 37%%", 100*learnt)
+		}
+		worst := Normal
+		for sec := 0; sec < 120; sec++ {
+			m.second(4, 40, 0, nil)
+			if st := m.s.State(); st > worst {
+				worst = st
+			}
+		}
+		t.Logf("highest state %v; new visitors served %.1f%%", worst, 100*m.tally("legit new").rate())
+		if worst == Attack {
+			t.Fatalf("a crowd of people with a browser released after the start was taken for an attack: %q", m.s.Snapshot().Reasons)
 		}
 	})
 

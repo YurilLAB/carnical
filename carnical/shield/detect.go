@@ -686,6 +686,10 @@ func (d *detector) learn(a aggregate) {
 	learnShares(b.paths, a.paths, alpha)
 }
 
+// learnShares moves the usual shares of fingerprints or targets towards the last ten seconds. A key that has faded below
+// a fifth of a percent is forgotten, but never in a second it was seen in: once warmed up a second weighs a six-hundredth,
+// so a key that is new enters below that and would otherwise be forgotten at once, and a browser or app released after
+// the start would stay "usually 0%" for ever.
 func learnShares(m map[uint64]float64, now []share, alpha float64) {
 	for k := range m {
 		m[k] *= 1 - alpha
@@ -694,7 +698,7 @@ func learnShares(m map[uint64]float64, now []share, alpha float64) {
 		m[s.key] += alpha * s.share
 	}
 	for k, v := range m {
-		if v < 0.002 {
+		if v < 0.002 && !slices.ContainsFunc(now, func(s share) bool { return s.key == k }) {
 			delete(m, k)
 		}
 	}
