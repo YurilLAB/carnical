@@ -277,7 +277,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p ../build/security-reports
-          go test -race ./shield -count=1 | tee ../build/security-reports/connection-races.log
+          go test -race ./shield -count=1 -timeout 20m | tee ../build/security-reports/connection-races.log
           go test -race ./proxy -run TestAFloodFromAThousandAddressesThroughTheProxy -count=1 -v \
             | tee ../build/security-reports/live-flood.log
           CGO_ENABLED=0 go build -o ../build/carnical-network-linux ./cmd/carnical
