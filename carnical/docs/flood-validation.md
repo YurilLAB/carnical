@@ -163,3 +163,83 @@ address was shown, and never a refusal or a wrong answer. In the simulation of 2
 Chrome (above), 3.6% of the attack was admitted after detection, against 3.2%, with 98.8% of returning and new visitors
 served as before: those bots send about one request a second each, and are no longer banned for the challenge they are
 shown. The other simulations gave the same results.
+
+## 2026-10-16: What the baseline learns, and when an attack ends
+
+A review of the detector found four ways its baseline learnt the wrong thing, or stopped protecting while a flood went on.
+Each is now a case in `TestSimulatedAttacks` that fails without its fix.
+
+- **New fingerprints and targets were never learnt after warm-up.** A second weighs a six-hundredth once warmed up, so a key
+  new to the baseline entered below the fifth of a percent at which it is forgotten and was dropped at once: a browser
+  released after the start stayed "usually 0%" for good. Reproduced: half the visitors moved to Chrome 142 after the
+  warm-up, and a tenfold crowd of people half an hour later was declared an attack. Now a key is never forgotten in a
+  second it was seen in; the new browser's assets were learnt at 35.9% of requests (about their real share) and the crowd
+  stayed "elevated".
+- **`-ddos-baseline-rate` skipped the warm-up of every measure, not only the rate.** An app's own users surging fivefold
+  five minutes after a restart were declared an attack, its fingerprint and endpoint "usually 40.3%". The rest of the
+  baseline now has its own five-minute warm-up and learns, during it, only from seconds under the threshold; the surge
+  stays "elevated". Learning from every second instead was tried and fails another case: after a restart into a flood of
+  2,000 requests a second at one target from 64 programs, with the usual rate given, on an application that keeps up,
+  the target and the new addresses were learnt as usual in the first second and the flood stayed "elevated". With the
+  threshold rule it is declared after 4 s. (A flood that also hurts the application is declared either way, since a
+  failing application stops the learning, below.)
+- **A flood that ramped up slowly was never declared.** The baseline followed it, at up to twice its rate a second's
+  weight at a time, and learnt the application's errors as usual. Reproduced: a botnet of 20,000 addresses growing from
+  10 requests a second by 0.3% a second (doubling every four minutes), on an application that serves 200, was at most
+  "elevated" for 40 minutes, with 3,000 requests a second at the end; at 0.15% a second, as found, it stayed "normal".
+  The application's error ratio is now also averaged six times more slowly (about an hour), and in a second where the
+  application is failing against that average the usual error ratio and latency can only fall, the traffic's look is not
+  learnt, and the usual rate can rise only as far as the requests the application answers well rise from when it began
+  to fail. Holding the rate still outright was tried first and fails another case: traffic growing sixfold over twenty
+  minutes while a broken dependency fails three requests in ten, whatever the load, was declared an attack at 193
+  requests a second against a usual frozen at 32, and 43% of new visitors were not served; the application answers more
+  of it as it grows, as it cannot a flood's, and it now stays "normal". The 0.3%
+  flood is declared after 1,218 s at 386 requests a second (the usual frozen at 102), with returning and new visitors
+  served in full in the minute after. The 0.15% flood is declared after 2,686 s at 562 requests a second but held off
+  only in part: the application kept up with it to about 170 a second, so the usual it froze at, 146, was mostly the
+  flood's; the attack's budgets, sized from it, let in 30.5% of the flood, and returning and new visitors were served
+  64.8% and 64.4% in the minute after. Ordinary traffic growing as fast, tenfold, on an application that keeps up, is
+  not flagged. Latency was first part of the test of a failing application, as an average against its own hour-long
+  average, and was taken out: it is measured until the response has been sent, so four addresses downloading slowly (one
+  request in twenty, half a minute each) held it high, the baseline stayed at 50 requests a second while the site's own
+  traffic grew tenfold, and that growth was declared an attack at about 340 a second, 18% of new visitors not served.
+  An application that queues what it cannot serve, instead of failing it, showed no failure at all: its clients hang up
+  long before it would, and a request the client hung up on was left out of its health, so that clients that hang up at
+  once could not make a healthy application look as if it failed. The 0.3% flood against it, with every client hanging
+  up after five seconds, was never declared and was learnt as the usual. A hang-up after at least a second and four
+  times the usual latency now counts as the application's failure, and that flood is declared as the one above is.
+- **An attack declared from harm alone ended after the evidence time-out while the flood went on.** Once mitigated, the
+  application is well again and a flood that rotates its look shows nothing else, so the attack ended and the flood was
+  let back in. Reproduced with 2,000 requests a second from 200,000 addresses and a two-minute time-out: the attack
+  ended twice in five minutes. The mitigation now counts as evidence while the rate is over the threshold of the
+  baseline from before the attack and at least half of the requests are refused or shown the challenge; the attack is
+  held for the five minutes and 1.6% of the flood is admitted. At first that counted every refusal, and one address that
+  went on at 400 requests a second after the flood, refused by its own limit and then banned, held the attack for over
+  an hour, with the baseline frozen and new visitors on the attack's budgets. What an address's or a network's own
+  limit refuses is now left out of both the rate and the refusals, since it is held whether there is an attack or not,
+  and so are the refusals of banned addresses unless they come from at least 20 addresses in ten seconds; with that
+  address going on the attack ends 129 s after the flood stops, at the time-out. Leaving out every ban's refusals was
+  tried first and fails another case: the same flood from 2,000 addresses, one request a second each, had them banned
+  within a minute, the bans' refusals were then most of it and did not count, and the attack ended at the time-out;
+  the baseline learnt the banned flood's addresses, and when the bans ran out the flood was not declared again and,
+  over forty minutes, visitors were served about 10% (the case in the simulation uses 1,000 addresses and shorter bans). Counting every refusal by the attack's budgets had a fault of its own: a flood
+  declared on an app's API, then stopped, followed by the app's own users at eight times their usual rate, held the
+  attack for as long as they kept it up (the twenty minutes measured), with returning users served 53% and new 21%,
+  since the budgets, sized from the usual before the flood, refused most of them. The mitigation now counts only while
+  the share of requests whose fingerprint the baseline knew is under half what it was before the attack; the users,
+  who look as they did, let the attack end at the time-out, and the floods above, from programs the site did not see
+  before, are held. Two floods still ended at the time-out. One from eight programs that ran for fifteen seconds at 150
+  requests a second, over the threshold but not yet hurting, before going to 2,000 a second: its programs were learnt at
+  a sliver each in those seconds, and a fingerprint the baseline held at all counted as the site's own. Now the usual
+  fingerprints and targets are learnt only from seconds under the threshold, and a fingerprint counts only when it was at
+  least 0.2% of the usual requests, the share below which the baseline forgets it. The other came after a restart into
+  the flood with `-ddos-baseline-rate`: the baseline had learnt no fingerprint, so the flood could never be unlike it.
+  Then the fingerprints are now left out of the test. Both are held for the five minutes.
+
+Three consequences are stated in [ddos.md](ddos.md). Real visitors that grow past four times the usual rate while the
+application cannot keep up are treated as an attack, as a flood would be (known visitors and browsers that answer the
+challenge are still served); before, the baseline learnt the failure. A flood slow enough to be learnt in part while the
+application keeps up is declared but held off only in part, as above. And the mitigation holds an attack for as long as
+traffic over the threshold that it mostly refuses is unlike the site's own clients by fingerprint, not for five minutes at
+most; the site's own clients, however much of their traffic the attack's budgets refuse, let it end after the five minutes.
+The other simulations gave the same results as before, within 0.1 point.
