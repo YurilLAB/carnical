@@ -495,14 +495,16 @@ type WordPressPolicy struct {
 }
 
 var (
-	// Executable files under the directories WordPress writes to. Nothing legitimate is run from there.
-	wpWritable = regexp.MustCompile(`(?i)^/wp-content/(uploads|cache|upgrade|backup[^/]*|backups[^/]*|ai1wm-backups|updraft|wc-logs|wflogs|et-cache|litespeed)(/|$)`)
-	wpScript   = regexp.MustCompile(`(?i)\.(php[0-9]?|phtml|pht|phps|phar|shtml?)(/|$)`)
+	// Executable files under the directories WordPress writes to, for a site installed at the root or in a directory
+	// (/blog/wp-content/uploads/). Nothing legitimate is run from there. A script extension is one before path info, a
+	// second extension (x.php.jpg, which Apache runs with AddHandler) or the end, as local rule 5006011 reads it.
+	wpWritable = regexp.MustCompile(`(?i)/wp-content/(uploads|cache|upgrade|backup[^/]*|backups[^/]*|ai1wm-backups|updraft|wc-logs|wflogs|et-cache|litespeed)(/|$)`)
+	wpScript   = regexp.MustCompile(`(?i)\.(php[0-9]?|phtml?|pht|phps|phar|shtml?)([/.:\s]|$)`)
 )
 
 // checkWordPress refuses the scripts a WordPress site never runs. The route is the request's routePath: empty segments, a
-// trailing slash, path parameters and path info do not change which script PHP runs, and xmlrpc.php is refused in any
-// directory, for a site installed under one. Login attempts are limited by a rate rule (see compileLimits).
+// trailing slash, path parameters and path info do not change which script PHP runs. Both the scripts in its writable
+// directories and xmlrpc.php are refused in any directory, for a site installed under one. Login attempts are limited by a rate rule (see compileLimits).
 func (e *Edge) checkWordPress(w http.ResponseWriter, r *http.Request, p string) bool {
 	if wpWritable.MatchString(p) && wpScript.MatchString(p) {
 		e.refuse(w, r, http.StatusForbidden, idWordPressPHP, "a script is requested from a directory WordPress only writes data to")

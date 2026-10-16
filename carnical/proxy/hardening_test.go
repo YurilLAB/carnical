@@ -622,6 +622,10 @@ func TestWordPressPolicy(t *testing.T) {
 		{"xmlrpc of a site installed in a subdirectory", "/blog/xmlrpc.php", on, 403},
 		{"a script whose name only ends like xmlrpc", "/blog/not-xmlrpc.php", on, 200},
 		{"a script in uploads on a site not marked as WordPress", "/wp-content/uploads/shell.php", ruleSetOff, 200},
+		{"a script in a backup plugin's folder of a site in a subdirectory", "/blog/wp-content/updraft/s.php", on, 403},
+		{"a picture in uploads of a site in a subdirectory", "/blog/wp-content/uploads/a.jpg", on, 200},
+		{"a script behind a second extension, which Apache may still run", "/blog/wp-content/uploads/x.php.jpg", on, 403},
+		{"a directory only named like wp-content", "/blog/my-wp-content/uploads/s.php", on, 200},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
