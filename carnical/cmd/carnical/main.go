@@ -9,6 +9,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -136,6 +137,9 @@ func runFlags(args []string, private map[string]string) error {
 	maxUpstream := flags.Int("max-upstream", 256, "requests allowed at the upstream at once")
 	evalBudget := flags.Duration("eval-budget", 2*time.Second, "most time each phase of rule evaluation may take for one request; a request over it is refused with 503")
 	maxEval := flags.Int("max-evaluations", 0, "requests in rule evaluation at once (0 = the number of CPUs, negative = no limit)")
+	readTimeout := flags.Duration("read-timeout", 0, "how long a client has to send a whole request, headers and body; raise it for large uploads over slow connections (0 = 30s; else 1s to 23h)")
+	writeTimeout := flags.Duration("write-timeout", 0, "how long a request may take from the end of its headers to the end of its response, so longer than -read-timeout and -upstream-timeout; raise it for large downloads and Server-Sent Events, and with -upstream-timeout for long polling (0 = -read-timeout plus 90s, 2m by default; else 1s to 24h)")
+	upstreamTimeout := flags.Duration("upstream-timeout", 0, "how long the upstream has to start its response, so shorter than -write-timeout (the default of 30s too); raise both for long polling (0 = 30s; else 1s to 24h)")
 	maxForm := flags.Int64("max-form-body", 128<<10, "largest request body that is not a file upload, in bytes; uploads may be as large as -max-body")
 	details := flags.Bool("log-details", false, "log client address, URI, matched data and macro-expanded messages (may contain credentials)")
 	certFile := flags.String("tls-cert", "", "TLS certificate file")
@@ -210,6 +214,9 @@ func runFlags(args []string, private map[string]string) error {
 	}
 	if *formatsStats != 0 && (*formatsStats < 100*time.Millisecond || *formatsStats > 24*time.Hour) {
 		return errors.New("-formats-stats-interval must be 0 or between 100ms and 24h")
+	}
+	if err := checkTimeouts(*readTimeout, *writeTimeout, *upstreamTimeout); err != nil {
+		return fromSite(err, site, private)
 	}
 	// A negative limit would refuse every request and break the reading of a chunked body.
 	if *maxForm < 0 {
@@ -297,6 +304,7 @@ func runFlags(args []string, private map[string]string) error {
 	cfg := proxy.Config{
 		Upstream: target, Origin: proxy.OriginPolicy{Allow: origin}, OriginTLS: originTLS, UpstreamHost: *upstreamHost, CRS: settings, TrustedProxies: trusted, AllowUpgrade: *allowUpgrade,
 		MaxUpstreamInFlight: *maxUpstream, LogDetails: *details, EvalBudget: *evalBudget, MaxEvaluations: *maxEval, MaxFormBody: *maxForm,
+		ReadTimeout: *readTimeout, WriteTimeout: *writeTimeout, ResponseHeaderTimeout: *upstreamTimeout,
 		AllowedHosts: splitList(*hosts), Paths: proxy.PathPolicy{AllowEncodedSlash: *encodedSlash, AllowPathParams: *pathParams},
 		DenyHeaders: splitList(*denyHeaders), WordPress: proxy.WordPressPolicy{Enabled: *wordpress, AllowXMLRPC: *xmlrpc, LoginPerMinute: *loginRate},
 		APIRate: proxy.APIRatePolicy{PerMinute: *apiRate, Paths: splitList(*apiPaths)}, Limits: limits.rules,
@@ -458,6 +466,43 @@ func runFlags(args []string, private map[string]string) error {
 		"inbound_threshold", cfg.CRS.InboundThreshold, "tls", *certFile != "", "confined", *confine, "formats_mode", effectiveFormatsMode, "request_encoding", *requestEncoding,
 		"health_enabled", healthListener != nil}, ddosLogAttrs(*ddos, explicit), rateLimits)...)
 	return serveRuntime(ctx, server, ln, healthListener, health, lifecycle, log)
+}
+
+// checkTimeouts checks -read-timeout and -write-timeout as the proxy would, and -upstream-timeout, naming the flags. The
+// write timeout runs from the end of a request's headers, so it covers the time the body takes to arrive and must be
+// longer than the read timeout, or an upload the read timeout allows could reach the application and its client never
+// hear the outcome. The upstream timeout, given or its default of 30 seconds, must be shorter than the write timeout: an
+// answer that comes later could no longer reach the client, and the request would keep its upstream place until then. A
+// write timeout given at 30 seconds or less therefore needs a shorter upstream timeout given with it. A timeout under a second is
+// refused: no client sends its headers, nor an application starts its answer, that fast everywhere. The read timeout is
+// at most 23 hours, so that the write timeout, which must be longer, can be given within its own 24.
+func checkTimeouts(read, write, upstream time.Duration) error {
+	const shortest, longestRead, longest = time.Second, 23 * time.Hour, 24 * time.Hour
+	const defaultRead, defaultUpstream, answerTime = 30 * time.Second, 30 * time.Second, 90 * time.Second
+	out := func(d, most time.Duration) bool { return d != 0 && (d < shortest || d > most) }
+	switch {
+	case out(read, longestRead):
+		return refuseFlag("read-timeout", errors.New("-read-timeout must be 0 (30s) or from 1s to 23h"))
+	case out(write, longest):
+		return refuseFlag("write-timeout", errors.New("-write-timeout must be 0 (-read-timeout plus 90s) or from 1s to 24h"))
+	case out(upstream, longest):
+		return refuseFlag("upstream-timeout", errors.New("-upstream-timeout must be 0 (30s) or from 1s to 24h"))
+	}
+	effectiveRead := cmp.Or(read, defaultRead)
+	if write != 0 && write <= effectiveRead {
+		return refuseFlag("write-timeout", fmt.Errorf("-write-timeout (%v) must be longer than -read-timeout (%v), as it includes the time the body takes to arrive",
+			write, effectiveRead))
+	}
+	effectiveWrite := cmp.Or(write, effectiveRead+answerTime)
+	switch {
+	case upstream == 0 && defaultUpstream >= effectiveWrite: // only a write timeout given can be this short
+		return refuseFlag("write-timeout", fmt.Errorf("-write-timeout (%v) must be longer than -upstream-timeout (%v, its default), or the client is cut off before the answer arrives; raise -write-timeout or give a shorter -upstream-timeout",
+			effectiveWrite, defaultUpstream))
+	case upstream >= effectiveWrite:
+		return refuseFlag("upstream-timeout", fmt.Errorf("-upstream-timeout (%v) must be shorter than -write-timeout (%v), or the client is cut off before the answer arrives",
+			upstream, effectiveWrite))
+	}
+	return nil
 }
 
 // systemdListener returns the listening socket systemd handed over as file descriptor 3 (see sd_listen_fds(3)).

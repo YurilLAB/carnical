@@ -57,7 +57,7 @@ The rate rules and the strength of the flood protection are two of them:
 checked as the flag checks it, and one that is refused stops start-up with the reason, as in
 `invalid site configuration flag "limit": -limit rule 1 ("POST /login 5/x"): "5/x": unknown window
 unit "x"; ...`. A value that is checked only once every setting is read (`ddos` and the
-`ddos-*` ranges, and the rate flags) is named the same way. The reason is left out for the
+`ddos-*` ranges, the rate flags and the timeouts) is named the same way. The reason is left out for the
 settings the file can store encrypted.
 
 A setting comes from, first to last:

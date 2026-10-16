@@ -30,14 +30,27 @@ that pool. A prematurely ended or malformed body returns 400/413 rather than an 
 A client has 30 seconds to send a whole request (10 for its headers), and a response must be
 finished 120 seconds after the end of the request's headers. A body still arriving at 30 seconds is
 answered with 408 Request Timeout, which the flood protection does not count as a security
-rejection; a longer response is cut. A program that embeds the proxy sets them with
-`proxy.Config.ReadTimeout` and `WriteTimeout` (up to 24 hours, negative refused): raise them for
-large uploads over slow connections, Server-Sent Events or large downloads, and for long polling
-along with `ResponseHeaderTimeout`, the 30 seconds the application has to start answering. The write
+rejection; a longer response is cut. `-read-timeout` and `-write-timeout` set them (in a program
+that embeds the proxy, `proxy.Config.ReadTimeout` and `WriteTimeout`), the read timeout up to 23
+hours and the write timeout up to 24, so that a write timeout longer than the read timeout can
+always be given; 0 is the default and a negative value is refused, and the flags also refuse a
+value under a second, which would cut off nearly every client: raise them for large uploads over slow connections,
+Server-Sent Events or large downloads, as in `-read-timeout 5m` or `-write-timeout 1h`. The write
 timeout also runs while the body is arriving, so it must be longer than the read timeout, and one
-that is not is refused: otherwise an upload could reach the application and its client get no
-answer. Left at zero, the write timeout is the read timeout plus 90 seconds, so raising only the
-read timeout is enough for slow uploads.
+that is not is refused (`-write-timeout (1m0s) must be longer than -read-timeout (2m0s), ...`):
+otherwise an upload could reach the application and its client get no answer. Left at zero, the
+write timeout is the read timeout plus 90 seconds, so raising only the read timeout is enough for
+slow uploads.
+
+The application has 30 seconds to start its response, its status and headers; one that takes longer
+is answered with 502 and logged as rule 5000050 (`upstream request timed out`). `-upstream-timeout`
+sets it (`proxy.Config.ResponseHeaderTimeout`), from a second (on the flag) up to 24 hours, with 0 for the default. Long polling,
+where the application holds a request until it has something to say, needs it raised along with the
+write timeout, as in `-upstream-timeout 5m -write-timeout 6m`: one that is not shorter than the write
+timeout is refused (`-upstream-timeout (5m0s) must be shorter than -write-timeout (2m0s), ...`), as
+an answer that comes later could no longer reach the client. The default of 30 seconds counts too: a
+`-write-timeout` of 30 seconds or less needs a shorter `-upstream-timeout` given with it, or it is
+refused (`-write-timeout (20s) must be longer than -upstream-timeout (30s, its default), ...`).
 
 | Setting | Default/behavior |
 | --- | --- |

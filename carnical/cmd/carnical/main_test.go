@@ -606,6 +606,19 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 			}
 			requests <- received{string(body), r.Header.Get("Content-Encoding"), r.ContentLength, r.RequestURI}
 		}
+		if r.URL.Path == "/__cli_test_slow" { // an application that answers after the shortest write or upstream timeout a test sets
+			time.Sleep(2 * time.Second)
+		}
+		// One that starts its answer at once and ends it after that timeout. Its length is announced, so the proxy holds what
+		// has come of it until the rest does, rather than passing each part on as it arrives.
+		if r.URL.Path == "/__cli_test_slow_body" {
+			w.Header().Set("Content-Length", "16")
+			_, _ = w.Write([]byte("part of "))
+			w.(http.Flusher).Flush()
+			time.Sleep(2 * time.Second)
+			_, _ = w.Write([]byte("the rest"))
+			return
+		}
 		if r.URL.Path == "/__cli_test_cut" { // an application that dies part way through the body it announced
 			w.Header().Set("Content-Length", "1000")
 			w.Write([]byte("part of a body"))
@@ -904,7 +917,7 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 		}
 	})
 
-	client := &http.Client{Timeout: time.Second}
+	client := &http.Client{Timeout: 3 * time.Second}
 	defer client.CloseIdleConnections()
 	const good = `{"note":"SECRET_TOKEN_CLI_TEST","a":1}`
 	var packed bytes.Buffer
@@ -1018,6 +1031,31 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 		{name: "confine check passes with the origin port and an upload directory", extraArgs: []string{"-check", "-confine", "-confine-connect", "$ORIGINPORT,53", "-upload-dir", "$UPLOADS"}, preflight: true},
 		// The reverse proxy's own line about a body the application cut short is JSON, named, without the addresses.
 		{name: "an application that cuts its body short is logged as the origin's error", mode: "block", method: "GET", target: "/__cli_test_cut", status: 0, says: `"server":"origin"`},
+		// The client gives up after three seconds, and the application ends its answer after two: only a write timeout of 1.5
+		// cuts it. The upstream timeout must be shorter than the write timeout.
+		{name: "a response longer than -write-timeout is cut", extraArgs: []string{"-read-timeout", "1s", "-write-timeout", "1500ms", "-upstream-timeout", "1s"}, method: "GET", target: "/__cli_test_slow_body", status: 0},
+		{name: "a response within -write-timeout is answered", extraArgs: []string{"-read-timeout", "1s", "-write-timeout", "5s", "-upstream-timeout", "3s"}, method: "GET", target: "/__cli_test_slow", status: 200},
+		// The application starts its answer after two seconds: past an -upstream-timeout of one, the visitor gets a 502.
+		{name: "an answer slower than -upstream-timeout is a 502", extraArgs: []string{"-upstream-timeout", "1s"}, method: "GET", target: "/__cli_test_slow", status: 502,
+			logRule: `"rule":5000050`},
+		{name: "an upstream timeout over a day refuses startup", extraArgs: []string{"-check", "-upstream-timeout", "25h"}, fails: true, says: "-upstream-timeout must be 0 (30s) or from 1s to 24h"},
+		{name: "an upstream timeout under a second refuses startup", extraArgs: []string{"-check", "-upstream-timeout", "1ns"}, fails: true, says: "-upstream-timeout must be 0 (30s) or from 1s to 24h"},
+		{name: "an upstream timeout within the default write timeout refuses startup", extraArgs: []string{"-check", "-upstream-timeout", "5m"}, fails: true,
+			says: "-upstream-timeout (5m0s) must be shorter than -write-timeout (2m0s)"},
+		{name: "an upstream timeout within the write timeout refuses startup", extraArgs: []string{"-check", "-upstream-timeout", "5m", "-write-timeout", "5m"}, fails: true,
+			says: "-upstream-timeout (5m0s) must be shorter than -write-timeout (5m0s)"},
+		{name: "a read timeout over a day refuses startup", extraArgs: []string{"-check", "-read-timeout", "25h"}, fails: true, says: "-read-timeout must be 0 (30s) or from 1s to 23h"},
+		// No -write-timeout could be both longer than a read timeout of a day and within its own day.
+		{name: "a read timeout of a day refuses startup", extraArgs: []string{"-check", "-read-timeout", "24h"}, fails: true, says: "-read-timeout must be 0 (30s) or from 1s to 23h"},
+		{name: "a read timeout under a second refuses startup", extraArgs: []string{"-check", "-read-timeout", "1ms"}, fails: true, says: "-read-timeout must be 0 (30s) or from 1s to 23h"},
+		{name: "the longest read and write timeouts", extraArgs: []string{"-check", "-read-timeout", "23h", "-write-timeout", "24h"}, preflight: true},
+		{name: "a negative write timeout refuses startup", extraArgs: []string{"-check", "-write-timeout", "-1s"}, fails: true, says: "-write-timeout must be 0 (-read-timeout plus 90s) or from 1s to 24h"},
+		{name: "a write timeout within the read timeout refuses startup", extraArgs: []string{"-check", "-read-timeout", "2m", "-write-timeout", "1m"}, fails: true,
+			says: "-write-timeout (1m0s) must be longer than -read-timeout (2m0s)"},
+		{name: "a write timeout within the default read timeout refuses startup", extraArgs: []string{"-check", "-write-timeout", "30s"}, fails: true,
+			says: "-write-timeout (30s) must be longer than -read-timeout (30s)"},
+		{name: "a write timeout within the default upstream timeout refuses startup", extraArgs: []string{"-check", "-read-timeout", "10s", "-write-timeout", "20s"}, fails: true,
+			says: "-write-timeout (20s) must be longer than -upstream-timeout (30s, its default)"},
 		{name: "site check permits named listening port", extraArgs: []string{"-check", "-listen", "127.0.0.1:http"}, preflight: true},
 		{name: "check validates listen syntax", extraArgs: []string{"-check", "-listen", "invalid"}, fails: true},
 		{name: "check validates upstream port", extraArgs: []string{"-check", "-upstream", "http://127.0.0.1:0"}, fails: true},
@@ -1202,6 +1240,8 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 			extraArgs: []string{"-check"}, fails: true, says: `invalid site configuration flag "login-per-minute": -login-per-minute must be from 1 to 100000`},
 		{name: "a site configuration trusted proxy that does not read is refused as the site's", site: `{"version":1,"flags":{"upstream":"$ORIGIN","origin-allow":"127.0.0.1/32","trusted-proxies":"bogus"}}`,
 			extraArgs: []string{"-check"}, fails: true, says: `invalid site configuration flag "trusted-proxies"`},
+		{name: "a site configuration timeout out of range is refused as the site's", site: `{"version":1,"flags":{"upstream":"$ORIGIN","origin-allow":"127.0.0.1/32","read-timeout":"25h"}}`,
+			extraArgs: []string{"-check"}, fails: true, says: `invalid site configuration flag "read-timeout": -read-timeout must be 0 (30s) or from 1s to 23h`},
 		{name: "rate limits are listed with where they come from", extraArgs: []string{"-check", "-wordpress", "-api-per-minute", "60", "-api-rate-paths", "/API,/v1",
 			"-limit", "POST /login,/register 5/m", "-limit", "get /search 30/10s monitor"}, preflight: true,
 			says: `"rate_limits":["POST */wp-login.php 10/1m (-wordpress)","/api,/v1 60/1m (-api-per-minute)","POST /login,/register 5/1m (flag)","GET /search 30/10s monitor (flag)"]`},
@@ -1542,9 +1582,11 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 				if tc.originAuth != "" {
 					originRequests = originCalls
 				}
+				// A 502 is the application failing to answer a request it was given.
+				reached := want == 200 || want == 502
 				select {
 				case got := <-originRequests:
-					if want != 200 {
+					if !reached {
 						t.Fatal("refused request reached the origin")
 					}
 					want := tc.body
@@ -1558,7 +1600,7 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 						t.Fatal("origin request target changed")
 					}
 				default:
-					if want == 200 {
+					if reached {
 						t.Fatal("accepted request did not reach the origin")
 					}
 				}

@@ -116,7 +116,8 @@ type Config struct {
 	// time in proportion to its size, and the engine does not apply its own limit for bodies without files, so the
 	// proxy does. A multipart/form-data body may be as large as CRS.RequestBodyLimit.
 	MaxFormBody int64
-	// ResponseHeaderTimeout is how long the upstream has to start answering (default 30 seconds).
+	// ResponseHeaderTimeout is how long the upstream has to start answering (default 30 seconds). Raise it, and
+	// WriteTimeout past it, for long polling, where the application holds a request until it has something to say.
 	ResponseHeaderTimeout time.Duration
 	// ReadTimeout is how long a client has to send a whole request, headers and body (default 30 seconds; the headers
 	// alone have at most 10). A body still arriving when it runs out is answered with 408. Raise it for large uploads
