@@ -103,7 +103,9 @@ type DetectorConfig struct {
 	// SeenPeriod is how long an address is remembered as seen (between one and two periods; default 12 hours).
 	SeenPeriod time.Duration
 	// InitialRate, if set, is the baseline request rate to start from instead of learning it from nothing, so that a
-	// restart during an attack does not take the attack for normal traffic.
+	// restart during an attack does not take the attack for normal traffic. It skips the warm-up of the rate only: what
+	// the traffic is made of (its fingerprints, targets, addresses and the application's health) is still learnt as in a
+	// warm-up, and only from seconds whose rate is under the threshold.
 	InitialRate float64
 }
 
@@ -220,7 +222,8 @@ type detector struct {
 	seen       seenFilter
 	rotated    int64
 	base       baseline
-	age        int
+	age        int // seconds the rate has been learnt, or Warmup's worth from the start with InitialRate
+	shapeAge   int // seconds the rest of the baseline has been learnt
 	state      State
 	run        int // consecutive seconds of evidence
 	since      int64
@@ -579,7 +582,7 @@ func (d *detector) evaluate(ns int64) {
 			d.state = Normal
 		}
 		if d.state != Attack {
-			d.learn(a)
+			d.learn(a, gate)
 		}
 	case Attack:
 		exitRate := math.Max(d.cfg.ExitFactor*d.frozen.rate, d.cfg.MinAttackRate/2)
@@ -645,18 +648,21 @@ func (d *detector) detectIDS(ns int64, a aggregate) {
 }
 
 // learn moves the baseline towards the last ten seconds. The rate may at most double per step's worth of weight, so a
-// sudden rise is not learnt at once.
-func (d *detector) learn(a aggregate) {
-	d.age++
-	alpha := 1 / float64(d.age)
-	if warm := float64(d.cfg.Warmup / time.Second); float64(d.age) > warm {
-		alpha = 1 / float64(d.cfg.Tau/time.Second)
+// sudden rise is not learnt at once. gate says the rate is over the threshold.
+func (d *detector) learn(a aggregate, gate bool) {
+	warm := int(d.cfg.Warmup / time.Second)
+	weight := func(age int) float64 { // while warming up the baseline is the plain average of what was seen, whatever it is
+		if age > warm {
+			return 1 / float64(d.cfg.Tau/time.Second)
+		}
+		return 1 / float64(age)
 	}
+	d.age++
+	alpha := weight(d.age)
 	b := &d.base
 	ew := func(x *float64, v float64) { *x += alpha * (v - *x) }
 	rate := a.rate
-	warming := float64(d.age) <= float64(d.cfg.Warmup/time.Second)
-	if !warming { // while warming up the baseline is the plain average of what was seen, whatever it is
+	if d.age > warm {
 		rate = math.Min(rate, math.Max(2*b.rate, d.cfg.MinAttackRate/2))
 	}
 	// The spread of the site's rate is measured between ten-second rates that do not overlap, so that a steady rise or
@@ -669,6 +675,15 @@ func (d *detector) learn(a aggregate) {
 		b.lastSample, b.sampled = rate, true
 	}
 	ew(&b.rate, rate)
+	// The rest has a warm-up of its own, which InitialRate does not skip: it starts from nothing, and a second weighing a
+	// six-hundredth from the start would leave the site's own fingerprints and targets "usually 0%" for many minutes. While
+	// it warms up it learns only from seconds whose rate is ordinary, so that a restart into a flood, which the rate given
+	// shows for what it is, does not teach it the flood's look.
+	if d.shapeAge < warm && gate {
+		return
+	}
+	d.shapeAge++
+	alpha = weight(d.shapeAge)
 	ew(&b.srcs, a.srcs)
 	ew(&b.newShare, a.newShare)
 	ew(&b.connRate, a.connRate)

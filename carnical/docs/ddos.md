@@ -92,7 +92,11 @@ goes on.
 An attack lasts at least one minute and ends after 30 quiet seconds. It can also end after five
 minutes without the evidence that triggered it. The first 60 seconds are a history period; during
 the remaining five-minute learning period, only a tenfold rise qualifies. Set `-ddos-baseline-rate`
-when restarting into a flood; learned baseline state is not persisted.
+when restarting into a flood; learned baseline state is not persisted. The flag seeds the rate only
+and skips its learning period: the usual fingerprints, targets, addresses and application health
+are still learned over their own five minutes, from seconds under the volume threshold, so a surge
+of the site's own clients soon after a restart is not taken for an attack and a flood running at
+the restart is not learned as the site's usual look.
 
 ## Limits that follow your traffic
 

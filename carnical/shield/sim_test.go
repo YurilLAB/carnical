@@ -236,6 +236,15 @@ func botnet(n int, r *rand.Rand) []*simVisitor {
 	return out
 }
 
+// randomWord is a path segment of letters only, which a target's template keeps as it is.
+func randomWord(r *rand.Rand) string {
+	var b [8]byte
+	for i := range b {
+		b[i] = byte('a' + r.IntN(26))
+	}
+	return string(b[:])
+}
+
 type result struct {
 	detectedAfter  int // seconds; -1 if never
 	attackAdmitted float64
@@ -456,6 +465,42 @@ func TestSimulatedAttacks(t *testing.T) {
 		t.Logf("highest state %v; new visitors served %.1f%%", worst, 100*m.tally("legit new").rate())
 		if worst == Attack {
 			t.Fatalf("a crowd of people with a browser released after the start was taken for an attack: %q", m.s.Snapshot().Reasons)
+		}
+	})
+
+	t.Run("an app's users surge five minutes after a restart with the usual rate given (negative control: not an attack)", func(t *testing.T) {
+		m := newSim(t, func(c *Config) { c.Detector.InitialRate = 120 })
+		m.app = []string{"User-Agent", "ExampleApp/5.2 (iOS 18.6; iPhone16,2) Alamofire/5.9", "Accept", "application/json", "Accept-Encoding", "gzip, br"}
+		m.capacity, m.kv, m.nv = 10_000, 15, 15 // 120 requests a second, the rate given, all of it one app calling one endpoint
+		for sec := 0; sec < 5*60; sec++ {
+			m.second(m.kv, m.nv, 0, nil)
+		}
+		worst := Normal
+		for sec := 0; sec < 60; sec++ {
+			m.second(5*m.kv, 5*m.nv, 0, nil)
+			if st := m.s.State(); st > worst {
+				worst = st
+			}
+		}
+		t.Logf("highest state %v; served %.1f%% (returning) %.1f%% (new)", worst, 100*m.tally("legit known").rate(), 100*m.tally("legit new").rate())
+		if worst == Attack {
+			t.Fatalf("the app's own users were taken for an attack: %q", m.s.Snapshot().Reasons)
+		}
+	})
+
+	t.Run("a restart into a flood of one target from many programs, with the usual rate given", func(t *testing.T) {
+		m := newSim(t, func(c *Config) { c.Detector.InitialRate = 32 })
+		m.capacity = 10_000 // the application keeps up: there is no harm to tell, only what the flood looks like
+		bots := botnet(20_000, m.r)
+		target := "/" + randomWord(m.r)
+		res := m.run(60, 2000, func(i int) {
+			// Sixty-four programs: nothing stands out but the volume, the target and new addresses that ask for nothing else.
+			ua := []string{"User-Agent", "bot/" + strconv.Itoa(m.r.IntN(64)), "Accept", "*/*"}
+			m.do("attack", bots[m.r.IntN(len(bots))], target, false, ua)
+		})
+		t.Log(res)
+		if res.detectedAfter < 0 || res.detectedAfter > 12 || res.known < 0.95 || res.new < 0.9 {
+			t.Fatal("protection below the bar")
 		}
 	})
 
