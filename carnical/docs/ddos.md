@@ -167,14 +167,15 @@ at its limit.
   `Retry-After` rather than a challenge page.
 
 An address refused 30 times during an attack (429 for its own or its network's limit, 503 for an
-attack budget) is banned for ten minutes, and again after another 30 refusals if it carries on once
-the ban runs out. Being shown the challenge counts as a tenth of a refusal: the many people behind
-one address are each shown it about once, while a bot that loads pages at 20 a second is shown it
-300 times in 15 seconds. A right answer takes back one challenge shown, so people who are shown it
-and answer it add nothing to the count; the page names an empty icon, so their browsers ask for no
-`/favicon.ico`, which an attack budget would refuse. One answer can be sent many times, so answers take back no
-more than the address was shown, and never a refusal; a bot behind an address whose people answer
-is counted for what it is shown beyond their answers. An IPv6 address is counted and banned with its
+attack budget, 403 for a wrong answer to the challenge) is banned for ten minutes, and again after
+another 30 refusals if it carries on once the ban runs out. Being shown the challenge counts as a
+tenth of a refusal: the many people behind one address are each shown it about once, while a bot
+that loads pages at 20 a second is shown it 300 times in 15 seconds. A right answer takes back one
+challenge shown, so people who are shown it and answer it add nothing to the count; the page names an
+empty icon, so their browsers ask for no `/favicon.ico`, which an attack budget would refuse. One
+answer can be sent many times, so answers take back no more than the address was shown, and never a refusal
+or a wrong answer; a bot behind an address whose people answer is counted for what it is shown
+beyond their answers. An IPv6 address is counted and banned with its
 /64; a trusted proxy peer is never refused for a ban, even one on a /64 it shares. In monitor mode nothing is banned: an address over
 its own limit is refused with 429 as at any other time. When the address table is full, an entry
 without standing is forgotten first; a ban or a known client's standing goes only when every entry

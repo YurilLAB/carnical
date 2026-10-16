@@ -225,6 +225,8 @@ func TestRefusalsHoldWithTheRuleSetOffAndAreRecorded(t *testing.T) {
 		}
 		// A body that is still arriving: the refusal must not wait for it.
 		post := "POST /page HTTP/1.1\r\n" + preamble + "X-Forwarded-For: 192.0.2.9\r\nContent-Type: text/plain\r\nContent-Length: 1000\r\n\r\n0123456789"
+		// A wrong answer to the challenge counts as a refusal, and ends like one.
+		wrong := "GET " + shield.VerifyPath + "?t=x&n=1 HTTP/1.1\r\n" + preamble + "X-Forwarded-For: 192.0.2.9\r\n\r\n"
 		for _, tc := range []struct {
 			name     string
 			trusted  bool
@@ -234,6 +236,8 @@ func TestRefusalsHoldWithTheRuleSetOffAndAreRecorded(t *testing.T) {
 			{"a trusted proxy relaying a refused visitor keeps its connection", true, []string{get("192.0.2.9"), get("192.0.2.9"), get("198.51.100.9")}, []int{200, 429, 200}},
 			{"a refused direct client loses its own", false, []string{get("192.0.2.9"), get("192.0.2.9"), get("198.51.100.9")}, []int{200, 429}},
 			{"a refused relayed request whose body is still coming is answered at once", true, []string{get("192.0.2.9"), post}, []int{200, 429}},
+			{"a direct client's wrong answer to the challenge loses its connection", false, []string{wrong, get("198.51.100.9")}, []int{403}},
+			{"a trusted proxy relaying a wrong answer keeps its connection", true, []string{wrong, get("198.51.100.9")}, []int{403, 200}},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				var trusted []netip.Prefix

@@ -587,28 +587,32 @@ func TestABanIsRenewedWithinOneAttack(t *testing.T) {
 		}
 	})
 	// What counts toward a ban (BanAfter 3) from one address, while a browser there holds the answer to a challenge: a
-	// refusal (r) does, and showing the challenge to someone (c) counts as a tenth of one. A right answer (s), which can be
-	// sent again, takes back one challenge shown, never more than were shown, and never a refusal. At the end, the browser
-	// that answered is served unless the address was banned.
+	// refusal (r) and a wrong answer (f) do, and showing the challenge to someone (c) counts as a tenth of one. A right
+	// answer (s), which can be sent again, takes back one challenge shown, never more than were shown, and never a refusal
+	// or a wrong answer. At the end, the browser that answered is served unless the address was banned.
 	t.Run("what counts toward a ban", func(t *testing.T) {
 		for _, tc := range []struct {
-			name  string
-			steps string
-			want  Action
+			name    string
+			steps   string
+			monitor bool
+			want    Action
 		}{
-			{"the challenge shown 29 times", strings.Repeat("c", 29), Allow},
-			{"the challenge shown 30 times, ten for each refusal", strings.Repeat("c", 30), Refuse},
-			{"the challenge shown 30 times, each answered", strings.Repeat("cs", 30), Allow},
-			{"the challenge page loaded by 30 browsers, each answered", strings.Repeat("bs", 30), Allow},
-			{"the challenge shown 29 times, answered 29 times, shown 29 times", strings.Repeat("c", 29) + strings.Repeat("s", 29) + strings.Repeat("c", 29), Allow},
-			{"the answer sent ten times after one challenge shown, then 30 shown", "c" + strings.Repeat("s", 10) + strings.Repeat("c", 30), Refuse},
-			{"a refusal and the challenge shown 20 times", "r" + strings.Repeat("c", 20), Refuse},
-			{"refusals", "rrr", Refuse},
-			{"the same answer sent again between refusals", "rsrsr", Refuse},
+			{"the challenge shown 29 times", strings.Repeat("c", 29), false, Allow},
+			{"the challenge shown 30 times, ten for each refusal", strings.Repeat("c", 30), false, Refuse},
+			{"the challenge shown 30 times, each answered", strings.Repeat("cs", 30), false, Allow},
+			{"the challenge page loaded by 30 browsers, each answered", strings.Repeat("bs", 30), false, Allow},
+			{"the challenge shown 29 times, answered 29 times, shown 29 times", strings.Repeat("c", 29) + strings.Repeat("s", 29) + strings.Repeat("c", 29), false, Allow},
+			{"the answer sent ten times after one challenge shown, then 30 shown", "c" + strings.Repeat("s", 10) + strings.Repeat("c", 30), false, Refuse},
+			{"a refusal and the challenge shown 20 times", "r" + strings.Repeat("c", 20), false, Refuse},
+			{"refusals", "rrr", false, Refuse},
+			{"the same answer sent again between refusals", "rsrsr", false, Refuse},
+			{"wrong answers", "fff", false, Refuse},
+			{"wrong answers and refusals", "frf", false, Refuse},
+			{"wrong answers in monitor mode", "fff", true, Allow},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				now := now
-				s := newTestShield(t, &now, func(c *Config) { c.BanAfter = 3 })
+				s := newTestShield(t, &now, func(c *Config) { c.BanAfter, c.MonitorOnly = 3, tc.monitor })
 				s.det.info.Store(&attackInfo{epoch: 1, since: now.UnixNano(), fps: map[uint64]bool{}, paths: map[uint64]bool{}})
 				s.Admit(req("GET", "/api", "Accept", "application/json"), netip.MustParseAddr("192.0.2.1")) // the budget's one request
 				tok := s.token(key, now)
@@ -629,6 +633,8 @@ func TestABanIsRenewedWithinOneAttack(t *testing.T) {
 						r, want = req("GET", "/", "User-Agent", "visitor "+strconv.Itoa(i), "Accept", "text/html"), idChallenge
 					case 's':
 						r, want = answer, idChallengeSolved
+					case 'f':
+						r, want = req("GET", VerifyPath+"?t="+tok+"&n="+solveWrong(tok, 8)), idChallengeFailed
 					}
 					if d := s.Admit(r, key); d.ID != want {
 						t.Fatalf("step %d (%c): rule %d, want %d", i, step, d.ID, want)

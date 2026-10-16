@@ -499,8 +499,12 @@ func (s *Shield) Admit(r *http.Request, client netip.Addr) Decision {
 	}
 	if r.URL.Path == VerifyPath {
 		v := s.verify(r, key, now)
-		if v.ID == idChallengeSolved && info != nil && !s.cfg.MonitorOnly && !trusted {
-			s.forgive(ns, key, info)
+		if info != nil && !s.cfg.MonitorOnly && !trusted {
+			if v.ID == idChallengeSolved {
+				s.forgive(ns, key, info)
+			} else {
+				s.strike(ns, key, info) // a wrong answer is a refusal like any other
+			}
 		}
 		return v
 	}
@@ -701,6 +705,9 @@ func (s *Shield) Write(w http.ResponseWriter, r *http.Request, d Decision) {
 			h.Set("Location", d.resp.location)
 		}
 		h.Set("Content-Type", d.resp.contentType)
+		if d.Status >= http.StatusBadRequest { // a wrong answer to the challenge counts as a refusal and ends as one
+			s.closeUnlessRelayed(h, r)
+		}
 		w.WriteHeader(d.Status)
 		if r.Method != http.MethodHead {
 			if _, err := w.Write([]byte(d.resp.body)); err != nil {
@@ -722,11 +729,7 @@ func (s *Shield) Write(w http.ResponseWriter, r *http.Request, d Decision) {
 		}
 		return
 	}
-	// A trusted proxy's connection carries other visitors' requests too, so it stays open, except after an HTTP/1 request
-	// with a body: net/http would wait for the rest of that body before answering, and a refused request is never read.
-	if !s.relayed(r) || (r.ProtoMajor == 1 && r.ContentLength != 0) {
-		h.Set("Connection", "close")
-	}
+	s.closeUnlessRelayed(h, r)
 	h.Set("Content-Type", "text/plain; charset=utf-8")
 	if d.RetryAfter > 0 {
 		h.Set("Retry-After", strconv.Itoa(d.RetryAfter))
@@ -736,6 +739,15 @@ func (s *Shield) Write(w http.ResponseWriter, r *http.Request, d Decision) {
 		if _, err := w.Write([]byte(http.StatusText(d.Status) + "\n")); err != nil {
 			s.counters.writeErrors.Add(1)
 		}
+	}
+}
+
+// closeUnlessRelayed closes the connection after a refusal. A trusted proxy's connection carries other visitors' requests
+// too, so it stays open, except after an HTTP/1 request with a body: net/http would wait for the rest of that body before
+// answering, and a refused request is never read.
+func (s *Shield) closeUnlessRelayed(h http.Header, r *http.Request) {
+	if !s.relayed(r) || (r.ProtoMajor == 1 && r.ContentLength != 0) {
+		h.Set("Connection", "close")
 	}
 }
 

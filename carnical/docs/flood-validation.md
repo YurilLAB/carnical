@@ -159,7 +159,7 @@ people behind one address who were each shown the challenge and answered it got 
 takes back one challenge shown. A browser shown a page that names no icon also asks for `/favicon.ico`, which the attack's
 budget refused as a full refusal, so 30 people who answered still got the address banned: the page now names an empty icon,
 which its Content-Security-Policy allows. A client can send one answer as often as it likes, so answers take back no more than the
-address was shown, and never a refusal. In the simulation of 2,000 addresses with standing that copy Chrome (above), 3.6% of
-the attack was admitted after detection, against 3.2%, with 98.8% of returning and new visitors served as before: those bots
-send about one request a second each, and are no longer banned for the challenge they are shown. The other simulations gave
-the same results.
+address was shown, and never a refusal or a wrong answer. In the simulation of 2,000 addresses with standing that copy
+Chrome (above), 3.6% of the attack was admitted after detection, against 3.2%, with 98.8% of returning and new visitors
+served as before: those bots send about one request a second each, and are no longer banned for the challenge they are
+shown. The other simulations gave the same results.
