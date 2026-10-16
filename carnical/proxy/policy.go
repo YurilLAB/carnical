@@ -487,10 +487,10 @@ func (e *Edge) reportEvicted(now, n int64) {
 // within hours of disclosure, so the useful protection is to take away what an attacker needs next.
 type WordPressPolicy struct {
 	Enabled bool
-	// AllowXMLRPC leaves xmlrpc.php reachable (Jetpack and the mobile app use it). By default it is refused: it
-	// allows many password guesses in one request.
+	// AllowXMLRPC leaves xmlrpc.php reachable (Jetpack and the mobile app use it). By default it is refused, in any
+	// directory (a site may be installed under /blog/): it allows many password guesses in one request.
 	AllowXMLRPC bool
-	// LoginPerMinute is how many POSTs to wp-login.php one address may make a minute (default 10).
+	// LoginPerMinute is how many POSTs to wp-login.php, in any directory, one address may make a minute (default 10).
 	LoginPerMinute int
 }
 
@@ -501,8 +501,8 @@ var (
 )
 
 // checkWordPress refuses the scripts a WordPress site never runs. The route is the request's routePath: empty segments, a
-// trailing slash, path parameters and path info do not change which script PHP runs. Login attempts are limited by a
-// rate rule (see compileLimits).
+// trailing slash, path parameters and path info do not change which script PHP runs, and xmlrpc.php is refused in any
+// directory, for a site installed under one. Login attempts are limited by a rate rule (see compileLimits).
 func (e *Edge) checkWordPress(w http.ResponseWriter, r *http.Request, p string) bool {
 	if wpWritable.MatchString(p) && wpScript.MatchString(p) {
 		e.refuse(w, r, http.StatusForbidden, idWordPressPHP, "a script is requested from a directory WordPress only writes data to")
@@ -515,5 +515,18 @@ func (e *Edge) checkWordPress(w http.ResponseWriter, r *http.Request, p string) 
 	return true
 }
 
-// runsScript reports a route path that runs script, directly or with path info after it.
-func runsScript(p, script string) bool { return p == script || strings.HasPrefix(p, script+"/") }
+// runsScript reports a route path that runs script (a "/" and a file name) from any directory, directly or with path info
+// after it: /wp-login.php, /blog/wp-login.php and /blog/wp-login.php/x all run /wp-login.php, so a site installed under a
+// subdirectory is covered as well as one at the root.
+func runsScript(p, script string) bool {
+	for {
+		i := strings.Index(p, script)
+		if i < 0 {
+			return false
+		}
+		// script starts with a slash, so it starts a segment; it must also end one.
+		if p = p[i+len(script):]; p == "" || p[0] == '/' {
+			return true
+		}
+	}
+}

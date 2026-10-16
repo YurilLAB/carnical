@@ -45,6 +45,8 @@ guarantees.
 
 `-wordpress` adds upload/cache script restrictions, disables XML-RPC and limits login attempts. Its paths
 are matched as PHP routes them, ignoring empty segments, a trailing slash, path info and path parameters.
+`wp-login.php` and `xmlrpc.php` are matched in any directory, so a site installed under `/blog/` is covered
+as well; the upload/cache restrictions cover `/wp-content/` at the root only.
 Login attempts, `-api-per-minute` and `-max-conns-per-ip` count an IPv6 /64 as one address, as the flood
 protection does.
 

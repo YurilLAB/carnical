@@ -607,6 +607,8 @@ func TestWordPressPolicy(t *testing.T) {
 		{"xmlrpc after an empty segment", "//xmlrpc.php", on, 400},
 		{"xmlrpc with a path parameter", "/xmlrpc.php;v=1", func(c *Config) { on(c); c.Paths.AllowPathParams = true }, 403},
 		{"xmlrpc allowed", "/xmlrpc.php", func(c *Config) { on(c); c.WordPress.AllowXMLRPC = true }, 200},
+		{"xmlrpc of a site installed in a subdirectory", "/blog/xmlrpc.php", on, 403},
+		{"a script whose name only ends like xmlrpc", "/blog/not-xmlrpc.php", on, 200},
 		{"a script in uploads on a site not marked as WordPress", "/wp-content/uploads/shell.php", ruleSetOff, 200},
 	}
 	for _, tt := range tests {
@@ -636,7 +638,8 @@ func TestWordPressPolicy(t *testing.T) {
 	t.Run("login spellings and addresses in one IPv6 /64 share the limit", func(t *testing.T) {
 		s := start(t, func(c *Config) { on(c); c.TrustedProxies = []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")} })
 		var statuses []int
-		for i, target := range []string{"/wp-login.php", "/wp-login.php/", "/wp-login.php/x", "/wp-login.php"} {
+		// The last is the login of a site installed in a subdirectory.
+		for i, target := range []string{"/wp-login.php", "/wp-login.php/", "/wp-login.php/x", "/blog/wp-login.php"} {
 			login := "POST " + target + " HTTP/1.1\r\n" + preamble + fmt.Sprintf("X-Forwarded-For: 2001:db8:1:2::%x\r\n", i+1) +
 				"Content-Type: application/x-www-form-urlencoded\r\nContent-Length: 11\r\nConnection: close\r\n\r\nlog=a&pwd=b"
 			status, _ := s.raw(t, login)
