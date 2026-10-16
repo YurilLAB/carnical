@@ -699,7 +699,7 @@ func (s *Shield) Done(d Decision, status int, fromOrigin bool) {
 	now := s.now().UnixNano()
 	if fromOrigin {
 		s.det.done(now, status, time.Duration(now-d.start))
-	} else if status >= 400 && status < 500 {
+	} else if status >= 400 && status < 500 && status != http.StatusRequestTimeout { // a 408 is a slow client, not a finding
 		s.counters.securityRejections.Add(1)
 		s.det.count(now, func(w *window) { w.securityRejects++ })
 	}
@@ -761,7 +761,8 @@ type Snapshot struct {
 	IDSReasons                                                                   []string
 	ConnectionRate, ConnectionRefusalRate, EarlyCloseRate, SecurityRejectionRate float64
 	// EarlyCloses counts nontrusted connections closed before HTTP StateActive.
-	// SecurityRejections counts 4xx responses from checks after shield admission, excluding origin responses.
+	// SecurityRejections counts 4xx responses from checks after shield admission, excluding origin responses and 408 (a
+	// client too slow to send its request).
 	EarlyCloses, SecurityRejections      uint64
 	Connections, MaxConnections          int64
 	RequestScale, NetworkScale           float64 // the most an address's, and a network's, limit was raised above its configured value in the last ten seconds

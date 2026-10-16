@@ -264,6 +264,13 @@ func TestNegativeLimitsAreRefused(t *testing.T) {
 	}{
 		{"a negative budget, which would also drop the evaluation slots", Config{EvalBudget: -time.Second}},
 		{"a negative form body limit, which would refuse every body", Config{MaxFormBody: -1}},
+		{"a negative read timeout, which net/http takes for none", Config{ReadTimeout: -time.Second}},
+		{"a write timeout over a day", Config{WriteTimeout: 25 * time.Hour}},
+		// A day's read timeout would leave no write timeout that is both longer than it and within a day.
+		{"a read timeout of a day", Config{ReadTimeout: 24 * time.Hour}},
+		// The write deadline starts at the end of the headers: an upload that arrives inside the read timeout but past
+		// it would be acted on by the application and its client never answered.
+		{"a write timeout shorter than the read timeout", Config{ReadTimeout: 5 * time.Second, WriteTimeout: time.Second}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -273,11 +280,27 @@ func TestNegativeLimitsAreRefused(t *testing.T) {
 			}
 		})
 	}
-	cfg := Config{Upstream: u, CRS: crs.DefaultSettings(), Origin: loopback}
-	if e, err := New(cfg); err != nil {
-		t.Fatalf("the defaults were refused: %v", err)
-	} else {
-		e.Close()
+	accepted := []struct {
+		name string
+		cfg  Config
+	}{
+		{"the defaults", Config{}},
+		{"a read timeout raised past the default write timeout", Config{ReadTimeout: 10 * time.Minute}},
+		{"the longest read timeout, with the longest write timeout", Config{ReadTimeout: 23 * time.Hour, WriteTimeout: 24 * time.Hour}},
+	}
+	for _, tt := range accepted {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.cfg.Upstream, tt.cfg.CRS, tt.cfg.Origin = u, crs.DefaultSettings(), loopback
+			e, err := New(tt.cfg)
+			if err != nil {
+				t.Fatalf("refused: %v", err)
+			}
+			defer e.Close()
+			// So that an upload the read timeout allows still gets its answer.
+			if srv := e.Server(""); srv.WriteTimeout <= srv.ReadTimeout {
+				t.Fatalf("the write timeout (%v) ends before the read timeout (%v)", srv.WriteTimeout, srv.ReadTimeout)
+			}
+		})
 	}
 }
 

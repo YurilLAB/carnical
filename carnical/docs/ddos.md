@@ -47,7 +47,7 @@ These alerts report patterns for investigation. They do not change attack state 
 | --- | --- |
 | Connection admission pressure | At least 50% of incoming TCP connections are refused. |
 | Early TCP closes | At least 75% of closed nontrusted connections never reached HTTP `StateActive`. |
-| HTTP security rejections | At least 50% of Shield-admitted requests receive a later WAF/policy 4xx. Origin 4xx and gateway 5xx responses are excluded. |
+| HTTP security rejections | At least 50% of Shield-admitted requests receive a later WAF/policy 4xx. Origin 4xx, gateway 5xx and 408 (a client too slow to send its request) responses are excluded. |
 
 Each signal also needs `Detector.MinAttackRate` observations per second (default 20), averaged over
 ten seconds. `Snapshot.IDSReasons` and the rate fields expose current evidence; `EarlyCloses` and
@@ -140,9 +140,9 @@ packet budgets are [configured separately](network-protection.md#choosing-a-budg
 
 At most `-max-upstream` requests (default 256) are at the application at once, and a request keeps its place until its
 response has been written to the client. A client that opens requests for large responses and then reads nothing (an HTTP/2
-stream window of zero, or a full TCP window) would hold those places until the 120 second write timeout, and every other
-visitor would be told the site is busy. Reproduced: with the places all held this way, another client got 503 for as long
-as the client kept it up.
+stream window of zero, or a full TCP window) would hold those places until the write timeout (120 seconds by default), and
+every other visitor would be told the site is busy. Reproduced: with the places all held this way, another client got 503
+for as long as the client kept it up.
 
 Now, when no place is free, the response whose write has been stuck the longest, and for at least five seconds, is ended and
 its place goes to the waiting request at once, and its request to the application is cancelled at the same moment, so the

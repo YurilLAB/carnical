@@ -27,6 +27,18 @@ guard](../proxy/origin.go), [CLI](../cmd/carnical/main.go).
 A request takes an upstream slot after its body has been read, so a stalled upload cannot occupy
 that pool. A prematurely ended or malformed body returns 400/413 rather than an empty 200.
 
+A client has 30 seconds to send a whole request (10 for its headers), and a response must be
+finished 120 seconds after the end of the request's headers. A body still arriving at 30 seconds is
+answered with 408 Request Timeout, which the flood protection does not count as a security
+rejection; a longer response is cut. A program that embeds the proxy sets them with
+`proxy.Config.ReadTimeout` and `WriteTimeout` (up to 24 hours, negative refused): raise them for
+large uploads over slow connections, Server-Sent Events or large downloads, and for long polling
+along with `ResponseHeaderTimeout`, the 30 seconds the application has to start answering. The write
+timeout also runs while the body is arriving, so it must be longer than the read timeout, and one
+that is not is refused: otherwise an upload could reach the application and its client get no
+answer. Left at zero, the write timeout is the read timeout plus 90 seconds, so raising only the
+read timeout is enough for slow uploads.
+
 | Setting | Default/behavior |
 | --- | --- |
 | `-eval-budget` | 2s per evaluation phase. Exceeding it refuses with 503 in block mode; in detect mode the request goes on with that phase's remaining rules unread. Either is logged as rule 5000045, at most once a second. Slow body reads do not consume this budget. Negative values are refused. |

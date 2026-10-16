@@ -769,6 +769,7 @@ func TestPerAddressAndPerNetworkLimitsApplyOutsideAnAttack(t *testing.T) {
 		}{
 			{"WAF forbidden", 403, false, 1}, {"invalid request", 400, false, 1}, {"origin not found", 404, true, 0},
 			{"origin forbidden", 403, true, 0}, {"gateway failure", 503, false, 0}, {"successful request", 200, true, 0},
+			{"a client too slow to send its request", 408, false, 0},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				sh := newTestShield(t, &now, func(c *Config) { c.MonitorOnly = true })

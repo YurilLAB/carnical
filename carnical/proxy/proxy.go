@@ -12,6 +12,7 @@ package proxy
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -24,6 +25,7 @@ import (
 	"net/http/httputil"
 	"net/netip"
 	"net/url"
+	"os"
 	"runtime"
 	"slices"
 	"strconv"
@@ -116,6 +118,17 @@ type Config struct {
 	MaxFormBody int64
 	// ResponseHeaderTimeout is how long the upstream has to start answering (default 30 seconds).
 	ResponseHeaderTimeout time.Duration
+	// ReadTimeout is how long a client has to send a whole request, headers and body (default 30 seconds; the headers
+	// alone have at most 10). A body still arriving when it runs out is answered with 408. Raise it for large uploads
+	// over slow connections; left at zero, WriteTimeout grows with it. At most 23 hours, so that a WriteTimeout longer
+	// than it can still be given; a negative value is refused. Used by Server.
+	ReadTimeout time.Duration
+	// WriteTimeout is how long a request may take from the end of its headers to the last byte of its response, so it
+	// includes the time the body takes to arrive (default ReadTimeout plus 90 seconds, 120 seconds with the default
+	// ReadTimeout). A longer response is cut: raise it for large downloads to slow clients, Server-Sent Events and long
+	// polling (with ResponseHeaderTimeout). It must be longer than ReadTimeout, or an upload that ReadTimeout allows could
+	// reach the application and get no answer. At most 24 hours; a negative value is refused. Used by Server.
+	WriteTimeout time.Duration
 	// OnMatch is called for every rule that matches. It must not block.
 	OnMatch func(Match)
 	// Shield, if set, protects the site against floods (package shield), before body inspection and rule evaluation.
@@ -214,6 +227,17 @@ func New(cfg Config) (*Edge, error) {
 		// It would refuse every body as too large, and size the read of a chunked one by a negative count.
 		return nil, errors.New("the form body limit must not be negative")
 	}
+	if cfg.ReadTimeout < 0 || cfg.ReadTimeout > maxReadTimeout || cfg.WriteTimeout < 0 || cfg.WriteTimeout > maxWriteTimeout {
+		// net/http takes a negative timeout for none at all, which would let a client hold a connection for ever.
+		return nil, fmt.Errorf("the read timeout must be between zero (the default) and %v, and the write timeout between zero and %v",
+			maxReadTimeout, maxWriteTimeout)
+	}
+	if read := cmp.Or(cfg.ReadTimeout, defaultReadTimeout); cfg.WriteTimeout != 0 && cfg.WriteTimeout <= read {
+		// net/http starts the write deadline at the end of the headers, so a body that arrives within the read timeout
+		// but after the write deadline would be forwarded and acted on, and its client never told the outcome.
+		return nil, fmt.Errorf("the write timeout (%v) must be longer than the read timeout (%v), as it includes the time "+
+			"the body takes to arrive", cfg.WriteTimeout, read)
+	}
 	e := &Edge{originTLS: originTLS, hosts: map[string]bool{}, deny: map[string]bool{}}
 	for _, h := range cfg.AllowedHosts {
 		if n := normHost(h); n != "" {
@@ -282,10 +306,25 @@ func (e *Edge) Close() error {
 	return nil
 }
 
-// Server returns an http.Server with limits on how long a client may take over its headers and body.
+const (
+	// maxReadTimeout and maxWriteTimeout are the longest ReadTimeout and WriteTimeout a configuration may ask for. The
+	// read timeout's is shorter, so that the default write timeout, answerTime past it, is within the write's.
+	maxReadTimeout, maxWriteTimeout = 23 * time.Hour, 24 * time.Hour
+	// defaultReadTimeout is Config.ReadTimeout when it is zero.
+	defaultReadTimeout = 30 * time.Second
+	// answerTime is what a WriteTimeout left at zero allows past ReadTimeout for the application to answer.
+	answerTime = 90 * time.Second
+)
+
+// Server returns an http.Server with limits on how long a client may take over its headers and body (Config.ReadTimeout)
+// and on how long a response may take (Config.WriteTimeout).
 func (e *Edge) Server(addr string) *http.Server {
-	srv := &http.Server{Addr: addr, Handler: e, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second,
-		WriteTimeout: 120 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10,
+	// The write deadline starts at the end of the headers, while the body may still be arriving, so it outlasts the
+	// read one (New refuses a WriteTimeout that does not).
+	readTimeout := cmp.Or(e.cfg.ReadTimeout, defaultReadTimeout)
+	writeTimeout := cmp.Or(e.cfg.WriteTimeout, readTimeout+answerTime)
+	srv := &http.Server{Addr: addr, Handler: e, ReadHeaderTimeout: min(10*time.Second, readTimeout), ReadTimeout: readTimeout,
+		WriteTimeout: writeTimeout, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10,
 		DisableGeneralOptionsHandler: true, // so that "OPTIONS *" reaches the guard instead of being answered by net/http
 		// HTTP/2 over TLS. Few concurrent streams, small frames, and a write timeout so that a client that stops
 		// reading cannot hold a connection. (Cleartext HTTP/2 is left off: it is how request smuggling past a front
@@ -444,8 +483,14 @@ func (e *Edge) guard(next http.Handler) http.Handler {
 			body, err := io.ReadAll(r.Body)
 			if err != nil {
 				status, msg := http.StatusBadRequest, "the request could not be read"
-				if capped.tooLarge {
+				var networkError net.Error
+				switch {
+				case capped.tooLarge:
 					status, msg = http.StatusRequestEntityTooLarge, "request body too large"
+				case errors.Is(err, os.ErrDeadlineExceeded) || errors.As(err, &networkError) && networkError.Timeout():
+					// The client was too slow for ReadTimeout: not a malformed request, and the shield does not count a 408
+					// as a security rejection.
+					status, msg = http.StatusRequestTimeout, "the request took too long to arrive"
 				}
 				http.Error(w, msg, status)
 				return

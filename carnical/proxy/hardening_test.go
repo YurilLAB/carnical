@@ -137,6 +137,9 @@ func TestRefusalsHoldWithTheRuleSetOffAndAreRecorded(t *testing.T) {
 		{"a header the site does not accept", get("/page", "Next-Action: abc\r\n"), func(c *Config) { c.DenyHeaders = []string{"next-action"} }, 400, idInternalHeader},
 		{"the same header with underscores", get("/page", "Next_Action: abc\r\n"), func(c *Config) { c.DenyHeaders = []string{"Next-Action"} }, 400, idInternalHeader},
 		{"that header on a site that did not ask", get("/page", "Next-Action: abc\r\n"), nil, 200, 0},
+		// A slow client, not a refusal: nothing is recorded.
+		{"a body that does not arrive within the read timeout", strings.Replace(post("a=1"), "Content-Length: 3", "Content-Length: 30", 1),
+			func(c *Config) { c.ReadTimeout = 300 * time.Millisecond }, 408, 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
