@@ -157,7 +157,7 @@ type Config struct {
 	Trusted []netip.Prefix
 	// Detector tunes attack detection.
 	Detector DetectorConfig
-	// Banner, if set, is asked to ban in the kernel the addresses the shield bans.
+	// Banner, if set, is asked to ban in the kernel the addresses the shield bans, except a range that holds a Trusted one.
 	Banner Banner
 	// Labeler, if set, names the country or network of the addresses in an attack, for the attack's record.
 	Labeler Labeler
@@ -478,7 +478,8 @@ func (s *Shield) Admit(r *http.Request, client netip.Addr) Decision {
 	}
 	d := Decision{key: key, start: ns, counted: true, trusted: trusted}
 	switch {
-	case banned:
+	// An IPv6 ban covers the client's /64, which a trusted proxy may share with the address that earned it.
+	case banned && !trusted:
 		return s.refuse(ns, d, info, idBanned, http.StatusForbidden, 0)
 	case !rateOK:
 		return s.refuse(ns, d, info, idRate, http.StatusTooManyRequests, 1)
@@ -607,16 +608,25 @@ func (s *Shield) strike(ns int64, key netip.Addr, info *attackInfo) {
 			inc.banned++
 		}
 	})
-	if s.cfg.Banner != nil {
-		bits := 32
-		if key.Is6() {
-			bits = 64
+	if s.cfg.Banner == nil {
+		return
+	}
+	bits := 32
+	if key.Is6() {
+		bits = 64
+	}
+	p := netip.PrefixFrom(key, bits)
+	// The kernel would drop every packet from the range, a trusted proxy's in it too: the ban then holds only here, where
+	// the proxy's own requests pass it.
+	for _, t := range s.cfg.Trusted {
+		if t.Overlaps(p) {
+			return
 		}
-		select {
-		case s.bans <- banReq{p: netip.PrefixFrom(key, bits), ttl: s.cfg.BanFor, reason: "carnical-shield attack " + strconv.Itoa(int(info.epoch))}:
-		default: // the helper is behind; the ban still holds in this process
-			s.counters.banErrors.Add(1)
-		}
+	}
+	select {
+	case s.bans <- banReq{p: p, ttl: s.cfg.BanFor, reason: "carnical-shield attack " + strconv.Itoa(int(info.epoch))}:
+	default: // the helper is behind; the ban still holds in this process
+		s.counters.banErrors.Add(1)
 	}
 }
 
@@ -703,12 +713,14 @@ func (s *Shield) Done(d Decision, status int, fromOrigin bool) {
 		s.counters.securityRejections.Add(1)
 		s.det.count(now, func(w *window) { w.securityRejects++ })
 	}
-	if status >= 400 {
-		return // nothing is learnt from errors
+	// Nothing is learnt from errors, nor from a trusted proxy, whose limits do not apply: its entry is its whole /64 for
+	// IPv6, which the proxy may share with addresses that are not trusted, and its standing would be theirs.
+	if status >= 400 || d.trusted {
+		return
 	}
 	// A higher limit is earned by what the application itself answered well, in any second that is not an attack's.
 	earn := s.det.earn.Load()
-	if earn != nil && (!earn.open || !fromOrigin || d.trusted) {
+	if earn != nil && (!earn.open || !fromOrigin) {
 		earn = nil
 	}
 	if earn != nil {

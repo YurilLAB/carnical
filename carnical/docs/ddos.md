@@ -157,7 +157,8 @@ at its limit.
 ## Who still gets through during an attack
 
 - **Known clients** earned five successful requests over at least a minute of ordinary traffic.
-  Standing earned in the minute before an attack does not count. This is reputation, not authentication:
+  Standing earned in the minute before an attack does not count, and a trusted proxy peer earns none
+  for its address (or its /64, which other clients may share). This is reputation, not authentication:
   known clients share a budget of twice the site's usual rate (at least 50 requests/second), and beyond
   it are treated like any other client.
 - **Browser challenges** let an unknown browser outside the budget solve a JavaScript SHA-256
@@ -166,7 +167,8 @@ at its limit.
   `Retry-After` rather than a challenge page.
 
 An address refused 30 times during an attack is banned for ten minutes, and again after another 30
-refusals if it carries on once the ban runs out. In monitor mode nothing is banned: an address over
+refusals if it carries on once the ban runs out. An IPv6 address is counted and banned with its
+/64; a trusted proxy peer is never refused for a ban, even one on a /64 it shares. In monitor mode nothing is banned: an address over
 its own limit is refused with 429 as at any other time. When the address table is full, an entry
 without standing is forgotten first; a ban or a known client's standing goes only when every entry
 in the sample of 32 has one. Rule IDs are 5004001

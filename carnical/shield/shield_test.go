@@ -3,6 +3,7 @@
 package shield
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
@@ -542,6 +543,49 @@ func TestABanIsRenewedWithinOneAttack(t *testing.T) {
 			t.Fatalf("decisions %v, then %+v; %d bans", ids, d, s.Snapshot().Banned)
 		}
 	})
+	// An IPv6 ban covers the /64. A trusted proxy that shares it with the address that earned the ban is still served, and
+	// the ban is not sent to the kernel, which would drop the proxy's packets with the rest of the range. Nor do the proxy's
+	// own requests, answered before the attack, give the range standing: its neighbour is a stranger like any other.
+	t.Run("a trusted proxy in a banned /64", func(t *testing.T) {
+		lb, neighbour := netip.MustParseAddr("2001:db8:1::10"), netip.MustParseAddr("2001:db8:1::99")
+		for _, tc := range []struct {
+			name     string
+			trusted  netip.Prefix
+			answered bool // the proxy's health checks were answered before the attack
+			want     Action
+			bans     uint64
+			kernel   int
+		}{
+			{"is served and keeps its packets", netip.PrefixFrom(lb, 128), false, Allow, 1, 0},
+			{"control: an untrusted one is banned with its range", netip.MustParsePrefix("2001:db8:9::1/128"), false, Refuse, 1, 1},
+			{"its answered requests give its range no standing", netip.PrefixFrom(lb, 128), true, Allow, 1, 0},
+			{"control: an untrusted one's answered requests make its range known", netip.MustParsePrefix("2001:db8:9::1/128"), true, Allow, 0, 0},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				now := now
+				s := newTestShield(t, &now, func(c *Config) {
+					c.BanAfter, c.Banner, c.Trusted = 3, nopBanner{}, []netip.Prefix{tc.trusted}
+				})
+				s.Close() // nothing takes a ban off the queue: what was sent to the kernel stays there
+				if tc.answered {
+					s.det.learning.Store(true)
+					for i := 0; i < 10; i++ {
+						now = now.Add(20 * time.Second)
+						s.Done(s.Admit(req("GET", "/healthz"), lb), 200, true)
+					}
+					now = now.Add(5 * time.Minute)
+					s.det.learning.Store(false)
+				}
+				s.det.info.Store(&attackInfo{epoch: 1, since: now.UnixNano(), fps: map[uint64]bool{}, paths: map[uint64]bool{}})
+				for i := 0; i < 5; i++ { // one request in the budget, then three refusals and a ban
+					s.Admit(req("GET", "/api", "Accept", "application/json"), neighbour)
+				}
+				if d := s.Admit(req("GET", "/healthz"), lb); d.Action != tc.want || s.Snapshot().Banned != tc.bans || len(s.bans) != tc.kernel {
+					t.Fatalf("the proxy got %+v; %d bans, %d sent to the kernel", d, s.Snapshot().Banned, len(s.bans))
+				}
+			})
+		}
+	})
 	// Nor does a client that became known shortly before the attack lose its standing for its connections (the reserved
 	// share, and keeping an idle connection), which mitigation takes from it.
 	t.Run("monitor mode keeps a recent client known", func(t *testing.T) {
@@ -897,6 +941,11 @@ type addrConn struct {
 }
 
 func (c addrConn) RemoteAddr() net.Addr { return c.remote }
+
+// nopBanner accepts every ban and does nothing with it.
+type nopBanner struct{}
+
+func (nopBanner) Ban(context.Context, netip.Prefix, time.Duration, string) error { return nil }
 
 // An address's limits are raised by what that address itself has had answered well by the application in seconds that
 // were not an attack's. What one address earns no other address has, and a request that was answered with an error, or
