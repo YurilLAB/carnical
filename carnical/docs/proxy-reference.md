@@ -47,6 +47,24 @@ guarantees.
 are matched as PHP routes them, ignoring empty segments, a trailing slash, path info and path parameters.
 Login attempts, `-api-per-minute` and `-max-conns-per-ip` count an IPv6 /64 as one address, as the flood
 protection does.
+
+The login limit and `-api-per-minute` are rate rules with a table of clients each, so one cannot use up
+the other's room. Each client has a sliding window of ten slots of six seconds: while the table holds a
+client, no minute holds more requests from it than its limit, and a client is held back at most one slot
+(six seconds) longer than an exact log of its requests would hold it. A request that matches both rules
+goes on only if both have room, and a refused request is counted by neither. A refusal is `429` with
+`Cache-Control: no-store` and a `Retry-After` that is the exact number of seconds, rounded up, until the
+request would be admitted.
+A table holds at most 50,000 clients. When it is full, the client admitted least recently makes room for
+a new one, so whoever fills a table locks no other network out; an idle client goes first, and when a
+client still inside its window has to go, rule 5000041 says so, at most once every ten seconds with how
+many such evictions were not logged. A dropped client comes back with a fresh window, and no client is
+ever refused for what its neighbours sent: a source able to fill a table already has more addresses than
+the table holds (one IPv6 /48 is 65,536 clients), each with a budget of its own, so the per-client limits
+do not bound what a whole network sends; the network budgets of `-ddos` do. Refusals (5000022 for
+logins, 5000042 for API quotas) are logged at most once a second per rule, and the next line logged says
+how many refusals were not.
+
 Responses get `nosniff`, lose software banners and prevent caching when they set cookies or serve
 HTML from a stylesheet address. Connection limits and a 100-stream HTTP/2 cap bound transport work.
 
@@ -58,8 +76,8 @@ expanded CRS text and inspector panic details. Treat it as sensitive logging.
 
 Format totals are process-local blocked/monitored findings. The default `-formats-stats-interval 1m`
 logs changed snapshots; `0` disables reporting, and graceful shutdown flushes a final changed
-snapshot. See [format monitoring](formats.md#monitoring-and-logs). API quotas use 5000042,
-rate-state exhaustion 5000041 and inspector failures 5000040.
+snapshot. See [format monitoring](formats.md#monitoring-and-logs). Login limits use 5000022, API quotas
+5000042, a full rate-limit table 5000041 and inspector failures 5000040.
 
 See [attack coverage](attacks.md) and [security findings](../../docs/security-findings.md) for
 application-dependent limits and verified fixes.

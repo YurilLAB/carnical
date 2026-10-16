@@ -9,12 +9,14 @@ import (
 	"crypto/x509"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"net/url"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -625,8 +627,9 @@ func TestAPIRatePolicy(t *testing.T) {
 				}
 				if want == 200 {
 					accepted++
-				} else if !strings.Contains(reply, "Retry-After: 60\r\n") || !strings.Contains(reply, "Cache-Control: no-store\r\n") {
-					t.Fatal("rate refusal lacks retry or cache policy")
+				} else if retry := retryAfter(reply); retry < 55 || retry > 66 || !strings.Contains(reply, "Cache-Control: no-store\r\n") {
+					// Requests a few seconds apart, two a minute: the window clears 55 to 66 seconds after the first.
+					t.Fatalf("rate refusal with Retry-After %d or without no-store", retry)
 				}
 			}
 			if len(s.up.requests()) != accepted {
@@ -692,18 +695,109 @@ func TestAPIRatePolicy(t *testing.T) {
 			t.Fatalf("a client in another /64 got %d", status)
 		}
 	})
-	t.Run("state saturation refuses live traffic", func(t *testing.T) {
-		s := start(t, on)
-		for i := 0; i < rateLimiterKeys; i++ {
-			if s.edge.limiter.allow(fmt.Sprintf("api:test-%d", i), 2) != rateAllowed {
-				t.Fatal("capacity filled early")
+	t.Run("state saturation does not refuse new clients", func(t *testing.T) {
+		s := start(t, func(c *Config) { on(c); c.TrustedProxies = []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")} })
+		now := int64(time.Hour) // the start of a slot
+		s.edge.now = func() int64 { return now }
+		table := s.edge.rules[0].table
+		table.mu.Lock()
+		for i := 0; i < rateKeysPerRule; i++ {
+			table.admit(netip.AddrFrom4([4]byte{10, byte(i >> 16), byte(i >> 8), byte(i)}), now)
+		}
+		table.mu.Unlock()
+		for i, want := range []int{200, 200, 429} {
+			status, reply := s.raw(t, get("/api", "X-Forwarded-For: 198.51.100.1\r\n"))
+			if status != want || want == 429 && !strings.Contains(reply, "Retry-After: 66\r\n") {
+				t.Fatalf("request %d from a client over its limit: %d, want %d\n%s", i+1, status, want, reply)
 			}
 		}
-		if status, reply := s.raw(t, get("/api")); status != 503 || !strings.Contains(reply, "Retry-After: 60\r\n") {
-			t.Fatalf("capacity response %d", status)
+		if status, _ := s.raw(t, get("/api", "X-Forwarded-For: 198.51.100.2\r\n")); status != 200 {
+			t.Fatalf("a new client was refused: %d", status)
 		}
-		if len(s.up.requests()) != 0 {
-			t.Fatal("untracked request reached origin")
+		if len(table.index) > rateKeysPerRule || len(s.up.requests()) != 3 {
+			t.Fatalf("%d clients in the table, %d requests at the origin", len(table.index), len(s.up.requests()))
+		}
+	})
+	t.Run("a refusal says exactly when to come back", func(t *testing.T) {
+		s := start(t, on)
+		start := int64(time.Hour) // the start of a slot
+		now := start
+		s.edge.now = func() int64 { return now }
+		for _, step := range []struct {
+			at     time.Duration
+			status int
+			retry  string
+		}{
+			{0, 200, ""}, {0, 200, ""}, {54 * time.Second, 429, "12"}, {65 * time.Second, 429, "1"}, {66 * time.Second, 200, ""},
+			// A wait of 55.7 seconds is 56, never 55, which would send the client back while it is still refused.
+			{66500 * time.Millisecond, 200, ""}, {76300 * time.Millisecond, 429, "56"}, {131300 * time.Millisecond, 429, "1"}, {132300 * time.Millisecond, 200, ""},
+		} {
+			now = start + int64(step.at)
+			status, reply := s.raw(t, get("/api"))
+			if status != step.status || step.retry != "" && (!strings.Contains(reply, "Retry-After: "+step.retry+"\r\n") || !strings.Contains(reply, "Cache-Control: no-store\r\n")) {
+				t.Fatalf("at %v: %d, want %d with Retry-After %q\n%s", step.at, status, step.status, step.retry, reply)
+			}
+		}
+		if len(s.up.requests()) != 5 {
+			t.Fatalf("%d requests at the origin, want 5", len(s.up.requests()))
+		}
+	})
+	t.Run("a refusal by one rule uses up no other rule's budget", func(t *testing.T) {
+		seen := &refusals{}
+		s := start(t, func(c *Config) {
+			ruleSetOff(c)
+			c.OnMatch = seen.record
+			c.WordPress = WordPressPolicy{Enabled: true, LoginPerMinute: 1}
+			c.APIRate = APIRatePolicy{PerMinute: 3, Paths: []string{"/"}}
+		})
+		start := int64(time.Hour) // the start of a slot
+		now := start
+		s.edge.now = func() int64 { return now }
+		login := "POST /wp-login.php HTTP/1.1\r\n" + preamble + "Content-Type: application/x-www-form-urlencoded\r\nContent-Length: 11\r\nConnection: close\r\n\r\nlog=a&pwd=b"
+		page := get("/page")
+		var statuses []int
+		for _, step := range []struct {
+			at      time.Duration // each refusal is a second or more after the last, so each is logged
+			request string
+		}{
+			// The second login is refused by the login rule and not counted by the API rule, which has room for two more.
+			{1 * time.Second, login}, {2 * time.Second, login}, {3 * time.Second, page}, {4 * time.Second, page}, {5 * time.Second, page}, {6 * time.Second, login},
+			// Two minutes on, the API rule is full and refuses a login the login rule has room for. Had the login rule
+			// counted it, it would still be in the login window at 186s and refuse the login the API rule lets through.
+			{120 * time.Second, page}, {121 * time.Second, page}, {122 * time.Second, page}, {150 * time.Second, login}, {186 * time.Second, login},
+		} {
+			now = start + int64(step.at)
+			status, _ := s.raw(t, step.request)
+			statuses = append(statuses, status)
+		}
+		if want := []int{200, 429, 200, 200, 429, 429, 200, 200, 200, 429, 200}; !equalInts(statuses, want) || len(s.up.requests()) != 7 {
+			t.Fatalf("statuses %v, want %v; %d at the origin", statuses, want, len(s.up.requests()))
+		}
+		if want := []int{idRateLimited, idAPIRateLimited, idRateLimited, idAPIRateLimited}; !equalInts(seen.ids, want) {
+			t.Fatalf("logged %v, want %v", seen.ids, want)
+		}
+	})
+	t.Run("refusals are logged at most once a second per rule", func(t *testing.T) {
+		seen := &matches{}
+		s := start(t, func(c *Config) { on(c); c.OnMatch = seen.record })
+		now := int64(time.Hour)
+		s.edge.now = func() int64 { return now }
+		for i, want := range []int{200, 200, 429, 429, 429, 429, 429} {
+			if status, _ := s.raw(t, get("/api")); status != want {
+				t.Fatalf("request %d: %d, want %d", i+1, status, want)
+			}
+		}
+		now += int64(time.Second)
+		if status, _ := s.raw(t, get("/api")); status != 429 {
+			t.Fatalf("a refusal a second later: %d", status)
+		}
+		var logged []string
+		for _, m := range seen.all() {
+			logged = append(logged, fmt.Sprint(m.RuleID, " ", m.Message))
+		}
+		want := []string{"5000042 too many API requests from one address", "5000042 too many API requests from one address (4 more refusals not logged)"}
+		if strings.Join(logged, "\n") != strings.Join(want, "\n") {
+			t.Fatalf("logged %q, want %q", logged, want)
 		}
 	})
 	t.Run("trusted ranges cannot be changed by the caller after construction", func(t *testing.T) {
@@ -729,33 +823,273 @@ func TestAPIRatePolicy(t *testing.T) {
 	})
 }
 
+// allowAt is one request by key at now, checked and, when admitted, counted.
+func allowAt(l *windowLimiter, key netip.Addr, now int64) (ok bool, wait int64, evicted bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if ok, wait = l.check(key, now); ok {
+		evicted = l.admit(key, now)
+	}
+	return ok, wait, evicted
+}
+
+// retryAfter is a reply's Retry-After in seconds, or -1 without one.
+func retryAfter(reply string) int {
+	_, value, found := strings.Cut(reply, "\r\nRetry-After: ")
+	value, _, _ = strings.Cut(value, "\r\n")
+	if seconds, err := strconv.Atoi(value); found && err == nil {
+		return seconds
+	}
+	return -1
+}
+
 func TestSlidingRateBudget(t *testing.T) {
-	t.Run("exact boundary and denied attempts do not extend it", func(t *testing.T) {
-		now := time.Now()
-		l := rateLimiter{now: func() time.Time { return now }}
-		for i := 0; i < 2; i++ {
-			if l.allow("a", 2) != rateAllowed {
-				t.Fatal("early refusal")
+	a, b, c := netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("192.0.2.2"), netip.MustParseAddr("192.0.2.3")
+	sec := int64(time.Second)
+	t.Run("no window holds more than the limit, and a refusal is at most a slot late", func(t *testing.T) {
+		for _, tc := range []struct {
+			name   string
+			limit  int
+			window time.Duration
+			seed   uint64
+		}{
+			{"5 a minute", 5, time.Minute, 1},
+			{"1 a second", 1, time.Second, 2},
+			{"100 an hour", 100, time.Hour, 3},
+			{"7 in 10 seconds", 7, 10 * time.Second, 4},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				rng := rand.New(rand.NewPCG(tc.seed, 0))
+				l := newWindowLimiter(tc.limit, tc.window, 16)
+				window, slot := int64(tc.window), int64(tc.window)/windowSlots
+				admitted, refused := map[netip.Addr][]int64{}, map[netip.Addr][]int64{}
+				now := int64(0)
+				for i := 0; i < 20000; i++ {
+					// Three clients, each sending about twice its limit.
+					now += rng.Int64N(window/int64(3*tc.limit) + 1)
+					key := []netip.Addr{a, b, c}[rng.IntN(3)]
+					if ok, _, _ := allowAt(l, key, now); ok {
+						admitted[key] = append(admitted[key], now)
+					} else {
+						refused[key] = append(refused[key], now)
+					}
+				}
+				within := func(times []int64, from, to int64) (n int) {
+					for _, at := range times {
+						if at >= from && at <= to {
+							n++
+						}
+					}
+					return n
+				}
+				for key, times := range admitted {
+					for _, at := range times {
+						if n := within(times, at, at+window); n > tc.limit {
+							t.Fatalf("%s: %d admitted in the window from %d", key, n, at)
+						}
+					}
+					for _, at := range refused[key] {
+						if n := within(times, at-window-slot, at); n < tc.limit {
+							t.Fatalf("%s: refused at %d with only %d admitted in the window and a slot before", key, at, n)
+						}
+					}
+				}
+				if len(refused) == 0 {
+					t.Fatal("the trace never reached the limit")
+				}
+			})
+		}
+	})
+	t.Run("Retry-After is exact", func(t *testing.T) {
+		for _, tc := range []struct {
+			name     string
+			limit    int
+			window   time.Duration
+			admitted []int64 // nanoseconds
+			at       int64
+			wait     int64
+		}{
+			{"a burst at the start of a slot", 3, time.Minute, []int64{0, 0, 0}, 10 * sec, 56 * sec},
+			{"spread over the window", 3, time.Minute, []int64{0, 20 * sec, 40 * sec}, 50 * sec, 16 * sec},
+			{"the oldest slot is enough", 2, time.Minute, []int64{5 * sec, 59 * sec}, 61 * sec, 5 * sec},
+			{"a short window", 1, 10 * time.Second, []int64{sec / 2}, 3200 * int64(time.Millisecond), 7800 * int64(time.Millisecond)},
+			// A request that read the clock just before another one took the lock and was admitted into the next slot.
+			{"a reading from before the newest slot", 3, time.Minute, []int64{30 * sec, 30 * sec, 30 * sec}, 30*sec - 1, 66*sec + 1},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				l := newWindowLimiter(tc.limit, tc.window, 4)
+				for _, at := range tc.admitted {
+					if ok, _, _ := allowAt(l, a, at); !ok {
+						t.Fatalf("refused at %d", at)
+					}
+				}
+				ok, wait, _ := allowAt(l, a, tc.at)
+				if ok || wait != tc.wait {
+					t.Fatalf("admitted %v, wait %v; want a refusal with %v", ok, time.Duration(wait), time.Duration(tc.wait))
+				}
+				for _, probe := range []struct {
+					at int64
+					ok bool
+				}{{tc.at + wait - 1, false}, {tc.at + wait, true}} {
+					l.mu.Lock()
+					ok, _ := l.check(a, probe.at)
+					l.mu.Unlock()
+					if ok != probe.ok {
+						t.Fatalf("at %v: admitted %v, want %v", time.Duration(probe.at), ok, probe.ok)
+					}
+				}
+			})
+		}
+	})
+	t.Run("a refused request is not counted and does not keep its client in the table", func(t *testing.T) {
+		l := newWindowLimiter(2, time.Minute, 4)
+		allowAt(l, a, 0)
+		allowAt(l, a, 0)
+		for i := 0; i < 100; i++ {
+			if ok, _, _ := allowAt(l, a, 30*sec); ok {
+				t.Fatal("admitted over the limit")
 			}
 		}
-		now = now.Add(time.Minute - time.Nanosecond)
-		if l.allow("a", 2) != rateExceeded {
-			t.Fatal("expired early")
+		if ok, _, _ := allowAt(l, a, 66*sec); !ok {
+			t.Fatal("refusals extended the window")
 		}
-		now = now.Add(time.Nanosecond)
-		if l.allow("a", 2) != rateAllowed {
-			t.Fatal("did not expire at boundary")
+		l = newWindowLimiter(1, time.Minute, 2)
+		allowAt(l, a, 0)
+		allowAt(l, b, sec)
+		if ok, _, _ := allowAt(l, a, 2*sec); ok {
+			t.Fatal("admitted over the limit")
+		}
+		if ok, _, evicted := allowAt(l, c, 3*sec); !ok || !evicted {
+			t.Fatalf("a new client in a full table: admitted %v, evicted a live client %v", ok, evicted)
+		}
+		if _, kept := l.index[a]; kept {
+			t.Fatal("a refusal kept its client in the table")
+		}
+		if ok, _, _ := allowAt(l, b, 4*sec); ok {
+			t.Fatal("the client admitted later lost its count")
+		}
+	})
+	t.Run("an idle client makes room first", func(t *testing.T) {
+		l := newWindowLimiter(1, time.Minute, 2)
+		allowAt(l, a, 0)
+		allowAt(l, b, 50*sec)
+		if ok, _, evicted := allowAt(l, c, 70*sec); !ok || evicted {
+			t.Fatalf("admitted %v, evicted a live client %v", ok, evicted)
+		}
+		if _, kept := l.index[a]; kept || len(l.index) != 2 {
+			t.Fatalf("the idle client was kept: %d clients", len(l.index))
+		}
+		if ok, _, _ := allowAt(l, b, 70*sec); ok {
+			t.Fatal("the live client lost its count")
+		}
+	})
+	t.Run("a client dropped from a full table costs its neighbours nothing", func(t *testing.T) {
+		for _, tc := range []struct {
+			name     string
+			attacker func(i int) netip.Addr
+		}{
+			{"IPv6 /64s of many /48s", func(i int) netip.Addr {
+				return netip.AddrFrom16([16]byte{0x20, 0x01, 0x0d, 0xb8, byte(i >> 8), byte(i), 0, 0, 0, 0, 0, 0, 0, 0, 0, 1})
+			}},
+			{"IPv4 addresses of many /24s", func(i int) netip.Addr { return netip.AddrFrom4([4]byte{10, byte(i >> 8), byte(i), 1}) }},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				// The users of one /24 each make one request of their two, then a flood drops every one of them.
+				const limit, capacity = 2, 8
+				l := newWindowLimiter(limit, time.Minute, capacity)
+				user := func(i int) netip.Addr { return netip.AddrFrom4([4]byte{198, 51, 100, byte(i)}) }
+				for i := 0; i < capacity; i++ {
+					allowAt(l, user(i), 0)
+				}
+				for i := 0; i < capacity; i++ {
+					if ok, _, _ := allowAt(l, tc.attacker(i), sec); !ok {
+						t.Fatalf("attacker %d refused", i)
+					}
+				}
+				for _, client := range []netip.Addr{user(0), user(200)} {
+					if ok, wait, _ := allowAt(l, client, 2*sec); !ok {
+						t.Fatalf("%s refused for its neighbours' requests, wait %v", client, time.Duration(wait))
+					}
+				}
+			})
+		}
+	})
+	t.Run("a full table admits a new client and says so once every ten seconds", func(t *testing.T) {
+		seen := &matches{}
+		s := start(t, func(c *Config) { ruleSetOff(c); c.APIRate = APIRatePolicy{PerMinute: 2}; c.OnMatch = seen.record })
+		now := int64(time.Hour)
+		s.edge.now = func() int64 { return now }
+		request := httptest.NewRequest(http.MethodGet, "/api", nil)
+		key := func(i int) netip.Addr { return netip.AddrFrom4([4]byte{10, byte(i >> 16), byte(i >> 8), byte(i)}) }
+		for i := 0; i < rateKeysPerRule; i++ {
+			if !s.edge.checkRequest(httptest.NewRecorder(), request, key(i)) {
+				t.Fatal("refused while the table filled")
+			}
+		}
+		table := s.edge.rules[0].table
+		for i := 0; i < 26; i++ {
+			newcomer := netip.AddrFrom4([4]byte{198, 51, 100, byte(i)})
+			if w := httptest.NewRecorder(); !s.edge.checkRequest(w, request, newcomer) {
+				t.Fatalf("new client %d refused: %d", i, w.Code)
+			}
+			if _, kept := table.index[key(i)]; kept || len(table.index) != rateKeysPerRule {
+				t.Fatalf("new client %d: the first client admitted is kept %v, %d clients", i, kept, len(table.index))
+			}
+			now += int64(time.Second)
+		}
+		var logged []string
+		for _, m := range seen.all() {
+			logged = append(logged, fmt.Sprint(m.RuleID, " ", m.Severity, " ", m.Message))
+		}
+		line := "5000041 WARNING rate-limit table full; least recently admitted client evicted"
+		want := []string{line, line + " (9 more evictions not logged)", line + " (9 more evictions not logged)"}
+		if strings.Join(logged, "\n") != strings.Join(want, "\n") || s.edge.evictedLive.Load() != 26 {
+			t.Fatalf("logged %q, want %q; %d evictions counted", logged, want, s.edge.evictedLive.Load())
+		}
+	})
+	t.Run("clients within their limits never lock out a new client", func(t *testing.T) {
+		for _, tc := range []struct {
+			name         string
+			perMinute, n int
+		}{{"two clients at 100000 a minute", 100000, 2}, {"334 clients at 600 a minute", 600, 334}} {
+			t.Run(tc.name, func(t *testing.T) {
+				s := start(t, func(c *Config) {
+					ruleSetOff(c)
+					c.WordPress = WordPressPolicy{Enabled: true}
+					c.APIRate = APIRatePolicy{PerMinute: tc.perMinute}
+				})
+				api := httptest.NewRequest(http.MethodGet, "/api/orders", nil)
+				for i := 0; i < tc.n; i++ {
+					client := netip.AddrFrom4([4]byte{10, 0, byte(i >> 8), byte(i)})
+					for j := 0; j < tc.perMinute; j++ {
+						if w := httptest.NewRecorder(); !s.edge.checkRequest(w, api, client) {
+							t.Fatalf("client %d refused within its limit: %d", i, w.Code)
+						}
+					}
+				}
+				fresh := netip.MustParseAddr("203.0.113.9")
+				login := httptest.NewRequest(http.MethodPost, "/wp-login.php", strings.NewReader("log=a&pwd=b"))
+				for _, r := range []*http.Request{login, api} {
+					if w := httptest.NewRecorder(); !s.edge.checkRequest(w, r, fresh) {
+						t.Fatalf("a new client's %s %s: %d", r.Method, r.URL.Path, w.Code)
+					}
+				}
+				if w := httptest.NewRecorder(); s.edge.checkRequest(w, api, netip.AddrFrom4([4]byte{10, 0, 0, 0})) || w.Code != 429 {
+					t.Fatalf("a client over its limit: %d", w.Code)
+				}
+			})
 		}
 	})
 	t.Run("concurrent admission does not overshoot", func(t *testing.T) {
-		var l rateLimiter
+		s := start(t, func(c *Config) { ruleSetOff(c); c.APIRate = APIRatePolicy{PerMinute: 7} })
+		request := httptest.NewRequest(http.MethodGet, "/api", nil)
 		var accepted atomic.Int64
 		var group sync.WaitGroup
 		for i := 0; i < 100; i++ {
 			group.Add(1)
 			go func() {
 				defer group.Done()
-				if l.allow("same", 7) == rateAllowed {
+				if s.edge.checkRequest(httptest.NewRecorder(), request, a) {
 					accepted.Add(1)
 				}
 			}()
@@ -765,74 +1099,66 @@ func TestSlidingRateBudget(t *testing.T) {
 			t.Fatalf("accepted %d", accepted.Load())
 		}
 	})
-	t.Run("event storage is bounded even for one busy client", func(t *testing.T) {
-		now := time.Now()
-		l := rateLimiter{now: func() time.Time { return now }}
-		for i := 0; i < rateLimiterEvents; i++ {
-			if l.allow("same", rateLimiterEvents+1) != rateAllowed {
-				t.Fatal("early capacity refusal")
-			}
-		}
-		if l.allow("same", rateLimiterEvents+1) != rateFull {
-			t.Fatal("event cap bypassed")
-		}
-		if l.size != rateLimiterEvents || len(l.events) != rateLimiterEvents {
-			t.Fatal("event storage grew")
-		}
-		now = now.Add(time.Minute)
-		if l.allow("new", 1) != rateAllowed || len(l.hits) != 1 || l.size != 1 {
-			t.Fatal("expired capacity not reclaimed")
-		}
-	})
 }
 
 func FuzzSlidingRateBudget(f *testing.F) {
 	f.Add([]byte{0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff, 0}, uint8(3))
 	f.Add([]byte(strings.Repeat("0123456", 20)), uint8(7))
+	f.Add([]byte(strings.Repeat("\x10\x21\x32\x43\x54\x65\x06", 30)), uint8(0))
 	f.Fuzz(func(t *testing.T, commands []byte, quota uint8) {
 		if len(commands) > 4096 {
 			return
 		}
-		now := time.Now()
-		base := now
-		// A small ring exercises wraparound and capacity under the same algorithm used in production.
-		l := rateLimiter{hits: map[string]int{}, events: make([]rateEvent, 16), now: func() time.Time { return now }}
-		type event struct {
-			key     string
-			seconds int64
-		}
-		var admitted []event
-		var elapsed int64
+		// A table of four, for seven clients, makes room often.
+		const capacity = 4
 		n := int(quota%8) + 1
-		for _, cmd := range commands {
-			elapsed += int64(cmd >> 4)
-			now = base.Add(time.Duration(elapsed) * time.Second)
-			key := string(rune('a' + cmd%7))
-			var active []event
-			hits := 0
-			for _, event := range admitted {
-				if elapsed-event.seconds < 60 {
-					active = append(active, event)
-					if event.key == key {
-						hits++
-					}
+		slot := int64(time.Minute) / windowSlots
+		l := newWindowLimiter(n, time.Minute, capacity)
+		// The model keeps each client's admission times, and the clients in the order they were last admitted. A client
+		// dropped from the table starts again with nothing.
+		admitted := map[netip.Addr][]int64{}
+		var order []netip.Addr
+		inWindow := func(times []int64, from int64) (count int) {
+			for _, at := range times {
+				if at/slot >= from {
+					count++
 				}
 			}
-			admitted = active
-			want := rateAllowed
-			if hits >= n {
-				want = rateExceeded
-			} else if len(admitted) >= 16 {
-				want = rateFull
+			return count
+		}
+		var now int64
+		for _, cmd := range commands {
+			now += int64(cmd>>4) * int64(time.Second)
+			key := netip.AddrFrom4([4]byte{192, 0, 2, cmd % 7})
+			current := now / slot
+			times, known := admitted[key]
+			wantOK, wantWait, wantEvicted := inWindow(times, current-windowSlots) < n, int64(0), false
+			if !wantOK {
+				for k := int64(1); ; k++ {
+					if inWindow(times, current+k-windowSlots) < n {
+						wantWait = (current+k)*slot - now
+						break
+					}
+				}
+			} else {
+				if !known && len(admitted) == capacity {
+					wantEvicted = inWindow(admitted[order[0]], current-windowSlots) > 0
+					delete(admitted, order[0])
+					order = order[1:]
+				}
+				admitted[key] = append(admitted[key], now)
+				order = append(slices.DeleteFunc(order, func(k netip.Addr) bool { return k == key }), key)
 			}
-			if got := l.allow(key, n); got != want {
-				t.Fatalf("decision %d, want %d", got, want)
+			ok, wait, evicted := allowAt(l, key, now)
+			if ok != wantOK || wait != wantWait || evicted != wantEvicted {
+				t.Fatalf("%s at %v: admitted %v, wait %v, evicted %v; want %v, %v, %v", key, time.Duration(now), ok, time.Duration(wait), evicted, wantOK, time.Duration(wantWait), wantEvicted)
 			}
-			if want == rateAllowed {
-				admitted = append(admitted, event{key, elapsed})
+			var listed []netip.Addr
+			for i := l.head; i >= 0; i = l.slab[i].next {
+				listed = append(listed, l.slab[i].key)
 			}
-			if l.size != len(admitted) || l.size > len(l.events) {
-				t.Fatal("event accounting differs from reference")
+			if len(l.index) != len(admitted) || len(l.slab) > capacity || !slices.Equal(listed, order) {
+				t.Fatalf("table %d clients in order %v, model %d in order %v", len(l.index), listed, len(admitted), order)
 			}
 		}
 	})

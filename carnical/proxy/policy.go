@@ -10,7 +10,10 @@ import (
 	"net/url"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	"github.com/YurilLAB/coraza/carnical/shield"
 )
@@ -224,16 +227,17 @@ func (e *Edge) checkRequest(w http.ResponseWriter, r *http.Request, client netip
 			return false
 		}
 	}
-	if e.cfg.WordPress.Enabled && !e.checkWordPress(w, r, client) {
+	var route string
+	if e.cfg.WordPress.Enabled || len(e.rules) > 0 {
+		route = routePath(r.URL.Path)
+	}
+	if e.cfg.WordPress.Enabled && !e.checkWordPress(w, r, route) {
 		return false
 	}
-	if e.cfg.APIRate.PerMinute > 0 && e.cfg.APIRate.matches(r.URL.Path) {
-		return e.checkRate(w, r, "api:"+clientKey(client), e.cfg.APIRate.PerMinute, idAPIRateLimited, "too many API requests from one address")
-	}
-	return true
+	return e.checkLimits(w, r, client, route)
 }
 
-// APIRatePolicy gives one client a shared sliding-minute budget across all matching prefixes and HTTP methods.
+// APIRatePolicy gives each client its own sliding-minute budget, shared across all matching prefixes and HTTP methods.
 // Paths are plain paths compared without ASCII case distinctions: /api matches /api and /api/... but not /apiary.
 // Empty uses /api and /graphql. Case, slash and matrix normalization are conservative quota matching, not route rewriting.
 // PerMinute is 1..100000 when enabled; zero disables the policy. State is local to one Edge and is lost on restart.
@@ -263,10 +267,10 @@ func (p APIRatePolicy) normalized() (APIRatePolicy, error) {
 	return p, nil
 }
 
-func (p APIRatePolicy) matches(decoded string) bool {
-	decoded = routePath(decoded)
+// matches reports whether a route path (see routePath) is under one of the prefixes.
+func (p APIRatePolicy) matches(route string) bool {
 	for _, prefix := range p.Paths {
-		if prefix == "/" || decoded == prefix || strings.HasPrefix(decoded, prefix+"/") {
+		if prefix == "/" || route == prefix || strings.HasPrefix(route, prefix+"/") {
 			return true
 		}
 	}
@@ -284,24 +288,144 @@ func routePath(decoded string) string {
 	return strings.ToLower(path.Clean(strings.Join(parts, "/")))
 }
 
-// clientKey is what the per-client limits count: an IPv4 address or an IPv6 /64, as the shield does, so a client
-// cannot get a fresh budget by changing the low bits of its IPv6 address.
-func clientKey(a netip.Addr) string { return shield.SourceKey(a).String() }
+// compiledRule is one per-client rate limit: which requests it counts, its own table of clients, and how a refusal is
+// logged. A client is an IPv4 address or an IPv6 /64, as the shield counts it, so a client cannot get a fresh budget by
+// changing the low bits of its IPv6 address.
+type compiledRule struct {
+	match   func(r *http.Request, route string) bool
+	count   int           // requests a client may make in a window
+	window  time.Duration // the window's length
+	id      int
+	message string // fixed text: never request data
+	table   *windowLimiter
+	// A flood of refusals must not become a flood of log lines: a rule logs at most one refusal a second, and the next
+	// line it logs says how many were not.
+	logSecond atomic.Int64
+	unlogged  atomic.Int64
+}
 
-func (e *Edge) checkRate(w http.ResponseWriter, r *http.Request, key string, n, rule int, message string) bool {
-	switch e.limiter.allow(key, n) {
-	case rateAllowed:
+// neverLogged is a log second long before any clock reading.
+const neverLogged = -1 << 62
+
+// compileLimits builds the rate rules a configuration asks for, each with its own table: the WordPress login limit, then
+// the API limit.
+func compileLimits(cfg Config) []*compiledRule {
+	var rules []*compiledRule
+	if cfg.WordPress.Enabled {
+		perMinute := cfg.WordPress.LoginPerMinute
+		if perMinute <= 0 {
+			perMinute = 10
+		}
+		rules = append(rules, &compiledRule{count: perMinute, window: time.Minute, id: idRateLimited,
+			message: "too many login attempts from one address",
+			match: func(r *http.Request, route string) bool {
+				return r.Method == http.MethodPost && runsScript(route, "/wp-login.php")
+			}})
+	}
+	if cfg.APIRate.PerMinute > 0 {
+		api := cfg.APIRate
+		rules = append(rules, &compiledRule{count: api.PerMinute, window: time.Minute, id: idAPIRateLimited,
+			message: "too many API requests from one address",
+			match:   func(_ *http.Request, route string) bool { return api.matches(route) }})
+	}
+	for _, rule := range rules {
+		rule.table = newWindowLimiter(rule.count, rule.window, min(rateKeysPerRule, rateKeysInAll/len(rules)))
+		rule.logSecond.Store(neverLogged)
+	}
+	return rules
+}
+
+// clock is the time the rate rules go by, in nanoseconds: the monotonic clock, so that setting the wall clock cannot
+// lift or extend a limit.
+func (e *Edge) clock() int64 {
+	if e.now != nil {
+		return e.now()
+	}
+	return monotonic()
+}
+
+// checkLimits counts a request against every rate rule it matches, all or nothing: it goes on only if each of them has
+// room, and a refused request is counted by none of them, so a refusal by one rule never uses up another's budget. The
+// tables are locked in rule order, so two requests cannot each hold one the other waits for.
+func (e *Edge) checkLimits(w http.ResponseWriter, r *http.Request, client netip.Addr, route string) bool {
+	var matched uint64 // there are far fewer rules than 64
+	for i, rule := range e.rules {
+		if rule.match(r, route) {
+			matched |= 1 << i
+		}
+	}
+	if matched == 0 {
 		return true
-	case rateFull:
-		w.Header().Set("Retry-After", "60")
-		w.Header().Set("Cache-Control", "no-store")
-		e.refuse(w, r, http.StatusServiceUnavailable, idRateStateFull, "rate-limit state capacity exhausted")
-	default:
-		w.Header().Set("Retry-After", "60")
-		w.Header().Set("Cache-Control", "no-store")
-		e.refuse(w, r, http.StatusTooManyRequests, rule, message)
+	}
+	key, now := shield.SourceKey(client), e.clock()
+	for i, rule := range e.rules {
+		if matched&(1<<i) != 0 {
+			rule.table.mu.Lock()
+		}
+	}
+	var refused *compiledRule
+	var wait int64
+	for i, rule := range e.rules {
+		if matched&(1<<i) != 0 {
+			if ok, d := rule.table.check(key, now); !ok {
+				if refused == nil {
+					refused = rule
+				}
+				wait = max(wait, d)
+			}
+		}
+	}
+	var evicted int64
+	for i, rule := range e.rules {
+		if matched&(1<<i) != 0 {
+			if refused == nil && rule.table.admit(key, now) {
+				evicted++
+			}
+			rule.table.mu.Unlock()
+		}
+	}
+	if evicted > 0 {
+		e.reportEvicted(now, evicted)
+	}
+	if refused == nil {
+		return true
+	}
+	e.rateRefused.Add(1)
+	// The client may come back once the request is in no rule's way: in whole seconds, rounded up.
+	w.Header().Set("Retry-After", strconv.FormatInt(max((wait+int64(time.Second)-1)/int64(time.Second), 1), 10))
+	w.Header().Set("Cache-Control", "no-store")
+	second := now / int64(time.Second)
+	if previous := refused.logSecond.Load(); second != previous && refused.logSecond.CompareAndSwap(previous, second) {
+		message := refused.message
+		if n := refused.unlogged.Swap(0); n > 0 {
+			message += " (" + strconv.FormatInt(n, 10) + " more refusals not logged)"
+		}
+		e.refuse(w, r, http.StatusTooManyRequests, refused.id, message)
+	} else {
+		refused.unlogged.Add(1)
+		http.Error(w, http.StatusText(http.StatusTooManyRequests), http.StatusTooManyRequests)
 	}
 	return false
+}
+
+// reportEvicted logs that a full rate-limit table dropped clients that were still counting to make room for new ones, at
+// most once every ten seconds, with how many such evictions were not logged.
+func (e *Edge) reportEvicted(now, n int64) {
+	e.evictedLive.Add(n)
+	if e.cfg.OnMatch == nil {
+		return
+	}
+	second := now / int64(time.Second)
+	previous := e.evictLogSecond.Load()
+	if second-previous < 10 && second >= previous || !e.evictLogSecond.CompareAndSwap(previous, second) {
+		e.evictUnlogged.Add(n)
+		return
+	}
+	message := "rate-limit table full; least recently admitted client evicted"
+	if missed := e.evictUnlogged.Swap(0) + n - 1; missed > 0 {
+		message += " (" + strconv.FormatInt(missed, 10) + " more evictions not logged)"
+	}
+	e.cfg.OnMatch(Match{RuleID: idRateStateFull, Severity: "WARNING", Message: message})
 }
 
 // WordPressPolicy is the protection for a WordPress site. WordPress and its plugins are most of what is hacked:
@@ -322,9 +446,10 @@ var (
 	wpScript   = regexp.MustCompile(`(?i)\.(php[0-9]?|phtml|pht|phps|phar|shtml?)(/|$)`)
 )
 
-func (e *Edge) checkWordPress(w http.ResponseWriter, r *http.Request, client netip.Addr) bool {
-	// Empty segments, a trailing slash, path parameters and path info do not change which script PHP runs.
-	p := routePath(r.URL.Path)
+// checkWordPress refuses the scripts a WordPress site never runs. The route is the request's routePath: empty segments, a
+// trailing slash, path parameters and path info do not change which script PHP runs. Login attempts are limited by a
+// rate rule (see compileLimits).
+func (e *Edge) checkWordPress(w http.ResponseWriter, r *http.Request, p string) bool {
 	if wpWritable.MatchString(p) && wpScript.MatchString(p) {
 		e.refuse(w, r, http.StatusForbidden, idWordPressPHP, "a script is requested from a directory WordPress only writes data to")
 		return false
@@ -332,13 +457,6 @@ func (e *Edge) checkWordPress(w http.ResponseWriter, r *http.Request, client net
 	if runsScript(p, "/xmlrpc.php") && !e.cfg.WordPress.AllowXMLRPC {
 		e.refuse(w, r, http.StatusForbidden, idXMLRPC, "xmlrpc.php is switched off")
 		return false
-	}
-	if runsScript(p, "/wp-login.php") && r.Method == http.MethodPost {
-		perMinute := e.cfg.WordPress.LoginPerMinute
-		if perMinute <= 0 {
-			perMinute = 10
-		}
-		return e.checkRate(w, r, "login:"+clientKey(client), perMinute, idRateLimited, "too many login attempts from one address")
 	}
 	return true
 }

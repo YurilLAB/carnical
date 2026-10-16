@@ -31,6 +31,7 @@ import (
 	"reflect"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1472,8 +1473,9 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 					data, _ := os.ReadFile(logPath)
 					t.Fatalf("status %d, want %d\n%s", resp.StatusCode, want, data)
 				}
-				if want == 429 && (resp.Header.Get("Retry-After") != "60" || resp.Header.Get("Cache-Control") != "no-store") {
-					t.Fatal("rate refusal lacks retry or cache policy")
+				// Requests a few seconds apart under a per-minute limit: the window clears 50 to 66 seconds after the first.
+				if retry, err := strconv.Atoi(resp.Header.Get("Retry-After")); want == 429 && (err != nil || retry < 50 || retry > 66 || resp.Header.Get("Cache-Control") != "no-store") {
+					t.Fatalf("rate refusal with Retry-After %q, Cache-Control %q", resp.Header.Get("Retry-After"), resp.Header.Get("Cache-Control"))
 				}
 				originRequests := requests
 				if tc.originAuth != "" {

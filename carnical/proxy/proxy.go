@@ -150,7 +150,12 @@ type Edge struct {
 	places            *upstreamPlaces
 	hosts             map[string]bool
 	deny              map[string]bool
-	limiter           rateLimiter
+	rules             []*compiledRule // the per-client rate limits, in the order their tables are locked
+	now               func() int64    // test clock for the rate rules; nil uses monotonic
+	evictLogSecond    atomic.Int64    // the last second a full rate-limit table was reported (see reportEvicted)
+	evictUnlogged     atomic.Int64
+	evictedLive       atomic.Int64 // clients dropped from a full rate-limit table while still counting
+	rateRefused       atomic.Int64 // requests a rate rule refused
 	conns             *connLimiter
 }
 
@@ -222,6 +227,8 @@ func New(cfg Config) (*Edge, error) {
 		return nil, err
 	}
 	e.cfg = cfg
+	e.rules = compileLimits(cfg)
+	e.evictLogSecond.Store(neverLogged)
 	for _, h := range cfg.DenyHeaders {
 		e.deny[strings.ReplaceAll(strings.ToLower(strings.TrimSpace(h)), "_", "-")] = true
 	}
