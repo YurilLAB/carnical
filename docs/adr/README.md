@@ -151,5 +151,6 @@ Superseding does not delete the old record. Set its status and let the history s
 | [0080](0080-carnical-bounded-ids-signals.md) | — | — | unreleased (post-v3.8.1) | F | Bounded IP/network, TCP lifecycle and HTTP rejection IDS signals |
 | [0081](0081-carnical-interactive-site-setup.md) | — | — | unreleased (post-v3.8.1) | F | Interactive site setup and encrypted private settings |
 | [0082](0082-carnical-local-protection-loading.md) | — | — | unreleased (post-v3.8.1) | F | Local policy and virtual-patch loading |
+| [0083](0083-carnical-rate-rules-and-protection-strengths.md) | — | — | unreleased (post-v3.8.1) | F | Per-client rate rules and protection strengths |
 
 Categories: **F**eature · **P**arity · **⚡** Perf · **R**efactor
