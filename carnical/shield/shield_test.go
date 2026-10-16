@@ -981,6 +981,10 @@ func TestPerAddressAndPerNetworkLimitsApplyOutsideAnAttack(t *testing.T) {
 			{"all three signals", aggregate{connRate: 40, connRefused: 25, closed: 40, earlyCloses: 35, rate: 40, securityRejects: 25}, 3},
 			{"low volume", aggregate{connRate: 10, connRefused: 9, closed: 10, earlyCloses: 9, rate: 10, securityRejects: 9}, 0},
 			{"busy site low ratios", aggregate{connRate: 1000, connRefused: 25, closed: 1000, earlyCloses: 35, rate: 1000, securityRejects: 25}, 0},
+			// Rejections are a share of the requests the shield admitted, not of all it saw.
+			{"rejections of what was admitted", aggregate{rate: 150, refused: 80, challenged: 20, securityRejects: 25}, 1},
+			{"a scanner held over its own limit", aggregate{rate: 150, refused: 100, held: 100, securityRejects: 40}, 2},
+			{"a few requests held", aggregate{rate: 100, refused: 15, held: 15}, 0},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				det := newDetector(DetectorConfig{})

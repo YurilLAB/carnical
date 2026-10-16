@@ -712,8 +712,13 @@ func (d *detector) detectIDS(ns int64, a aggregate) {
 	if a.earlyCloses >= floor && a.earlyCloses >= 0.75*a.closed {
 		reasons = append(reasons, "connections close before HTTP activity: "+itoa(a.earlyCloses)+" a second")
 	}
-	if a.securityRejects >= floor && a.securityRejects >= 0.5*a.rate {
+	// Later checks see only the requests the shield admitted: a scanner whose own limit refuses most of what it sends
+	// must not hide the share of the rest that the checks reject.
+	if admitted := math.Max(a.rate-a.refused-a.challenged, 0); a.securityRejects >= floor && a.securityRejects >= 0.5*admitted {
 		reasons = append(reasons, "requests rejected before the origin: "+itoa(a.securityRejects)+" a second")
+	}
+	if a.held >= floor {
+		reasons = append(reasons, "addresses held over their own limit: "+itoa(a.held)+" refusals a second")
 	}
 	d.idsReasons = reasons
 	if len(reasons) == 0 || d.idsReported && ns-d.idsLast < int64(30*time.Second) {

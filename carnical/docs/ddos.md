@@ -56,7 +56,8 @@ These alerts report patterns for investigation. They do not change attack state 
 | --- | --- |
 | Connection admission pressure | At least 50% of incoming TCP connections are refused. |
 | Early TCP closes | At least 75% of closed nontrusted connections never reached HTTP `StateActive`. |
-| HTTP security rejections | At least 50% of Shield-admitted requests receive a later WAF/policy 4xx. Origin 4xx, gateway 5xx and 408 (a client too slow to send its request) responses are excluded. |
+| HTTP security rejections | At least 50% of Shield-admitted requests receive a later WAF/policy 4xx. Requests the Shield refused or challenged are not in the share. Origin 4xx, gateway 5xx and 408 (a client too slow to send its request) responses are excluded. |
+| Addresses held over their own limit | Requests refused by an address's or a network's own rate limit (429), with no ratio: a scanner that sends faster than its limit is reported even when other traffic is busy. |
 
 Each signal also needs `Detector.MinAttackRate` observations per second (default 20), averaged over
 ten seconds. `Snapshot.IDSReasons` and the rate fields expose current evidence; `EarlyCloses` and
