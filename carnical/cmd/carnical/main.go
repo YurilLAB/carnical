@@ -112,16 +112,7 @@ func runFlags(args []string, private map[string]string) error {
 	scriptContent := flags.Bool("allow-script-content", false, "allow uploads that contain a PHP, ASP or JSP opening tag; refused by default")
 	keepBanners := flags.Bool("keep-banners", false, "keep X-Powered-By and Server headers from the application")
 	keepCaching := flags.Bool("keep-caching", false, "do not add Cache-Control: private, no-store to responses that set a cookie or look like a stylesheet but are HTML")
-	ddosMode := flags.String("ddos", "on", "flood protection: on (detect attacks, including ones spread over many addresses, and mitigate them), monitor (detect and log; baseline connection/request limits still apply), or off")
-	ddosRate := flags.Float64("ddos-rate", 50, "the least requests a second one address may make, at all times; raised for an address that is answered well at a higher pace, as one with many visitors behind it is")
-	ddosBurst := flags.Float64("ddos-burst", 200, "burst of requests one address may make at once")
-	ddosConns := flags.Int("ddos-max-conns", 20000, "the least connections held open at once, raised with the site's average; a fifth are kept for clients that used the site before")
-	ddosKnownFactor := flags.Float64("ddos-known-factor", 2, "during an attack, returning visitors who earned standing share this many times the site's usual requests a second before they are treated like strangers")
-	ddosKnownRate := flags.Float64("ddos-known-rate", 50, "the least requests a second that returning visitors with standing share during an attack")
-	ddosMaxRaise := flags.Float64("ddos-max-raise", 20, "the most times -ddos-rate an address, or a network, may earn by its own well-answered requests; 1 keeps every address at -ddos-rate")
-	ddosChallenge := flags.Bool("ddos-challenge", true, "during an attack, ask unknown browsers to pass a short JavaScript check instead of refusing them")
-	ddosBaseline := flags.Float64("ddos-baseline-rate", 0, "the site's usual requests a second, to start from instead of learning it (so a restart during an attack is not fooled)")
-	ddosRanges := flags.String("ddos-ranges", "", "address-range table (ip2asn TSV) naming the countries and networks an attack comes from, in the attack logs")
+	ddos := declareShieldFlags(flags)
 	csAPI := flags.String("crowdsec-api", "", "CrowdSec LAPI HTTP(S) origin or absolute Unix socket path (empty = disabled; HTTP requires loopback)")
 	csKey := flags.String("crowdsec-key-file", "", "private file containing a dedicated CrowdSec bouncer key")
 	csCA := flags.String("crowdsec-ca-file", "", "PEM CA bundle for CrowdSec HTTPS (default: system roots; verification always enabled)")
@@ -269,8 +260,9 @@ func runFlags(args []string, private map[string]string) error {
 			log.Info("CrowdSec connected", "entries", cs.Stats().Entries, "skipped", cs.Stats().Skipped, "fail_open", *csFailOpen)
 		}
 	}
-	guard, err := configureShield(log, shieldFlags{mode: *ddosMode, rate: *ddosRate, burst: *ddosBurst, maxConns: *ddosConns,
-		challenge: *ddosChallenge, baseline: *ddosBaseline, ranges: *ddosRanges, knownFactor: *ddosKnownFactor, knownRate: *ddosKnownRate, maxRaise: *ddosMaxRaise}, trusted)
+	// The flags given on the command line or in the site configuration; the others keep their defaults.
+	explicit := setFlags(flags)
+	guard, err := configureShield(log, *ddos, explicit, trusted)
 	if err != nil {
 		return err
 	}
@@ -299,7 +291,7 @@ func runFlags(args []string, private map[string]string) error {
 			log.Warn("rule matched", attrs...)
 		},
 	}
-	formatInspector, effectiveFormatsMode, patches, err := configureSite(siteFlag, setFlags(flags), &cfg, log, *formatsMode, *formatsPolicy, *requestEncoding)
+	formatInspector, effectiveFormatsMode, patches, err := configureSite(siteFlag, explicit, &cfg, log, *formatsMode, *formatsPolicy, *requestEncoding)
 	if err != nil {
 		return err
 	}
@@ -378,7 +370,7 @@ func runFlags(args []string, private map[string]string) error {
 		return err
 	}
 	if *check {
-		log.Info("configuration checked", "mode", cfg.CRS.Mode, "formats_mode", effectiveFormatsMode, "origin_checked", *checkOrigin, "origin_http_checked", *checkOriginHTTP, "origin_client_identity", originTLS.Certificate != nil, "tls", *certFile != "", "sandbox_applied", false)
+		log.Info("configuration checked", append([]any{"mode", cfg.CRS.Mode, "formats_mode", effectiveFormatsMode, "origin_checked", *checkOrigin, "origin_http_checked", *checkOriginHTTP, "origin_client_identity", originTLS.Certificate != nil, "tls", *certFile != "", "sandbox_applied", false}, ddosLogAttrs(*ddos, explicit)...)...)
 		return nil
 	}
 	if err := ctx.Err(); err != nil {
@@ -437,9 +429,9 @@ func runFlags(args []string, private map[string]string) error {
 	stopStats := startFormatStats(log, formatInspector, *formatsStats)
 	defer stopStats()
 	health := &runtimeHealth{available: func() bool { return cs == nil || *csFailOpen || !cs.Stats().Stale }}
-	log.Info("listening", "addr", ln.Addr().String(), "crs", crs.Version(), "mode", cfg.CRS.Mode, "paranoia", cfg.CRS.ParanoiaLevel,
-		"inbound_threshold", cfg.CRS.InboundThreshold, "tls", *certFile != "", "confined", *confine, "ddos", *ddosMode, "formats_mode", effectiveFormatsMode, "request_encoding", *requestEncoding,
-		"health_enabled", healthListener != nil)
+	log.Info("listening", append([]any{"addr", ln.Addr().String(), "crs", crs.Version(), "mode", cfg.CRS.Mode, "paranoia", cfg.CRS.ParanoiaLevel,
+		"inbound_threshold", cfg.CRS.InboundThreshold, "tls", *certFile != "", "confined", *confine, "formats_mode", effectiveFormatsMode, "request_encoding", *requestEncoding,
+		"health_enabled", healthListener != nil}, ddosLogAttrs(*ddos, explicit)...)...)
 	return serveRuntime(ctx, server, ln, healthListener, health, lifecycle, log)
 }
 

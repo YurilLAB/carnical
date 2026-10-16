@@ -9,6 +9,10 @@ processing. It is enabled by default in the standalone proxy.
 | `-ddos monitor` | Detect and log floods; baseline limits still enforce (429), but attack-specific mitigation does not: no attack budgets, challenges or bans. |
 | `-ddos off` | Remove Shield. Use this for isolated payload benchmarks, then test flood behavior separately. |
 
+`on` and `monitor` take a [strength](#strengths) after a comma, as in `-ddos monitor,strict`; a
+strength alone, as in `-ddos strict`, means `on`. The figures on this page are those of `normal`,
+the default.
+
 Source: [Shield](../shield/shield.go), [listener](../shield/listener.go),
 [detector](../shield/detect.go), [CLI wiring](../cmd/carnical/shield.go).
 
@@ -243,6 +247,41 @@ in the sample of 32 has one. Rule IDs are 5004001
 (address rate), 5004002 (network rate), 5004003 (attack cluster), 5004004 (unknown-client budget),
 5004005 (challenge shown), 5004006/5004007 (failed/passed) and 5004008 (ban).
 
+## Strengths
+
+| Setting | `relaxed` | `normal` (default) | `strict` |
+| --- | --- | --- | --- |
+| Per-address rate and burst (`-ddos-rate`, `-ddos-burst`) | 100/s, 400 | 50/s, 200 | 20/s, 80 |
+| Per-network rate | 1,000/s | 500/s | 500/s |
+| Highest raise of a limit (`-ddos-max-raise`) | 50x | 20x | 10x |
+| Known clients during an attack (`-ddos-known-factor`, `-ddos-known-rate`) | 2x, 50/s | 2x, 50/s | 2x, 50/s |
+| Strangers during an attack (factor, at least) | 2x, 20/s | 1x, 10/s | 0.5x, 5/s |
+| New connections per address (rate, burst) | 40/s, 120 | 20/s, 60 | 10/s, 30 |
+| Ban after, for | 60 refusals, 5 min | 30, 10 min | 15, 30 min |
+| Attack threshold (rate factor, sigmas, seconds to confirm, floor) | 6x, 10, 5 s, 50/s | 4x, 8, 3 s, 20/s | 3x, 6, 2 s, 10/s |
+
+`strict` is for a small site or one that is often attacked; in a crowd taken for an attack, an
+address many people share, such as a carrier's, can be banned for 30 minutes. `relaxed` is for an
+API or a site with many visitors behind a carrier's addresses. The number of connections and the
+challenge's difficulty are the same at every strength. The [simulations](flood-validation.md#2026-10-16-three-strengths-of-protection)
+measure each one.
+
+A setting comes from, first to last:
+
+1. a `-ddos-*` flag on the command line;
+2. the same flag in the site file's `flags`, such as `"ddos-rate": 60`;
+3. the strength;
+4. the built-in default.
+
+A flag that is not given leaves the strength's value, and so does a 0 for `-ddos-rate`,
+`-ddos-burst`, `-ddos-max-conns`, `-ddos-known-factor` and `-ddos-known-rate`. A rate given
+raises the network's rate to at least ten times it.
+`-ddos` on the command line replaces the site file's as a whole: `-ddos monitor` over a site's
+`"ddos": "strict"` is `monitor,normal`. The start-up log (and `-check`) says which applies:
+`"ddos"` is the mode, `"ddos_strength"` the strength and `"ddos_overrides"` the flags that change
+its settings. With `-ddos off`, `-ddos-ranges` is refused, as it needs `-ddos on` or `monitor`; the
+other `-ddos-*` flags change nothing, and the log warns that they were given.
+
 ## Measured
 
 See [flood validation](flood-validation.md) for simulation and live results, including controls and
@@ -274,9 +313,9 @@ previous defects. Those results measure their recorded workload, not production 
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `-ddos` | `on` | `on`, `monitor` or `off`. |
-| `-ddos-rate`, `-ddos-burst` | 50, 200 | Per-address request floors, with bounded automatic growth. |
-| `-ddos-max-raise` | 20 | The most times its configured limit an address, or a network, may earn by its own well-answered requests (1 to 100). 1 keeps the limits fixed. |
+| `-ddos` | `on` | `on`, `monitor` or `off`, with a strength `relaxed`, `normal` or `strict` (`-ddos strict`, `-ddos monitor,strict`). |
+| `-ddos-rate`, `-ddos-burst` | The strength's | Per-address request floors, with bounded automatic growth. |
+| `-ddos-max-raise` | The strength's | The most times its configured limit an address, or a network, may earn by its own well-answered requests (1 to 100). 1 keeps the limits fixed. |
 | `-ddos-max-conns` | 20000 | Global connection floor, with bounded automatic growth and reserved capacity. |
 | `-ddos-known-factor`, `-ddos-known-rate` | 2, 50 | During an attack, the budget returning visitors with standing share: this many times the usual request rate, and at least this many a second. Raise them on a site whose regulars come in crowds. |
 | `-ddos-challenge` | true | Enable browser challenges during an attack. |

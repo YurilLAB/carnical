@@ -51,6 +51,8 @@ Detection mode records CRS findings and monitors request formats. Blocking mode 
 both content layers. Flood and proxy safety checks still enforce in detection mode. Review
 real application traffic before changing production policy. CLI options override site-file
 values, including encrypted fields; invalid ciphertext still fails startup.
+To protect a small or often attacked site more tightly against floods, add `"ddos": "strict"` to
+the `flags` object (or `"relaxed"` for an API); see [strengths](ddos.md#strengths).
 
 ## What is encrypted
 

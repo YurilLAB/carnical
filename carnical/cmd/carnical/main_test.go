@@ -1044,6 +1044,10 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 		{name: "known visitor budget flags", mode: "block", extraArgs: []string{"-ddos", "on", "-ddos-known-factor", "4", "-ddos-known-rate", "100"}, method: "GET", target: "/page", status: 200},
 		{name: "negative known visitor budget", mode: "block", extraArgs: []string{"-ddos", "on", "-ddos-known-rate", "-1"}, fails: true},
 		{name: "negative known visitor factor", mode: "block", extraArgs: []string{"-ddos", "on", "-ddos-known-factor", "-1"}, fails: true},
+		{name: "site config names a protection strength", site: `{"version":1,"flags":{"upstream":"$ORIGIN","origin-allow":"127.0.0.1/32","ddos":"strict","ddos-rate":60}}`, extraArgs: []string{"-check"}, preflight: true,
+			says: `"ddos":"on","ddos_strength":"strict","ddos_overrides":["-ddos-rate"]`},
+		{name: "flood flags with protection off are reported", extraArgs: []string{"-check", "-ddos", "off", "-ddos-rate", "10"}, preflight: true,
+			says: `"msg":"flood protection flags have no effect with -ddos off","flags":["-ddos-rate"]`},
 		{name: "address limits kept fixed", mode: "block", extraArgs: []string{"-ddos", "on", "-ddos-max-raise", "1"}, method: "GET", target: "/page", status: 200},
 		{name: "address limit raise below one", mode: "block", extraArgs: []string{"-ddos", "on", "-ddos-max-raise", "0.5"}, fails: true},
 		{name: "address limit raise of zero", mode: "block", extraArgs: []string{"-ddos", "on", "-ddos-max-raise", "0"}, fails: true},
@@ -1868,7 +1872,7 @@ func TestPrivateFilesAreReadWithCare(t *testing.T) {
 			{"-api-spec", func() error { _, _, err := configureAPI(fifo, "monitor", "monitor"); return err }},
 			{"-formats-policy", func() error { _, err := configureFormats("monitor", fifo, false); return err }},
 			{"-ddos-ranges", func() error {
-				_, err := configureShield(log, shieldFlags{mode: "monitor", rate: 10, burst: 20, maxConns: 100, maxRaise: 1, ranges: fifo}, nil)
+				_, err := configureShield(log, shieldFlags{mode: "monitor", ranges: fifo}, nil, nil)
 				return err
 			}},
 		} {
@@ -2159,39 +2163,124 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
-// The flood protection's settings are what the flags say: the ceiling on how far an address's limit may rise reaches the
-// detector as given, and a value that is no ceiling is refused. (Not rows of the table above: those start the program
-// and see one request through, which cannot show a limit that takes minutes of traffic to move.)
+// The flood protection's settings are those of the strength -ddos names, with the -ddos-* flags given on the command line
+// or in the site configuration put over them, the command line's first; a value a flag cannot take is refused with the
+// flag's name and range. (Not rows of the table above: those start the program and see one request through, which cannot
+// show a limit that takes minutes of traffic to move.)
 func TestFloodFlagsBecomeShieldSettings(t *testing.T) {
-	flags := shieldFlags{mode: "on", rate: 50, burst: 200, maxConns: 20000, challenge: true, knownFactor: 2, knownRate: 50}
+	preset := func(name string, change func(*shield.Config)) shield.Config {
+		c, err := shield.Preset(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if change != nil {
+			change(&c)
+		}
+		return c
+	}
+	// What the flags gave before there were strengths, with no flag set.
+	today := func(change func(*shield.Config)) shield.Config {
+		c := shield.Config{RequestRate: 50, RequestBurst: 200, SubnetRate: 500, MaxConns: 20000, KnownFactor: 2, MinKnownRate: 50,
+			Detector: shield.DetectorConfig{MaxScale: 20}}
+		if change != nil {
+			change(&c)
+		}
+		return c
+	}
+	monitor := func(c *shield.Config) { c.MonitorOnly = true }
+	rangeErr := func(flag, from, to, unit, zero string) string {
+		msg := "-" + flag + " must be a number from " + from + " to " + to + unit
+		if zero != "" {
+			msg += " (0 = " + zero + ")"
+		}
+		return msg
+	}
+	raiseErr := rangeErr("ddos-max-raise", "1", "100", "", "")
 	for _, tt := range []struct {
-		name  string
-		raise float64
-		want  float64 // 0: refused
+		name string
+		args []string
+		site string // the flags of a site configuration, if any
+		want shield.Config
+		err  string // the whole error, if the flags are refused
 	}{
-		{"the default", 20, 20},
-		{"fixed limits", 1, 1},
-		{"the highest", 100, 100},
-		{"between whole numbers", 2.5, 2.5},
-		{"below one", 0.99, 0},
-		{"zero, which the shield would take for the default", 0, 0},
-		{"negative", -3, 0},
-		{"above the highest", 100.5, 0},
-		{"not a number", math.NaN(), 0},
-		{"infinite", math.Inf(1), 0},
+		{name: "the default is today's", want: today(nil)},
+		{name: "on is normal", args: []string{"-ddos", "on"}, want: today(nil)},
+		{name: "normal", args: []string{"-ddos", "normal"}, want: today(nil)},
+		{name: "monitor alone is normal", args: []string{"-ddos", "monitor"}, want: today(monitor)},
+		{name: "today's defaults given as flags", args: []string{"-ddos-rate", "50", "-ddos-burst", "200", "-ddos-max-conns", "20000",
+			"-ddos-known-factor", "2", "-ddos-known-rate", "50", "-ddos-max-raise", "20", "-ddos-challenge=true"}, want: today(nil)},
+		{name: "strict", args: []string{"-ddos", "strict"}, want: preset("strict", nil)},
+		{name: "relaxed", args: []string{"-ddos", "relaxed"}, want: preset("relaxed", nil)},
+		{name: "monitor with a strength", args: []string{"-ddos", "monitor,strict"}, want: preset("strict", monitor)},
+		{name: "a strength before its mode", args: []string{"-ddos", " strict , monitor "}, want: preset("strict", monitor)},
+		{name: "a rate over the strength's", args: []string{"-ddos", "strict", "-ddos-rate", "60"},
+			want: preset("strict", func(c *shield.Config) { c.RequestRate, c.SubnetRate = 60, 600 })},
+		{name: "a site's rate over the strength's", site: `{"ddos":"strict","ddos-rate":60}`,
+			want: preset("strict", func(c *shield.Config) { c.RequestRate, c.SubnetRate = 60, 600 })},
+		{name: "the command line's rate over the site's", args: []string{"-ddos-rate", "30"}, site: `{"ddos":"strict","ddos-rate":60}`,
+			want: preset("strict", func(c *shield.Config) { c.RequestRate, c.SubnetRate = 30, 500 })},
+		{name: "the command line's -ddos replaces the site's", args: []string{"-ddos", "monitor"}, site: `{"ddos":"strict"}`, want: today(monitor)},
+		{name: "zero is the strength's value", args: []string{"-ddos", "strict", "-ddos-rate", "0", "-ddos-burst", "0", "-ddos-max-conns", "0",
+			"-ddos-known-factor", "0", "-ddos-known-rate", "0", "-ddos-baseline-rate", "0"}, want: preset("strict", nil)},
+		{name: "known visitors' budget", args: []string{"-ddos-known-factor", "4", "-ddos-known-rate", "100"},
+			want: today(func(c *shield.Config) { c.KnownFactor, c.MinKnownRate = 4, 100 })},
+		{name: "fixed limits", args: []string{"-ddos-max-raise", "1"}, want: today(func(c *shield.Config) { c.Detector.MaxScale = 1 })},
+		{name: "the highest raise", args: []string{"-ddos-max-raise", "100"}, want: today(func(c *shield.Config) { c.Detector.MaxScale = 100 })},
+		{name: "a raise between whole numbers", args: []string{"-ddos-max-raise", "2.5"}, want: today(func(c *shield.Config) { c.Detector.MaxScale = 2.5 })},
+		{name: "a raise over the strength's", args: []string{"-ddos", "strict", "-ddos-max-raise", "30"},
+			want: preset("strict", func(c *shield.Config) { c.Detector.MaxScale = 30 })},
+		{name: "no challenge", args: []string{"-ddos-challenge=false"}, want: today(func(c *shield.Config) { c.NoChallenge = true })},
+		{name: "a baseline", args: []string{"-ddos-baseline-rate", "120"}, want: today(func(c *shield.Config) { c.Detector.InitialRate = 120 })},
+
+		{name: "a misspelt strength", args: []string{"-ddos", "stict"},
+			err: `-ddos: "stict" is not one of on, monitor, off, relaxed, normal, strict (did you mean strict?)`},
+		{name: "a misspelt strength in the site's", site: `{"ddos":"stict"}`,
+			err: `-ddos: "stict" is not one of on, monitor, off, relaxed, normal, strict (did you mean strict?)`},
+		{name: "a strength in capitals", args: []string{"-ddos", "MONITOR,STRICT"},
+			err: `-ddos: "MONITOR" is not one of on, monitor, off, relaxed, normal, strict (did you mean monitor?)`},
+		{name: "a word that is near none", args: []string{"-ddos", "loud"}, err: `-ddos: "loud" is not one of on, monitor, off, relaxed, normal, strict`},
+		{name: "two modes", args: []string{"-ddos", "on,monitor"}, err: `-ddos: "on,monitor" names two modes`},
+		{name: "two strengths", args: []string{"-ddos", "strict,relaxed"}, err: `-ddos: "strict,relaxed" names two strengths`},
+		{name: "a strength with off", args: []string{"-ddos", "off,strict"}, err: "-ddos off,strict: a strength needs -ddos on or monitor"},
+		{name: "no value", args: []string{"-ddos", ""},
+			err: "-ddos needs on, monitor or off, a strength relaxed, normal or strict, or one of each, as in -ddos monitor,strict"},
+		{name: "a word twice", args: []string{"-ddos", "strict,strict"}, err: `-ddos: "strict,strict" names strict twice`},
+		{name: "an empty word", args: []string{"-ddos", "on,"}, err: `-ddos: "on," has an empty part`},
+		{name: "a raise below one", args: []string{"-ddos-max-raise", "0.99"}, err: raiseErr},
+		{name: "a raise of zero, which would be none", args: []string{"-ddos-max-raise", "0"}, err: raiseErr},
+		{name: "a negative raise", args: []string{"-ddos-max-raise", "-3"}, err: raiseErr},
+		{name: "a raise above the highest", args: []string{"-ddos-max-raise", "100.5"}, err: raiseErr},
+		{name: "a raise that is not a number", args: []string{"-ddos-max-raise", "NaN"}, err: raiseErr},
+		{name: "an infinite raise", args: []string{"-ddos-max-raise", "+Inf"}, err: raiseErr},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			f := flags
-			f.maxRaise = tt.raise
-			cfg, err := shieldSettings(f, nil)
-			if tt.want == 0 {
-				if err == nil || !strings.Contains(err.Error(), "-ddos-max-raise") {
-					t.Fatalf("a ceiling of %v was taken: %v", tt.raise, err)
+			fs := flag.NewFlagSet("carnical", flag.ContinueOnError)
+			fs.SetOutput(io.Discard)
+			f := declareShieldFlags(fs)
+			if err := fs.Parse(tt.args); err != nil {
+				t.Fatal(err)
+			}
+			if tt.site != "" {
+				path := filepath.Join(t.TempDir(), "site.json")
+				if err := os.WriteFile(path, []byte(`{"version":1,"flags":`+tt.site+`}`), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := loadSiteConfig(path, fs); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cfg, err := shieldSettings(*f, setFlags(fs), nil)
+			if tt.err != "" {
+				if err == nil || err.Error() != tt.err {
+					t.Fatalf("got error %v, want %q", err, tt.err)
 				}
 				return
 			}
-			if err != nil || cfg.Detector.MaxScale != tt.want {
-				t.Fatalf("the detector's ceiling is %v (%v), want %v", cfg.Detector.MaxScale, err, tt.want)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, want := withDefaults(cfg), withDefaults(tt.want); !reflect.DeepEqual(got, want) {
+				t.Fatalf("settings\n%+v\nwant\n%+v", got, want)
 			}
 			s, err := shield.New(cfg)
 			if err != nil {
@@ -2200,6 +2289,26 @@ func TestFloodFlagsBecomeShieldSettings(t *testing.T) {
 			s.Close()
 		})
 	}
+}
+
+// withDefaults is c with each zero number replaced by the default it stands for, so that two configurations the shield
+// takes for the same compare equal.
+func withDefaults(c shield.Config) shield.Config {
+	var fill func(v, def reflect.Value)
+	fill = func(v, def reflect.Value) {
+		for i := range v.NumField() {
+			switch field := v.Field(i); field.Kind() {
+			case reflect.Struct:
+				fill(field, def.Field(i))
+			case reflect.Float64, reflect.Int, reflect.Int64:
+				if field.CanSet() && field.IsZero() {
+					field.Set(def.Field(i))
+				}
+			}
+		}
+	}
+	fill(reflect.ValueOf(&c).Elem(), reflect.ValueOf(shield.DefaultConfig()))
+	return c
 }
 
 // quietPort finds a port on a loopback address that is free now and that the system gives to nobody who asks for "any
