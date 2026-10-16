@@ -990,8 +990,13 @@ func TestPerAddressAndPerNetworkLimitsApplyOutsideAnAttack(t *testing.T) {
 				det := newDetector(DetectorConfig{})
 				var events []Event
 				det.onEvent = func(e Event) { events = append(events, e) }
+				detect := func(ns int64, a aggregate) {
+					det.mu.Lock()
+					det.detectIDS(ns, a)
+					det.deliver()
+				}
 				ns := now.UnixNano()
-				det.detectIDS(ns, tc.a)
+				detect(ns, tc.a)
 				if len(det.idsReasons) != tc.signals {
 					t.Fatalf("signals=%v", det.idsReasons)
 				}
@@ -1005,15 +1010,15 @@ func TestPerAddressAndPerNetworkLimitsApplyOutsideAnAttack(t *testing.T) {
 				if det.idsReasons[0] == "modified" {
 					t.Fatal("event owns detector reasons")
 				}
-				det.detectIDS(ns+int64(time.Second), tc.a)
+				detect(ns+int64(time.Second), tc.a)
 				if len(events) != 1 || events[0].Kind != "ids_signal" || det.state != Normal || det.info.Load() != nil {
 					t.Fatal("alert pacing or mitigation changed")
 				}
-				det.detectIDS(ns+int64(30*time.Second), tc.a)
+				detect(ns+int64(30*time.Second), tc.a)
 				if len(events) != 2 {
 					t.Fatal("persistent signal was not reported")
 				}
-				det.detectIDS(ns+int64(31*time.Second), aggregate{})
+				detect(ns+int64(31*time.Second), aggregate{})
 				if len(det.idsReasons) != 0 {
 					t.Fatal("cleared signal remained")
 				}
@@ -1100,6 +1105,149 @@ func TestPerAddressAndPerNetworkLimitsApplyOutsideAnAttack(t *testing.T) {
 		time.Sleep(50 * time.Millisecond) // five requests at 100 a second
 		if d := sh.Admit(req("GET", "/"), a); d.Action != Allow {
 			t.Fatalf("after the wall clock was set back the address was refused (%d): its limit stopped refilling", d.ID)
+		}
+	})
+}
+
+// A function of its own: what it checks is how the detector's lock and queue behave while OnEvent blocks, and what
+// Close does with the queue, not an output for an input that a table row could hold.
+func TestEventsAreSentOutsideTheDetectorLock(t *testing.T) {
+	scanner := netip.MustParseAddr("203.0.113.9")
+	t.Run("requests do not wait for OnEvent", func(t *testing.T) {
+		now := time.Date(2026, 10, 6, 9, 0, 0, 0, time.UTC)
+		got, release := make(chan Event, 1), make(chan struct{})
+		s := newTestShield(t, &now, func(c *Config) {
+			c.RequestRate, c.RequestBurst = 1, 1
+			c.OnEvent = func(e Event) {
+				select {
+				case got <- e:
+				default:
+				}
+				<-release
+			}
+		})
+		for i := 0; i < 300; i++ { // held over its own limit: an IDS signal once the second is among those closed
+			s.Admit(req("GET", "/"), scanner)
+		}
+		now = now.Add(2 * time.Second)
+		ticked := make(chan struct{})
+		go func() {
+			defer close(ticked)
+			s.Tick()
+		}()
+		defer func() {
+			close(release)
+			<-ticked
+		}()
+		select {
+		case e := <-got:
+			if e.Kind != "ids_signal" {
+				t.Fatalf("event %q, want ids_signal", e.Kind)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("no event was delivered")
+		}
+		served := make(chan Decision, 1)
+		go func() {
+			d := s.Admit(req("GET", "/"), netip.MustParseAddr("198.51.100.1"))
+			s.Snapshot()
+			served <- d
+		}()
+		select {
+		case d := <-served:
+			if d.Action != Allow {
+				t.Fatalf("an ordinary request was refused (%d) while OnEvent blocked", d.ID)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("a request waited for OnEvent: the detector's lock was held while it blocked")
+		}
+	})
+	// The bound counts the events of the batch being delivered: while OnEvent holds the first of 256, the other 255 and
+	// one new event are all that wait.
+	t.Run("at most 256 events wait while OnEvent blocks", func(t *testing.T) {
+		det := newDetector(DetectorConfig{})
+		entered, release := make(chan struct{}), make(chan struct{})
+		released := false
+		free := func() {
+			if !released {
+				released = true
+				close(release)
+			}
+		}
+		defer free() // a build that calls OnEvent under the lock fails below within seconds, and this frees it
+		wait := func(ch <-chan struct{}, why string) {
+			t.Helper()
+			select {
+			case <-ch:
+			case <-time.After(10 * time.Second):
+				t.Fatal(why)
+			}
+		}
+		delivered := 0
+		det.onEvent = func(Event) {
+			if delivered == 0 {
+				close(entered)
+				<-release
+			}
+			delivered++
+		}
+		emit := func(n int) {
+			det.mu.Lock()
+			defer det.mu.Unlock()
+			for range n {
+				det.emit(Event{Kind: "ids_signal"})
+			}
+		}
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			emit(maxPendingEvents)
+			det.mu.Lock()
+			det.deliver()
+		}()
+		wait(entered, "OnEvent was never called")
+		queued := make(chan struct{})
+		go func() {
+			defer close(queued)
+			emit(300)
+		}()
+		wait(queued, "events could not be queued while OnEvent blocked: it was called with the detector's lock held")
+		free()
+		wait(done, "the queue was not delivered after OnEvent returned")
+		if dropped := det.droppedEvents.Load(); delivered != maxPendingEvents+1 || dropped != 299 {
+			t.Fatalf("delivered %d and dropped %d of %d, want %d and 299", delivered, dropped, maxPendingEvents+300, maxPendingEvents+1)
+		}
+	})
+	// An event found in the shield's last second is given to OnEvent by Close, not left in the queue; one found after
+	// Close is counted as dropped.
+	t.Run("Close delivers the queue", func(t *testing.T) {
+		now := time.Date(2026, 10, 6, 9, 0, 0, 0, time.UTC)
+		var events []Event
+		s := newTestShield(t, &now, func(c *Config) {
+			c.RequestRate, c.RequestBurst = 1, 1
+			c.OnEvent = func(e Event) { events = append(events, e) }
+		})
+		for i := 0; i < 300; i++ {
+			s.Admit(req("GET", "/"), scanner)
+		}
+		now = now.Add(2 * time.Second)
+		s.Admit(req("GET", "/"), scanner) // the second closes and its signal is queued, with no Tick to deliver it
+		if len(events) != 0 {
+			t.Fatalf("events %v were delivered by a request", events)
+		}
+		s.Close()
+		if len(events) == 0 || events[0].Kind != "ids_signal" {
+			t.Fatalf("Close delivered %v, want the queued ids_signal first", events)
+		}
+		closed := len(events)
+		now = now.Add(time.Minute)
+		for i := 0; i < 300; i++ {
+			s.Admit(req("GET", "/"), scanner)
+		}
+		now = now.Add(2 * time.Second)
+		s.Admit(req("GET", "/"), scanner)
+		if len(events) != closed || s.Snapshot().DroppedEvents == 0 {
+			t.Fatalf("an event found after Close was delivered (%v) or not counted (%d dropped)", events, s.Snapshot().DroppedEvents)
 		}
 	})
 }

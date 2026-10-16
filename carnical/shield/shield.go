@@ -164,7 +164,11 @@ type Config struct {
 	Banner Banner
 	// Labeler, if set, names the country or network of the addresses in an attack, for the attack's record.
 	Labeler Labeler
-	// OnEvent is told when an attack starts, every ten seconds while it goes on, and when it ends. It must not block.
+	// OnEvent is told when an attack starts, every ten seconds while it goes on, and when it ends, and of the other
+	// Events. It is called on the shield's own goroutine once a second (with Now set, by Tick), and by Close for the events
+	// still queued, one event at a time and in order, never while a request or a connection waits on it. It should return
+	// quickly: while it blocks, at most 256 later events wait, and those past them are dropped and counted in
+	// Snapshot.DroppedEvents.
 	OnEvent func(Event)
 	// Now is the clock (tests). With it set the shield starts no goroutine: the caller advances the detector with Tick.
 	Now func() time.Time
@@ -451,10 +455,14 @@ func New(cfg Config) (*Shield, error) {
 	return s, nil
 }
 
-// Close stops the shield's goroutines.
+// Close stops the shield's goroutines and gives Config.OnEvent the events still queued for it. Events found after Close
+// are counted in Snapshot.DroppedEvents.
 func (s *Shield) Close() {
 	s.stopOnce.Do(func() { close(s.stop) })
 	s.wg.Wait()
+	s.det.mu.Lock()
+	s.det.closed = true
+	s.det.deliver()
 }
 
 // now is the shield's clock: Config.Now if set, and otherwise the wall clock as it read when the shield was made, moved
@@ -951,8 +959,11 @@ type Snapshot struct {
 	BanErrors                            uint64
 	// WriteErrors counts failed response body writes; SocketOptionErrors counts failed optional TCP tuning.
 	WriteErrors, SocketOptionErrors uint64
-	Current                         *Incident
-	Recent                          []Incident
+	// DroppedEvents counts the Events not given to Config.OnEvent: those found while 256 were already waiting for it, and
+	// those found after Close.
+	DroppedEvents uint64
+	Current       *Incident
+	Recent        []Incident
 }
 
 // Snapshot returns the current state.
@@ -976,6 +987,7 @@ func (s *Shield) Snapshot() Snapshot {
 	snap.Solved, snap.Banned, snap.ConnsRefused, snap.Evicted, snap.BanErrors = c.solved.Load(), c.banned.Load(), c.connsRefused.Load(), c.evicted.Load(), c.banErrors.Load()
 	snap.WriteErrors, snap.SocketOptionErrors = c.writeErrors.Load(), c.socketOptionErrors.Load()
 	snap.EarlyCloses, snap.SecurityRejections = c.earlyCloses.Load(), c.securityRejections.Load()
+	snap.DroppedEvents = s.det.droppedEvents.Load()
 	return snap
 }
 

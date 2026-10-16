@@ -47,6 +47,11 @@ into admission.
 | `Snapshot.ConnsRefused` | Refused connections. |
 | `Snapshot.WriteErrors` | Failed Shield response writes. |
 | `Snapshot.SocketOptionErrors` | Failed optional socket settings, including reset linger. |
+| `Snapshot.DroppedEvents` | Events not given to `Config.OnEvent`: those found while 256 were already waiting for it, and those found after `Shield.Close`. |
+
+`Config.OnEvent` is called on the Shield's own goroutine once a second, in order, and never while a
+request or connection waits on it: a log writer that stalls delays later events, never admission.
+`Shield.Close` hands it the events still waiting, so those found in the last second are not lost.
 
 ## IDS signals
 

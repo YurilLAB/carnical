@@ -289,16 +289,23 @@ type detector struct {
 	// set by the Shield
 	// wall gives the wall-clock time of an instant on the shield's clock, for what events and records report; nil when
 	// the shield's clock is Config.Now.
-	wall         func(ns int64) time.Time
-	labeler      Labeler
-	onEvent      func(Event)
-	idsReasons   []string
-	idsLast      int64
-	idsReported  bool
-	unknownRate  func(base float64) float64
-	knownRate    func(base float64) float64
-	clusterRate  float64
-	clusterShare float64
+	wall       func(ns int64) time.Time
+	labeler    Labeler
+	onEvent    func(Event)
+	idsReasons []string
+	idsLast    int64
+	// pending holds the events found under mu until tick delivers them after releasing it (see deliver), at most
+	// maxPendingEvents; droppedEvents counts those that did not fit, and those found after the shield was closed.
+	// delivering says that a caller of tick is delivering.
+	pending       []Event
+	delivering    bool
+	closed        bool
+	droppedEvents atomic.Uint64
+	idsReported   bool
+	unknownRate   func(base float64) float64
+	knownRate     func(base float64) float64
+	clusterRate   float64
+	clusterShare  float64
 }
 
 func newDetector(cfg DetectorConfig) *detector {
@@ -408,11 +415,37 @@ func (d *detector) done(ns int64, status int, latency time.Duration) {
 	})
 }
 
-// tick closes the windows that have ended. The Shield calls it every second so that the state moves on while no
-// requests arrive.
+// tick closes the windows that have ended and delivers the events found since the last tick. The Shield calls it every
+// second so that the state moves on while no requests arrive.
 func (d *detector) tick(ns int64) {
 	d.mu.Lock()
 	d.advance(ns)
+	d.deliver()
+}
+
+// maxPendingEvents is the most events kept for delivery while onEvent is behind, besides the one it is given.
+const maxPendingEvents = 256
+
+// deliver is called with mu held and releases it. It hands the pending events to onEvent in order, with mu released: an
+// onEvent that blocks (a log on a stalled pipe) then holds up neither requests nor connections, which only queue events,
+// but later events only. Each event leaves the queue as it is handed over, so the queue's bound counts every event not
+// yet given to onEvent. Only tick and Close deliver, so onEvent runs on the shield's own goroutine (or Tick's caller with
+// Config.Now), and one caller at a time: another that finds the events being delivered leaves its own to that one.
+func (d *detector) deliver() {
+	if d.delivering || len(d.pending) == 0 {
+		d.mu.Unlock()
+		return
+	}
+	d.delivering = true
+	for len(d.pending) > 0 {
+		ev := d.pending[0]
+		d.pending[0] = Event{}
+		d.pending = d.pending[1:]
+		d.mu.Unlock()
+		d.onEvent(ev)
+		d.mu.Lock()
+	}
+	d.delivering = false
 	d.mu.Unlock()
 }
 
@@ -936,10 +969,16 @@ func (d *detector) wallTime(ns int64) time.Time {
 	return time.Unix(0, ns)
 }
 
+// emit queues an event for tick to deliver once mu is released (see deliver).
 func (d *detector) emit(ev Event) {
-	if d.onEvent != nil {
-		d.onEvent(ev)
+	if d.onEvent == nil {
+		return
 	}
+	if d.closed || len(d.pending) >= maxPendingEvents {
+		d.droppedEvents.Add(1)
+		return
+	}
+	d.pending = append(d.pending, ev)
 }
 
 func cloneMap(m map[uint64]float64) map[uint64]float64 {
