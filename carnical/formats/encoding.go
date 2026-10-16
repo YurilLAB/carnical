@@ -22,6 +22,8 @@ const ratioFloor = 4 << 10
 // It returns the decompressed body and whether there was any compression at all. It refuses a second layer, any other encoding, a
 // stream that is truncated or fails its checksum, bytes after the end of the stream (a second gzip member is one: parsers differ
 // about whether the rest is read or ignored), and a body that expands past the output limit or far past what content compresses to.
+// ok is false after any of those findings, whatever the rule's action: the body was not decoded, and reading the compressed
+// bytes as the declared type would only report what compression put there (the proxy refuses a body that is still encoded).
 func (in *Inspector) decodeBody(f *finder, header []string, body []byte) (out []byte, did bool, ok bool) {
 	var layers []string
 	for _, h := range header {
@@ -36,9 +38,11 @@ func (in *Inspector) decodeBody(f *finder, header []string, body []byte) (out []
 	case len(layers) == 0:
 		return nil, false, true
 	case len(layers) > 1:
-		return nil, false, !f.hit(rEncLayers, -1, dNone)
+		f.hit(rEncLayers, -1, dNone)
+		return nil, false, false
 	case layers[0] != "gzip" && layers[0] != "deflate":
-		return nil, false, !f.hit(rEncUnsupported, -1, dNone)
+		f.hit(rEncUnsupported, -1, dNone)
+		return nil, false, false
 	}
 	lim := &in.pol.Encoding
 	maxOut := int64(lim.MaxOutput)
@@ -56,7 +60,8 @@ func (in *Inspector) decodeBody(f *finder, header []string, body []byte) (out []
 	if layers[0] == "gzip" {
 		zr, err := gzip.NewReader(br)
 		if err != nil {
-			return nil, false, !f.hit(rEncCorrupt, 0, corruptDetail(err))
+			f.hit(rEncCorrupt, 0, corruptDetail(err))
+			return nil, false, false
 		}
 		zr.Multistream(false)
 		r = zr
@@ -69,7 +74,8 @@ func (in *Inspector) decodeBody(f *finder, header []string, body []byte) (out []
 			br = bytes.NewReader(body)
 			r = flate.NewReader(br)
 		default:
-			return nil, false, !f.hit(rEncCorrupt, 0, corruptDetail(err))
+			f.hit(rEncCorrupt, 0, corruptDetail(err))
+			return nil, false, false
 		}
 	}
 	var buf bytes.Buffer
@@ -83,13 +89,16 @@ func (in *Inspector) decodeBody(f *finder, header []string, body []byte) (out []
 		if ratioBinds {
 			rl = rEncRatio
 		}
-		return nil, false, !f.hitLimit(rl, d, int(maxOut), -1)
+		f.hitLimit(rl, d, int(maxOut), -1)
+		return nil, false, false
 	}
 	if err != nil {
-		return nil, false, !f.hit(rEncCorrupt, int(int64(len(body))-int64(br.Len())), corruptDetail(err))
+		f.hit(rEncCorrupt, int(int64(len(body))-int64(br.Len())), corruptDetail(err))
+		return nil, false, false
 	}
 	if br.Len() > 0 {
-		return nil, false, !f.hit(rEncTrailing, len(body)-br.Len(), dNone)
+		f.hit(rEncTrailing, len(body)-br.Len(), dNone)
+		return nil, false, false
 	}
 	out = buf.Bytes()
 	if out == nil {

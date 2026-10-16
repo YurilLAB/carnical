@@ -28,6 +28,8 @@ type row struct {
 	want int
 	// also lists identifiers that must be recorded without refusing (monitor findings).
 	also []int
+	// only says that also lists every identifier that may be recorded.
+	only bool
 	// tweak changes the policy for this row only (a lower limit, another list of types).
 	tweak func(*Policy)
 }
@@ -112,6 +114,11 @@ func (r row) check(in *Inspector) error {
 	for _, id := range r.also {
 		if !has(all, id) {
 			return fmt.Errorf("want a finding %d, got %v", id, all)
+		}
+	}
+	for _, id := range all {
+		if r.only && !has(r.also, id) {
+			return fmt.Errorf("want only the findings %v, got %v (%s)", r.also, all, messages(res))
 		}
 	}
 	return nil

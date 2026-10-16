@@ -114,6 +114,15 @@ var encodingRows = register("encoding", []row{
 	{name: "raw deflate when the policy does not allow it", ct: appJSON, hdr: enc("deflate"), body: rawDeflate(smallJSON), want: idEncCorrupt},
 	{name: "a preset dictionary", ct: appJSON, hdr: enc("deflate"), body: "\x78\xbb\x00\x00\x00\x01" + rawDeflate(smallJSON), want: idEncCorrupt},
 
+	// In monitor mode a body that was not decoded is not read as its declared type, which would report what compression put
+	// there; one that was decoded is read.
+	{name: "a truncated gzip form in monitor mode", ct: form, hdr: enc("gzip"), body: gz("a=1&b=2")[:12], also: []int{idEncCorrupt}, only: true,
+		tweak: func(p *Policy) { p.Monitor = true }},
+	{name: "a brotli form in monitor mode", ct: form, hdr: enc("br"), body: "\x1b\x03\x00\xf8a=1", also: []int{idEncUnsupported}, only: true,
+		tweak: func(p *Policy) { p.Monitor = true }},
+	{name: "a gzip form with a semicolon in monitor mode", ct: form, hdr: enc("gzip"), body: gz("a=1;b=2"), also: []int{idFormSemi}, only: true,
+		tweak: func(p *Policy) { p.Monitor = true }},
+
 	// What is inside is read by its own type.
 	{name: "gzip of json with a duplicate key", ct: appJSON, hdr: enc("gzip"), body: gz(`{"a":1,"A":2}`), want: idJSONDup},
 	{name: "gzip of malformed json", ct: appJSON, hdr: enc("gzip"), body: gz(`{"a":`), want: idJSONSyntax},

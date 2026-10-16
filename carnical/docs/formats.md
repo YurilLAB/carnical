@@ -21,7 +21,7 @@ Backend-specific behavior and unsupported formats still need separate review.
 | `-formats-mode block` | Enforce configured blocking findings after tuning legitimate traffic. |
 | `-formats-mode off` | Disable the inspector; incompatible with a policy file or encoding opt-in. |
 | `-formats-policy path.json` | Read a regular file, at most 1 MiB, before listening or confinement. |
-| `-allow-request-encoding` | Allow one bounded gzip/deflate layer. Both CRS and origin receive decoded bytes; a body that was not decoded (monitor mode or an `encoding-*` rule off) is refused with 415. |
+| `-allow-request-encoding` | Allow one bounded gzip/deflate layer. Both CRS and origin receive decoded bytes; a body that was not decoded (monitor mode or an `encoding-*` rule off) is refused with 415, and the inspector reports only the encoding finding for it: the compressed bytes are not read as the declared type. |
 
 The CLI mode overrides the policy's `monitor` field. Per-rule overrides still apply. Proxy
 `-max-body`/`-max-form-body` limits and format body/decompression limits all apply independently.
