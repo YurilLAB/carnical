@@ -714,7 +714,11 @@ func (e *Edge) forward() http.Handler {
 			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			markOrigin(r.Context())
+			// A request cancelled because its client went away, or because its response was ended to free a place (see
+			// stall.go), was not failed by the application: the shield must not take it for an application error.
+			if !errors.Is(err, context.Canceled) || r.Context().Err() == nil {
+				markOrigin(r.Context())
+			}
 			if e.cfg.OnMatch != nil {
 				// Operational failure, not an attack finding. Error strings can
 				// contain addresses or request data; default logs get only a class

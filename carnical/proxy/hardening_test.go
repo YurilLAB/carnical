@@ -274,6 +274,60 @@ func TestRefusalsHoldWithTheRuleSetOffAndAreRecorded(t *testing.T) {
 			})
 		}
 	})
+	// The 502 is recorded either way; only one the application caused may tell the shield's detector it is failing.
+	t.Run("shield counts only the application's own failures as its errors", func(t *testing.T) {
+		for _, tc := range []struct {
+			name, path string
+			errRatio   float64
+		}{
+			{"the client went away", "/hang", -1}, // nothing the application answered or failed
+			{"the application dropped the connection", "/drop", 1},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				arrived := make(chan struct{})
+				up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					close(arrived)
+					if r.URL.Path == "/drop" {
+						panic(http.ErrAbortHandler)
+					}
+					<-r.Context().Done()
+				}))
+				t.Cleanup(up.Close)
+				clock := time.Unix(1_700_000_000, 0)
+				sh, err := shield.New(shield.Config{Now: func() time.Time { return clock }})
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(sh.Close)
+				var seen refusals
+				cfg := Config{Upstream: mustURL(up.URL), Origin: loopback, CRS: crs.DefaultSettings(), Shield: sh, OnMatch: seen.record}
+				ruleSetOff(&cfg)
+				e, err := New(cfg)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { e.Close() })
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				go func() {
+					<-arrived
+					if tc.path == "/hang" {
+						cancel()
+					}
+				}()
+				rec := httptest.NewRecorder()
+				e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tc.path, nil).WithContext(ctx))
+				if rec.Code != http.StatusBadGateway || seen.last() != idUpstreamFailed {
+					t.Fatalf("status %d, recorded id %d", rec.Code, seen.last())
+				}
+				clock = clock.Add(2 * time.Second)
+				sh.Tick()
+				if got := sh.Snapshot().ErrRatio; got != tc.errRatio {
+					t.Fatalf("the detector's error ratio is %v, want %v", got, tc.errRatio)
+				}
+			})
+		}
+	})
 }
 
 func TestFrameworkControlHeadersNeverReachTheApplication(t *testing.T) {

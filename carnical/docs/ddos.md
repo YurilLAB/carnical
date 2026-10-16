@@ -73,7 +73,8 @@ An attack needs elevated volume plus supporting evidence held for three seconds:
 
 - A concentrated fingerprint from at least 20 addresses.
 - A concentrated target from new addresses without normal browser engagement.
-- An unhealthy application with traffic from new places.
+- An unhealthy application with traffic from new places. A request its client abandoned, or whose
+  response the proxy ended to free an upstream place, is not counted as an application error.
 
 A flood of connections that carry no requests is enough on its own, held for three seconds likewise
 and without a rise in requests: connections arrive at four times their usual rate (and at least 20 a
