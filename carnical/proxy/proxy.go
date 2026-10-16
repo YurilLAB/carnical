@@ -417,6 +417,31 @@ func (e *Edge) onMatch(m types.MatchedRule) {
 	e.cfg.OnMatch(match)
 }
 
+// refuseCrowdSec answers a visitor CrowdSec has a decision against, or every visitor while its decisions are not known.
+// The connection is closed after the refusal, as after the shield's: a banned client that keeps its connection open could
+// go on sending requests on it, each one refused and each one costing a request's work. A trusted proxy's connection
+// carries other visitors' requests too, so it is kept, unless the request has a body that was not read (see
+// closeUnlessRelayed). The shield does not count this refusal toward the visitor's standing yet: that is to be added here,
+// where the visitor's address and the kind of refusal are known.
+func (e *Edge) refuseCrowdSec(w http.ResponseWriter, r *http.Request, action crowdsec.Action, relayed bool) {
+	status, id, msg := http.StatusForbidden, idCrowdSecBan, "CrowdSec IP ban"
+	if action == crowdsec.Unavailable {
+		status, id, msg = http.StatusServiceUnavailable, idCrowdSecUnavailable, "CrowdSec decision cache unavailable"
+		w.Header().Set("Retry-After", "10")
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	closeUnlessRelayed(w.Header(), r, relayed)
+	// Keep refusal logs bounded during a ban flood; every request is
+	// counted in CrowdSec.Stats, including those with no sampled log.
+	second := time.Now().Unix()
+	previous := e.crowdSecLogSecond.Load()
+	if second != previous && e.crowdSecLogSecond.CompareAndSwap(previous, second) {
+		e.refuse(w, r, status, id, msg)
+	} else {
+		http.Error(w, http.StatusText(status), status)
+	}
+}
+
 // guard refuses what cannot be inspected faithfully, and tells the WAF and the application who the visitor is.
 func (e *Edge) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -437,6 +462,7 @@ func (e *Edge) guard(next http.Handler) http.Handler {
 			http.Error(w, "invalid client address", http.StatusBadRequest)
 			return
 		}
+		peer := r.RemoteAddr // the connection's own address, before it is replaced by the visitor's
 		// Coraza splits RemoteAddr at its last colon, so an IPv6 address is given without brackets.
 		r.RemoteAddr = fmt.Sprintf("%s:%d", addr, port)
 		watch := &writeWatch{ResponseWriter: w, onHijack: e.hijacked}
@@ -446,23 +472,8 @@ func (e *Edge) guard(next http.Handler) http.Handler {
 		w = watch
 		r = r.WithContext(context.WithValue(r.Context(), writeWatchKey{}, watch))
 		if cs := e.cfg.CrowdSec; cs != nil {
-			action := cs.Check(addr)
-			if action != crowdsec.Allow {
-				status, id, msg := http.StatusForbidden, idCrowdSecBan, "CrowdSec IP ban"
-				if action == crowdsec.Unavailable {
-					status, id, msg = http.StatusServiceUnavailable, idCrowdSecUnavailable, "CrowdSec decision cache unavailable"
-					w.Header().Set("Retry-After", "10")
-				}
-				w.Header().Set("Cache-Control", "no-store")
-				// Keep refusal logs bounded during a ban flood; every request is
-				// counted in CrowdSec.Stats, including those with no sampled log.
-				second := time.Now().Unix()
-				previous := e.crowdSecLogSecond.Load()
-				if second != previous && e.crowdSecLogSecond.CompareAndSwap(previous, second) {
-					e.refuse(w, r, status, id, msg)
-				} else {
-					http.Error(w, http.StatusText(status), status)
-				}
+			if action := cs.Check(addr); action != crowdsec.Allow {
+				e.refuseCrowdSec(w, r, action, e.relayed(peer))
 				return
 			}
 		}

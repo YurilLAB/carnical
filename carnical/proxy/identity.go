@@ -60,6 +60,21 @@ func checkTrusted(p netip.Prefix) error {
 	return nil
 }
 
+// relayed reports whether a connection's address, as http.Request.RemoteAddr gives it, is a trusted proxy's.
+func (e *Edge) relayed(remoteAddr string) bool {
+	ap, err := netip.ParseAddrPort(remoteAddr)
+	return err == nil && isTrusted(ap.Addr().Unmap(), e.cfg.TrustedProxies)
+}
+
+// closeUnlessRelayed closes the connection after a refusal, by the same rule as the shield's: a trusted proxy's connection
+// carries other visitors' requests too, so it stays open, except after an HTTP/1 request with a body, as net/http would
+// wait for the rest of that body before reading the next request, and a refused request is never read.
+func closeUnlessRelayed(h http.Header, r *http.Request, relayed bool) {
+	if !relayed || r.ProtoMajor == 1 && r.ContentLength != 0 {
+		h.Set("Connection", "close")
+	}
+}
+
 func isTrusted(a netip.Addr, trusted []netip.Prefix) bool {
 	for _, p := range trusted {
 		if p.Contains(a) {

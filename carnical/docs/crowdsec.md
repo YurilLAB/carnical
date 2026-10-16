@@ -98,7 +98,10 @@ JSON logs report `entries`, `skipped` (latest pull), `syncs`, `failures`, `stale
 and **5000061** for unavailable decisions, capped at one combined event per second per edge.
 Counters include every refusal.
 
-The 403 and 503 responses have `Cache-Control: no-store`; 503 includes `Retry-After: 10`. Keys,
+The 403 and 503 responses have `Cache-Control: no-store`; 503 includes `Retry-After: 10`. Both
+close the connection (`Connection: close`), as a flood refusal does, so a banned client cannot keep
+sending requests on it. A connection from a `-trusted-proxies` address carries other visitors'
+requests and stays open, unless the refused HTTP/1 request has a body. Keys,
 decision values, API response bodies and URLs are not logged by this client. The existing
 `-log-details` option can include visitor addresses and URIs in sampled request logs; leave it
 disabled unless those details are needed.

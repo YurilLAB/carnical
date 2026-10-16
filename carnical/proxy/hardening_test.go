@@ -218,6 +218,47 @@ func TestRefusalsHoldWithTheRuleSetOffAndAreRecorded(t *testing.T) {
 			})
 		}
 	})
+	// A CrowdSec refusal is for one visitor; whether the connection survives it is HTTP, not a SecLang profile.
+	t.Run("CrowdSec refusals close only the refused client's own connection", func(t *testing.T) {
+		get := func(visitor string) string {
+			return "GET /page HTTP/1.1\r\n" + preamble + "X-Forwarded-For: " + visitor + "\r\n\r\n"
+		}
+		for _, tc := range []struct {
+			name, banned string
+			trusted      bool
+			requests     []string
+			want         []int
+		}{
+			{"a banned direct client loses its connection", "127.0.0.0/8", false, []string{get("192.0.2.9"), get("192.0.2.9")}, []int{403}},
+			{"a trusted proxy relaying a banned visitor keeps its connection", "192.0.2.9/32", true,
+				[]string{get("192.0.2.9"), get("198.51.100.9")}, []int{403, 200}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					fmt.Fprintf(w, `{"new":[{"id":1,"scope":"Range","value":%q,"type":"ban","duration":"1h"}],"deleted":[]}`, tc.banned)
+				}))
+				defer api.Close()
+				cs, err := crowdsec.New(crowdsec.Config{URL: api.URL, APIKey: "proxy-test-bouncer-key"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer cs.Close()
+				if err := cs.Sync(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				s := start(t, func(c *Config) {
+					ruleSetOff(c)
+					c.CrowdSec = cs
+					if tc.trusted {
+						c.TrustedProxies = loopback.Allow
+					}
+				})
+				if statuses := onOneConnection(t, s, tc.requests); !equalInts(statuses, tc.want) {
+					t.Fatalf("statuses on one connection %v, want %v", statuses, tc.want)
+				}
+			})
+		}
+	})
 	// A shield refusal is for one visitor; whether the connection survives it is HTTP, not a SecLang profile.
 	t.Run("shield refusals close only the refused client's own connection", func(t *testing.T) {
 		get := func(visitor string) string {
@@ -250,32 +291,7 @@ func TestRefusalsHoldWithTheRuleSetOffAndAreRecorded(t *testing.T) {
 				}
 				t.Cleanup(sh.Close)
 				s := start(t, func(c *Config) { ruleSetOff(c); c.Shield = sh; c.TrustedProxies = trusted })
-				conn, err := net.DialTimeout("tcp", s.addr, 3*time.Second)
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer conn.Close()
-				if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
-					t.Fatal(err)
-				}
-				br := bufio.NewReader(conn)
-				var statuses []int
-				for _, request := range tc.requests {
-					if _, err := conn.Write([]byte(request)); err != nil {
-						break
-					}
-					resp, err := http.ReadResponse(br, nil)
-					if err != nil {
-						break
-					}
-					_, err = io.Copy(io.Discard, resp.Body)
-					resp.Body.Close()
-					if err != nil {
-						break
-					}
-					statuses = append(statuses, resp.StatusCode)
-				}
-				if !equalInts(statuses, tc.want) {
+				if statuses := onOneConnection(t, s, tc.requests); !equalInts(statuses, tc.want) {
 					t.Fatalf("statuses on one connection %v, want %v", statuses, tc.want)
 				}
 			})
@@ -2403,4 +2419,36 @@ func mustURL(s string) *url.URL {
 		panic(err)
 	}
 	return u
+}
+
+// onOneConnection sends the requests one after the other on one connection and returns the status of each answer it read,
+// up to the first that did not come because the connection was closed.
+func onOneConnection(t *testing.T, s *setup, requests []string) []int {
+	t.Helper()
+	conn, err := net.DialTimeout("tcp", s.addr, 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	br := bufio.NewReader(conn)
+	var statuses []int
+	for _, request := range requests {
+		if _, err := conn.Write([]byte(request)); err != nil {
+			break
+		}
+		resp, err := http.ReadResponse(br, nil)
+		if err != nil {
+			break
+		}
+		_, err = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			break
+		}
+		statuses = append(statuses, resp.StatusCode)
+	}
+	return statuses
 }
