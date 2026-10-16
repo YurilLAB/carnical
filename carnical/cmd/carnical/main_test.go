@@ -2544,6 +2544,46 @@ func me(t *testing.T) string {
 	return strings.TrimSpace(string(out))
 }
 
+// A function of its own: no other test reads the lines the shield's events are logged as. Each kind has its own
+// message and level, and the IDS fields are written.
+func TestShieldEventsAreLoggedByKind(t *testing.T) {
+	tests := []struct {
+		name    string
+		ev      shield.Event
+		monitor bool
+		says    []string
+		not     []string
+	}{
+		{name: "an IDS signal names its codes and mode", ev: shield.Event{Kind: "ids_signal", Mode: "monitor", Codes: []string{"held"}},
+			says: []string{`"level":"WARN"`, `"msg":"network or HTTP intrusion signal detected"`, `"mode":"monitor"`, `"codes":["held"]`}},
+		{name: "signals cleared", ev: shield.Event{Kind: "ids_clear", Mode: "on", Codes: []string{"held", "rejections"}},
+			says: []string{`"level":"INFO"`, `"msg":"intrusion signals cleared"`, `"codes":["held","rejections"]`}},
+		{name: "back to normal", ev: shield.Event{Kind: "normal", Mode: "on"},
+			says: []string{`"level":"INFO"`, `"msg":"traffic is back to normal"`, `"mode":"on"`}, not: []string{`"codes"`}},
+		{name: "an attack in monitor mode is not called mitigated", ev: shield.Event{Kind: "attack_start", Mode: "monitor"}, monitor: true,
+			says: []string{`"level":"WARN"`, `"msg":"denial-of-service attack detected; monitor mode, not mitigated"`}, not: []string{"mitigation on"}},
+		{name: "a kind this binary does not know is still a warning", ev: shield.Event{Kind: "later_kind"},
+			says: []string{`"level":"WARN"`, `"msg":"flood protection event"`, `"kind":"later_kind"`}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			logShieldEvent(slog.New(slog.NewJSONHandler(&buf, nil)), tt.ev, tt.monitor)
+			line := buf.String()
+			for _, want := range tt.says {
+				if !strings.Contains(line, want) {
+					t.Errorf("log %s lacks %s", line, want)
+				}
+			}
+			for _, unwanted := range tt.not {
+				if strings.Contains(line, unwanted) {
+					t.Errorf("log %s has %s", line, unwanted)
+				}
+			}
+		})
+	}
+}
+
 // A Windows access list is read from its text form, and what is not understood is refused, on every system the tests
 // run on (the reading is plain text; who an entry names is resolved on Windows only).
 func TestWindowsAccessListsAreReadStrictly(t *testing.T) {

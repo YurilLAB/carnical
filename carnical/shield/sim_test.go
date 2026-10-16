@@ -1049,6 +1049,12 @@ func TestABusySiteIsNotAnAttackWhenTheProxyStarts(t *testing.T) {
 func TestAnAttackThatShowsNoEvidenceForFiveMinutesEnds(t *testing.T) {
 	now := time.Date(2026, 10, 6, 0, 0, 0, 0, time.UTC)
 	d := newDetector(DetectorConfig{Warmup: 2 * time.Minute, Tau: 5 * time.Minute, MinAttack: 30 * time.Second, EvidenceTimeout: 3 * time.Minute})
+	var kinds []string
+	d.onEvent = func(e Event) {
+		if e.Kind != "attack_update" {
+			kinds = append(kinds, e.Kind)
+		}
+	}
 	n := uint32(0)
 	feed := func(sec, rate int, fp uint64, path uint64, variety uint32) {
 		for i := 0; i < rate; i++ {
@@ -1063,8 +1069,8 @@ func TestAnAttackThatShowsNoEvidenceForFiveMinutesEnds(t *testing.T) {
 	for ; sec < 300; sec++ {
 		feed(sec, 100, 1, 100, 8) // eight fingerprints and eight targets, ordinary
 	}
-	if d.state == Attack {
-		t.Fatal("the attack was declared during ordinary traffic")
+	if d.state == Attack || len(kinds) != 0 {
+		t.Fatalf("ordinary traffic was reported: %q", kinds)
 	}
 	for ; sec < 330; sec++ {
 		feed(sec, 1500, 500, 900, 1) // one program, one target: an attack
@@ -1092,6 +1098,28 @@ func TestAnAttackThatShowsNoEvidenceForFiveMinutesEnds(t *testing.T) {
 	t.Logf("with traffic still at 15x but nothing to show an attack, the attack ended %d seconds later (timeout 180)", ended)
 	if ended < 150 || ended > 260 {
 		t.Fatalf("it ended after %d seconds, want about the 180-second timeout", ended)
+	}
+	// The traffic is still high after the attack, and then ordinary again: the owner is told both.
+	for end := sec + 30; sec < end; sec++ {
+		feed(sec, 100, 1, 100, 8)
+	}
+	if want := []string{"elevated", "attack_start", "attack_end", "elevated", "normal"}; !slices.Equal(kinds, want) {
+		t.Fatalf("events %q, want %q", kinds, want)
+	}
+	// Short bursts that take the rate over the threshold and back are one rise, told once, until it has been calm.
+	kinds = nil
+	for burst := 0; burst < 4; burst++ {
+		feed(sec, 30000, 1, 100, 8)
+		sec++
+		for end := sec + 14; sec < end; sec++ {
+			feed(sec, 100, 1, 100, 8)
+		}
+	}
+	for end := sec + 30; sec < end; sec++ {
+		feed(sec, 100, 1, 100, 8)
+	}
+	if want := []string{"elevated", "normal"}; !slices.Equal(kinds, want) {
+		t.Fatalf("events %q, want %q", kinds, want)
 	}
 }
 

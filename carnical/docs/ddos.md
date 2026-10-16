@@ -57,17 +57,22 @@ request or connection waits on it: a log writer that stalls delays later events,
 
 These alerts report patterns for investigation. They do not change attack state or add bans.
 
-| Signal | Threshold |
+| Signal (code) | Threshold |
 | --- | --- |
-| Connection admission pressure | At least 50% of incoming TCP connections are refused. |
-| Early TCP closes | At least 75% of closed nontrusted connections never reached HTTP `StateActive`. |
-| HTTP security rejections | At least 50% of Shield-admitted requests receive a later WAF/policy 4xx. Requests the Shield refused or challenged are not in the share. Origin 4xx, gateway 5xx and 408 (a client too slow to send its request) responses are excluded. |
-| Addresses held over their own limit | Requests refused by an address's or a network's own rate limit (429), with no ratio: a scanner that sends faster than its limit is reported even when other traffic is busy. |
+| Connection admission pressure (`conn_pressure`) | At least 50% of incoming TCP connections are refused. |
+| Early TCP closes (`early_close`) | At least 75% of closed nontrusted connections never reached HTTP `StateActive`. |
+| HTTP security rejections (`rejections`) | At least 50% of Shield-admitted requests receive a later WAF/policy 4xx. Requests the Shield refused or challenged are not in the share. Origin 4xx, gateway 5xx and 408 (a client too slow to send its request) responses are excluded. |
+| Addresses held over their own limit (`held`) | Requests refused by an address's or a network's own rate limit (429), with no ratio: a scanner that sends faster than its limit is reported even when other traffic is busy. |
 
 Each signal also needs `Detector.MinAttackRate` observations per second (default 20), averaged over
 ten seconds. `Snapshot.IDSReasons` and the rate fields expose current evidence; `EarlyCloses` and
-`SecurityRejections` hold totals. The CLI emits `ids_signal` at most once every 30 seconds per
-Shield, including in monitor mode, with aggregate reasons and no request paths/bodies.
+`SecurityRejections` hold totals. An `ids_signal` event carries every current reason, the code of
+each in `Event.Codes`, and `Event.Mode` (`on` or `monitor`), with aggregate reasons and no request
+paths/bodies, including in monitor mode. Each signal is paced on its own: an event is sent when one
+of the current signals was not reported in the last 30 seconds, so a new signal is reported at once
+and one that goes on is reported again every 30 seconds. Once every signal has been gone for 30
+seconds an `ids_clear` event names the codes reported since the last one; a signal that crosses its
+threshold back and forth is not reported each time.
 
 TCP signals cover accepted sockets and admission refusals. Raw packets, incomplete SYN handshakes,
 UDP and link saturation need [kernel packet guards](network-protection.md) or provider protection.
@@ -77,7 +82,10 @@ HTTP checks before Shield admission and pre-parser failures are outside the reje
 
 Every second, the detector compares a ten-second window with the site's ordinary traffic. It
 combines volume with fingerprint/target concentration, new addresses, engagement and origin health.
-Volume alone is logged as elevated traffic; it does not declare an attack.
+Volume alone is logged as elevated traffic; it does not declare an attack. The `elevated` event is
+sent once until the state is reported back to normal: a `normal` event follows `elevated` or
+`attack_end` once the state has stayed normal for ten seconds, so a rate that hovers at the
+threshold is reported as one rise.
 
 The volume threshold is the largest of four times the baseline, baseline plus eight standard
 deviations, and 20 requests/second. The baseline has a ten-minute time constant, updates whenever no

@@ -971,20 +971,21 @@ func TestPerAddressAndPerNetworkLimitsApplyOutsideAnAttack(t *testing.T) {
 	})
 	t.Run("IDS thresholds and alert pacing", func(t *testing.T) {
 		for _, tc := range []struct {
-			name    string
-			a       aggregate
-			signals int
+			name  string
+			a     aggregate
+			codes []string
 		}{
-			{"network admission pressure", aggregate{connRate: 40, connRefused: 25}, 1},
-			{"early TCP closes", aggregate{closed: 40, earlyCloses: 35}, 1},
-			{"WAF rejection burst", aggregate{rate: 40, securityRejects: 25}, 1},
-			{"all three signals", aggregate{connRate: 40, connRefused: 25, closed: 40, earlyCloses: 35, rate: 40, securityRejects: 25}, 3},
-			{"low volume", aggregate{connRate: 10, connRefused: 9, closed: 10, earlyCloses: 9, rate: 10, securityRejects: 9}, 0},
-			{"busy site low ratios", aggregate{connRate: 1000, connRefused: 25, closed: 1000, earlyCloses: 35, rate: 1000, securityRejects: 25}, 0},
+			{"network admission pressure", aggregate{connRate: 40, connRefused: 25}, []string{"conn_pressure"}},
+			{"early TCP closes", aggregate{closed: 40, earlyCloses: 35}, []string{"early_close"}},
+			{"WAF rejection burst", aggregate{rate: 40, securityRejects: 25}, []string{"rejections"}},
+			{"all three signals", aggregate{connRate: 40, connRefused: 25, closed: 40, earlyCloses: 35, rate: 40, securityRejects: 25},
+				[]string{"conn_pressure", "early_close", "rejections"}},
+			{"low volume", aggregate{connRate: 10, connRefused: 9, closed: 10, earlyCloses: 9, rate: 10, securityRejects: 9}, nil},
+			{"busy site low ratios", aggregate{connRate: 1000, connRefused: 25, closed: 1000, earlyCloses: 35, rate: 1000, securityRejects: 25}, nil},
 			// Rejections are a share of the requests the shield admitted, not of all it saw.
-			{"rejections of what was admitted", aggregate{rate: 150, refused: 80, challenged: 20, securityRejects: 25}, 1},
-			{"a scanner held over its own limit", aggregate{rate: 150, refused: 100, held: 100, securityRejects: 40}, 2},
-			{"a few requests held", aggregate{rate: 100, refused: 15, held: 15}, 0},
+			{"rejections of what was admitted", aggregate{rate: 150, refused: 80, challenged: 20, securityRejects: 25}, []string{"rejections"}},
+			{"a scanner held over its own limit", aggregate{rate: 150, refused: 100, held: 100, securityRejects: 40}, []string{"rejections", "held"}},
+			{"a few requests held", aggregate{rate: 100, refused: 15, held: 15}, nil},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				det := newDetector(DetectorConfig{})
@@ -997,14 +998,17 @@ func TestPerAddressAndPerNetworkLimitsApplyOutsideAnAttack(t *testing.T) {
 				}
 				ns := now.UnixNano()
 				detect(ns, tc.a)
-				if len(det.idsReasons) != tc.signals {
+				if len(det.idsReasons) != len(tc.codes) {
 					t.Fatalf("signals=%v", det.idsReasons)
 				}
-				if tc.signals == 0 {
+				if len(tc.codes) == 0 {
 					if len(events) != 0 {
 						t.Fatal("unexpected signal")
 					}
 					return
+				}
+				if !slices.Equal(events[0].Codes, tc.codes) || events[0].Mode != "on" {
+					t.Fatalf("codes %q in mode %q, want %q in mode on", events[0].Codes, events[0].Mode, tc.codes)
 				}
 				events[0].Reasons[0] = "modified"
 				if det.idsReasons[0] == "modified" {
@@ -1021,6 +1025,65 @@ func TestPerAddressAndPerNetworkLimitsApplyOutsideAnAttack(t *testing.T) {
 				detect(ns+int64(31*time.Second), aggregate{})
 				if len(det.idsReasons) != 0 {
 					t.Fatal("cleared signal remained")
+				}
+			})
+		}
+		// Each signal is paced on its own, and the signals are reported clear once they have been gone for 30 seconds.
+		pressure, held := aggregate{connRate: 40, connRefused: 25}, aggregate{connRate: 40, connRefused: 25, rate: 100, refused: 30, held: 30}
+		type step struct {
+			at   int // seconds
+			a    aggregate
+			want string // the event sent, as its kind and codes, or empty for none
+		}
+		for _, tc := range []struct {
+			name    string
+			monitor bool
+			steps   []step
+		}{
+			{"a signal that goes on is told again every 30 seconds", false, []step{
+				{0, pressure, "ids_signal conn_pressure"}, {1, pressure, ""}, {29, pressure, ""}, {30, pressure, "ids_signal conn_pressure"}}},
+			{"a new signal is not held back by one already told", false, []step{
+				{0, pressure, "ids_signal conn_pressure"}, {5, held, "ids_signal conn_pressure,held"}, {6, held, ""}, {35, held, "ids_signal conn_pressure,held"}}},
+			{"signals gone for 30 seconds are told clear, once", false, []step{
+				{0, pressure, "ids_signal conn_pressure"}, {5, held, "ids_signal conn_pressure,held"}, {6, aggregate{}, ""}, {35, aggregate{}, ""},
+				{36, aggregate{}, "ids_clear conn_pressure,held"}, {90, aggregate{}, ""}}},
+			{"a signal back within 30 seconds is not told again at once", false, []step{
+				{0, pressure, "ids_signal conn_pressure"}, {1, aggregate{}, ""}, {2, pressure, ""}, {20, aggregate{}, ""}, {49, aggregate{}, ""},
+				{50, aggregate{}, "ids_clear conn_pressure"}}},
+			{"a signal back after it was told clear is told at once", false, []step{
+				{0, pressure, "ids_signal conn_pressure"}, {1, aggregate{}, ""}, {31, aggregate{}, "ids_clear conn_pressure"}, {32, pressure, "ids_signal conn_pressure"}}},
+			{"nothing to clear without a signal", false, []step{{0, aggregate{}, ""}, {60, aggregate{}, ""}}},
+			{"in monitor mode", true, []step{
+				{0, pressure, "ids_signal conn_pressure"}, {1, aggregate{}, ""}, {31, aggregate{}, "ids_clear conn_pressure"}}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				det := newDetector(DetectorConfig{})
+				det.monitor = tc.monitor
+				var events []Event
+				det.onEvent = func(e Event) { events = append(events, e) }
+				mode := "on"
+				if tc.monitor {
+					mode = "monitor"
+				}
+				for _, st := range tc.steps {
+					events = events[:0]
+					det.mu.Lock()
+					det.detectIDS(now.Add(time.Duration(st.at)*time.Second).UnixNano(), st.a)
+					det.deliver()
+					var got []string
+					for _, e := range events {
+						got = append(got, e.Kind+" "+strings.Join(e.Codes, ","))
+						if e.Mode != mode {
+							t.Fatalf("at %d s: mode %q, want %q", st.at, e.Mode, mode)
+						}
+					}
+					var want []string
+					if st.want != "" {
+						want = []string{st.want}
+					}
+					if !slices.Equal(got, want) {
+						t.Fatalf("at %d s: events %q, want %q", st.at, got, st.want)
+					}
 				}
 			})
 		}

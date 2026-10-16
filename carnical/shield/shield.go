@@ -438,7 +438,7 @@ func New(cfg Config) (*Shield, error) {
 	s.subnets = newTable[netip.Prefix, subnet](cfg.MaxSources/4,
 		func(v *subnet, now int64) bool { return subnetIdle(v, now) && !raisedNet(v) }, subnetLast,
 		func(v *subnet, _ int64) bool { return raisedNet(v) })
-	s.det.labeler, s.det.onEvent = cfg.Labeler, cfg.OnEvent
+	s.det.labeler, s.det.onEvent, s.det.monitor = cfg.Labeler, cfg.OnEvent, cfg.MonitorOnly
 	s.det.clusterRate, s.det.clusterShare = cfg.ClusterRate, cfg.ClusterShare
 	s.fdLimit = fdLimit()
 	s.det.unknownRate = func(base float64) float64 { return max(base*cfg.UnknownFactor, cfg.MinUnknownRate) }

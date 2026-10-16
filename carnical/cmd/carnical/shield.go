@@ -328,10 +328,14 @@ func checkShieldRanges(f shieldFlags, set map[string]bool) error {
 // number writes a flag's value as it would be typed.
 func number(v float64) string { return strconv.FormatFloat(v, 'f', -1, 64) }
 
-// logShieldEvent writes attack transitions and bounded IDS signals. Per-request logs would amplify a flood. monitor says
+// logShieldEvent writes attack transitions, the return to normal traffic, and bounded IDS signals and their clearing, with
+// the shield's mode and the signals' codes. Per-request logs would amplify a flood. monitor says
 // that an attack is only reported (-ddos monitor), so the log does not claim it is being mitigated.
 func logShieldEvent(log *slog.Logger, ev shield.Event, monitor bool) {
-	attrs := []any{"state", ev.State.String(), "rate", math.Round(ev.Rate), "baseline_rate", math.Round(ev.BaselineRate), "reasons", ev.Reasons}
+	attrs := []any{"state", ev.State.String(), "mode", ev.Mode, "rate", math.Round(ev.Rate), "baseline_rate", math.Round(ev.BaselineRate), "reasons", ev.Reasons}
+	if len(ev.Codes) > 0 {
+		attrs = append(attrs, "codes", ev.Codes)
+	}
 	if strings.HasPrefix(ev.Kind, "attack") {
 		inc := ev.Incident
 		clusters := make([]string, 0, len(inc.Clusters))
@@ -352,14 +356,21 @@ func logShieldEvent(log *slog.Logger, ev shield.Event, monitor bool) {
 			attrs = append(attrs, "ended", inc.End)
 		}
 	}
-	msg := map[string]string{"elevated": "traffic is unusually high", "attack_start": "denial-of-service attack detected; mitigation on",
-		"attack_update": "denial-of-service attack continues", "attack_end": "denial-of-service attack over", "ids_signal": "network or HTTP intrusion signal detected"}[ev.Kind]
+	msg := map[string]string{"elevated": "traffic is unusually high", "normal": "traffic is back to normal",
+		"attack_start": "denial-of-service attack detected; mitigation on", "attack_update": "denial-of-service attack continues",
+		"attack_end": "denial-of-service attack over", "ids_signal": "network or HTTP intrusion signal detected",
+		"ids_clear": "intrusion signals cleared"}[ev.Kind]
 	if monitor && ev.Kind == "attack_start" {
 		msg = "denial-of-service attack detected; monitor mode, not mitigated"
 	}
-	if ev.Kind == "elevated" {
+	switch ev.Kind {
+	case "elevated", "normal", "ids_clear":
 		log.Info(msg, attrs...)
-		return
+	default:
+		if msg == "" { // a kind this binary does not know is still reported, as a warning
+			msg = "flood protection event"
+			attrs = append(attrs, "kind", ev.Kind)
+		}
+		log.Warn(msg, attrs...)
 	}
-	log.Warn(msg, attrs...)
 }

@@ -12,17 +12,24 @@ import (
 	"time"
 )
 
-// Event is something the owner should hear about: an attack began, is going on, or ended, or traffic is unusually high.
-// Events are few (a handful per attack) and never carry request content; the shield never logs one line per refused
-// request, because during a flood that would be a second flood, into the log.
+// Event is something the owner should hear about: an attack began, is going on, or ended, traffic is unusually high or
+// back to normal, or an IDS signal was seen or cleared. Events are few (a handful per attack) and never carry request
+// content; the shield never logs one line per refused request, because during a flood that would be a second flood,
+// into the log.
 type Event struct {
-	// Kind is "elevated", "attack_start", "attack_update", "attack_end" or "ids_signal".
-	Kind         string
+	// Kind is "elevated", "normal", "attack_start", "attack_update", "attack_end", "ids_signal" or "ids_clear".
+	// "normal" follows "elevated" or "attack_end" once the state has stayed normal for ten seconds.
+	Kind string
+	// Mode is "on" when the shield mitigates attacks and "monitor" when it only reports them (Config.MonitorOnly).
+	Mode         string
 	At           time.Time
 	State        State
 	Rate         float64 // requests a second over the last ten seconds
 	BaselineRate float64
 	Reasons      []string
+	// Codes name the IDS signals: for ids_signal one for each reason, in the same order ("conn_pressure",
+	// "early_close", "rejections", "held"), and for ids_clear those reported since the last ids_clear.
+	Codes []string
 	// Incident is filled for the attack events.
 	Incident Incident
 }

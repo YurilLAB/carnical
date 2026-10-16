@@ -292,8 +292,19 @@ type detector struct {
 	wall       func(ns int64) time.Time
 	labeler    Labeler
 	onEvent    func(Event)
+	monitor    bool // Config.MonitorOnly, for Event.Mode
 	idsReasons []string
-	idsLast    int64
+	// idsLast is when each IDS signal was last reported, and idsSent whether it ever was. idsOpen holds the signals
+	// reported since the last ids_clear, and idsQuiet when the reasons last became empty, while idsCalm says they are.
+	idsLast  [idsCodes]int64
+	idsSent  [idsCodes]bool
+	idsOpen  uint8
+	idsQuiet int64
+	idsCalm  bool
+	// announced is the state the last elevated, attack_start or normal event reported, and calm how many seconds in a row
+	// the state has been Normal.
+	announced State
+	calm      int
 	// pending holds the events found under mu until tick delivers them after releasing it (see deliver), at most
 	// maxPendingEvents; droppedEvents counts those that did not fit, and those found after the shield was closed.
 	// delivering says that a caller of tick is delivering.
@@ -301,7 +312,6 @@ type detector struct {
 	delivering    bool
 	closed        bool
 	droppedEvents atomic.Uint64
-	idsReported   bool
 	unknownRate   func(base float64) float64
 	knownRate     func(base float64) float64
 	clusterRate   float64
@@ -671,8 +681,10 @@ func (d *detector) evaluate(ns int64) {
 		if d.run >= d.cfg.Confirm {
 			d.startAttack(ns, a, reasons, strongFP, pathConc && spread && lowEngage)
 		} else if gate {
-			if d.state != Elevated {
-				d.state = Elevated
+			d.state = Elevated
+			// Once until the state has been announced normal again: a rate that hovers at the threshold is one rise.
+			if d.announced != Elevated {
+				d.announced = Elevated
 				d.emit(Event{Kind: "elevated", At: d.wallTime(ns), State: Elevated, Rate: a.rate, BaselineRate: rateBase, Reasons: reasons})
 			}
 		} else {
@@ -680,6 +692,16 @@ func (d *detector) evaluate(ns int64) {
 		}
 		if d.state != Attack {
 			d.learn(a, gate, hurt)
+		}
+		// The return to normal is announced once the state has stayed Normal for as long as the rate is averaged over.
+		if d.state == Normal {
+			d.calm++
+		} else {
+			d.calm = 0
+		}
+		if d.state == Normal && d.announced != Normal && d.calm >= aggSeconds {
+			d.announced = Normal
+			d.emit(Event{Kind: "normal", At: d.wallTime(ns), State: Normal, Rate: a.rate, BaselineRate: rateBase})
 		}
 	case Attack:
 		exitRate := math.Max(d.cfg.ExitFactor*d.frozen.rate, d.cfg.MinAttackRate/2)
@@ -733,32 +755,92 @@ func (d *detector) evaluate(ns int64) {
 	d.earn.Store(&earning{sec: d.earnSec + 1, open: d.earnOpen, alpha: 1 / float64(d.cfg.Tau/time.Second)})
 }
 
+// The IDS signals, by the code an Event names them with (idsCodeNames).
+const (
+	idsConnPressure = iota
+	idsEarlyClose
+	idsRejections
+	idsHeld
+	idsCodes
+)
+
+var idsCodeNames = [idsCodes]string{"conn_pressure", "early_close", "rejections", "held"}
+
+// idsPace is the least time between two reports of one IDS signal, and how long the signals must have been gone before
+// they are reported clear.
+const idsPace = 30 * time.Second
+
 // detectIDS reports strong admission and rejection signals without changing mitigation.
 // A response error alone cannot classify an attack; these bounded alerts let operators
 // investigate rejected probes, connection churn or capacity/configuration problems.
+//
+// An ids_signal event carries every current reason. It is sent when one of them was not reported in the last idsPace,
+// so that a new signal is told at once whatever else is going on, and one that goes on is told again every idsPace. An
+// ids_clear event says that the signals reported have been gone for idsPace: one that comes and goes at its threshold
+// is not reported as many times as it crosses it.
 func (d *detector) detectIDS(ns int64, a aggregate) {
 	var reasons []string
+	var present uint8
+	add := func(code int, reason string) {
+		reasons = append(reasons, reason)
+		present |= 1 << code
+	}
 	floor := d.cfg.MinAttackRate
 	if a.connRefused >= floor && a.connRefused >= 0.5*a.connRate {
-		reasons = append(reasons, "IP/network connection admission pressure: "+itoa(a.connRefused)+" refusals a second")
+		add(idsConnPressure, "IP/network connection admission pressure: "+itoa(a.connRefused)+" refusals a second")
 	}
 	if a.earlyCloses >= floor && a.earlyCloses >= 0.75*a.closed {
-		reasons = append(reasons, "connections close before HTTP activity: "+itoa(a.earlyCloses)+" a second")
+		add(idsEarlyClose, "connections close before HTTP activity: "+itoa(a.earlyCloses)+" a second")
 	}
 	// Later checks see only the requests the shield admitted: a scanner whose own limit refuses most of what it sends
 	// must not hide the share of the rest that the checks reject.
 	if admitted := math.Max(a.rate-a.refused-a.challenged, 0); a.securityRejects >= floor && a.securityRejects >= 0.5*admitted {
-		reasons = append(reasons, "requests rejected before the origin: "+itoa(a.securityRejects)+" a second")
+		add(idsRejections, "requests rejected before the origin: "+itoa(a.securityRejects)+" a second")
 	}
 	if a.held >= floor {
-		reasons = append(reasons, "addresses held over their own limit: "+itoa(a.held)+" refusals a second")
+		add(idsHeld, "addresses held over their own limit: "+itoa(a.held)+" refusals a second")
 	}
 	d.idsReasons = reasons
-	if len(reasons) == 0 || d.idsReported && ns-d.idsLast < int64(30*time.Second) {
+	if present == 0 {
+		switch {
+		case d.idsOpen == 0:
+		case !d.idsCalm:
+			d.idsQuiet, d.idsCalm = ns, true
+		case ns-d.idsQuiet >= int64(idsPace):
+			d.emit(Event{Kind: "ids_clear", At: d.wallTime(ns), State: d.state, Rate: a.rate, BaselineRate: d.base.rate, Codes: idsNames(d.idsOpen)})
+			d.idsOpen, d.idsCalm = 0, false
+		}
 		return
 	}
-	d.idsLast, d.idsReported = ns, true
-	d.emit(Event{Kind: "ids_signal", At: d.wallTime(ns), State: d.state, Rate: a.rate, BaselineRate: d.base.rate, Reasons: append([]string(nil), reasons...)})
+	d.idsCalm = false
+	due := false
+	for c := range idsCodes {
+		if present&(1<<c) != 0 && (!d.idsSent[c] || ns-d.idsLast[c] >= int64(idsPace)) {
+			due = true
+		}
+	}
+	if !due {
+		return
+	}
+	for c := range idsCodes {
+		if present&(1<<c) != 0 {
+			d.idsLast[c], d.idsSent[c] = ns, true
+		}
+	}
+	d.idsOpen |= present
+	d.emit(Event{Kind: "ids_signal", At: d.wallTime(ns), State: d.state, Rate: a.rate, BaselineRate: d.base.rate, Reasons: append([]string(nil), reasons...),
+		Codes: idsNames(present)})
+}
+
+// idsNames lists the codes of a set of IDS signals, in the order of their reasons.
+func idsNames(set uint8) []string {
+	var out []string
+	for c := range idsCodes {
+		if set&(1<<c) != 0 {
+			out = append(out, idsCodeNames[c])
+		}
+	}
+	return out
 }
 
 // hurt says whether the application is failing in the last ten seconds compared with its errors over a far longer time
@@ -909,6 +991,7 @@ func (d *detector) startAttack(ns int64, a aggregate, reasons []string, fpAttack
 	d.info.Store(&attackInfo{epoch: d.epoch, since: ns, fps: map[uint64]bool{}, paths: map[uint64]bool{}, unknownRate: unknown,
 		clusterRate: cluster, knownRate: known})
 	d.widen(a, fpAttack, pathAttack)
+	d.announced = Attack
 	d.emit(d.incidentEvent("attack_start", ns))
 }
 
@@ -973,6 +1056,10 @@ func (d *detector) wallTime(ns int64) time.Time {
 func (d *detector) emit(ev Event) {
 	if d.onEvent == nil {
 		return
+	}
+	ev.Mode = "on"
+	if d.monitor {
+		ev.Mode = "monitor"
 	}
 	if d.closed || len(d.pending) >= maxPendingEvents {
 		d.droppedEvents.Add(1)
