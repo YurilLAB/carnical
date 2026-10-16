@@ -474,9 +474,15 @@ func (e *Edge) guard(next http.Handler) http.Handler {
 			}
 			sw := &shieldWriter{ResponseWriter: w}
 			w = sw
-			fromOrigin := new(bool)
-			r = r.WithContext(context.WithValue(r.Context(), originKey{}, fromOrigin))
-			defer func() { sh.Done(d, sw.code(), *fromOrigin) }()
+			o := new(origin)
+			r = r.WithContext(context.WithValue(r.Context(), originKey{}, o))
+			defer func() {
+				if o.hungUp {
+					sh.Done(d, shield.StatusClientClosed, true)
+					return
+				}
+				sh.Done(d, sw.code(), o.answered)
+			}()
 		}
 		if !e.checkRequest(w, r, addr) {
 			return
@@ -781,8 +787,12 @@ func (e *Edge) forward() http.Handler {
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			// A request cancelled because its client went away, or because its response was ended to free a place (see
-			// stall.go), was not failed by the application: the shield must not take it for an application error.
-			if !errors.Is(err, context.Canceled) || r.Context().Err() == nil {
+			// stall.go), was not failed by the application, unless the client had waited long: the shield decides which.
+			if errors.Is(err, context.Canceled) && r.Context().Err() != nil {
+				if o, ok := r.Context().Value(originKey{}).(*origin); ok {
+					o.hungUp = true
+				}
+			} else {
 				markOrigin(r.Context())
 			}
 			if e.cfg.OnMatch != nil {
@@ -862,12 +872,15 @@ func (n noInterim) WriteHeader(code int) {
 
 func (n noInterim) Unwrap() http.ResponseWriter { return n.ResponseWriter }
 
-// originKey marks, for the shield, that a response came from (or was about) the application rather than from a check.
+// originKey marks, for the shield, that a response came from (or was about) the application rather than from a check,
+// or that the client hung up while the application had the request.
 type originKey struct{}
 
+type origin struct{ answered, hungUp bool }
+
 func markOrigin(ctx context.Context) {
-	if p, ok := ctx.Value(originKey{}).(*bool); ok {
-		*p = true
+	if o, ok := ctx.Value(originKey{}).(*origin); ok {
+		o.answered = true
 	}
 }
 

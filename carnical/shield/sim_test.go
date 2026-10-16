@@ -4,6 +4,7 @@ package shield
 
 import (
 	"fmt"
+	"math"
 	"math/rand/v2"
 	"net"
 	"net/http"
@@ -59,12 +60,14 @@ type sim struct {
 	known    []*simVisitor
 	stats    map[string]*tally
 	nextIP   uint32
-	capacity int          // requests a second the application can serve
-	kv, nv   int          // visits a second by returning and by new visitors
-	shared   []netip.Addr // addresses with many visitors behind them (a company, a mobile carrier)
-	app      []string     // when set, every visit is the mobile app calling one API endpoint
-	ua       [][]string   // when set, the browsers visitors use in place of browsers, index for index
-	natShare float64      // the share of returning visits that come through them
+	capacity int           // requests a second the application can serve
+	kv, nv   int           // visits a second by returning and by new visitors
+	shared   []netip.Addr  // addresses with many visitors behind them (a company, a mobile carrier)
+	app      []string      // when set, every visit is the mobile app calling one API endpoint
+	ua       [][]string    // when set, the browsers visitors use in place of browsers, index for index
+	natShare float64       // the share of returning visits that come through them
+	lat      time.Duration // how long the application takes to answer a visit
+	queue    time.Duration // when set, the application queues what it cannot serve, and the clients hang up after this long
 }
 
 type tally struct{ sent, ok int }
@@ -134,8 +137,13 @@ func (m *sim) do(class string, v *simVisitor, path string, nav bool, headers []s
 			ok := m.served < m.capacity
 			if ok {
 				m.served++
+				m.clock = m.clock.Add(m.lat)
 				m.s.Done(d, 200, true)
+				m.clock = m.clock.Add(-m.lat)
 				tl.ok++
+			} else if m.queue > 0 {
+				d.start -= int64(m.queue)
+				m.s.Done(d, StatusClientClosed, true)
 			} else {
 				m.s.Done(d, 503, true)
 			}
@@ -428,6 +436,106 @@ func TestSimulatedAttacks(t *testing.T) {
 			t.Fatalf("a crowd of people was taken for an attack: %q", m.s.Snapshot().Reasons)
 		}
 	})
+
+	// A flood that grows by a fraction of a percent a second: slowly enough that a baseline that learnt every second would
+	// follow it and never see four times its usual rate.
+	grow := func(by float64, sec int) int { return int(min(10*math.Exp(by*float64(sec)), 3000)) }
+	ramp := func(sec int) int { return grow(0.003, sec) }
+	for _, tc := range []struct {
+		name       string
+		by         float64 // the flood's growth a second
+		minutes    int
+		known, new float64       // the least share of visitors to be served in the minute after detection
+		queue      time.Duration // see sim.queue
+	}{
+		{"a botnet that ramps up slowly, doubling every four minutes, until the application fails", 0.003, 40, 0.95, 0.85, 0},
+		// Its clients give up long before such an application would fail them: what it does not answer is told only by how
+		// long they waited before they hung up.
+		{"the same botnet against an application that queues what it cannot serve until its clients hang up", 0.003, 40, 0.95, 0.85, 5 * time.Second},
+		// The application keeps up until the flood is about 170 a second, and by the time it fails about half the flood has
+		// been learnt as the usual. The attack's budgets are sized from that usual and let about a third of the flood in: it
+		// is declared, and held off only in part.
+		{"a botnet that ramps up more slowly still, doubling every eight minutes, until the application fails", 0.0015, 80, 0.6, 0.6, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newSim(t, nil)
+			m.queue = tc.queue
+			m.warm(10)
+			bots := botnet(20_000, m.r)
+			detected := -1
+			var known, fresh, attack tally
+			for sec := 0; sec < tc.minutes*60 && (detected < 0 || sec < detected+60); sec++ {
+				m.second(m.kv, m.nv, grow(tc.by, sec), func(int) {
+					m.do("attack", bots[m.r.IntN(len(bots))], "/?r="+strconv.Itoa(m.r.IntN(1e9)), false, python)
+				})
+				if m.s.State() == Attack && detected < 0 {
+					detected = sec
+					t.Logf("detected after %ds at %d requests a second: %q", sec, grow(tc.by, sec), m.s.Snapshot().Reasons)
+					known, fresh, attack = *m.tally("legit known"), *m.tally("legit new"), *m.tally("attack")
+				}
+			}
+			if detected < 0 {
+				t.Fatalf("a flood that reached %d requests a second on a site that serves 200 was never declared an attack", grow(tc.by, tc.minutes*60))
+			}
+			k, n, a := m.tally("legit known"), m.tally("legit new"), m.tally("attack")
+			gotK, gotN := float64(k.ok-known.ok)/float64(k.sent-known.sent), float64(n.ok-fresh.ok)/float64(n.sent-fresh.sent)
+			t.Logf("in the minute after detection returning visitors were served %.1f%%, new %.1f%%, and %.1f%% of the flood admitted",
+				100*gotK, 100*gotN, 100*float64(a.ok-attack.ok)/float64(a.sent-attack.sent))
+			if gotK < tc.known || gotN < tc.new {
+				t.Fatal("protection below the bar")
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name    string
+		slow    bool
+		failing float64 // the share of requests the application fails whatever the load
+	}{
+		{"ordinary traffic that grows as fast, on an application that keeps up (negative control: not an attack)", false, 0},
+		// Latency is measured until the response has been sent, so these make the application look slow when it is not.
+		{"the same growth while four addresses download slowly, half a minute each (negative control: not an attack)", true, 0},
+		// The application fails, but no more as more people come: what it answers grows with them, as a flood's does not.
+		// Growth this fast is taken for an attack with the application failing whatever the baseline learns, so it is
+		// sixfold over the twenty minutes, steadily.
+		{"traffic that grows sixfold while a broken dependency fails three requests in ten (negative control: not an attack)", false, 0.3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newSim(t, nil)
+			m.capacity, m.lat = 10_000, 50*time.Millisecond
+			m.warm(10)
+			slow := []netip.Addr{netip.MustParseAddr("198.51.100.1"), netip.MustParseAddr("198.51.100.2"), netip.MustParseAddr("198.51.100.3"), netip.MustParseAddr("198.51.100.4")}
+			type download struct {
+				d    Decision
+				ends time.Time
+			}
+			var downloads []download
+			worst := Normal
+			for sec := 0; sec < 20*60; sec++ {
+				v := max(4, ramp(sec)*4/10) // the visits of returning and of new visitors, each from 4 to 40 a second
+				if tc.failing > 0 {
+					v = 4 + 20*sec/(20*60)
+					m.capacity = int((1 - tc.failing) * float64(8*v))
+				}
+				m.second(min(v, 40), min(v, 40), 0, nil)
+				for i := 0; tc.slow && i < max(1, min(v, 40)*2/5); i++ { // one request in twenty
+					if d := m.s.Admit(simRequest("/files/report.pdf"), slow[i%len(slow)]); d.Action == Allow {
+						downloads = append(downloads, download{d, m.clock.Add(30 * time.Second)})
+					}
+				}
+				for len(downloads) > 0 && !downloads[0].ends.After(m.clock) {
+					m.s.Done(downloads[0].d, 200, true)
+					downloads = downloads[1:]
+				}
+				if st := m.s.State(); st > worst {
+					worst = st
+				}
+			}
+			t.Logf("highest state %v; new visitors served %.1f%%", worst, 100*m.tally("legit new").rate())
+			if worst == Attack {
+				t.Fatalf("ordinary traffic growing over twenty minutes was taken for an attack: %q", m.s.Snapshot().Reasons)
+			}
+		})
+	}
 
 	t.Run("a new browser release that half the visitors take up, then a flash crowd (negative control: not an attack)", func(t *testing.T) {
 		m := newSim(t, nil)

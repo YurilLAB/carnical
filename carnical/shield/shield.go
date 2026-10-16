@@ -773,9 +773,14 @@ func (s *Shield) closeUnlessRelayed(h http.Header, r *http.Request) {
 	}
 }
 
+// StatusClientClosed is the status to give Done, with fromOrigin, for a request whose client hung up (or whose response
+// was ended to free a place) while the application had it and before it answered.
+const StatusClientClosed = 499
+
 // Done tells the shield how a request it allowed ended: the status sent and whether it came from the application.
 // fromOrigin is false for a refusal by a later check (the rule set, a format check), which says nothing about the
-// application's health.
+// application's health. A request the client hung up on before the application answered is StatusClientClosed: it counts
+// as the application's failure only if the client had waited well beyond the application's usual latency.
 func (s *Shield) Done(d Decision, status int, fromOrigin bool) {
 	if !d.counted || d.Action != Allow {
 		return

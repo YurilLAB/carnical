@@ -285,10 +285,13 @@ func TestRefusalsHoldWithTheRuleSetOffAndAreRecorded(t *testing.T) {
 	t.Run("shield counts only the application's own failures as its errors", func(t *testing.T) {
 		for _, tc := range []struct {
 			name, path string
+			wait       time.Duration // how long the client waited before it went away
 			errRatio   float64
 		}{
-			{"the client went away", "/hang", -1}, // nothing the application answered or failed
-			{"the application dropped the connection", "/drop", 1},
+			{"the client went away", "/hang", 0, -1}, // nothing the application answered or failed
+			// An application that queues what it cannot serve shows it only so: its clients give up first.
+			{"the client went away after waiting far longer than the application usually takes", "/hang", 5 * time.Second, 1},
+			{"the application dropped the connection", "/drop", 0, 1},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				arrived := make(chan struct{})
@@ -300,8 +303,9 @@ func TestRefusalsHoldWithTheRuleSetOffAndAreRecorded(t *testing.T) {
 					<-r.Context().Done()
 				}))
 				t.Cleanup(up.Close)
-				clock := time.Unix(1_700_000_000, 0)
-				sh, err := shield.New(shield.Config{Now: func() time.Time { return clock }})
+				var clock atomic.Int64
+				clock.Store(time.Unix(1_700_000_000, 0).UnixNano())
+				sh, err := shield.New(shield.Config{Now: func() time.Time { return time.Unix(0, clock.Load()) }})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -319,6 +323,7 @@ func TestRefusalsHoldWithTheRuleSetOffAndAreRecorded(t *testing.T) {
 				go func() {
 					<-arrived
 					if tc.path == "/hang" {
+						clock.Add(int64(tc.wait))
 						cancel()
 					}
 				}()
@@ -327,7 +332,7 @@ func TestRefusalsHoldWithTheRuleSetOffAndAreRecorded(t *testing.T) {
 				if rec.Code != http.StatusBadGateway || seen.last() != idUpstreamFailed {
 					t.Fatalf("status %d, recorded id %d", rec.Code, seen.last())
 				}
-				clock = clock.Add(2 * time.Second)
+				clock.Add(int64(2 * time.Second))
 				sh.Tick()
 				if got := sh.Snapshot().ErrRatio; got != tc.errRatio {
 					t.Fatalf("the detector's error ratio is %v, want %v", got, tc.errRatio)

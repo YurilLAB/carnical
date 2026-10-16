@@ -4,6 +4,7 @@ package shield
 
 import (
 	"math"
+	"net/http"
 	"net/netip"
 	"slices"
 	"sync"
@@ -30,7 +31,9 @@ import (
 //
 // Everything is measured in one-second windows; decisions use the last ten seconds against a baseline that is an
 // exponentially weighted average of the same measures, updated only while the site is not under attack, so that an
-// attack cannot teach the detector that it is normal.
+// attack cannot teach the detector that it is normal. Nor is it raised while the application fails compared with a
+// far slower average of its errors: a flood that grows slowly enough to stay under the threshold would otherwise teach
+// the detector its volume, and the failure it causes, as the site's usual.
 
 // State is what the detector thinks is happening.
 type State uint8
@@ -142,6 +145,7 @@ func (c *DetectorConfig) defaults() {
 }
 
 const (
+	slowTau     = 6  // how many times Tau the application's health is also averaged over, to tell when it is in pain
 	ringSeconds = 64 // windows kept; the last aggSeconds are used for decisions
 	aggSeconds  = 10
 	topKeys     = 16
@@ -188,15 +192,20 @@ type aggregate struct {
 	connRate, connRefused, connSrcs      float64
 	closed, earlyCloses, securityRejects float64
 	refused, challenged                  float64
+	served                               float64 // requests a second the application answered without an error
 	scaleSrc, scaleNet                   float64 // the most an address's, and a network's, limit was raised in the ten seconds
 	fps, paths                           []share
 }
 
 type baseline struct {
 	rate, rateVar, srcs, newShare, errRatio, lat, connRate, connSrcs float64
+	errSlow                                                          float64 // errRatio averaged slowTau times slower
 	lastSample                                                       float64
 	sampled                                                          bool
-	fps, paths                                                       map[uint64]float64
+	// While the application is failing (see hurt): the rate, and the requests it answered well, when it began to.
+	hurtRate, hurtServed float64
+	hurting              bool
+	fps, paths           map[uint64]float64
 }
 
 // attackInfo is what the request path needs to know during an attack. It is replaced as a whole and read without a lock.
@@ -343,9 +352,22 @@ func (d *detector) note(ns int64, f func(w *window, inc *incidentAcc)) {
 	d.mu.Unlock()
 }
 
-// done records a request the application answered (or failed to answer). latency is negative when unknown.
+// hangUpWait is the least a client must have waited before a hang-up counts as the application's failure (see done).
+const hangUpWait = time.Second
+
+// done records a request the application answered (or failed to answer). latency is negative when unknown. A request
+// whose client hung up first (StatusClientClosed) says nothing about the application if the client gave up at once, and
+// is left out; one it hung up on after waiting at least hangUpWait and four times the usual latency is a request the
+// application did not answer in time, and counts as its failure: an application that queues what it cannot serve,
+// instead of failing it, shows its overload in no other way, since the clients give up long before it would fail.
 func (d *detector) done(ns int64, status int, latency time.Duration) {
 	d.count(ns, func(w *window) {
+		if status == StatusClientClosed {
+			if latency < max(hangUpWait, time.Duration(4*d.base.lat*float64(time.Millisecond))) {
+				return
+			}
+			status = http.StatusServiceUnavailable
+		}
 		w.done++
 		if status >= 500 {
 			w.errs++
@@ -456,6 +478,7 @@ func (d *detector) aggregate() aggregate {
 	a.closed, a.earlyCloses, a.securityRejects = closed/aggSeconds, earlyCloses/aggSeconds, securityRejects/aggSeconds
 	a.refused = refused / aggSeconds
 	a.challenged = challenged / aggSeconds
+	a.served = (done - errs) / aggSeconds
 	a.newSrcs = newSrcs
 	if reqs > 0 {
 		a.srcs = d.scratchS.estimate()
@@ -507,6 +530,7 @@ func (d *detector) evaluate(ns int64) {
 		b = &d.frozen
 	}
 	rateBase := math.Max(b.rate, 0)
+	hurt := d.hurt(a)
 	warming := d.age < int(d.cfg.Warmup/time.Second)
 	trained := d.age >= int(d.cfg.MinHistory/time.Second) || d.state == Attack // too little data tells nothing about what is usual
 	thr := d.threshold(rateBase, b.rateVar)
@@ -582,7 +606,7 @@ func (d *detector) evaluate(ns int64) {
 			d.state = Normal
 		}
 		if d.state != Attack {
-			d.learn(a, gate)
+			d.learn(a, gate, hurt)
 		}
 	case Attack:
 		exitRate := math.Max(d.cfg.ExitFactor*d.frozen.rate, d.cfg.MinAttackRate/2)
@@ -611,7 +635,7 @@ func (d *detector) evaluate(ns int64) {
 		}
 	}
 	d.reasons = reasons
-	d.learning.Store(d.state == Normal && d.run == 0)
+	d.learning.Store(d.state == Normal && d.run == 0 && !hurt)
 	// What an address earns (see earned) it earns in the seconds the baseline is learnt in: all but an attack's. The
 	// second that has ended counts if it was one. From the first second on, a second weighs what it weighs in the
 	// warmed-up baseline and counts for at most twice the average: while the detector warms up, its baseline weighs a
@@ -647,9 +671,23 @@ func (d *detector) detectIDS(ns int64, a aggregate) {
 	d.emit(Event{Kind: "ids_signal", At: d.wallTime(ns), State: d.state, Rate: a.rate, BaselineRate: d.base.rate, Reasons: append([]string(nil), reasons...)})
 }
 
+// hurt says whether the application is failing in the last ten seconds compared with its errors over a far longer time
+// (slowTau times Tau): seconds in which the baseline learns little it could raise (see learn). The longer average still learns them,
+// so an application that stays worse for hours (a broken endpoint) is in time taken as it is. Latency is left out: it is
+// measured until the response has been sent, so a few clients that read slowly could hold it up, and with it keep the
+// baseline from following the site's own growth until that growth is taken for an attack.
+func (d *detector) hurt(a aggregate) bool {
+	return d.shapeAge > 0 && a.errRatio >= 0.2 && a.errRatio >= d.base.errSlow+0.1
+}
+
 // learn moves the baseline towards the last ten seconds. The rate may at most double per step's worth of weight, so a
-// sudden rise is not learnt at once. gate says the rate is over the threshold.
-func (d *detector) learn(a aggregate, gate bool) {
+// sudden rise is not learnt at once. gate says the rate is over the threshold, and hurt that the application is failing
+// (see hurt): then the application's errors and latency may only fall, what the traffic is made of is not learnt at
+// all, and the rate may rise only as far as the requests the application answers well rise from when it began to fail.
+// A flood that grows slowly enough never to cross the threshold, once it is more than the application can answer, is
+// then not taken as the usual, while the site's own visitors, whom an application that fails whatever the load (a
+// broken dependency) still answers in proportion, are followed as they grow.
+func (d *detector) learn(a aggregate, gate, hurt bool) {
 	warm := int(d.cfg.Warmup / time.Second)
 	weight := func(age int) float64 { // while warming up the baseline is the plain average of what was seen, whatever it is
 		if age > warm {
@@ -664,6 +702,18 @@ func (d *detector) learn(a aggregate, gate bool) {
 	rate := a.rate
 	if d.age > warm {
 		rate = math.Min(rate, math.Max(2*b.rate, d.cfg.MinAttackRate/2))
+	}
+	if hurt {
+		if !b.hurting {
+			b.hurting, b.hurtRate, b.hurtServed = true, b.rate, a.served
+		}
+		most := b.rate
+		if b.hurtServed > 0 {
+			most = math.Max(most, b.hurtRate*a.served/b.hurtServed)
+		}
+		rate = math.Min(rate, most)
+	} else {
+		b.hurting = false
 	}
 	// The spread of the site's rate is measured between ten-second rates that do not overlap, so that a steady rise or
 	// fall (a day's ramp, or the baseline still catching up) is not mistaken for noise.
@@ -683,20 +733,32 @@ func (d *detector) learn(a aggregate, gate bool) {
 		return
 	}
 	d.shapeAge++
-	alpha = weight(d.shapeAge)
-	ew(&b.srcs, a.srcs)
-	ew(&b.newShare, a.newShare)
-	ew(&b.connRate, a.connRate)
-	ew(&b.connSrcs, a.connSrcs)
+	alpha = weight(d.shapeAge) / slowTau
+	if d.shapeAge <= warm {
+		alpha = weight(d.shapeAge)
+	}
 	if a.errRatio >= 0 {
+		ew(&b.errSlow, a.errRatio)
+	}
+	alpha = weight(d.shapeAge)
+	if a.errRatio >= 0 && (!hurt || a.errRatio < b.errRatio) {
 		ew(&b.errRatio, a.errRatio)
 	}
 	if a.lat >= 0 {
 		if b.lat == 0 {
 			b.lat = a.lat
 		}
-		ew(&b.lat, a.lat)
+		if !hurt || a.lat < b.lat {
+			ew(&b.lat, a.lat)
+		}
 	}
+	if hurt {
+		return
+	}
+	ew(&b.srcs, a.srcs)
+	ew(&b.newShare, a.newShare)
+	ew(&b.connRate, a.connRate)
+	ew(&b.connSrcs, a.connSrcs)
 	learnShares(b.fps, a.fps, alpha)
 	learnShares(b.paths, a.paths, alpha)
 }

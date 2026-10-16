@@ -74,12 +74,42 @@ deviations, and 20 requests/second. The baseline has a ten-minute time constant,
 attack has been declared (elevated volume without attack evidence included) and grows by at most two
 times per step. Deviation is measured from nonoverlapping ten-second windows.
 
+The baseline is held back while the application is failing compared with its own error ratio over
+about an hour (a six-times-slower average): in those seconds the usual error ratio and latency can
+only fall, the usual fingerprints, targets and addresses are not learned, and the usual rate can
+rise only as far as the requests the application answers well rise from when it began to fail. An
+application that fails whatever the load (a broken dependency) still answers more as more people
+come, so the site's own growth is followed; a flood that is more than the application can answer is
+not. Latency does not
+count for this: it is measured until the response has been sent, so a few clients that read slowly
+could otherwise hold the baseline still while the site's own traffic grows, until that growth was
+taken for an attack. Requests whose clients gave up after waiting long do count as failures (see
+the evidence below).
+A flood that grows slowly enough to stay under the threshold is therefore not
+learned as the site's usual once it makes the application fail (or wait), and is declared when it reaches four
+times the rate from before. The same applies to a real rise in visitors that the application cannot
+keep up with: past four times the usual rate, with the application failing and the traffic coming
+from many more addresses, it is treated as an attack, and known visitors and browsers that answer
+the challenge are still served. An application that stays worse for hours is taken as it is in time.
+Clients do not earn standing in those seconds either.
+
+What a slow flood grew to while the application kept up has been learned, though, and the attack's
+budgets are sized from that usual rate, so the slower the flood, the less of it the mitigation holds
+off. In the simulation, on an application that serves 200 requests a second, a flood that doubles
+every four minutes is declared at about 390 a second and visitors are served in full; one that
+doubles every eight minutes is declared at about 560 a second with a usual rate of 146, about 115 of
+it the flood's, and a third of the flood is still let in, so visitors are served about 65%.
+
 An attack needs elevated volume plus supporting evidence held for three seconds:
 
 - A concentrated fingerprint from at least 20 addresses.
 - A concentrated target from new addresses without normal browser engagement.
 - An unhealthy application with traffic from new places. A request its client abandoned, or whose
-  response the proxy ended to free an upstream place, is not counted as an application error.
+  response the proxy ended to free an upstream place, is not counted as an application error unless
+  the client had waited at least a second and four times the application's usual latency: an
+  application that queues what it cannot serve, instead of failing it, shows its overload only so,
+  since clients give up long before the upstream time-out (30 seconds by default), while clients that hang up at
+  once cannot make a healthy application look as if it were failing.
 
 A flood of connections that carry no requests is enough on its own, held for three seconds likewise
 and without a rise in requests: connections arrive at four times their usual rate (and at least 20 a
