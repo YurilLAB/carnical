@@ -53,7 +53,10 @@ The rate rules and the strength of the flood protection are two of them:
 
 `"limit"` is one JSON string of [rate rules](proxy-reference.md#rate-rules) separated by `;`, as
 `-limit` takes them; there is no array form. `"ddos"` is a mode, a
-[strength](ddos.md#strengths) or one of each, as in `"strict"` or `"monitor,strict"`.
+[strength](ddos.md#strengths) or one of each, as in `"strict"` or `"monitor,strict"`. A value is
+checked as the flag checks it, and one that is refused stops start-up with the reason, as in
+`invalid site configuration flag "limit": -limit rule 1 ("POST /login 5/x"): "5/x": unknown window
+unit "x"; ...`. The reason is left out for the settings the file can store encrypted.
 
 A setting comes from, first to last:
 

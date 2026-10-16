@@ -79,6 +79,11 @@ func loadSiteConfig(path string, flags *flag.FlagSet) (map[string]string, []stri
 	if _, err := dec.Token(); err != io.EOF {
 		return nil, nil, errors.New("trailing data in site configuration")
 	}
+	// The flags in the clear section, whose values the file shows anyway.
+	inClear := make(map[string]bool, len(values))
+	for name := range values {
+		inClear[name] = true
+	}
 	private := map[string]string{}
 	if encrypted != nil {
 		keyPath := ""
@@ -95,10 +100,6 @@ func loadSiteConfig(path string, flags *flag.FlagSet) (map[string]string, []stri
 		}
 		privateDec := json.NewDecoder(bytes.NewReader(plain))
 		privateDec.UseNumber()
-		inClear := make(map[string]bool, len(values))
-		for name := range values {
-			inClear[name] = true
-		}
 		if err := readSiteFlags(privateDec, flags, values, true); err != nil {
 			return nil, nil, err
 		}
@@ -120,6 +121,10 @@ func loadSiteConfig(path string, flags *flag.FlagSet) (map[string]string, []stri
 			continue
 		}
 		if err := flags.Set(name, value); err != nil {
+			// The reason can quote the value, which an error must not show for a setting that may be stored encrypted.
+			if inClear[name] && !privateSiteFlag(name) {
+				return nil, nil, fmt.Errorf("invalid site configuration flag %q: %v", name, err)
+			}
 			return nil, nil, fmt.Errorf("invalid site configuration flag %q", name)
 		}
 	}

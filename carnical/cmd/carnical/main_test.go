@@ -58,6 +58,13 @@ func (w setupOutputFault) Write(p []byte) (int, error) {
 	return w.Writer.Write(p)
 }
 
+// refusingFlag is a string flag that refuses every value, quoting it, as a flag that checks its value may.
+type refusingFlag struct{}
+
+func (refusingFlag) Set(s string) error { return fmt.Errorf("refused %q", s) }
+func (refusingFlag) String() string     { return "" }
+func (refusingFlag) Get() any           { return "" }
+
 // This is executable startup and TCP forwarding behavior, which cannot be expressed as an engine profile.
 func TestRequestFormatsAtCLI(t *testing.T) {
 	bin := filepath.Join(t.TempDir(), "carnical")
@@ -74,8 +81,13 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 		tests := []struct {
 			name, data string
 			bad        bool
+			says       string // what the error must say
+			hides      string // what it must not
 		}{
 			{name: "empty settings", data: "{\"version\":1,\"flags\":{}}", bad: false},
+			{name: "a refused value with the reason", data: `{"version":1,"flags":{"limit":"9/x"}}`, bad: true, says: `invalid site configuration flag "limit": refused "9/x"`},
+			{name: "a refused private value without it", data: `{"version":1,"flags":{"trusted-proxies":"10.9.8.7/33"}}`, bad: true,
+				says: `invalid site configuration flag "trusted-proxies"`, hides: "10.9.8.7"},
 			{name: "boolean string option", data: "{\"version\":1,\"flags\":{\"upstream\":true}}", bad: true},
 			{name: "all flag kinds", data: "{\"version\":1,\"flags\":{\"upstream\":\"http://example.test\",\"local-rules\":false,\"max-body\":2048,\"max-upstream\":2,\"ddos-rate\":0.5,\"eval-budget\":\"500ms\"}}", bad: false},
 			{name: "unknown field", data: "{\"version\":1,\"flags\":{},\"other\":1}", bad: true},
@@ -132,6 +144,8 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 				flags.Bool("check-origin-http", false, "")
 				flags.Bool("version", false, "")
 				flags.String("probe", "", "")
+				flags.Var(refusingFlag{}, "limit", "")
+				flags.Var(refusingFlag{}, "trusted-proxies", "")
 				if err := flags.Parse([]string{"-upstream", "http://override.test", "-local-rules=false"}); err != nil {
 					t.Fatal(err)
 				}
@@ -142,6 +156,9 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 				_, _, err := loadSiteConfig(path, flags)
 				if (err != nil) != tc.bad {
 					t.Fatalf("error %v, want invalid=%v", err, tc.bad)
+				}
+				if err != nil && (!strings.Contains(err.Error(), tc.says) || tc.hides != "" && strings.Contains(err.Error(), tc.hides)) {
+					t.Fatalf("error %q, want it to say %q and not %q", err, tc.says, tc.hides)
 				}
 				if !tc.bad && (*upstream != "http://override.test" || *localRules) {
 					t.Fatal("file replaced explicit CLI settings")
@@ -1174,6 +1191,9 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 			statuses: []int{200, 429}, logRule: `"rule":5000047`, says: `"rate_limits":["POST /api 1/1m (site configuration)"]`},
 		{name: "a -limit replaces the site configuration's", mode: "off", site: `{"version":1,"flags":{"upstream":"$ORIGIN","origin-allow":"127.0.0.1/32","limit":"POST /api 1/m"}}`,
 			extraArgs: []string{"-limit", "GET /api 1/m"}, statuses: []int{200, 200}, says: `"msg":"site configuration limit replaced by the command line"`},
+		{name: "an invalid site configuration limit is refused with the reason", site: `{"version":1,"flags":{"upstream":"$ORIGIN","origin-allow":"127.0.0.1/32","limit":"POST /api 5/x"}}`,
+			extraArgs: []string{"-check"}, fails: true,
+			says: `invalid site configuration flag "limit": -limit rule 1 ("POST /api 5/x"): "5/x": unknown window unit "x"; use s, m or h, such as 5/m, 100/10s or 1k/h`},
 		{name: "rate limits are listed with where they come from", extraArgs: []string{"-check", "-wordpress", "-api-per-minute", "60", "-api-rate-paths", "/API,/v1",
 			"-limit", "POST /login,/register 5/m", "-limit", "get /search 30/10s monitor"}, preflight: true,
 			says: `"rate_limits":["POST */wp-login.php 10/1m (-wordpress)","/api,/v1 60/1m (-api-per-minute)","POST /login,/register 5/1m (flag)","GET /search 30/10s monitor (flag)"]`},
