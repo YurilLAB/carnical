@@ -153,5 +153,6 @@ Superseding does not delete the old record. Set its status and let the history s
 | [0082](0082-carnical-local-protection-loading.md) | — | — | unreleased (post-v3.8.1) | F | Local policy and virtual-patch loading |
 | [0083](0083-carnical-rate-rules-and-protection-strengths.md) | — | — | unreleased (post-v3.8.1) | F | Per-client rate rules and protection strengths |
 | [0084](0084-carnical-intrusion-alerts.md) | — | — | unreleased (post-v3.8.1) | F | Deduplicated intrusion alerts and totals (library; CLI wiring pending) |
+| [0085](0085-carnical-repeat-offender-blocking.md) | — | — | unreleased (post-v3.8.1) | F | Repeat-offender blocking in the flood shield |
 
 Categories: **F**eature · **P**arity · **⚡** Perf · **R**efactor
