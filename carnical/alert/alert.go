@@ -99,11 +99,12 @@ const (
 	LayerCRS
 	LayerRate
 	LayerAutoBlock
+	LayerBots
 
-	numLayers = int(LayerAutoBlock) + 1
+	numLayers = int(LayerBots) + 1
 )
 
-var layerNames = [numLayers]string{"", "proxy", "crowdsec", "shield", "formats", "vpatch", "apiguard", "upload", "crs", "rate", "auto-block"}
+var layerNames = [numLayers]string{"", "proxy", "crowdsec", "shield", "formats", "vpatch", "apiguard", "upload", "crs", "rate", "auto-block", "bots"}
 
 func (l Layer) String() string {
 	if int(l) < numLayers {
@@ -164,13 +165,14 @@ const (
 	CatDecoy                            // decoy paths
 	CatEvasion                          // path canonicalisation, method override, encodings
 	CatInspection                       // inspection that could not finish
+	CatBot                              // the bot policy: a kind of client the site refuses
 
-	numCategories = int(CatInspection) + 1
+	numCategories = int(CatBot) + 1
 )
 
 var categoryNames = [numCategories]string{"", "scanner", "protocol", "lfi", "rfi", "rce", "php", "generic", "xss", "sqli",
 	"session", "java", "data-leak", "upload", "wordpress", "format", "virtual-patch", "api-contract", "rate", "flood",
-	"reputation", "policy", "decoy", "evasion", "inspection"}
+	"reputation", "policy", "decoy", "evasion", "inspection", "bot"}
 
 func (c Category) String() string {
 	if int(c) < numCategories {
@@ -264,6 +266,7 @@ type Alert struct {
 	Status      int // the status sent; 0 when the request was forwarded
 	Score       int // CRS anomaly score, 0 when not a CRS verdict
 	Threshold   int
+	Client      Client     // the kind of client that sent the request (package bots); 0 when it was not read
 	Src         netip.Addr // the verified client, never a port and never an unverified forwarded address
 	ViaProxy    bool       // the address came through a trusted proxy
 	// Net is the network a "suspected intrusion" names when the findings came from several /64s of one IPv6 /48; zero

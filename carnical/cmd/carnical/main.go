@@ -147,6 +147,7 @@ func runFlags(usage, logs io.Writer, args []string, private map[string]string) e
 	siteFlag := declareSiteFlags(flags)
 	alertFlag := declareAlertFlags(flags)
 	autoBlockFlag := declareAutoBlockFlags(flags)
+	botFlag := declareBotFlags(flags)
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -300,6 +301,10 @@ func runFlags(usage, logs io.Writer, args []string, private map[string]string) e
 	if err != nil {
 		return fromSite(err, site, private)
 	}
+	botsPolicy, err := botPolicy(botFlag)
+	if err != nil {
+		return fromSite(err, site, private)
+	}
 	guard, err := configureShieldWith(log, *ddos, explicit, trusted, autoBlock, alerts.source)
 	if err != nil {
 		return fromSite(err, site, private)
@@ -320,7 +325,7 @@ func runFlags(usage, logs io.Writer, args []string, private map[string]string) e
 		APIRate: proxy.APIRatePolicy{PerMinute: *apiRate, Paths: splitList(*apiPaths)}, Limits: limits.rules,
 		Uploads:   proxy.UploadPolicy{AllowExecutableNames: *scriptNames, AllowScriptContent: *scriptContent},
 		Responses: proxy.ResponsePolicy{KeepBanners: *keepBanners, KeepCaching: *keepCaching}, MaxConnsPerIP: *maxConns,
-		AllowRequestEncoding: *requestEncoding, NoJoinedParams: !*joinRepeated, Shield: guard, CrowdSec: cs,
+		AllowRequestEncoding: *requestEncoding, NoJoinedParams: !*joinRepeated, Shield: guard, CrowdSec: cs, Bots: botsPolicy,
 		ErrorLog: stdlog.New(originErrors, "", 0), OnAlert: alerts.onAlert, Alerts: alerts.options, EvalBudgetDetect: alerts.evalMode,
 		NoRuleMatches: !*alertFlag.ruleMatches,
 		OnMatch: func(m proxy.Match) {
@@ -477,7 +482,8 @@ func runFlags(usage, logs io.Writer, args []string, private map[string]string) e
 	health := &runtimeHealth{available: func() bool { return cs == nil || *csFailOpen || !cs.Stats().Stale }}
 	log.Info("listening", slices.Concat([]any{"addr", ln.Addr().String(), "crs", crs.Version(), "mode", cfg.CRS.Mode, "paranoia", cfg.CRS.ParanoiaLevel,
 		"inbound_threshold", cfg.CRS.InboundThreshold, "tls", *certFile != "", "confined", *confine, "formats_mode", effectiveFormatsMode, "request_encoding", *requestEncoding,
-		"health_enabled", healthListener != nil, "alerts", *alertFlag.alerts, "auto_block", autoBlockMode(guard, autoBlock)}, ddosLogAttrs(*ddos, explicit), rateLimits)...)
+		"health_enabled", healthListener != nil, "alerts", *alertFlag.alerts, "auto_block", autoBlockMode(guard, autoBlock),
+		"bots", botsMode(botsPolicy)}, ddosLogAttrs(*ddos, explicit), rateLimits)...)
 	return serveRuntime(ctx, server, ln, healthListener, health, lifecycle, log)
 }
 

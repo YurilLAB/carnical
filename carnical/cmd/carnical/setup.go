@@ -179,7 +179,15 @@ func setupListener(value string) error {
 
 // setupProtection holds setup's profile and security answers.
 type setupProtection struct {
-	site, level, mode, flood, autoBlock, login, alerts string
+	site, level, mode, flood, autoBlock, login, bots, alerts string
+}
+
+// setupBots are the bot answers of setup and the kinds of bot each refuses (-bots).
+var setupBots = map[string]string{
+	"none":   "",
+	"fake":   "fake",
+	"ai":     "fake,ai,seo",
+	"strict": "fake,ai,seo,tool,headless,scanner,bot",
 }
 
 // loginLimit is the rate rule setup writes for a login page: as many POSTs a minute as -login-per-minute allows WordPress.
@@ -207,6 +215,12 @@ func (s setupProtection) flags() map[string]any {
 	}
 	if s.login != "" {
 		values["limit"] = loginLimit(s.login)
+	}
+	if kinds := setupBots[s.bots]; kinds != "" {
+		values["bots"], values["bots-mode"] = kinds, "block"
+		if s.mode != "block" {
+			values["bots-mode"] = "monitor"
+		}
 	}
 	return values
 }
@@ -257,6 +271,10 @@ func askProtection(p setupPrompt) (setupProtection, error) {
 		}); err != nil {
 			return s, err
 		}
+	}
+	if s.bots, err = p.choose("Bots to block", "fake", "Every bot is counted, blocked or not; scanners are refused by the rules anyway.\nnone: block no bot for being one.\nfake: block bots that pretend to be Google, Bing and other search engines (checked by DNS).\nai: also AI crawlers and SEO or data-mining crawlers.\nstrict: also HTTP tools and scripts, headless browsers and unnamed bots; for sites only browsers use.\nIn detect mode they are only logged.",
+		"none", "fake", "ai", "strict"); err != nil {
+		return s, err
 	}
 	s.alerts, err = p.choose("Intrusion alerts in the log", "on", "One line per attacker and attack, with exact totals; nothing of the request's content.",
 		"on", "off")

@@ -40,6 +40,7 @@ import (
 	"github.com/corazawaf/coraza/v3/types"
 
 	"github.com/YurilLAB/coraza/carnical/alert"
+	"github.com/YurilLAB/coraza/carnical/bots"
 	"github.com/YurilLAB/coraza/carnical/crowdsec"
 	"github.com/YurilLAB/coraza/carnical/crs"
 	"github.com/YurilLAB/coraza/carnical/inspect"
@@ -150,6 +151,10 @@ type Config struct {
 	// Shield, if set, protects the site against floods (package shield), before body inspection and rule evaluation.
 	// Its listener and ConnState judge connections. Wrap the listening socket with Shield.Listener.
 	Shield *shield.Shield
+	// Bots, if set, refuses the kinds of client it lists (package bots), after the flood protection and before the body
+	// is read. Every request's alerts name the kind of client that sent it either way, and the alert totals count
+	// refused bots and people apart.
+	Bots *bots.Policy
 	// CrowdSec checks LAPI bans against the verified visitor before reading a body.
 	// Its owner must Sync before serving, run its refresh loop and close it on shutdown.
 	CrowdSec *crowdsec.Client

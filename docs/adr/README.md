@@ -155,5 +155,6 @@ Superseding does not delete the old record. Set its status and let the history s
 | [0084](0084-carnical-intrusion-alerts.md) | — | — | unreleased (post-v3.8.1) | F | Deduplicated intrusion alerts and totals |
 | [0085](0085-carnical-repeat-offender-blocking.md) | — | — | unreleased (post-v3.8.1) | F | Repeat-offender blocking in the flood shield |
 | [0086](0086-carnical-short-commands-and-setup-profiles.md) | — | — | unreleased (post-v3.8.1) | F | Short commands and setup profiles |
+| [0087](0087-carnical-bot-policy-and-counts.md) | — | — | unreleased (post-v3.8.1) | F | Bot policy and bot and people counts |
 
 Categories: **F**eature · **P**arity · **⚡** Perf · **R**efactor

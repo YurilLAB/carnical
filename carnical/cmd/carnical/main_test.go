@@ -261,7 +261,7 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 				}
 				input := tc.prefix
 				if input == "" {
-					input = strings.Join([]string{"example.test", origin.URL, "y", "", "local", listen, siteType, "", "block", "", "", "", "", "n", answer, configAnswer, keyAnswer, ""}, "\n")
+					input = strings.Join([]string{"example.test", origin.URL, "y", "", "local", listen, siteType, "", "block", "", "", "", "", "", "n", answer, configAnswer, keyAnswer, ""}, "\n")
 				}
 				var output bytes.Buffer
 				var err error
@@ -344,7 +344,7 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 					t.Errorf("setup did not say %q:\n%s", next, &output)
 				}
 				flags := flag.NewFlagSet("encrypted override", flag.ContinueOnError)
-				for _, name := range []string{"hosts", "listen", "mode", "formats-mode", "ddos", "auto-block", "alerts", "upstream", "upstream-host", "origin-allow", "config-key-file"} {
+				for _, name := range []string{"hosts", "listen", "mode", "formats-mode", "ddos", "auto-block", "bots", "bots-mode", "alerts", "upstream", "upstream-host", "origin-allow", "config-key-file"} {
 					flags.String(name, "", "")
 				}
 				flags.Bool("wordpress", false, "")
@@ -730,7 +730,7 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 		} {
 			t.Run(flow.name, func(t *testing.T) {
 				answers := append([]string{"localhost", app.URL, "yes", ""}, flow.extra...)
-				answers = append(answers, "", "", "detect", "", "", "", "", "no", "no")
+				answers = append(answers, "", "", "detect", "", "", "", "", "", "no", "no")
 				var transcript bytes.Buffer
 				if err := runSetup(strings.NewReader(strings.Join(answers, "\n")), &transcript, runArgs); err != nil {
 					t.Fatalf("setup=%v %s", err, &transcript)
@@ -3219,6 +3219,7 @@ func TestShortCommands(t *testing.T) {
 		{"help", []string{"help"}, "carnical start [FILE]", false},
 		{"-h is the guide too", []string{"-h"}, "Commands:", false},
 		{"a help topic", []string{"help", "profiles"}, "wordpress", false},
+		{"the bots topic", []string{"help", "bots"}, "blocked_people", false},
 		{"every flag", []string{"help", "flags"}, "-auto-block", false},
 		{"an unknown topic", []string{"help", "nope"}, "topics: setup", true},
 		{"an unknown command", []string{"launch"}, `unknown command "launch"`, true},
@@ -3265,6 +3266,10 @@ func TestSetupProfilesChooseFlags(t *testing.T) {
 		{"a login page", func(s *setupProtection) { s.login = "/account/login" }, with(map[string]any{"limit": "POST /account/login 10/m"})},
 		{"the other answers are written as given", func(s *setupProtection) { s.flood, s.autoBlock, s.alerts = "strict", "on", "off" },
 			with(map[string]any{"ddos": "strict", "auto-block": "on", "alerts": "off"})},
+		{"bots are only logged in detect", func(s *setupProtection) { s.bots = "fake" }, with(map[string]any{"bots": "fake", "bots-mode": "monitor"})},
+		{"strict bots are blocked in block", func(s *setupProtection) { s.mode, s.bots = "block", "strict" },
+			with(map[string]any{"mode": "block", "formats-mode": "block", "bots": "fake,ai,seo,tool,headless,scanner,bot", "bots-mode": "block"})},
+		{"no bots blocked adds nothing", func(s *setupProtection) { s.bots = "none" }, common},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := base

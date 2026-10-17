@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/YurilLAB/coraza/carnical/bots"
 	"github.com/YurilLAB/coraza/carnical/shield"
 )
 
@@ -285,6 +286,9 @@ func (e *Edge) checkRequest(w http.ResponseWriter, r *http.Request, client netip
 			return false
 		}
 	}
+	if e.cfg.Bots != nil && !e.checkBots(w, r, client) {
+		return false
+	}
 	var route string
 	if e.cfg.WordPress.Enabled || len(e.rules) > 0 {
 		route = routePath(r.URL.Path)
@@ -293,6 +297,25 @@ func (e *Edge) checkRequest(w http.ResponseWriter, r *http.Request, client netip
 		return false
 	}
 	return e.checkLimits(w, r, client, route)
+}
+
+// checkBots refuses a kind of client the bot policy lists (rules 5005003 to 5005011), or in monitor mode reports that it
+// would have. The kind is kept for the request's alerts.
+func (e *Edge) checkBots(w http.ResponseWriter, r *http.Request, client netip.Addr) bool {
+	kind, refuse := e.cfg.Bots.Judge(r.Context(), r, client)
+	if rec := recordOf(r.Context()); rec != nil {
+		rec.kind = kind
+	}
+	if !refuse {
+		return true
+	}
+	msg := "a kind of client this site refuses: " + kind.String()
+	if e.cfg.Bots.Monitor {
+		e.finding(Match{RuleID: bots.RuleID(kind), Severity: "WARNING", Message: msg, would: true}, nil, r)
+		return true
+	}
+	e.refuse(w, r, http.StatusForbidden, bots.RuleID(kind), msg)
+	return false
 }
 
 // APIRatePolicy gives each client its own sliding-minute budget, shared across all matching prefixes and HTTP methods.

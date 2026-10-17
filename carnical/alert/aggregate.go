@@ -162,7 +162,10 @@ type Aggregator struct {
 	ruleIDs     atomic.Int64 // distinct ids counted one by one
 	rulesOther  atomic.Uint64
 	gen         atomic.Uint64 // findings observed: totals are written only when it moved
-	summaryGen  atomic.Uint32
+	// Refused requests by the kind of client that sent them, and the distinct sources of the bots and of the people.
+	refusedBy              [numClients]atomic.Uint64
+	botSources, peopleSrcs distinct
+	summaryGen             atomic.Uint32
 
 	tickMu       sync.Mutex // Tick and Close
 	recs         []Record
@@ -329,6 +332,16 @@ func (g *Aggregator) count(a *Alert) {
 	}
 	g.counts[l][ac][r].Add(1)
 	g.gen.Add(1)
+	if c := a.Client; a.Action.Refused() && c != 0 && int(c) < numClients {
+		g.refusedBy[c].Add(1)
+		if a.Src.IsValid() {
+			if c.IsBot() {
+				g.botSources.add(g.seed, a.Src)
+			} else {
+				g.peopleSrcs.add(g.seed, a.Src)
+			}
+		}
+	}
 	g.countRule(a.RuleID)
 	for i, id := range a.Rules {
 		if i == MaxRules {
@@ -693,6 +706,34 @@ type Totals struct {
 	Dropped      Drops   // since start
 	Rules        []RuleCount
 	RulesOther   uint64 // findings of rule ids beyond the ones counted one by one
+	// Refused is the requests refused, by the kind of client that sent them; a refusal whose client was not read is not
+	// in it. BotSources and PeopleSources estimate how many different sources (IPv4 addresses, IPv6 /64s) the refused
+	// bots and people came from: close to exact below a few hundred, within about 2% above.
+	Refused       []ClientCount
+	BotSources    uint64
+	PeopleSources uint64
+}
+
+// ClientCount is how many requests of one kind of client were refused.
+type ClientCount struct {
+	Client Client
+	N      uint64
+}
+
+// RefusedBots is how many requests sent by bots were refused, and RefusedPeople how many sent by people.
+func (t *Totals) RefusedBots() uint64 { return t.refused(true) }
+
+// RefusedPeople is how many requests sent by people were refused.
+func (t *Totals) RefusedPeople() uint64 { return t.refused(false) }
+
+func (t *Totals) refused(bots bool) uint64 {
+	var n uint64
+	for _, c := range t.Refused {
+		if c.Client.IsBot() == bots {
+			n += c.N
+		}
+	}
+	return n
 }
 
 // Count is one cell of the totals.
@@ -749,6 +790,12 @@ func (g *Aggregator) Totals() Totals {
 		s.mu.Unlock()
 	}
 	slices.SortFunc(t.Rules, func(a, b RuleCount) int { return a.ID - b.ID })
+	for c := 1; c < numClients; c++ {
+		if n := g.refusedBy[c].Load(); n > 0 {
+			t.Refused = append(t.Refused, ClientCount{Client(c), n})
+		}
+	}
+	t.BotSources, t.PeopleSources = g.botSources.count(), g.peopleSrcs.count()
 	return t
 }
 

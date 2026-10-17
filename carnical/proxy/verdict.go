@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/YurilLAB/coraza/carnical/alert"
+	"github.com/YurilLAB/coraza/carnical/bots"
 	"github.com/YurilLAB/coraza/carnical/crs"
 )
 
@@ -127,6 +128,8 @@ func layerOf(id int) alert.Layer {
 		return alert.LayerAPIGuard
 	case id >= 5004000 && id <= 5004999:
 		return alert.LayerShield
+	case id >= 5005000 && id <= 5005999:
+		return alert.LayerBots
 	case id >= 5100000 && id <= 5199999:
 		return alert.LayerVPatch
 	}
@@ -251,6 +254,9 @@ func (rec *record) finish(e *Edge, r *http.Request, sent int) {
 		defer func() { *f = findings{}; findingsPool.Put(f) }()
 	}
 	base := e.alertBase(rec, r)
+	if base.Client = rec.kind; base.Client == 0 {
+		base.Client, _ = bots.Classify(r.Header, r.ProtoMajor, r.ProtoMinor, r.Method)
+	}
 	var out outcome
 	defer out.tell(e, rec.client)
 	emit := func(a alert.Alert) {

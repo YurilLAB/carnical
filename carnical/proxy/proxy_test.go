@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/YurilLAB/coraza/carnical/alert"
+	"github.com/YurilLAB/coraza/carnical/bots"
 	"github.com/YurilLAB/coraza/carnical/crs"
 	"github.com/YurilLAB/coraza/carnical/inspect"
 	"github.com/YurilLAB/coraza/carnical/shield"
@@ -744,6 +745,7 @@ func TestMatchesAreReportedWithoutWhatTheVisitorSentUnlessAsked(t *testing.T) {
 	}
 	sqli := get("/search?q=" + url.QueryEscape("1' OR '"+secret+"'='"+secret+"' --"))
 	numericHost := strings.Replace(get("/page"), "Host: shop.example.test", "Host: 127.0.0.1", 1)
+	gptbot := strings.Replace(get("/page"), "Mozilla/5.0 Chrome/120", "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; GPTBot/1.3; +https://openai.com/gptbot)", 1)
 	for _, tt := range []struct {
 		name    string
 		change  func(*Config)
@@ -795,6 +797,22 @@ func TestMatchesAreReportedWithoutWhatTheVisitorSentUnlessAsked(t *testing.T) {
 					t.Errorf("path %q", a.Path)
 				}
 			}},
+		{"an attack names the kind of client that sent it", nil, strings.Replace(sqli, "User-Agent: Mozilla/5.0 Chrome/120\r\n",
+			"User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:143.0) Gecko/20100101 Firefox/143.0\r\nAccept-Language: en\r\n", 1), 403,
+			[]string{"crs-949110 blocked 403"}, func(t *testing.T, a alert.Alert) {
+				if a.Client != alert.ClientPerson {
+					t.Errorf("client %v, want person", a.Client)
+				}
+			}},
+		{"a kind of bot the policy lists is refused", func(c *Config) { c.Bots = &bots.Policy{Refuse: 1 << alert.ClientAI} }, gptbot, 403,
+			[]string{"bots-5005003 blocked 403"}, func(t *testing.T, a alert.Alert) {
+				if a.Layer != alert.LayerBots || a.Client != alert.ClientAI || !a.Categories.Has(alert.CatBot) || a.Risk != alert.RiskLow {
+					t.Errorf("refusal %+v", a)
+				}
+			}},
+		{"in monitor mode it would have been", func(c *Config) { c.Bots = &bots.Policy{Refuse: 1 << alert.ClientAI, Monitor: true} }, gptbot, 200,
+			[]string{"bots-5005003 would_block 0"}, nil},
+		{"a kind it does not list passes", func(c *Config) { c.Bots = &bots.Policy{Refuse: 1 << alert.ClientTool} }, gptbot, 200, nil, nil},
 		{"a clean request has none", nil, get("/page"), 200, nil, nil},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

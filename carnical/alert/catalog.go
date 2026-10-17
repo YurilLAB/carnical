@@ -31,6 +31,8 @@ const (
 	apiLast       = 5003999 //
 	shieldFirst   = 5004000 // flood protection
 	shieldLast    = 5004999 //
+	botsFirst     = 5005000 // bot policy: 5005000 and the client kind's number
+	botsLast      = 5005999 //
 	localFirst    = 5006000 // carnical's local CRS rules
 	localLast     = 5006999 //
 	vpatchFirst   = 5100000 // virtual patches: the engine's own below 5101000, signatures above
@@ -184,6 +186,18 @@ var shieldRules = map[int]Entry{
 	5004008: {"Banned address", Of(CatFlood, CatReputation), RiskMedium},
 }
 
+// botRules are the bot policy's ids (bots/policy.go): 5005000 and the number of the kind of client refused. A declared
+// crawler or tool is low; a client that claims to be a search engine from an address that is not the engine's is
+// medium, as it is lying about itself.
+var botRules = map[int]Entry{
+	5005003: {"AI crawler", Of(CatBot), RiskLow},
+	5005004: {"SEO or data-mining crawler", Of(CatBot), RiskLow},
+	5005005: {"HTTP tool or script", Of(CatBot), RiskLow},
+	5005006: {"Headless or automated browser", Of(CatBot), RiskLow},
+	5005010: {"Unidentified bot", Of(CatBot), RiskLow},
+	5005011: {"Fake search engine crawler", Of(CatBot), RiskMedium},
+}
+
 // apiRules are the API guard's ids (apiguard/verdict.go). The guard's own severity sets the risk of a finding.
 var apiRules = map[int]Entry{
 	5003001: {"API method not allowed", Of(CatAPIContract), RiskMedium},
@@ -290,6 +304,11 @@ func Lookup(id int) (Entry, bool) {
 			return e, true
 		}
 		return Entry{Name: "Flood protection", Categories: Of(CatFlood), Risk: RiskLow}, true
+	case id >= botsFirst && id <= botsLast:
+		if e, ok := botRules[id]; ok {
+			return e, true
+		}
+		return Entry{Name: "Bot policy", Categories: Of(CatBot), Risk: RiskLow}, true
 	case id >= localFirst && id <= localLast:
 		if e, ok := localRules[id]; ok {
 			return e, true
@@ -369,7 +388,7 @@ func InspectorRisk(severity string, refused bool) Risk {
 }
 
 // Signature returns the stable signature of a numeric rule id: crs- (the CRS, carnical's local rules and Coraza's base
-// rules, which run in the same engine), policy-, carnical-, formats-, apiguard-, shield- or vpatch- followed by the
+// rules, which run in the same engine), policy-, carnical-, formats-, apiguard-, shield-, bots- or vpatch- followed by the
 // id, or "" for an id in no known range. A virtual-patch signature has a name of its own; see VPatchSignature.
 func Signature(id int) string {
 	p := sigPrefix(id)
@@ -394,6 +413,8 @@ func sigPrefix(id int) string {
 		return "apiguard-"
 	case id >= shieldFirst && id <= shieldLast:
 		return "shield-"
+	case id >= botsFirst && id <= botsLast:
+		return "bots-"
 	case id >= vpatchFirst && id <= vpatchLast:
 		return "vpatch-"
 	}

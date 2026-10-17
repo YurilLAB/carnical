@@ -205,7 +205,9 @@ func TestCatalog(t *testing.T) {
 		{"base multipart strict failure", 200003, true, "crs-200003", CatEvasion, RiskMedium},
 		{"base argument limit", 200005, true, "crs-200005", CatProtocol, RiskMedium},
 		{"above the base range", 201000, false, "", 0, 0},
-		{"unused carnical range", 5005000, false, "", 0, 0},
+		{"bot policy fake search engine", 5005011, true, "bots-5005011", CatBot, RiskMedium},
+		{"bot policy AI crawler", 5005003, true, "bots-5005003", CatBot, RiskLow},
+		{"unused carnical range", 5001000, false, "", 0, 0},
 		{"below every range", 42, false, "", 0, 0},
 	}
 	for _, tt := range rows {
@@ -233,6 +235,8 @@ func TestCatalog(t *testing.T) {
 		{"formats-5002103", true},
 		{"apiguard-5003113", true},
 		{"shield-5004001", true},
+		{"bots-5005003", true},
+		{"bots-5004001", false}, // a shield id under the bots prefix
 		{"policy-1050007", true},
 		{"crs-200009", true},
 		{"crs-199999", false},
@@ -512,6 +516,38 @@ func TestAggregator(t *testing.T) {
 			}
 			if a := out.of(KindAlert); len(a) != 10 || a[9].Alert.Risk != RiskLow {
 				t.Fatalf("written: %d, want 8 high and the 2 low ones the shared tier holds", len(a))
+			}
+		}},
+		{"refused requests are counted by the kind of client, bots and people apart", Config{}, func(t *testing.T, g *Aggregator, c *clock, out *collect) {
+			by := func(src netip.Addr, client Client, action Action) Alert {
+				a := finding(src, 942100, CatSQLi, action, RiskHigh)
+				a.Client = client
+				return a
+			}
+			g.Observe(by(srcA, ClientAI, Blocked))
+			g.Observe(by(srcA, ClientAI, RateLimited))
+			g.Observe(by(srcB, ClientTool, SourceBlocked))
+			g.Observe(by(srcB, ClientFake, Blocked))
+			g.Observe(by(netip.MustParseAddr("2001:db8:1:2::1"), ClientPerson, Blocked))
+			g.Observe(by(netip.MustParseAddr("2001:db8:1:2::2"), ClientPerson, Blocked)) // the same /64: one source
+			g.Observe(by(srcA, ClientPerson, WouldBlock))                                // let through: not refused
+			g.Observe(by(srcA, ClientPerson, Detected))
+			g.Observe(by(srcB, 0, Blocked)) // its client was not read
+			tot := g.Totals()
+			if tot.RefusedBots() != 4 || tot.RefusedPeople() != 2 || tot.BotSources != 2 || tot.PeopleSources != 1 {
+				t.Fatalf("bots %d from %d, people %d from %d; want 4 from 2, 2 from 1", tot.RefusedBots(), tot.BotSources,
+					tot.RefusedPeople(), tot.PeopleSources)
+			}
+			want := []ClientCount{{ClientPerson, 2}, {ClientAI, 2}, {ClientTool, 1}, {ClientFake, 1}}
+			if !reflect.DeepEqual(tot.Refused, want) {
+				t.Fatalf("refused by client %+v, want %+v", tot.Refused, want)
+			}
+			// Many sources are estimated, within a few percent.
+			for i := range 5000 {
+				g.Observe(by(netip.AddrFrom4([4]byte{10, byte(i >> 16), byte(i >> 8), byte(i)}), ClientPerson, Blocked))
+			}
+			if n := g.Totals().PeopleSources; n < 4850 || n > 5150 {
+				t.Fatalf("5001 people sources estimated as %d", n)
 			}
 		}},
 		{"below the minimum risk is counted only", Config{MinRisk: RiskMedium}, func(t *testing.T, g *Aggregator, c *clock, out *collect) {
@@ -982,6 +1018,8 @@ func TestSinks(t *testing.T) {
 	v4.Src = srcA
 	network := a
 	network.Net = SourceNet(a.Src)
+	withClient := a
+	withClient.Client = ClientFake
 	dropped := Record{Kind: KindDropped, Dropped: Drops{High: 2, Repeats: 7},
 		Unwritten: []SigCount{{Sig: "crs-942100", Action: Blocked, N: 7}}}
 	logs := []struct {
@@ -1004,6 +1042,12 @@ func TestSinks(t *testing.T) {
 			[]string{"src", "2001:db8"}},
 		{"repeats name no status", SourceFull, Record{Kind: KindRepeated, Alert: a}, map[string]any{"msg": "alert repeated"},
 			[]string{`"status"`}},
+		{"client", SourceFull, Record{Kind: KindAlert, Alert: withClient}, map[string]any{"client": "fake"}, nil},
+		{"no client read", SourceFull, Record{Kind: KindAlert, Alert: a}, map[string]any{"sig": "crs-949110"}, []string{`"client"`}},
+		{"totals count blocked bots and people", SourceFull, Record{Kind: KindTotals, Totals: &Totals{BotSources: 2, PeopleSources: 1,
+			Refused: []ClientCount{{ClientPerson, 3}, {ClientAI, 4}, {ClientFake, 1}}}}, map[string]any{"blocked_bots": 5.0,
+			"blocked_people": 3.0, "blocked_bot_sources": 2.0, "blocked_people_sources": 1.0,
+			"blocked_by_client": map[string]any{"person": 3.0, "ai": 4.0, "fake": 1.0}}, nil},
 		{"unwritten repeats", SourceFull, dropped, map[string]any{"msg": "alerts dropped", "count": 2.0, "repeats_unwritten": 7.0,
 			"repeats_unwritten_by_sig": map[string]any{"crs-942100/blocked": 7.0}}, nil},
 	}

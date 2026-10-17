@@ -49,6 +49,9 @@ type record struct {
 	found *findings
 	// engine is how the rule engine's evaluation of the request ended (see budgetTx.Close).
 	engine engineEnd
+	// kind is the kind of client the bot policy read the request as (see checkBots); 0 when it did not run. The
+	// request's own goroutine writes and reads it.
+	kind alert.Client
 }
 
 // admit counts a line about the request and reports whether it may be logged: a verdict always may.

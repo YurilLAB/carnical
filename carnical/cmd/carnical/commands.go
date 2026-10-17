@@ -108,7 +108,7 @@ Commands:
   carnical setup          set up a site step by step (start here)
   carnical check [FILE]   check the saved settings and the connection to your site
   carnical start [FILE]   start the WAF with the saved settings
-  carnical help [TOPIC]   this help; topics: setup, profiles, security, flags
+  carnical help [TOPIC]   this help; topics: setup, profiles, security, bots, flags
   carnical version        show the version of the rules
 
 Setup saves the site where check and start find it, so neither needs a file.
@@ -119,6 +119,7 @@ Common flags:
   -mode detect|block              only log attacks, or block them
   -ddos relaxed|normal|strict     flood protection strength
   -auto-block off|monitor|on      ban addresses that keep attacking
+  -bots fake,ai,...               kinds of bot to block (help bots)
   -wordpress                      WordPress protections
   -log-details                    log addresses and matched data (sensitive)
 
@@ -134,7 +135,8 @@ never replaced. It asks, in order:
   2. Visitors: whether Carnical holds the certificate (https), sits behind a load
      balancer or CDN (proxy), or is tried out on this machine (local).
   3. Profile: what the site is, and how strict attack detection is.
-  4. Security: block or only log, flood protection, auto-block, a login limit and alerts.
+  4. Security: block or only log, flood protection, auto-block, a login limit, bots
+     and alerts.
   5. Check and save: the settings are checked as start-up checks them, then saved
      with the origin details encrypted, and its key kept apart.
 
@@ -162,9 +164,33 @@ Detection levels (OWASP CRS paranoia level and blocking score):
   auto-block   bans an address whose requests keep being blocked as attacks;
                monitor only logs who would be banned. Needs mode block to ban.
   login limit  POSTs one address may make to your login page a minute.
+  bots         which bots to block: none, fake (recommended), ai or strict.
+               See carnical help bots.
   alerts       one log line per attacker and attack, with exact totals.
 
 Proxy safety checks and flood protection enforce in every mode.
+`,
+	"bots": `Carnical reads what kind of client sent each request from its user agent and
+headers, names it in every alert ("client"), and counts blocked requests by it:
+the "intrusion totals" line has blocked_bots, blocked_people, how many addresses
+each came from, and blocked_by_client.
+
+Kinds -bots can block (-bots-mode monitor only logs them):
+  fake      claims to be Google, Bing, Apple, Yandex, Baidu, Petal, Seznam or
+            Naver, from an address that engine's DNS does not confirm
+  ai        AI crawlers and fetchers: GPTBot, ClaudeBot, CCBot, Bytespider, ...
+  seo       SEO, marketing, archive and data-mining crawlers: AhrefsBot, ...
+  tool      HTTP libraries and scripts: curl, python-requests, Go, Scrapy, ...
+  headless  browsers driven by programs: HeadlessChrome, PhantomJS, ...
+  scanner   vulnerability scanners (the rules also refuse them in block mode)
+  bot       other bots: no user agent, a contact URL, or a browser's user
+            agent without the headers every browser sends
+
+Never blocked for being a bot: people, search engines that are what they claim,
+link previews (Slack, WhatsApp, ...) and uptime checks.
+
+Setup's answers: none; fake; ai = fake,ai,seo; strict = every kind above.
+Use strict only for a site browsers alone use: apps and API clients are tools.
 `,
 }
 
@@ -172,7 +198,7 @@ Proxy safety checks and flood protection enforce in every mode.
 func writeHelp(output io.Writer, topic string) error {
 	text, ok := helpTopics[topic]
 	if !ok {
-		return fmt.Errorf("no help on %q; topics: setup, profiles, security, flags", topic)
+		return fmt.Errorf("no help on %q; topics: setup, profiles, security, bots, flags", topic)
 	}
 	_, err := io.WriteString(output, text)
 	return err

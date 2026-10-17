@@ -366,6 +366,9 @@ func (s *LogSink) alertAttrs(a *Alert, status bool) []slog.Attr {
 	if a.Score > 0 || a.Threshold > 0 {
 		at = append(at, slog.Int("score", a.Score), slog.Int("threshold", a.Threshold))
 	}
+	if a.Client != 0 {
+		at = append(at, slog.String("client", a.Client.String()))
+	}
 	at = s.sourceAttrs(at, a)
 	if a.Method != "" {
 		at = append(at, slog.String("method", a.Method))
@@ -447,7 +450,16 @@ func (s *LogSink) totalsAttrs(t *Totals) []slog.Attr {
 	for _, r := range t.Rules {
 		rules[strconv.Itoa(r.ID)] = r.N
 	}
+	refused := make(map[string]uint64, len(t.Refused))
+	for _, c := range t.Refused {
+		refused[c.Client.String()] = c.N
+	}
 	return []slog.Attr{
+		slog.Uint64("blocked_bots", t.RefusedBots()),
+		slog.Uint64("blocked_people", t.RefusedPeople()),
+		slog.Uint64("blocked_bot_sources", t.BotSources),
+		slog.Uint64("blocked_people_sources", t.PeopleSources),
+		slog.Any("blocked_by_client", refused),
 		slog.Any("counts", counts),
 		slog.Uint64("suppressed", t.Suppressed),
 		slog.Uint64("below_min_risk", t.BelowMinRisk),
