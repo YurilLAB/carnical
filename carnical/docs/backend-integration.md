@@ -12,6 +12,7 @@ standalone CLI forwards to one origin; it does not provide a hosted multi-tenant
 | Verify signed tenant/edge configuration | [`config`](../config/); [configuration reference](config-and-policy.md#part-1-the-configuration-channel-config) |
 | Authenticate and authorize management requests | [`control`](../control/); [control API](control-api.md) |
 | Publish a signed monitoring feed | [`control/feed`](../control/feed/); [feed contract](control-api.md#11-the-feed) |
+| Deduplicate, count and deliver intrusion alerts; turn them into feed events | [`alert`](../alert/) (`Aggregator`, `Async`, `FeedEvent`); [ADR-0084](../../docs/adr/0084-carnical-intrusion-alerts.md) |
 | Check API descriptions, discovery and learning | [`apiguard`](../apiguard/); [API guard](apiguard.md) |
 | Load virtual patches | [`vpatch`](../vpatch/); [virtual patches](vpatch.md) |
 | Audit zone/tenant boundaries | [`audit`](../audit/); [segmentation](segmentation.md) |
