@@ -146,6 +146,8 @@ func runFlags(args []string, private map[string]string) error {
 	keyFile := flags.String("tls-key", "", "TLS key file (not accessible to everyone or writable by its group, as 0600 or 0640)")
 	showVersion := flags.Bool("version", false, "print the CRS version that is embedded and exit")
 	siteFlag := declareSiteFlags(flags)
+	alertFlag := declareAlertFlags(flags)
+	autoBlockFlag := declareAutoBlockFlags(flags)
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -270,6 +272,11 @@ func runFlags(args []string, private map[string]string) error {
 	}
 
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	alerts, err := configureAlerts(log, alertFlag)
+	if err != nil {
+		return fromSite(err, site, private)
+	}
+	defer alerts.close() // after the server has stopped: the last requests' alerts and the final totals
 	if limitReplaced {
 		// The rules of -limit are one setting, as every flag is: the command line's do not add to the site's.
 		log.Info("site configuration limit replaced by the command line")
@@ -290,7 +297,11 @@ func runFlags(args []string, private map[string]string) error {
 	}
 	// The flags given on the command line or in the site configuration; the others keep their defaults.
 	explicit := setFlags(flags)
-	guard, err := configureShield(log, *ddos, explicit, trusted)
+	autoBlock, err := autoBlockSettings(autoBlockFlag, explicit, ddos.mode, alerts.exclude)
+	if err != nil {
+		return fromSite(err, site, private)
+	}
+	guard, err := configureShieldWith(log, *ddos, explicit, trusted, autoBlock, alerts.source)
 	if err != nil {
 		return fromSite(err, site, private)
 	}
@@ -311,7 +322,8 @@ func runFlags(args []string, private map[string]string) error {
 		Uploads:   proxy.UploadPolicy{AllowExecutableNames: *scriptNames, AllowScriptContent: *scriptContent},
 		Responses: proxy.ResponsePolicy{KeepBanners: *keepBanners, KeepCaching: *keepCaching}, MaxConnsPerIP: *maxConns,
 		AllowRequestEncoding: *requestEncoding, NoJoinedParams: !*joinRepeated, Shield: guard, CrowdSec: cs,
-		ErrorLog: stdlog.New(originErrors, "", 0),
+		ErrorLog: stdlog.New(originErrors, "", 0), OnAlert: alerts.onAlert, Alerts: alerts.options, EvalBudgetDetect: alerts.evalMode,
+		NoRuleMatches: !*alertFlag.ruleMatches,
 		OnMatch: func(m proxy.Match) {
 			attrs := []any{"rule", m.RuleID, "severity", m.Severity, "rule_msg", m.Message, "tx", m.TransactionID, "disruptive", m.Disruptive,
 				"category", m.Category, "risk", m.Risk}
@@ -462,10 +474,11 @@ func runFlags(args []string, private map[string]string) error {
 	}
 	stopStats := startFormatStats(log, formatInspector, *formatsStats)
 	defer stopStats()
+	alerts.start()
 	health := &runtimeHealth{available: func() bool { return cs == nil || *csFailOpen || !cs.Stats().Stale }}
 	log.Info("listening", slices.Concat([]any{"addr", ln.Addr().String(), "crs", crs.Version(), "mode", cfg.CRS.Mode, "paranoia", cfg.CRS.ParanoiaLevel,
 		"inbound_threshold", cfg.CRS.InboundThreshold, "tls", *certFile != "", "confined", *confine, "formats_mode", effectiveFormatsMode, "request_encoding", *requestEncoding,
-		"health_enabled", healthListener != nil}, ddosLogAttrs(*ddos, explicit), rateLimits)...)
+		"health_enabled", healthListener != nil, "alerts", *alertFlag.alerts, "auto_block", autoBlockMode(guard, autoBlock)}, ddosLogAttrs(*ddos, explicit), rateLimits)...)
 	return serveRuntime(ctx, server, ln, healthListener, health, lifecycle, log)
 }
 

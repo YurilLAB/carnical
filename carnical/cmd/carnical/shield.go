@@ -16,6 +16,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/YurilLAB/coraza/carnical/alert"
 	"github.com/YurilLAB/coraza/carnical/shield"
 )
 
@@ -174,6 +175,13 @@ func ddosLogAttrs(f shieldFlags, set map[string]bool) []any {
 // configuration. It returns nil for -ddos off. The address-range table, if any, is read here, before the process
 // confines itself.
 func configureShield(log *slog.Logger, f shieldFlags, set map[string]bool, trusted []netip.Prefix) (*shield.Shield, error) {
+	return configureShieldWith(log, f, set, trusted, shield.AutoBlock{}, alert.SourceFull)
+}
+
+// configureShieldWith is configureShield with repeat-offender blocking (see autoBlockSettings), whose events show their
+// source as -alert-source asks.
+func configureShieldWith(log *slog.Logger, f shieldFlags, set map[string]bool, trusted []netip.Prefix, ab shield.AutoBlock,
+	source alert.SourceMode) (*shield.Shield, error) {
 	mode, _, err := parseDDoS(f.mode)
 	if err != nil {
 		return nil, refuseFlag("ddos", err)
@@ -195,7 +203,8 @@ func configureShield(log *slog.Logger, f shieldFlags, set map[string]bool, trust
 	if err != nil {
 		return nil, err
 	}
-	cfg.OnEvent = func(ev shield.Event) { logShieldEvent(log, ev, cfg.MonitorOnly) }
+	cfg.AutoBlock = ab
+	cfg.OnEvent = shieldEventLogger(log, cfg.MonitorOnly, source)
 	if f.ranges != "" {
 		// Opened without blocking, so a FIFO cannot hold start-up.
 		file, err := os.OpenFile(f.ranges, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOCTTY, 0)
@@ -327,6 +336,18 @@ func checkShieldRanges(f shieldFlags, set map[string]bool) error {
 
 // number writes a flag's value as it would be typed.
 func number(v float64) string { return strconv.FormatFloat(v, 'f', -1, 64) }
+
+// shieldEventLogger writes the shield's events: repeat-offender blocking's with their source as -alert-source asks (see
+// logOffenderEvent), the others with logShieldEvent.
+func shieldEventLogger(log *slog.Logger, monitor bool, source alert.SourceMode) func(shield.Event) {
+	return func(ev shield.Event) {
+		if offenderEvent(ev.Kind) {
+			logOffenderEvent(log, ev, source)
+			return
+		}
+		logShieldEvent(log, ev, monitor)
+	}
+}
 
 // logShieldEvent writes attack transitions, the return to normal traffic, and bounded IDS signals and their clearing, with
 // the shield's mode and the signals' codes. Per-request logs would amplify a flood. monitor says

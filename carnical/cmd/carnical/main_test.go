@@ -24,6 +24,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"os"
 	"os/exec"
@@ -39,6 +40,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/YurilLAB/coraza/carnical/alert"
 	"github.com/YurilLAB/coraza/carnical/apiguard"
 	"github.com/YurilLAB/coraza/carnical/crs"
 	"github.com/YurilLAB/coraza/carnical/formats"
@@ -1049,6 +1051,31 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 		{name: "a read timeout of a day refuses startup", extraArgs: []string{"-check", "-read-timeout", "24h"}, fails: true, says: "-read-timeout must be 0 (30s) or from 1s to 23h"},
 		{name: "a read timeout under a second refuses startup", extraArgs: []string{"-check", "-read-timeout", "1ms"}, fails: true, says: "-read-timeout must be 0 (30s) or from 1s to 23h"},
 		{name: "the longest read and write timeouts", extraArgs: []string{"-check", "-read-timeout", "23h", "-write-timeout", "24h"}, preflight: true},
+		{name: "a detected attack is one intrusion alert", extraArgs: []string{"-mode", "detect"}, method: "GET", target: "/page?id=1%27%20UNION%20SELECT%20password%20FROM%20users--", status: 200, says: `"msg":"intrusion detected"`},
+		{name: "a blocked attack is one intrusion alert", mode: "block", extraArgs: []string{"-mode", "block"}, method: "GET", target: "/page?id=1%27%20UNION%20SELECT%20password%20FROM%20users--", status: 403,
+			says: `"msg":"intrusion blocked"`},
+		{name: "alerts and auto-block settings pass the check", extraArgs: []string{"-check", "-alert-source", "prefix", "-alert-path", "full", "-alert-min-risk", "medium",
+			"-alert-suppress", "crs-920350 note=numeric host; crs-942100 /search until=2099-12-31", "-alert-exclude-sources", "192.0.2.0/24",
+			"-auto-block", "on", "-auto-block-exempt", "198.51.100.7", "-eval-budget-detect", "refuse"}, preflight: true},
+		{name: "alerts off pass the check", extraArgs: []string{"-check", "-alerts", "off"}, preflight: true},
+		{name: "an unknown alerts value refuses startup", extraArgs: []string{"-check", "-alerts", "maybe"}, fails: true, says: "-alerts must be on or off"},
+		{name: "an unknown alert source refuses startup", extraArgs: []string{"-check", "-alert-source", "everyone"}, fails: true, says: "-alert-source must be full, prefix or off"},
+		{name: "an unknown alert path refuses startup", extraArgs: []string{"-check", "-alert-path", "query"}, fails: true, says: "-alert-path must be template, full or off"},
+		{name: "an unknown minimum risk refuses startup", extraArgs: []string{"-check", "-alert-min-risk", "severe"}, fails: true, says: "-alert-min-risk must be info, low, medium or high"},
+		{name: "an alert rate of zero refuses startup", extraArgs: []string{"-check", "-alert-rate", "0"}, fails: true, says: "-alert-rate must be from 1 to 10000"},
+		{name: "a short repeat window refuses startup", extraArgs: []string{"-check", "-alert-repeat-window", "1s"}, fails: true, says: "-alert-repeat-window must be from 10s to 1h0m0s"},
+		{name: "a short totals interval refuses startup", extraArgs: []string{"-check", "-alert-totals-interval", "1s"}, fails: true, says: "-alert-totals-interval must be 0 or from 10s to 24h"},
+		{name: "an excluded source wider than a /16 refuses startup", extraArgs: []string{"-check", "-alert-exclude-sources", "10.0.0.0/8"}, fails: true, says: "-alert-exclude-sources:"},
+		{name: "an unknown suppression signature refuses startup", extraArgs: []string{"-check", "-alert-suppress", "not a signature"}, fails: true, says: "-alert-suppress:"},
+		{name: "an unknown detection budget choice refuses startup", extraArgs: []string{"-check", "-eval-budget-detect", "skip"}, fails: true, says: "-eval-budget-detect must be forward or refuse"},
+		{name: "flood protection off leaves the default auto-block quietly off", extraArgs: []string{"-check", "-ddos", "off"}, preflight: true},
+		{name: "auto-block asked for without flood protection refuses startup", extraArgs: []string{"-check", "-ddos", "off", "-auto-block", "on"}, fails: true,
+			says: "-auto-block on needs -ddos on or monitor"},
+		{name: "an unknown auto-block mode refuses startup", extraArgs: []string{"-check", "-auto-block", "always"}, fails: true, says: "-auto-block must be off, monitor or on"},
+		{name: "too few auto-block points refuse startup", extraArgs: []string{"-check", "-auto-block-points", "3"}, fails: true, says: "-auto-block-points must be from 4 to 1000"},
+		{name: "a longest ban shorter than the first refuses startup", extraArgs: []string{"-check", "-auto-block-for", "30m", "-auto-block-max-for", "20m"}, fails: true,
+			says: "-auto-block-max-for (20m0s) must be at least -auto-block-for (30m0s)"},
+		{name: "an auto-block exemption wider than a /16 refuses startup", extraArgs: []string{"-check", "-auto-block-exempt", "10.0.0.0/8"}, fails: true, says: "-auto-block-exempt:"},
 		{name: "a negative write timeout refuses startup", extraArgs: []string{"-check", "-write-timeout", "-1s"}, fails: true, says: "-write-timeout must be 0 (-read-timeout plus 90s) or from 1s to 24h"},
 		{name: "a write timeout within the read timeout refuses startup", extraArgs: []string{"-check", "-read-timeout", "2m", "-write-timeout", "1m"}, fails: true,
 			says: "-write-timeout (1m0s) must be longer than -read-timeout (2m0s)"},
@@ -1636,6 +1663,12 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 						t.Fatal("compiled firewall did not report expected bypass totals")
 					}
 					time.Sleep(20 * time.Millisecond)
+				}
+			}
+			// Alerts are written through a queue, and cancel kills the process: wait for the line first.
+			for deadline := time.Now().Add(2 * time.Second); tc.says != "" && time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+				if data, err := os.ReadFile(logPath); err == nil && bytes.Contains(data, []byte(tc.says)) {
+					break
 				}
 			}
 			cancel()
@@ -2547,10 +2580,15 @@ func me(t *testing.T) string {
 // A function of its own: no other test reads the lines the shield's events are logged as. Each kind has its own
 // message and level, and the IDS fields are written.
 func TestShieldEventsAreLoggedByKind(t *testing.T) {
+	offence := func(kind string) shield.Event {
+		return shield.Event{Kind: kind, Mode: "on", Source: netip.MustParsePrefix("203.0.113.7/32"), Client: netip.MustParseAddr("203.0.113.7"),
+			Points: 12, Sigs: []string{"crs-949110"}, TTL: 20 * time.Minute, Level: 2}
+	}
 	tests := []struct {
 		name    string
 		ev      shield.Event
 		monitor bool
+		source  alert.SourceMode
 		says    []string
 		not     []string
 	}{
@@ -2564,11 +2602,24 @@ func TestShieldEventsAreLoggedByKind(t *testing.T) {
 			says: []string{`"level":"WARN"`, `"msg":"denial-of-service attack detected; monitor mode, not mitigated"`}, not: []string{"mitigation on"}},
 		{name: "a kind this binary does not know is still a warning", ev: shield.Event{Kind: "later_kind"},
 			says: []string{`"level":"WARN"`, `"msg":"flood protection event"`, `"kind":"later_kind"`}},
+		{name: "a repeat offender's ban names the source once and its own level apart", ev: offence("source_blocked"),
+			says: []string{`"level":"WARN"`, `"msg":"source blocked"`, `"src":"203.0.113.7"`, `"src_key":"203.0.113.7/32"`, `"ban_level":2`,
+				`"sigs":["crs-949110"]`, `"ttl":"20m0s"`, "-auto-block-exempt"}, not: []string{`"level":2`}},
+		{name: "a would-be ban in monitor mode", ev: offence("source_would_block"),
+			says: []string{`"msg":"source would be blocked"`, `"points":12`}, not: []string{"exempt it"}},
+		{name: "a ban shows only the network with -alert-source prefix", ev: offence("source_blocked"), source: alert.SourcePrefix,
+			says: []string{`"src":"203.0.113.0/24"`}, not: []string{"203.0.113.7", "src_key"}},
+		{name: "a ban shows no address with -alert-source off", ev: offence("source_blocked"), source: alert.SourceOff,
+			says: []string{`"msg":"source blocked"`}, not: []string{"203.0.113", `"src`}},
+		{name: "a ban that ended is information", ev: shield.Event{Kind: "source_block_ended", Mode: "on", Source: netip.MustParsePrefix("203.0.113.7/32")},
+			says: []string{`"level":"INFO"`, `"msg":"source block ended"`}},
+		{name: "a full ban table is a warning with its count", ev: shield.Event{Kind: "auto_block_full", Mode: "on", Count: 3},
+			says: []string{`"level":"WARN"`, `"msg":"auto-block table full; sources not blocked"`, `"count":3`}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var buf bytes.Buffer
-			logShieldEvent(slog.New(slog.NewJSONHandler(&buf, nil)), tt.ev, tt.monitor)
+			shieldEventLogger(slog.New(slog.NewJSONHandler(&buf, nil)), tt.monitor, tt.source)(tt.ev)
 			line := buf.String()
 			for _, want := range tt.says {
 				if !strings.Contains(line, want) {
