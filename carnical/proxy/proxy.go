@@ -437,8 +437,10 @@ func (e *Edge) onMatch(m types.MatchedRule) {
 	}
 	// Coraza's Message is macro-expanded and may contain credentials or arbitrary request values.
 	// Its public metadata exposes no unexpanded message; keep the default summary fixed.
+	// The engine marks every match of a rule with a disruptive action (block, which the CRS turns into pass) while it
+	// enforces; only the rule that refused the request is disruptive here.
 	match := Match{RuleID: m.Rule().ID(), Severity: m.Rule().Severity().String(), Message: "Coraza rule matched",
-		TransactionID: m.TransactionID(), Disruptive: m.Disruptive()}
+		TransactionID: m.TransactionID(), Disruptive: m.Disruptive() && refusesOnItsOwn(m.Rule())}
 	if label := crs.LocalRuleMessage(match.RuleID); label != "" {
 		match.Message = label
 	}
@@ -451,6 +453,21 @@ func (e *Edge) onMatch(m types.MatchedRule) {
 		rec = recordOf(c.Context()) // the transaction's context is the request's (see budgetWAF)
 	}
 	e.report(match, rec, nil)
+}
+
+// refusesOnItsOwn reports a rule that refuses a request when it matches, rather than adding to the anomaly score: the
+// CRS's inbound and outbound verdicts (949110 and 959100, and 949111 and 959101, which refuse a phase early when
+// tx.early_blocking is set), its configuration checks 901001 and 901500 (every CRS rule written with deny), Coraza's base
+// rules (each of which that logs is a deny) and a rule tagged crs.DenyTag, which the site policy adds to the deny rules
+// it writes.
+func refusesOnItsOwn(rule types.RuleMetadata) bool {
+	switch id := rule.ID(); {
+	case id == 949110 || id == 949111 || id == 959100 || id == 959101 || id == 901001 || id == 901500:
+		return true
+	case id >= 200000 && id <= 200999:
+		return true
+	}
+	return slices.Contains(rule.Tags(), crs.DenyTag)
 }
 
 // refuseCrowdSec answers a visitor CrowdSec has a decision against, or every visitor while its decisions are not known.

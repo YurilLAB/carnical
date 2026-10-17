@@ -1660,6 +1660,8 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 					blocked = tc.statuses[len(tc.statuses)-1] >= 400
 				}
 				for _, id := range append([]int{wanted.Rule}, tc.alsoRules...) {
+					// A rule set rule that only adds to the anomaly score is never the one that refused: 949110 is.
+					scores := id >= 5006000 && id <= 5006999 || id >= 900000 && id <= 999999 && id != 949110 && id != 959100
 					matches := 0
 					for _, line := range bytes.Split(data, []byte("\n")) {
 						var event struct {
@@ -1669,7 +1671,7 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 						}
 						if json.Unmarshal(line, &event) == nil && event.Msg == "rule matched" && event.Rule == id {
 							matches++
-							if event.Disruptive != blocked {
+							if event.Disruptive != (blocked && !scores) {
 								t.Fatal("finding logged with incorrect enforcement outcome")
 							}
 						}

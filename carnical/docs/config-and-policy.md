@@ -431,7 +431,7 @@ here can switch the rules off). It compiles to exactly one `SecRule` with the id
 fixed message `Custom rule <id>` (never the note, never request data), and a fixed list of actions:
 
 ```
-SecRule ARGS "@rx (?i:a\x22b\x5cc\x20\x25\x7bx\x7d\x0ad)" "id:1050007,phase:2,deny,status:403,log,t:none,msg:'Custom rule 7',tag:'carnical-custom',severity:'CRITICAL'"
+SecRule ARGS "@rx (?i:a\x22b\x5cc\x20\x25\x7bx\x7d\x0ad)" "id:1050007,phase:2,deny,status:403,log,t:none,msg:'Custom rule 7',tag:'carnical-custom',tag:'carnical-deny',severity:'CRITICAL'"
 ```
 
 Fields: `method path uri query args argnames cookies cookienames headers body filenames host

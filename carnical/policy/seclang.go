@@ -10,6 +10,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/YurilLAB/coraza/carnical/crs"
 )
 
 // This file writes the SecLang that the settings of crs.Settings and proxy.Config cannot express: the address lists, the
@@ -102,7 +104,7 @@ func renderBeforeWith(p Policy, made map[int]string) (text string, rules int, er
 	}
 	for i, part := range chunks(p.BlockIPs) {
 		id := idBlockIPs + i
-		if err := g.add(fmt.Sprintf(`SecRule REMOTE_ADDR "@ipMatch %s" "id:%d,phase:1,deny,status:403,log,t:none,msg:'Address on the block list',tag:'carnical-block-list',severity:'CRITICAL'"`,
+		if err := g.add(fmt.Sprintf(`SecRule REMOTE_ADDR "@ipMatch %s" "id:%d,phase:1,deny,status:403,log,t:none,msg:'Address on the block list',tag:'carnical-block-list',tag:'`+crs.DenyTag+`',severity:'CRITICAL'"`,
 			strings.Join(part, ","), id), id); err != nil {
 			return "", 0, err
 		}
@@ -180,9 +182,9 @@ func customRule(r CustomRule, rx string) (string, error) {
 			return "", err
 		}
 	}
-	action, severity := "pass,log", "NOTICE"
+	action, severity, tags := "pass,log", "NOTICE", "tag:'carnical-custom'"
 	if r.Action == ActionBlock {
-		action, severity = "deny,status:403,log", "CRITICAL"
+		action, severity, tags = "deny,status:403,log", "CRITICAL", "tag:'carnical-custom',tag:'"+crs.DenyTag+"'"
 	} else if r.Action != ActionLog {
 		return "", errors.New("the action is not block or log")
 	}
@@ -191,8 +193,8 @@ func customRule(r CustomRule, rx string) (string, error) {
 		transforms = ",t:urlDecodeUni" // the raw target is percent-encoded; the rule means what a person reads
 	}
 	id := idCustom + r.ID
-	return fmt.Sprintf(`SecRule %s "@rx %s" "id:%d,phase:%d,%s,t:none%s,msg:'Custom rule %d',tag:'carnical-custom',severity:'%s'"`,
-		v, rx, id, fieldPhase(r.Field), action, transforms, r.ID, severity), nil
+	return fmt.Sprintf(`SecRule %s "@rx %s" "id:%d,phase:%d,%s,t:none%s,msg:'Custom rule %d',%s,severity:'%s'"`,
+		v, rx, id, fieldPhase(r.Field), action, transforms, r.ID, tags, severity), nil
 }
 
 // renderAfter writes what changes the rules of the Core Rule Set once they are loaded: the rule groups that are off are removed

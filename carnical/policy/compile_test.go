@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"net/http"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -462,29 +463,48 @@ func TestAddressListsAndAllowedPaths(t *testing.T) {
 	e := newEdge(t, p)
 	from := func(addr string) func(*http.Request) { return func(r *http.Request) { r.RemoteAddr = addr + ":5000" } }
 	rows := []struct {
-		name   string
-		target string
-		mod    func(*http.Request)
-		want   int
+		name      string
+		target    string
+		mod       func(*http.Request)
+		want      int
+		refusedBy int // the only rule whose line says it refused the request, when one did
 	}{
-		{"an attack from an ordinary address", sqlInjection, nil, 403},
-		{"an ordinary request from an ordinary address", "/", nil, 200},
-		{"an attack from the allow-listed address (also on the block list: the allow list wins)", sqlInjection, from("203.0.113.9"), 200},
-		{"an ordinary request from the allow-listed address", "/", from("203.0.113.9"), 200},
-		{"an ordinary request from a blocked range", "/", from("198.51.100.50"), 403},
-		{"an attack from a blocked range", sqlInjection, from("198.51.100.50"), 403},
-		{"the address next to the blocked range", "/", from("198.51.101.1"), 200},
-		{"an attack on a page that is never inspected", "/webhook/stripe?q=1%27+OR+%271%27%3D%271%27+--", nil, 200},
-		{"an attack on the file that is never inspected", "/health?q=1%27+OR+%271%27%3D%271%27+--", nil, 200},
-		{"an attack on a page that starts alike", "/webhooks/x?q=1%27+OR+%271%27%3D%271%27+--", nil, 403},
-		{"an attack on the page in another case", "/Webhook/x?q=1%27+OR+%271%27%3D%271%27+--", nil, 403},
-		{"an attack in the query that mentions the page", "/x?p=/webhook/&q=1%27+OR+%271%27%3D%271%27+--", nil, 403},
-		{"a blocked address on the page that is never inspected (the block list still applies)", "/webhook/stripe", from("198.51.100.7"), 403},
+		{"an attack from an ordinary address", sqlInjection, nil, 403, 949110},
+		{"an ordinary request from an ordinary address", "/", nil, 200, 0},
+		{"an attack from the allow-listed address (also on the block list: the allow list wins)", sqlInjection, from("203.0.113.9"), 200, 0},
+		{"an ordinary request from the allow-listed address", "/", from("203.0.113.9"), 200, 0},
+		{"an ordinary request from a blocked range", "/", from("198.51.100.50"), 403, idBlockIPs},
+		{"an attack from a blocked range", sqlInjection, from("198.51.100.50"), 403, idBlockIPs},
+		{"the address next to the blocked range", "/", from("198.51.101.1"), 200, 0},
+		{"an attack on a page that is never inspected", "/webhook/stripe?q=1%27+OR+%271%27%3D%271%27+--", nil, 200, 0},
+		{"an attack on the file that is never inspected", "/health?q=1%27+OR+%271%27%3D%271%27+--", nil, 200, 0},
+		{"an attack on a page that starts alike", "/webhooks/x?q=1%27+OR+%271%27%3D%271%27+--", nil, 403, 949110},
+		{"an attack on the page in another case", "/Webhook/x?q=1%27+OR+%271%27%3D%271%27+--", nil, 403, 949110},
+		{"an attack in the query that mentions the page", "/x?p=/webhook/&q=1%27+OR+%271%27%3D%271%27+--", nil, 403, 949110},
+		{"a blocked address on the page that is never inspected (the block list still applies)", "/webhook/stripe", from("198.51.100.7"), 403, idBlockIPs},
+	}
+	disruptive := func(e *edge) (ids []int) {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		for _, m := range e.matches {
+			if m.Disruptive {
+				ids = append(ids, m.RuleID)
+			}
+		}
+		return ids
 	}
 	for _, r := range rows {
 		t.Run(r.name, func(t *testing.T) {
+			e.reset()
 			if got := e.do("GET", r.target, r.mod, ""); got != r.want {
 				t.Fatalf("status %d, want %d (rules %v)", got, r.want, e.ruleIDs())
+			}
+			want := []int(nil)
+			if r.refusedBy != 0 {
+				want = []int{r.refusedBy}
+			}
+			if got := disruptive(e); !slices.Equal(got, want) {
+				t.Fatalf("disruptive rules %v, want %v (rules %v)", got, want, e.ruleIDs())
 			}
 		})
 	}
@@ -497,6 +517,9 @@ func TestAddressListsAndAllowedPaths(t *testing.T) {
 		}
 		if !has(em.ruleIDs(), idBlockIPs) {
 			t.Fatalf("the match was not recorded: %v", em.ruleIDs())
+		}
+		if got := disruptive(em); len(got) != 0 {
+			t.Fatalf("disruptive rules %v in monitor mode", got)
 		}
 	})
 }
@@ -590,11 +613,13 @@ func TestCustomRuleActionAndModeBehave(t *testing.T) {
 		}))
 	}
 	for _, tc := range []struct {
-		mode   Mode
-		action Action
-		want   int
-		logged bool
-	}{{ModeBlock, ActionBlock, 403, true}, {ModeBlock, ActionLog, 200, true}, {ModeMonitor, ActionBlock, 200, true}, {ModeMonitor, ActionLog, 200, true}, {ModeOff, ActionBlock, 200, false}} {
+		mode       Mode
+		action     Action
+		want       int
+		logged     bool
+		disruptive bool // the rule's own line says it refused the request
+	}{{ModeBlock, ActionBlock, 403, true, true}, {ModeBlock, ActionLog, 200, true, false}, {ModeMonitor, ActionBlock, 200, true, false},
+		{ModeMonitor, ActionLog, 200, true, false}, {ModeOff, ActionBlock, 200, false, false}} {
 		t.Run(fmt.Sprintf("%s mode, %s", tc.mode, tc.action), func(t *testing.T) {
 			e := mk(tc.mode, tc.action)
 			if got := e.do("GET", "/secret/x", nil, ""); got != tc.want {
@@ -602,6 +627,11 @@ func TestCustomRuleActionAndModeBehave(t *testing.T) {
 			}
 			if got := has(e.ruleIDs(), idCustom+5); got != tc.logged {
 				t.Fatalf("recorded = %v, want %v", got, tc.logged)
+			}
+			e.mu.Lock()
+			defer e.mu.Unlock()
+			if got := slices.ContainsFunc(e.matches, func(m proxy.Match) bool { return m.RuleID == idCustom+5 && m.Disruptive }); got != tc.disruptive {
+				t.Fatalf("disruptive = %v, want %v", got, tc.disruptive)
 			}
 		})
 	}

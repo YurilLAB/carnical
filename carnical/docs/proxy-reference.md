@@ -176,7 +176,16 @@ Default match events contain the rule ID, severity, the request's id and a fixed
 uses `msg`; rule text uses `rule_msg`. The id, `tx`, is 16 hexadecimal digits made when the request
 arrives; the rule set's transaction is given the same one, so the lines of the rule set, the proxy's
 own checks, the inspectors and the rate rules about one request all carry it and can be read
-together. It joins lines; it is not a secret. `-log-details` may include the client address (the
+together. It joins lines; it is not a secret. `disruptive` is true only on the line of the check that
+refused the request: one of the proxy's own refusals, an inspector verdict that blocks, a rate rule
+that enforces, or, in the rule set, the anomaly verdict (949110 inbound, 959100 outbound, or 949111
+and 959101, which give it a phase early when `tx.early_blocking` is set), one of the CRS configuration
+checks 901001 and 901500 (status 500 when the rule set is set up wrong), one of Coraza's base rules
+(2000xx, a body or URI the engine could not take apart) or a rule tagged `carnical-deny`, which the
+site policy adds to its block list and to every custom rule that blocks.
+The CRS rules that only add to the anomaly score are never disruptive, though the engine runs them
+with a disruptive action while it enforces; in detection mode no rule set line is. A rule written
+into `crs.Settings.Before` or `After` that refuses with `deny` should carry `tag:'carnical-deny'`. `-log-details` may include the client address (the
 visitor's, never with a port), URI, matched data, expanded CRS text and inspector panic details.
 Treat it as sensitive logging.
 

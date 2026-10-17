@@ -22,6 +22,12 @@ import (
 //go:embed owasp_crs base local provenance.json
 var files embed.FS
 
+// DenyTag marks a rule that refuses a request on its own, with deny, rather than adding to the anomaly score. The proxy
+// reports a match as disruptive only for the rule that refuses: such a rule, Coraza's base rules and the CRS rules written
+// with deny (the anomaly verdicts 949110, 949111, 959100 and 959101 and the configuration checks 901001 and 901500). The
+// site policy adds it to every deny rule it writes.
+const DenyTag = "carnical-deny"
+
 // FS returns the embedded files. Its root holds base/coraza.conf (Coraza's recommended configuration), owasp_crs/
 // (the rule and data files, and the setup example) and provenance.json. Pass it to WithRootFS.
 func FS() fs.FS { return portableFS{files} }
@@ -107,7 +113,8 @@ type Settings struct {
 	AllowedMethods []string
 	// Before and After are extra SecLang directives run before and after the CRS rules, which is where the CRS
 	// documentation puts rule exclusions. They are trusted configuration written by the operator, so never fill
-	// them from a tenant's input.
+	// them from a tenant's input. A rule here that refuses a request on its own (deny) is reported as the one that
+	// refused it only if it carries the tag DenyTag.
 	Before, After string
 	// DisableLocalRules omits Carnical's supplemental injection rules. They are separate from the verified, unmodified CRS
 	// release, run at PL1 and add five inbound anomaly points per finding. Mode and thresholds apply to both rule sets.

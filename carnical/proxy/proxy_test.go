@@ -14,6 +14,7 @@ import (
 	"net/netip"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -491,7 +492,7 @@ func TestMatchesAreReportedWithoutWhatTheVisitorSentUnlessAsked(t *testing.T) {
 	collect := func(into *[]Match) func(Match) {
 		return func(m Match) { mu.Lock(); *into = append(*into, m); mu.Unlock() }
 	}
-	const expanded = "SecRule ARGS:note \"@rx .\" \"id:5000099,phase:2,deny,status:403,log,msg:'request=%{ARGS.note}',logdata:'%{ARGS.note}'\""
+	const expanded = "SecRule ARGS:note \"@rx .\" \"id:5000099,phase:2,deny,status:403,log,msg:'request=%{ARGS.note}',logdata:'%{ARGS.note}',tag:'carnical-deny'\""
 	// An inspector that only watches, so that the attack is reported by an inspector as well as by the rule set.
 	watch := fakeInspector{"watcher", func(r *inspect.Request) inspect.Result {
 		if r.Path == "/search" {
@@ -512,6 +513,30 @@ func TestMatchesAreReportedWithoutWhatTheVisitorSentUnlessAsked(t *testing.T) {
 	if status, _ := a.raw(t, get("/search?q="+url.QueryEscape("' or true() or '"+secret+"'='b"))); status != 403 {
 		t.Fatalf("local rule status %d", status)
 	}
+	// A request the rules only score (920350, a numeric Host) and let through.
+	if status, _ := a.raw(t, strings.Replace(get("/page"), "Host: shop.example.test", "Host: 127.0.0.1", 1)); status != 200 {
+		t.Fatalf("numeric Host status %d", status)
+	}
+	// A body the engine cannot take apart refuses on its own (Coraza's base rule 200002), and only while it enforces.
+	var detected []Match
+	dt := start(t, func(c *Config) { c.OnMatch = collect(&detected); c.CRS.Mode = crs.ModeDetect })
+	badJSON := "POST /api HTTP/1.1\r\n" + preamble + "Content-Type: application/json\r\nContent-Length: 1\r\nConnection: close\r\n\r\n{"
+	if status, _ := a.raw(t, badJSON); status != 400 {
+		t.Fatalf("malformed JSON status %d", status)
+	}
+	if status, _ := dt.raw(t, badJSON); status != 200 {
+		t.Fatalf("malformed JSON in detection mode: status %d", status)
+	}
+	// With early blocking on, the rule set refuses in phase 1 with 949111, after many lines of rules that only log.
+	var early []Match
+	earlyRules := []string{`SecAction "id:900120,phase:1,pass,nolog,t:none,setvar:tx.early_blocking=1"`}
+	for i := range 40 {
+		earlyRules = append(earlyRules, fmt.Sprintf(`SecRule REQUEST_HEADERS:User-Agent "@rx ." "id:%d,phase:1,pass,log"`, 10001+i))
+	}
+	eb := start(t, func(c *Config) { c.OnMatch = collect(&early); c.CRS.Before = strings.Join(earlyRules, "\n") })
+	if status, _ := eb.raw(t, strings.Replace(get("/page"), "Mozilla/5.0 Chrome/120", "sqlmap/1.4", 1)); status != 403 {
+		t.Fatalf("a scanner with early blocking: status %d", status)
+	}
 	// Macro-expanded messages can contain request data even when logdata and URI are omitted.
 	for _, s := range []*setup{a, b} {
 		if status, _ := s.raw(t, get("/profile?note="+secret)); status != 403 {
@@ -526,6 +551,28 @@ func TestMatchesAreReportedWithoutWhatTheVisitorSentUnlessAsked(t *testing.T) {
 	defer mu.Unlock()
 	if len(plain) == 0 || len(detailed) == 0 {
 		t.Fatalf("no matches reported (%d, %d)", len(plain), len(detailed))
+	}
+	// Only the rule that refused a request is disruptive: the anomaly verdict, or a rule tagged carnical-deny. The rules that
+	// only score it are not, though the engine runs them with a disruptive action while it enforces.
+	refusing := map[int]bool{}
+	for _, m := range plain {
+		if m.Disruptive {
+			refusing[m.RuleID] = true
+		}
+	}
+	if !refusing[949110] || !refusing[5000099] || !refusing[200002] || len(refusing) != 4 || !refusing[idUpstreamFailed] ||
+		!slices.ContainsFunc(plain, func(m Match) bool { return m.RuleID == 920350 }) {
+		t.Errorf("disruptive rules %v, want 949110, 5000099, 200002 and %d, with 920350 matched", refusing, idUpstreamFailed)
+	}
+	// 949111 is the one disruptive line of a request early blocking refused.
+	if i := slices.IndexFunc(early, func(m Match) bool { return m.Disruptive }); i < 0 || early[i].RuleID != 949111 ||
+		slices.ContainsFunc(early[i+1:], func(m Match) bool { return m.Disruptive }) {
+		t.Errorf("with early blocking the lines end %+v; want 949111 the one disruptive line", early[max(len(early)-4, 0):])
+	}
+	// In detection mode nothing refused, so no rule set line is disruptive.
+	if !slices.ContainsFunc(detected, func(m Match) bool { return m.RuleID == 200002 }) ||
+		slices.ContainsFunc(detected, func(m Match) bool { return m.Disruptive }) {
+		t.Errorf("in detection mode: %+v; want 200002 matched and nothing disruptive", detected)
 	}
 	localLabel, upstreamLabel := false, false
 	// Every line is about one request and names it, and an inspector's line names it as the rule set's lines do.

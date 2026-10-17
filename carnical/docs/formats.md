@@ -364,7 +364,8 @@ final changed snapshot. A forced process kill cannot flush. Counters reset when 
 constructed and do not aggregate across a fleet. Format mode off does not run this reporter.
 
 For per-attempt events, `msg` is `rule matched`, `rule_msg` contains fixed rule text, and
-`disruptive` distinguishes enforced from monitored findings. Log tests verify every repeated bypass
+`disruptive` distinguishes enforced from monitored findings: it is true only on the line of the check
+that refused the request, on every layer (see [monitoring](proxy-reference.md#monitoring)). Log tests verify every repeated bypass
 attempt is recorded with the correct outcome. Aggregate labels contain no URI, body, credentials or
 client address. CRS expanded messages and inspector panic text are available only through the
 explicit detailed-log setting; they are not safe summaries.
