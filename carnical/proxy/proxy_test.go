@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/YurilLAB/coraza/carnical/alert"
 	"github.com/YurilLAB/coraza/carnical/crs"
 	"github.com/YurilLAB/coraza/carnical/inspect"
 )
@@ -731,6 +732,106 @@ func TestMatchesAreReportedWithoutWhatTheVisitorSentUnlessAsked(t *testing.T) {
 	}
 	if !cut {
 		t.Error("a long matched value was not cut with a marker")
+	}
+
+	// Every request in which something was found has one alert per signature, with the request's final verdict for it
+	// (ADR-0084), whatever NoRuleMatches leaves out of the lines; a clean request has none.
+	inspector := func(id, status int) inspect.Inspector {
+		return fakeInspector{"formats", func(r *inspect.Request) inspect.Result {
+			return inspect.Result{Verdicts: []inspect.Verdict{{ID: id, Message: "a finding", Severity: "medium", Block: status != 0, Status: status}}}
+		}}
+	}
+	sqli := get("/search?q=" + url.QueryEscape("1' OR '"+secret+"'='"+secret+"' --"))
+	numericHost := strings.Replace(get("/page"), "Host: shop.example.test", "Host: 127.0.0.1", 1)
+	for _, tt := range []struct {
+		name    string
+		change  func(*Config)
+		request string
+		status  int
+		want    []string // signature, action and status of each alert
+		check   func(t *testing.T, a alert.Alert)
+	}{
+		{"block: the anomaly verdict blocks an attack", nil, sqli, 403, []string{"crs-949110 blocked 403"}, func(t *testing.T, a alert.Alert) {
+			if a.Score < 5 || a.Threshold != 5 || !a.Categories.Has(alert.CatSQLi) || !slices.Contains(a.Rules, 942100) || len(a.Rules) > alert.MaxRules ||
+				a.Risk != alert.RiskHigh || a.Mode != alert.ModeBlock || a.Layer != alert.LayerCRS {
+				t.Errorf("verdict %+v", a)
+			}
+			if a.Src != netip.MustParseAddr("127.0.0.1") || a.ViaProxy || a.Method != "GET" || a.Host != "shop.example.test" || a.Path != "/search?" {
+				t.Errorf("request %+v", a)
+			}
+		}},
+		{"detect: the same attack would have been blocked", func(c *Config) { c.CRS.Mode = crs.ModeDetect }, sqli, 200,
+			[]string{"crs-949110 would_block 0"}, func(t *testing.T, a alert.Alert) {
+				if a.Score < 5 || a.Mode != alert.ModeDetect || !a.Categories.Has(alert.CatSQLi) {
+					t.Errorf("verdict %+v", a)
+				}
+			}},
+		{"below the threshold a finding is detected", nil, numericHost, 200, []string{"crs-920350 detected 0"}, func(t *testing.T, a alert.Alert) {
+			if a.Risk != alert.RiskInfo || !a.Categories.Has(alert.CatProtocol) || a.Score != 0 {
+				t.Errorf("finding %+v", a)
+			}
+		}},
+		{"a monitor finding of an inspector is detected", func(c *Config) { c.Inspectors = []inspect.Inspector{inspector(5002103, 0)} },
+			get("/page"), 200, []string{"formats-5002103 detected 0"}, func(t *testing.T, a alert.Alert) {
+				if a.Layer != alert.LayerFormats || a.Mode != alert.ModeMonitor || a.Risk != alert.RiskMedium {
+					t.Errorf("finding %+v", a)
+				}
+			}},
+		{"an inspector's refusal is blocked with its status", func(c *Config) { c.Inspectors = []inspect.Inspector{inspector(5002103, 400)} },
+			get("/page"), 400, []string{"formats-5002103 blocked 400"}, nil},
+		{"the proxy's own refusal is blocked", nil, get("/a/./b"), 400, []string{"carnical-5000002 blocked 400"}, nil},
+		{"with no rule matches in the log the alert is still given", func(c *Config) { c.NoRuleMatches = true }, sqli, 403,
+			[]string{"crs-949110 blocked 403"}, nil},
+		{"with the source and the path off", func(c *Config) { c.Alerts = AlertOptions{Source: alert.SourceOff, Path: alert.PathOff} }, sqli, 403,
+			[]string{"crs-949110 blocked 403"}, func(t *testing.T, a alert.Alert) {
+				if a.Src.IsValid() || a.Path != "" {
+					t.Errorf("source %v and path %q", a.Src, a.Path)
+				}
+			}},
+		{"the full path has no query", func(c *Config) { c.Alerts.Path = alert.PathFull }, sqli, 403, []string{"crs-949110 blocked 403"},
+			func(t *testing.T, a alert.Alert) {
+				if a.Path != "/search" {
+					t.Errorf("path %q", a.Path)
+				}
+			}},
+		{"a clean request has none", nil, get("/page"), 200, nil, nil},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var amu sync.Mutex
+			var got []alert.Alert
+			var lines []Match
+			s := start(t, func(c *Config) {
+				c.OnAlert = func(a alert.Alert) { amu.Lock(); got = append(got, a); amu.Unlock() }
+				c.OnMatch = func(m Match) { amu.Lock(); lines = append(lines, m); amu.Unlock() }
+				if tt.change != nil {
+					tt.change(c)
+				}
+			})
+			if status, _ := s.raw(t, tt.request); status != tt.status {
+				t.Fatalf("status %d, want %d", status, tt.status)
+			}
+			amu.Lock()
+			defer amu.Unlock()
+			var verdicts []string
+			for _, a := range got {
+				verdicts = append(verdicts, fmt.Sprintf("%s %s %d", a.Sig, a.Action, a.Status))
+				if !hexID.MatchString(a.ID) || a.Count != 1 || strings.Contains(fmt.Sprintf("%+v", a), secret) {
+					t.Errorf("alert %+v", a)
+				}
+				for _, m := range lines {
+					if m.TransactionID != "" && m.TransactionID != a.ID {
+						t.Errorf("a line names request %s, the alert %s", m.TransactionID, a.ID)
+					}
+				}
+			}
+			slices.Sort(verdicts)
+			if !slices.Equal(verdicts, tt.want) {
+				t.Fatalf("alerts %q, want %q", verdicts, tt.want)
+			}
+			if tt.check != nil {
+				tt.check(t, got[0])
+			}
+		})
 	}
 }
 

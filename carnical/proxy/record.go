@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/YurilLAB/coraza/carnical/alert"
@@ -37,6 +38,17 @@ type record struct {
 	client, conn netip.Addr
 	// lines is how many lines the request has been reported in, and held how many of them went over maxRequestLines.
 	lines, held atomic.Int32
+	// alerts says the edge gives alerts (Config.OnAlert), without which nothing below is kept. via says the visitor's
+	// address came through a trusted proxy.
+	alerts, via bool
+	// mu guards what follows, which the request's own goroutine fills and finish reads once the request is done: a line
+	// about the request can still come from elsewhere, and is then no longer noted.
+	mu   sync.Mutex
+	done bool
+	// found holds the request's findings, taken from a pool at the first one, so that a request with none costs nothing.
+	found *findings
+	// engine is how the rule engine's evaluation of the request ended (see budgetTx.Close).
+	engine engineEnd
 }
 
 // admit counts a line about the request and reports whether it may be logged: a verdict always may.
@@ -72,9 +84,13 @@ func recordOf(ctx context.Context) *record {
 	return rec
 }
 
-// finding is report for a line that says what a request matched or why it was refused, which Config.NoRuleMatches leaves
-// out.
+// finding notes what a request matched or why it was refused for the request's verdict (see note), and reports it in a
+// line, which Config.NoRuleMatches leaves out.
 func (e *Edge) finding(m Match, rec *record, r *http.Request) {
+	if rec == nil && r != nil {
+		rec = recordOf(r.Context())
+	}
+	e.note(m, rec)
 	if !e.cfg.NoRuleMatches {
 		e.report(m, rec, r)
 	}
@@ -117,21 +133,33 @@ func (e *Edge) report(m Match, rec *record, r *http.Request) {
 // know, such as one written into crs.Settings.Before or After, has no category; it is rated as a rule set rule that
 // scores, by its severity, or as medium when it refused the request or would have.
 func (e *Edge) deliver(m Match) {
-	entry, known := alert.Lookup(m.RuleID)
+	risk, cats := rating(m)
 	if m.Category == "" {
-		m.Category = categoryText(entry.Categories)
+		m.Category = categoryText(cats)
 	}
 	if m.Risk == "" {
-		switch {
-		case known:
-			m.Risk = entry.Risk.String()
-		case m.Disruptive || m.verdict:
-			m.Risk = alert.RiskMedium.String()
-		default:
-			m.Risk = alert.CRSRisk(m.Severity).String()
-		}
+		m.Risk = risk.String()
 	}
 	e.cfg.OnMatch(m)
+}
+
+// rating is the risk and categories of a line: its own where it gives them, otherwise the catalog's (see deliver).
+func rating(m Match) (alert.Risk, alert.Categories) {
+	entry, known := alert.Lookup(m.RuleID)
+	cats := entry.Categories
+	if m.cats != 0 {
+		cats = m.cats
+	}
+	if r, ok := alert.ParseRisk(m.Risk); ok {
+		return r, cats
+	}
+	switch {
+	case known:
+		return entry.Risk, cats
+	case m.Disruptive || m.verdict:
+		return alert.RiskMedium, cats
+	}
+	return alert.CRSRisk(m.Severity), cats
 }
 
 // categoryText is a set of categories as a line gives them: their names joined with commas. One name, the usual case, is

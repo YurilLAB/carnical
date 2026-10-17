@@ -40,6 +40,8 @@ type writeWatch struct {
 	conn   net.Conn           // the client's connection when this response is all it carries (HTTP/1), or nil
 	// onHijack, if set, is given the connection when it is taken over for an allowed upgrade (see Edge.hijacked).
 	onHijack func(net.Conn) net.Conn
+	// status is the status the client was sent, written and read by the request's own goroutine (see sent).
+	status int
 }
 
 func (w *writeWatch) setCancel(c context.CancelFunc) {
@@ -91,7 +93,26 @@ func drop(c net.Conn) {
 
 type writeWatchKey struct{}
 
+// WriteHeader notes the status the client is sent, for the request's alerts.
+func (w *writeWatch) WriteHeader(code int) {
+	if w.status == 0 && code >= 200 {
+		w.status = code
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+// sent is the status the client was sent, or 0 when nothing was (or w is nil).
+func (w *writeWatch) sent() int {
+	if w == nil {
+		return 0
+	}
+	return w.status
+}
+
 func (w *writeWatch) Write(b []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
 	w.since.Store(monotonic())
 	n, err := w.ResponseWriter.Write(b)
 	w.since.Store(0)

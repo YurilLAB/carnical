@@ -320,6 +320,25 @@ func policyEntry(id int) Entry {
 	return Entry{Name: "Site policy rule", Categories: Of(CatPolicy), Risk: RiskLow}
 }
 
+// crsTags are the categories of the CRS's attack tags (tag:'attack-sqli' and so on), which name what a rule looks for
+// more closely than its file does: a rule of the protocol file tagged attack-ssrf, say.
+var crsTags = map[string]Category{
+	"attack-sqli": CatSQLi, "attack-xss": CatXSS, "attack-rce": CatRCE, "attack-lfi": CatLFI, "attack-rfi": CatRFI,
+	"attack-injection-php": CatPHP, "attack-injection-java": CatJava, "attack-injection-generic": CatGeneric,
+	"attack-generic": CatGeneric, "attack-ssrf": CatGeneric, "attack-ssti": CatGeneric, "attack-fixation": CatSession,
+	"attack-disclosure": CatDataLeak, "attack-protocol": CatProtocol, "attack-multipart-header": CatProtocol,
+	"attack-deprecated-header": CatProtocol, "attack-reputation-scanner": CatScanner,
+}
+
+// TagCategory is the category of a CRS attack tag, or 0 for any other tag. Tags are the rule's static metadata, never
+// request data.
+func TagCategory(tag string) Category {
+	if !strings.HasPrefix(tag, "attack-") {
+		return 0
+	}
+	return crsTags[tag]
+}
+
 // CRSRisk is the risk of one CRS or local rule's finding below the anomaly threshold, from its severity: critical and
 // error are low, everything else info. The request's verdict over the threshold is high (949110, 959100, and 949111 and
 // 959101 with early blocking).

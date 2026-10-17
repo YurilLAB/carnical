@@ -9,12 +9,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/YurilLAB/coraza/carnical/alert"
 	"github.com/YurilLAB/coraza/carnical/crs"
 	"github.com/corazawaf/coraza/v3"
 	"github.com/corazawaf/coraza/v3/experimental"
@@ -67,19 +70,43 @@ func TestEvaluationBudgetRefusesARequestThatCostsTooMuch(t *testing.T) {
 	}
 	t.Logf("inspecting in full: %v; refused at a 5 ms budget after %v", baseline, took)
 
-	t.Run("in detection mode the request goes on and the overrun is reported", func(t *testing.T) {
-		var seen refusals
-		detect := start(t, func(c *Config) {
-			big(c)
-			c.EvalBudget, c.CRS.Mode, c.OnMatch = 5*time.Millisecond, crs.ModeDetect, seen.record
+	// Each request cut short has an alert of its own, with its id and source (G12): forwarded and not inspected in detection
+	// mode, or refused there too when Config.EvalBudgetDetect asks for it, and refused in block mode.
+	for _, tt := range []struct {
+		name   string
+		mode   crs.Mode
+		cut    OverBudget
+		status int
+		action alert.Action
+	}{
+		{"in block mode the request is refused", crs.ModeBlock, "", http.StatusServiceUnavailable, alert.Blocked},
+		{"in detection mode the request goes on and the overrun is reported", crs.ModeDetect, "", http.StatusOK, alert.NotInspected},
+		{"in detection mode a request cut short can be refused", crs.ModeDetect, OverBudgetRefuse, http.StatusServiceUnavailable, alert.Blocked},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var seen refusals
+			var mu sync.Mutex
+			var alerts []alert.Alert
+			s := start(t, func(c *Config) {
+				big(c)
+				c.EvalBudget, c.CRS.Mode, c.EvalBudgetDetect, c.OnMatch = 5*time.Millisecond, tt.mode, tt.cut, seen.record
+				c.OnAlert = func(a alert.Alert) { mu.Lock(); alerts = append(alerts, a); mu.Unlock() }
+			})
+			if status, _ := s.rawFor(t, 2*time.Minute, post(body)); status != tt.status {
+				t.Fatalf("status %d, want %d", status, tt.status)
+			}
+			if seen.count(idEvalBudget) == 0 {
+				t.Fatal("rules left unread for want of time were not reported")
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			i := slices.IndexFunc(alerts, func(a alert.Alert) bool { return a.RuleID == idEvalBudget })
+			if i < 0 || alerts[i].Action != tt.action || !alerts[i].Src.IsValid() || len(alerts[i].ID) != 16 ||
+				alerts[i].Sig != "carnical-5000045" || alerts[i].Status != map[bool]int{true: 503}[tt.action == alert.Blocked] {
+				t.Fatalf("alerts %+v, want one %s for the budget", alerts, tt.action)
+			}
 		})
-		if status, _ := detect.rawFor(t, 2*time.Minute, post(body)); status != http.StatusOK {
-			t.Fatalf("status %d, want 200", status)
-		}
-		if seen.count(idEvalBudget) == 0 {
-			t.Fatal("rules left unread for want of time were not reported")
-		}
-	})
+	}
 }
 
 func TestEvaluationBudgetDoesNotTouchNormalRequestsOrSlowUploads(t *testing.T) {
@@ -173,7 +200,7 @@ SecRule RESPONSE_BODY "@contains secret" "id:4001,phase:4,deny,status:418"
 		t.Fatal(err)
 	}
 	slots := make(chan struct{}, 1)
-	budgeted := withEvalBudget(waf, 80*time.Millisecond, slots, 16, nil).(experimental.WAFWithOptions)
+	budgeted := withEvalBudget(waf, 80*time.Millisecond, slots, 16, false, nil).(experimental.WAFWithOptions)
 	for _, tc := range []struct {
 		name string
 		body string

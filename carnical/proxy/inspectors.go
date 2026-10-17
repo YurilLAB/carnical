@@ -27,7 +27,9 @@ func (e *Edge) runInspectors(w http.ResponseWriter, r *http.Request, rawPath, ra
 	for _, in := range e.cfg.Inspectors {
 		res, err := safeInspect(in, req)
 		if err != nil {
-			m := Match{RuleID: idInspectorFailed, Severity: "CRITICAL", Message: "request inspector failed", Disruptive: true}
+			m := Match{RuleID: idInspectorFailed, Severity: "CRITICAL", Message: "request inspector failed", Disruptive: true,
+				status: http.StatusServiceUnavailable}
+			e.note(m, recordOf(r.Context()))
 			if e.cfg.LogDetails {
 				m.ExpandedMessage = in.Name() + " failed: " + err.Error()
 			}
@@ -51,22 +53,31 @@ func (e *Edge) runInspectors(w http.ResponseWriter, r *http.Request, rawPath, ra
 			if sev == "" {
 				sev = "WARNING"
 			}
-			e.finding(Match{RuleID: v.ID, Severity: sev, Message: v.Message, Disruptive: v.Block, Risk: alert.InspectorRisk(v.Severity, v.Block).String(),
-				verdict: true}, nil, r) // each inspector bounds how many verdicts it gives one request
+			m := Match{RuleID: v.ID, Severity: sev, Message: v.Message, Disruptive: v.Block, Risk: alert.InspectorRisk(v.Severity, v.Block).String(),
+				verdict: true} // each inspector bounds how many verdicts it gives one request
+			if v.Block {
+				m.status = refusalStatus(v.Status)
+			}
+			e.finding(m, nil, r)
 			if v.Block && blocking == nil {
 				blocking = &v
 			}
 		}
 		if blocking != nil {
-			status := blocking.Status
-			if status < 400 || status > 599 {
-				status = http.StatusForbidden
-			}
+			status := refusalStatus(blocking.Status)
 			http.Error(w, http.StatusText(status), status)
 			return nil, nil, false
 		}
 	}
 	return req, replaced, true
+}
+
+// refusalStatus is the status an inspector's refusal is answered with: its own when that is an error, otherwise 403.
+func refusalStatus(status int) int {
+	if status < 400 || status > 599 {
+		return http.StatusForbidden
+	}
+	return status
 }
 
 // observed is the request as the inspectors last saw it, kept for the observers that are told the application's answer.

@@ -333,3 +333,26 @@ func ParseSourceMode(s string) (SourceMode, bool) {
 	}
 	return 0, false
 }
+
+// PathMode is what an alert shows of the request's path.
+type PathMode uint8
+
+// The path modes of -alert-path.
+const (
+	PathTemplate PathMode = iota // the path with its identifiers replaced: digits by 9, long tokens by x, at most 6 segments
+	PathFull                     // the path as sent, without the query, at most MaxPath bytes
+	PathOff                      // no path
+)
+
+// ParsePathMode reads template, full or off.
+func ParsePathMode(s string) (PathMode, bool) {
+	switch s {
+	case "template":
+		return PathTemplate, true
+	case "full":
+		return PathFull, true
+	case "off":
+		return PathOff, true
+	}
+	return 0, false
+}

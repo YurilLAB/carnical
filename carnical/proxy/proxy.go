@@ -72,6 +72,10 @@ type Config struct {
 	// EvalBudget is how long each phase of rule evaluation may take for one request (default 2 seconds). A request
 	// that goes over it is refused with 503. Reading a slow client's body is not counted. A negative value is refused.
 	EvalBudget time.Duration
+	// EvalBudgetDetect is what detection mode does with a request whose evaluation ran out of EvalBudget: forward it with
+	// the rest of its rules unread (OverBudgetForward, the default), which its alert reports as not_inspected, or refuse it
+	// with 503 as block mode does (OverBudgetRefuse). Block mode always refuses it.
+	EvalBudgetDetect OverBudget
 	// MaxEvaluations is how many requests may be in rule evaluation at once (default: the number of CPUs). The rules
 	// cost several milliseconds per KiB of body, so without this a few large requests use every core. Others wait up
 	// to EvalBudget for a place and are then refused with 503. A negative value means no limit.
@@ -136,6 +140,13 @@ type Config struct {
 	WriteTimeout time.Duration
 	// OnMatch is called for every rule that matches. It must not block.
 	OnMatch func(Match)
+	// OnAlert is given the verdict of every request in which something was found, once the request is done: one
+	// alert.Alert for each signature, saying whether the request was blocked, would have been (detection or monitor
+	// mode), was only reported, or could not be inspected in full (ADR-0084). A request with no finding gives none. It
+	// is called on the request's goroutine and must not block (see alert.Async); nil gives no alerts.
+	OnAlert func(alert.Alert)
+	// Alerts says what an alert shows of the visitor and the path.
+	Alerts AlertOptions
 	// Shield, if set, protects the site against floods (package shield), before body inspection and rule evaluation.
 	// Its listener and ConnState judge connections. Wrap the listening socket with Shield.Listener.
 	Shield *shield.Shield
@@ -173,12 +184,20 @@ type Match struct {
 	// monitor mode, would have: a rule set verdict (see refusesOnItsOwn) or an inspector's. Such a line is never held back
 	// by maxRequestLines, so a request cannot hide its verdict behind the lines of the rules it matched.
 	verdict bool
+	// What the request's alerts are built from (see Edge.note): the status a refusal answered with; would, for a finding
+	// that did not refuse, that its check refuses where it enforces; engine for a rule set match, with the categories of
+	// the rule's attack tags and, on the anomaly verdict, the score it gave.
+	status        int
+	would, engine bool
+	cats          alert.Categories
+	score         int
 }
 
 // Edge is the proxy. It is an http.Handler.
 type Edge struct {
 	crowdSecLogSecond atomic.Int64
 	evalLogSecond     [2]atomic.Int64 // the last second a budget refusal of each kind was reported (see reportEval)
+	evalUnlogged      [2]atomic.Int64 // and how many of each kind were not since
 	cfg               Config
 	originTLS         *tls.Config
 	waf               coraza.WAF
@@ -200,6 +219,15 @@ type Edge struct {
 }
 
 type contextKey struct{}
+
+// OverBudget is what detection mode does with a request whose evaluation ran out of its budget (Config.EvalBudgetDetect).
+type OverBudget string
+
+// The choices of Config.EvalBudgetDetect.
+const (
+	OverBudgetForward OverBudget = "forward"
+	OverBudgetRefuse  OverBudget = "refuse"
+)
 
 // New builds the proxy and compiles the rule set.
 func New(cfg Config) (*Edge, error) {
@@ -245,6 +273,22 @@ func New(cfg Config) (*Edge, error) {
 	if cfg.EvalBudget < 0 {
 		// The budget wrapper is also what applies MaxEvaluations, so this would quietly drop both limits.
 		return nil, errors.New("the evaluation budget must not be negative")
+	}
+	switch cfg.EvalBudgetDetect {
+	case "", OverBudgetForward, OverBudgetRefuse:
+	default:
+		return nil, fmt.Errorf("the evaluation budget in detection mode must be %s or %s, not %q", OverBudgetForward, OverBudgetRefuse,
+			excerpt(string(cfg.EvalBudgetDetect)))
+	}
+	switch cfg.Alerts.Source {
+	case alert.SourceFull, alert.SourcePrefix, alert.SourceOff:
+	default:
+		return nil, errors.New("the alert source must be full, prefix or off")
+	}
+	switch cfg.Alerts.Path {
+	case alert.PathTemplate, alert.PathFull, alert.PathOff:
+	default:
+		return nil, errors.New("the alert path must be template, full or off")
 	}
 	if cfg.MaxFormBody < 0 {
 		// It would refuse every body as too large, and size the read of a chunked one by a negative count.
@@ -318,7 +362,8 @@ func New(cfg Config) (*Edge, error) {
 	if e.cfg.MaxFormBody == 0 {
 		e.cfg.MaxFormBody = 128 << 10
 	}
-	e.handler = e.guard(txhttp.WrapHandler(withEvalBudget(waf, budget, evalSlots, cfg.CRS.ResponseLimit(), e.reportEval), e.forward()))
+	refuseCut := cfg.CRS.Mode == crs.ModeDetect && cfg.EvalBudgetDetect == OverBudgetRefuse
+	e.handler = e.guard(txhttp.WrapHandler(withEvalBudget(waf, budget, evalSlots, cfg.CRS.ResponseLimit(), refuseCut, e.reportEval), e.forward()))
 	return e, nil
 }
 
@@ -428,26 +473,31 @@ func (e *Edge) reportTooManyConns(ip netip.Addr) {
 }
 
 // reportEval reports a phase of rule evaluation that found no slot or ran out of its budget, with the id of the request it
-// was for. Under a flood of expensive requests every one of them can, so each kind is reported at most once a second.
+// was for. Under a flood of expensive requests every one of them can, so each kind is reported at most once a second, and
+// the next line says how many were not. Each such request also has an alert of its own (see record.finish).
 func (e *Edge) reportEval(timedOut bool, tx string) {
 	if e.cfg.OnMatch == nil {
 		return
 	}
 	kind, m := 0, Match{RuleID: idEvalBusy, Severity: "WARNING", Disruptive: true, TransactionID: tx,
-		Message: "no rule evaluation slot came free within the budget (at most one report a second)"}
+		Message: "no rule evaluation slot came free within the budget"}
 	if timedOut {
-		kind, m = 1, Match{RuleID: idEvalBudget, Severity: "WARNING", Disruptive: e.cfg.CRS.Mode == crs.ModeBlock, TransactionID: tx,
-			Message: "rule evaluation ran out of its budget (at most one report a second)"}
+		kind, m = 1, Match{RuleID: idEvalBudget, Severity: "WARNING", TransactionID: tx, Message: "rule evaluation ran out of its budget",
+			Disruptive: e.cfg.CRS.Mode == crs.ModeBlock || e.cfg.EvalBudgetDetect == OverBudgetRefuse}
 	}
 	second := time.Now().Unix()
 	if previous := e.evalLogSecond[kind].Load(); second == previous || !e.evalLogSecond[kind].CompareAndSwap(previous, second) {
+		e.evalUnlogged[kind].Add(1)
 		return
+	}
+	if n := e.evalUnlogged[kind].Swap(0); n > 0 {
+		m.Message += " (" + strconv.FormatInt(n, 10) + " more not logged)"
 	}
 	e.deliver(m)
 }
 
 func (e *Edge) onMatch(m types.MatchedRule) {
-	if e.cfg.OnMatch == nil {
+	if e.cfg.OnMatch == nil && e.cfg.OnAlert == nil {
 		return
 	}
 	// Coraza's Message is macro-expanded and may contain credentials or arbitrary request values.
@@ -455,7 +505,10 @@ func (e *Edge) onMatch(m types.MatchedRule) {
 	// The engine marks every match of a rule with a disruptive action (block, which the CRS turns into pass) while it
 	// enforces; only the rule that refused the request is disruptive here.
 	match := Match{RuleID: m.Rule().ID(), Severity: m.Rule().Severity().String(), Message: "Coraza rule matched",
-		TransactionID: m.TransactionID(), verdict: refusesOnItsOwn(m.Rule())}
+		TransactionID: m.TransactionID(), verdict: refusesOnItsOwn(m.Rule()), engine: true}
+	for _, tag := range m.Rule().Tags() {
+		match.cats = match.cats.With(alert.TagCategory(tag)) // static tags: what the rule looks for
+	}
 	match.Disruptive = m.Disruptive() && match.verdict
 	if label := crs.LocalRuleMessage(match.RuleID); label != "" {
 		match.Message = label
@@ -470,6 +523,9 @@ func (e *Edge) onMatch(m types.MatchedRule) {
 	var rec *record
 	if c, ok := m.(interface{ Context() context.Context }); ok {
 		rec = recordOf(c.Context()) // the transaction's context is the request's (see budgetWAF)
+	}
+	if rec != nil && rec.alerts && (match.RuleID == 949110 || match.RuleID == 959100) {
+		match.score = anomalyScore(match.RuleID, m.Message())
 	}
 	e.finding(match, rec, nil)
 }
@@ -510,6 +566,7 @@ func (e *Edge) refuseCrowdSec(w http.ResponseWriter, r *http.Request, action cro
 	if second != previous && e.crowdSecLogSecond.CompareAndSwap(previous, second) {
 		e.refuse(w, r, status, id, msg)
 	} else {
+		e.note(Match{RuleID: id, Severity: "CRITICAL", Disruptive: true, status: status}, recordOf(r.Context())) // the alert is not sampled
 		http.Error(w, http.StatusText(status), status)
 	}
 }
@@ -518,10 +575,15 @@ func (e *Edge) refuseCrowdSec(w http.ResponseWriter, r *http.Request, action cro
 func (e *Edge) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rec := newRecord()
-		defer e.reportHeld(rec)
+		rec.alerts = e.cfg.OnAlert != nil
+		var watch *writeWatch
+		defer func() {
+			e.reportHeld(rec)
+			rec.finish(e, r, watch.sent())
+		}()
 		addr, port, addrErr := clientAddr(r, e.cfg.TrustedProxies)
 		if addrErr == nil {
-			rec.client = addr
+			rec.client, rec.via = addr, addr != connAddr(r.RemoteAddr)
 		} else {
 			rec.conn = connAddr(r.RemoteAddr) // the visitor's is not known: the line names the connection's
 		}
@@ -544,7 +606,7 @@ func (e *Edge) guard(next http.Handler) http.Handler {
 		peer := r.RemoteAddr // the connection's own address, before it is replaced by the visitor's
 		// Coraza splits RemoteAddr at its last colon, so an IPv6 address is given without brackets.
 		r.RemoteAddr = fmt.Sprintf("%s:%d", addr, port)
-		watch := &writeWatch{ResponseWriter: w, onHijack: e.hijacked}
+		watch = &writeWatch{ResponseWriter: w, onHijack: e.hijacked}
 		if r.ProtoMajor == 1 { // an HTTP/2 connection carries other requests too
 			watch.conn, _ = r.Context().Value(connKey{}).(net.Conn)
 		}

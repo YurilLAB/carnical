@@ -148,6 +148,33 @@ func TestCatalog(t *testing.T) {
 			t.Fatalf("%d local rules with a message in the file, %d in the catalog", n, len(localRules))
 		}
 	})
+	t.Run("every attack tag of the rules has a category", func(t *testing.T) {
+		local, _ := filepath.Glob(filepath.Join("..", "crs", "local", "*.conf"))
+		seen := map[string]bool{}
+		for _, f := range append(files, local...) {
+			data, err := os.ReadFile(f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, m := range regexp.MustCompile(`tag:'(attack-[a-z-]+)'`).FindAllStringSubmatch(string(data), -1) {
+				seen[m[1]] = true
+			}
+		}
+		if len(seen) < 10 {
+			t.Fatalf("%d attack tags found", len(seen))
+		}
+		for tag := range seen {
+			if TagCategory(tag) == 0 {
+				t.Errorf("tag %q has no category", tag)
+			}
+		}
+		for tag, want := range map[string]Category{"attack-sqli": CatSQLi, "attack-reputation-scanner": CatScanner,
+			"attack-fixation": CatSession, "paranoia-level/1": 0, "OWASP_CRS": 0, "attack-unknown": 0, "": 0} {
+			if got := TagCategory(tag); got != want {
+				t.Errorf("TagCategory(%q) = %v, want %v", tag, got, want)
+			}
+		}
+	})
 
 	rows := []struct {
 		name string

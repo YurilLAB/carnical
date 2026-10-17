@@ -26,13 +26,14 @@ import (
 // runs the response body rules, waits for a slot. report, if set, is told of every phase that found no slot (timedOut false)
 // or ran out of its budget (timedOut true), with the transaction's id: neither is a matched rule, and in detection mode a
 // phase that ran out lets the request go on with the rest of its rules unread, which an operator tuning the site needs to
-// know.
-func withEvalBudget(waf coraza.WAF, d time.Duration, slots chan struct{}, respLimit int64, report func(timedOut bool, tx string)) coraza.WAF {
+// know. refuseCut refuses such a request with 503 in detection mode as well (Config.EvalBudgetDetect); while the engine
+// enforces, it refuses it itself.
+func withEvalBudget(waf coraza.WAF, d time.Duration, slots chan struct{}, respLimit int64, refuseCut bool, report func(timedOut bool, tx string)) coraza.WAF {
 	inner, ok := waf.(experimental.WAFWithOptions)
 	if !ok || d <= 0 {
 		return waf
 	}
-	return &budgetWAF{WAF: waf, inner: inner, d: d, slots: slots, respLimit: respLimit, report: report}
+	return &budgetWAF{WAF: waf, inner: inner, d: d, slots: slots, respLimit: respLimit, refuseCut: refuseCut, report: report}
 }
 
 type budgetWAF struct {
@@ -41,6 +42,7 @@ type budgetWAF struct {
 	d         time.Duration
 	slots     chan struct{}
 	respLimit int64
+	refuseCut bool
 	report    func(timedOut bool, tx string)
 }
 
@@ -62,7 +64,7 @@ func (w *budgetWAF) NewTransactionWithOptions(o experimental.Options) types.Tran
 	for _, j := range joined {
 		tx.AddPathRequestArgument(j.name, j.value)
 	}
-	return &budgetTx{Transaction: tx, ctx: ctx, d: w.d, slots: w.slots, respLimit: w.respLimit, report: w.report}
+	return &budgetTx{Transaction: tx, ctx: ctx, d: w.d, slots: w.slots, respLimit: w.respLimit, refuseCut: w.refuseCut, report: w.report}
 }
 
 // Close releases the compiled rules of the wrapped WAF.
@@ -109,16 +111,30 @@ type budgetTx struct {
 	resp      int64 // response body bytes the engine has buffered
 	respOver  bool  // the write that reached the limit has been made
 
-	refused *types.Interruption // set when a phase could not get a slot; see IsInterrupted
+	refused *types.Interruption // set when a phase could not get a slot, or ran out of time with refuseCut; see IsInterrupted
+
+	cut       bool // a phase ran out of its budget
+	refuseCut bool // see withEvalBudget
 }
 
-// busy is the refusal for a request that could not get a slot to be evaluated in.
-var busy = &types.Interruption{Status: 503, Action: "deny"}
+// busy is the refusal for a request that could not get a slot to be evaluated in, and overBudget the refusal in detection
+// mode of one whose evaluation ran out of time (Config.EvalBudgetDetect).
+var busy, overBudget = &types.Interruption{Status: 503, Action: "deny"}, &types.Interruption{Status: 503, Action: "deny"}
 
 // refuse records that a phase was refused for want of a slot, so that the transaction counts as interrupted from then on.
 func (t *budgetTx) refuse() *types.Interruption {
 	t.refused = busy
 	return busy
+}
+
+// cutShort refuses the request when a phase ran out of time and refuseCut asks for that, in detection mode, where the engine
+// lets it go on: it returns the phase's interruption otherwise.
+func (t *budgetTx) cutShort(it *types.Interruption) *types.Interruption {
+	if it == nil && t.cut && t.refuseCut {
+		t.refused = overBudget
+		return overBudget
+	}
+	return it
 }
 
 // IsInterrupted also reports a phase refused for want of a slot. The engine never saw that refusal, and the HTTP middleware
@@ -178,38 +194,79 @@ func (t *budgetTx) run(phase func()) bool {
 	timer := after(t.d, func() { t.ctx.expire(gen) })
 	defer func() { timer.Stop(); t.ctx.current.Add(1) }()
 	phase()
-	if t.report != nil && t.ctx.expired.Load() == gen {
-		t.report(true, t.id())
+	if t.ctx.expired.Load() == gen {
+		t.cut = true
+		if t.report != nil {
+			t.report(true, t.id())
+		}
 	}
 	return true
+}
+
+// Close notes in the request's record how the engine's evaluation of it ended, for its alerts (see record.finish): the
+// rule that refused it, or in detection mode would have (the engine's DetectionOnlyInterruption, which types.Transaction
+// does not have), and an end no rule gave: a phase out of time or without a slot, or the client gone.
+func (t *budgetTx) Close() error {
+	if rec := recordOf(t.ctx.Context); rec != nil && rec.alerts {
+		var end engineEnd
+		it := t.Transaction.Interruption()
+		switch {
+		case t.refused == busy:
+			end.busy = true
+		case t.refused == overBudget:
+			end.cutRefused = true
+		case it != nil && it.RuleID != 0:
+			end.refused, end.status = it.RuleID, it.Status
+		case it != nil && t.cut:
+			end.cutRefused = true
+		case it != nil && t.ctx.Context.Err() != nil:
+			end.closed = true
+		case it != nil:
+			end.noRule = true
+		}
+		if d, ok := t.Transaction.(interface{ DetectionOnlyInterruption() *types.Interruption }); ok && it == nil && t.refused == nil {
+			if would := d.DetectionOnlyInterruption(); would != nil && would.RuleID != 0 {
+				end.would = would.RuleID
+			} else if would != nil && !t.cut && t.ctx.Context.Err() != nil {
+				end.closed = true
+			}
+		}
+		end.cut = t.cut
+		if end != (engineEnd{}) {
+			rec.mu.Lock()
+			rec.engine = end
+			rec.mu.Unlock()
+		}
+	}
+	return t.Transaction.Close()
 }
 
 func (t *budgetTx) ProcessRequestHeaders() (it *types.Interruption) {
 	if !t.run(func() { it = t.Transaction.ProcessRequestHeaders() }) {
 		return t.refuse()
 	}
-	return asRefusal(it)
+	return t.cutShort(asRefusal(it))
 }
 
 func (t *budgetTx) ProcessRequestBody() (it *types.Interruption, err error) {
 	if !t.run(func() { it, err = t.Transaction.ProcessRequestBody() }) {
 		return t.refuse(), nil
 	}
-	return asRefusal(it), err
+	return t.cutShort(asRefusal(it)), err
 }
 
 func (t *budgetTx) ProcessResponseHeaders(code int, proto string) (it *types.Interruption) {
 	if !t.run(func() { it = t.Transaction.ProcessResponseHeaders(code, proto) }) {
 		return t.refuse()
 	}
-	return asRefusal(it)
+	return t.cutShort(asRefusal(it))
 }
 
 func (t *budgetTx) ProcessResponseBody() (it *types.Interruption, err error) {
 	if !t.run(func() { it, err = t.Transaction.ProcessResponseBody() }) {
 		return t.refuse(), nil
 	}
-	return asRefusal(it), err
+	return t.cutShort(asRefusal(it)), err
 }
 
 // WriteResponseBody runs the response body rules itself when a response reaches the body limit with
@@ -227,7 +284,7 @@ func (t *budgetTx) WriteResponseBody(b []byte) (it *types.Interruption, n int, e
 	}
 	t.respOver = true
 	t.resp += int64(n)
-	return asRefusal(it), n, err
+	return t.cutShort(asRefusal(it)), n, err
 }
 
 // The body writes and reads below run the body rules themselves when a body reaches its limit with ProcessPartial, so

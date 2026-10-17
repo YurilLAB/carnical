@@ -187,7 +187,7 @@ func contentEncoded(h http.Header) bool {
 
 // refuse answers a request the proxy itself will not forward, and records why in the same form as a rule match.
 func (e *Edge) refuse(w http.ResponseWriter, r *http.Request, status int, id int, msg string) {
-	e.finding(Match{RuleID: id, Severity: "CRITICAL", Message: msg, Disruptive: true}, nil, r)
+	e.finding(Match{RuleID: id, Severity: "CRITICAL", Message: msg, Disruptive: true, status: status}, nil, r)
 	http.Error(w, http.StatusText(status), status)
 }
 
@@ -201,6 +201,8 @@ func (e *Edge) refuse(w http.ResponseWriter, r *http.Request, status int, id int
 // that may be a trusted proxy's, which carries every visitor behind it: such a refusal is counted globally or not at all,
 // never against that address.
 func (e *Edge) refuseEarly(w http.ResponseWriter, r *http.Request, rec *record, status, id int, msg string) {
+	m := Match{RuleID: id, Severity: "CRITICAL", Message: msg, Disruptive: true, status: status}
+	e.note(m, rec) // every refusal has its alert; only the lines are sampled
 	if i := id - idConnect; e.cfg.OnMatch != nil && i >= 0 && i < len(e.earlyLog) {
 		s, second := &e.earlyLog[i], e.clock()/int64(time.Second)
 		if previous := s.second.Load(); second == previous || !s.second.CompareAndSwap(previous, second) {
@@ -210,7 +212,7 @@ func (e *Edge) refuseEarly(w http.ResponseWriter, r *http.Request, rec *record, 
 			}
 		} else {
 			e.flushEarly(i)
-			e.finding(Match{RuleID: id, Severity: "CRITICAL", Message: msg, Disruptive: true}, rec, r)
+			e.finding(m, rec, r)
 		}
 	}
 	http.Error(w, http.StatusText(status), status)
@@ -492,6 +494,13 @@ func (e *Edge) enforceLimits(w http.ResponseWriter, r *http.Request, key netip.A
 // flood of log lines: a rule logs at most one a second. The ones it does not log are counted, and the count is logged in a
 // line of its own a second later at most, before the rule's next line, or when the edge is closed (see flushLimit).
 func (e *Edge) logLimit(r *http.Request, rule *compiledRule, now int64) {
+	m := Match{RuleID: rule.id, Severity: "CRITICAL", Message: rule.message, Disruptive: !rule.monitor, would: rule.monitor}
+	if rule.monitor {
+		m.Severity = "WARNING"
+	} else {
+		m.status = http.StatusTooManyRequests
+	}
+	e.note(m, recordOf(r.Context())) // every refusal has its alert; only the lines are sampled
 	if e.cfg.OnMatch == nil {
 		return
 	}
@@ -504,10 +513,6 @@ func (e *Edge) logLimit(r *http.Request, rule *compiledRule, now int64) {
 		return
 	}
 	e.flushLimit(rule)
-	m := Match{RuleID: rule.id, Severity: "CRITICAL", Message: rule.message, Disruptive: !rule.monitor}
-	if rule.monitor {
-		m.Severity = "WARNING"
-	}
 	e.finding(m, nil, r)
 }
 
