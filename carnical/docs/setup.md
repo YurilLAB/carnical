@@ -41,7 +41,7 @@ question. A question with no brackets has no safe default and must be answered.
    An HTTPS origin can have its own CA bundle and a client certificate.
 3. **Protection profile**: the site type and the attack detection level.
 4. **Security settings**: whether attacks are blocked or only logged, flood protection, auto-block,
-   a login limit and intrusion alerts.
+   a login limit, which bots to block and intrusion alerts.
 5. **Check and save**: the settings are checked as start-up checks them, a summary is shown, and
    setup asks before saving.
 
@@ -64,6 +64,7 @@ question. A question with no brackets has no safe default and must be answered.
 | Flood protection | `normal` (`relaxed` for an API) | `-ddos` |
 | Ban addresses that keep attacking | `monitor` | `-auto-block`; see [repeat offenders](ddos.md#repeat-offenders) |
 | Login page to protect | none | `-limit 'POST PATH 10/m'` (WordPress has its own) |
+| Bots to block | `fake` | `-bots`, and `-bots-mode monitor` in detect mode; `ai` adds AI and SEO crawlers, `strict` every kind; see [bots](bots.md) |
 | Intrusion alerts | `on` | `-alerts`; see [intrusion alerts](proxy-reference.md#intrusion-alerts) |
 
 Detection mode records CRS findings and monitors request formats. Blocking mode enables both

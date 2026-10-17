@@ -243,11 +243,13 @@ signature, as UniFi's IDS reports it: `intrusion blocked` (refused, rate limited
 its source is banned), `intrusion detected` (found in detection or monitor mode, or would have been
 refused) or `inspection incomplete` (forwarded without a finished inspection). Each alert carries
 `alert_id` (the request's `tx`), `layer`, a stable `sig` such as `crs-942100`, `sig_name`, `category`,
-`risk`, `action`, `mode`, the status sent, the CRS score, the source, the method, the host and the
-path as a template. The first alert for a source, signature and action is written at once; repeats
+`risk`, `action`, `mode`, the status sent, the CRS score, `client` (the kind of client: `person`,
+`ai`, `tool`, ...; see [bots](bots.md)), the source, the method, the host and the path as a
+template. The first alert for a source, signature and action is written at once; repeats
 in `-alert-repeat-window` are counted and written as one `alert repeated` line. A source that shows
 three attack categories, a scanner finding with an attack or ten refused or would-be-refused
-findings within ten minutes is reported, at most once an hour, as `suspected intrusion`. `intrusion totals` holds exact counts, `intrusion
+findings within ten minutes is reported, at most once an hour, as `suspected intrusion`. `intrusion totals` holds exact counts, with the requests
+refused from bots and from people apart (`blocked_bots`, `blocked_people`, [bots](bots.md#counting)), `intrusion
 summary` the ten busiest attacking sources, and `alerts dropped` what the line limit held back. The
 lines never contain the query, the body or matched data. [ADR-0084](../../docs/adr/0084-carnical-intrusion-alerts.md)
 describes the record.
@@ -272,7 +274,7 @@ Suppressions and exclusions only silence alerts: blocking, rate limits and point
 unchanged and the matches are counted as suppressed. Each entry is listed at start-up, and one whose
 `until` date has passed is logged as expired and no longer applies. At shutdown the process waits at
 most two seconds for queued alerts and writes the final totals. The listening line says whether
-alerts are on and the auto-block mode. Alerts also tell the flood protection what each request came
+alerts are on, the auto-block mode and the bots blocked. Alerts also tell the flood protection what each request came
 to: a would-be refusal in detection or monitor mode counts toward its `would_reject` signal, and a
 refusal counts toward a [repeat offender's](ddos.md#repeat-offenders) ban.
 

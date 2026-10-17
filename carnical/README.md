@@ -18,7 +18,7 @@ carnical help     # commands, profiles and common flags
 ```
 
 Setup asks about your site, a protection profile (site type and detection level) and basic
-security settings (block or log, flood protection, auto-block, a login limit and alerts),
+security settings (block or log, flood protection, auto-block, a login limit, bots and alerts),
 checks them as start-up does, and saves them where `check` and `start` find them, with private
 origin details encrypted. See [setup](docs/setup.md) for the key file, service accounts and
 backups. The wizard uses existing certificates; it does not change DNS.
@@ -65,6 +65,7 @@ shutdown, containers and platform support.
 | `-ddos` | `on` | Flood detection, connection/request budgets and bounded IDS signals; add a strength, `relaxed`, `normal` or `strict`, as in `-ddos strict` or `-ddos monitor,strict`. |
 | `-alerts` | `on` | One deduplicated `intrusion detected`/`intrusion blocked` line per source and signature, with exact totals; see [intrusion alerts](docs/proxy-reference.md#intrusion-alerts). |
 | `-auto-block` | `monitor` | Ban a source whose requests keep being refused as attacks; `monitor` only logs who would be banned. Needs `-ddos on` or `monitor`; see [repeat offenders](docs/ddos.md#repeat-offenders). |
+| `-bots` | None | Kinds of bot to block: `fake` (claims to be a search engine; checked by DNS), `ai`, `seo`, `tool`, `headless`, `scanner`, `bot`. Every alert names the kind of client, and the totals count blocked bots and people; see [bots](docs/bots.md). |
 | `-crowdsec-api` | Disabled | Optional CrowdSec IP/CIDR bans, enforced independently of inspection modes. |
 | `-trusted-proxies` | Empty | Only actual CDN/load-balancer peers may supply client identity headers. |
 | `-origin-allow` | No private-range exception | Explicitly permit only required private origin ranges. |
