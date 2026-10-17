@@ -61,12 +61,13 @@ These alerts report patterns for investigation. They do not change attack state 
 | --- | --- |
 | Connection admission pressure (`conn_pressure`) | At least 50% of incoming TCP connections are refused. |
 | Early TCP closes (`early_close`) | At least 75% of closed nontrusted connections never reached HTTP `StateActive`. |
-| HTTP security rejections (`rejections`) | At least 50% of Shield-admitted requests receive a later WAF/policy 4xx. Requests the Shield refused or challenged are not in the share. Origin 4xx, gateway 5xx and 408 (a client too slow to send its request) responses are excluded. |
+| HTTP security rejections (`rejections`) | At least 50% of Shield-admitted requests receive a later WAF/policy 4xx. Requests the Shield refused or challenged are not in the share. Origin 4xx, gateway 5xx and 408 (a client too slow to send its request) responses are excluded. Refusals made before admission count when they are reported with `Shield.Rejected`, which the Carnical proxy does not call yet. |
+| Would-be rejections (`would_reject`) | Requests that would have been rejected in detect/monitor mode, reported with `Shield.WouldReject` (which the Carnical proxy does not call yet), reach the same 50% of Shield-admitted requests, so a campaign is reported whether the checks block it or only report it. |
 | Addresses held over their own limit (`held`) | Requests refused by an address's or a network's own rate limit (429), with no ratio: a scanner that sends faster than its limit is reported even when other traffic is busy. |
 
 Each signal also needs `Detector.MinAttackRate` observations per second (default 20), averaged over
-ten seconds. `Snapshot.IDSReasons` and the rate fields expose current evidence; `EarlyCloses` and
-`SecurityRejections` hold totals. An `ids_signal` event carries every current reason, the code of
+ten seconds. `Snapshot.IDSReasons` and the rate fields expose current evidence; `EarlyCloses`,
+`SecurityRejections` and `WouldRejections` hold totals. An `ids_signal` event carries every current reason, the code of
 each in `Event.Codes`, and `Event.Mode` (`on` or `monitor`), with aggregate reasons and no request
 paths/bodies, including in monitor mode. Each signal is paced on its own: an event is sent when one
 of the current signals was not reported in the last 30 seconds, so a new signal is reported at once
@@ -76,7 +77,17 @@ threshold back and forth is not reported each time.
 
 TCP signals cover accepted sockets and admission refusals. Raw packets, incomplete SYN handshakes,
 UDP and link saturation need [kernel packet guards](network-protection.md) or provider protection.
-HTTP checks before Shield admission and pre-parser failures are outside the rejection counter.
+Pre-parser failures (the requests `net/http` answers itself) are outside the rejection counter, and
+so are HTTP checks before Shield admission unless the integrator reports each refusal with
+`Shield.Rejected(client)`; the Carnical proxy does not report them yet. Such a refusal (a target
+that cannot be forwarded, CONNECT, an upgrade, an address on the integrator's own block list) also
+takes from the address's own request limit as `Admit` would have, so an address that sends only what
+is refused before admission is held to that limit and then refused with 429 by `Admit`; during an
+attack a refusal past the limit counts toward the address's ban, as a 429 does, so such refusals
+alone can get it banned. Outside an attack, and in monitor mode, it never bans.
+`Shield.WouldReject(client)` only counts: it never limits, strikes or bans. Both count an address in
+the trusted ranges, as a later check's refusal of one is counted, so that both modes report alike; a
+refusal of a trusted address takes from no limit.
 
 ## Detecting an attack from many addresses and countries
 
@@ -259,7 +270,9 @@ figure to size a memory limit from. When the address table is full, an entry
 without standing is forgotten first; a ban or a known client's standing goes only when every entry
 in the sample of 32 has one. Rule IDs are 5004001
 (address rate), 5004002 (network rate), 5004003 (attack cluster), 5004004 (unknown-client budget),
-5004005 (challenge shown), 5004006/5004007 (failed/passed) and 5004008 (ban).
+5004005 (challenge shown), 5004006/5004007 (failed/passed) and 5004008 (ban); `Decision.RuleID` gives
+a decision's, and `shield.PathTemplate` the target as the shield counts it (at most 96 printable bytes, no
+query values).
 
 ## Strengths
 

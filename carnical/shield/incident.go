@@ -28,7 +28,7 @@ type Event struct {
 	BaselineRate float64
 	Reasons      []string
 	// Codes name the IDS signals: for ids_signal one for each reason, in the same order ("conn_pressure",
-	// "early_close", "rejections", "held"), and for ids_clear those reported since the last ids_clear.
+	// "early_close", "rejections", "would_reject", "held"), and for ids_clear those reported since the last ids_clear.
 	Codes []string
 	// Incident is filled for the attack events.
 	Incident Incident

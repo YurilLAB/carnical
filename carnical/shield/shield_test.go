@@ -220,10 +220,11 @@ func TestPathTemplatesTakeOutTheVariableParts(t *testing.T) {
 		{"/u/0f8e9a7b6c5d4e3f2a1b/avatar.png", "/u/x/avatar.png"},
 		{"/a/b/c/d/e/f/g/h", "/a/b/c/d/e/f/*"},
 		{"/about", "/about"},
+		{"/" + strings.Repeat("a", 40) + "/" + strings.Repeat("b", 40) + "/" + strings.Repeat("c", 40), "/" + strings.Repeat("a", 40) + "/" + strings.Repeat("b", 40) + "/" + strings.Repeat("c", 13)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.target, func(t *testing.T) {
-			if _, got := pathTemplate(req("GET", tt.target)); got != tt.want {
+			if got := PathTemplate(req("GET", tt.target)); got != tt.want {
 				t.Fatalf("got %q, want %q", got, tt.want)
 			}
 		})
@@ -635,7 +636,11 @@ func TestABanIsRenewedWithinOneAttack(t *testing.T) {
 	// What counts toward a ban (BanAfter 3) from one address, while a browser there holds the answer to a challenge: a
 	// refusal (r) and a wrong answer (f) do, and showing the challenge to someone (c) counts as a tenth of one. A right
 	// answer (s), which can be sent again, takes back one challenge shown, never more than were shown, and never a refusal
-	// or a wrong answer. At the end, the browser that answered is served unless the address was banned.
+	// or a wrong answer. A refusal before admission (p) counts once it is past the address's own limit (a burst of 200,
+	// one of which the answer took), and a request that would have been refused in detect mode (w) never does; nor does a
+	// refusal before admission of a trusted proxy (P), which the proxy sees as an IPv4-mapped address. Ten seconds later,
+	// when the address's limit has refilled, the browser that answered is served unless it was banned, and only then is
+	// there a ban.
 	t.Run("what counts toward a ban", func(t *testing.T) {
 		for _, tc := range []struct {
 			name    string
@@ -655,10 +660,18 @@ func TestABanIsRenewedWithinOneAttack(t *testing.T) {
 			{"wrong answers", "fff", false, Refuse},
 			{"wrong answers and refusals", "frf", false, Refuse},
 			{"wrong answers in monitor mode", "fff", true, Allow},
+			{"refusals before admission within the address's limit", strings.Repeat("p", 199), false, Allow},
+			{"refusals before admission, three past the address's limit", strings.Repeat("p", 202), false, Refuse},
+			{"refusals before admission past the address's limit in monitor mode", strings.Repeat("p", 202), true, Allow},
+			{"requests that would have been refused", strings.Repeat("w", 300), false, Allow},
+			{"refusals before admission of a trusted proxy, three past its limit", strings.Repeat("P", 203), false, Allow},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				now := now
-				s := newTestShield(t, &now, func(c *Config) { c.BanAfter, c.MonitorOnly = 3, tc.monitor })
+				proxy := netip.MustParseAddr("198.51.100.1")
+				s := newTestShield(t, &now, func(c *Config) {
+					c.BanAfter, c.MonitorOnly, c.Trusted = 3, tc.monitor, []netip.Prefix{netip.PrefixFrom(proxy, 32)}
+				})
 				s.det.info.Store(&attackInfo{epoch: 1, since: now.UnixNano(), fps: map[uint64]bool{}, paths: map[uint64]bool{}})
 				s.Admit(req("GET", "/api", "Accept", "application/json"), netip.MustParseAddr("192.0.2.1")) // the budget's one request
 				tok := s.token(key, now)
@@ -681,15 +694,25 @@ func TestABanIsRenewedWithinOneAttack(t *testing.T) {
 						r, want = answer, idChallengeSolved
 					case 'f':
 						r, want = req("GET", VerifyPath+"?t="+tok+"&n="+solveWrong(tok, 8)), idChallengeFailed
+					case 'p':
+						s.Rejected(key)
+						continue
+					case 'P':
+						s.Rejected(netip.AddrFrom16(proxy.As16()))
+						continue
+					case 'w':
+						s.WouldReject(key)
+						continue
 					}
 					if d := s.Admit(r, key); d.ID != want {
 						t.Fatalf("step %d (%c): rule %d, want %d", i, step, d.ID, want)
 					}
 				}
+				now = now.Add(10 * time.Second)
 				r := req("GET", "/", "User-Agent", "browser A", "Accept", "text/html")
 				r.AddCookie(cookie)
-				if d := s.Admit(r, key); d.Action != tc.want {
-					t.Fatalf("the browser that answered got %+v", d)
+				if d, bans := s.Admit(r, key), s.Snapshot().Banned; d.Action != tc.want || (bans != 0) != (tc.want == Refuse) {
+					t.Fatalf("the browser that answered got %+v; %d bans", d, bans)
 				}
 			})
 		}
@@ -945,26 +968,68 @@ func TestPerAddressAndPerNetworkLimitsApplyOutsideAnAttack(t *testing.T) {
 				}
 			})
 		}
+		// A request refused before admission (Rejected) or that a check in detect mode would have refused (WouldReject),
+		// sent a number of times instead of the admitted request's end, and what the address's next request gets. A trusted
+		// proxy shares its IPv6 /64 with a visitor: what is refused of the proxy takes nothing from the visitor's limit.
 		for _, tc := range []struct {
-			name   string
-			status int
-			origin bool
-			want   uint64
+			name            string
+			status          int
+			origin          bool
+			want            uint64
+			rejected, would int
+			trusted         bool
+			wantWould       uint64
+			next            Action
 		}{
-			{"WAF forbidden", 403, false, 1}, {"invalid request", 400, false, 1}, {"origin not found", 404, true, 0},
-			{"origin forbidden", 403, true, 0}, {"gateway failure", 503, false, 0}, {"successful request", 200, true, 0},
-			{"a client too slow to send its request", 408, false, 0},
+			{name: "WAF forbidden", status: 403, want: 1}, {name: "invalid request", status: 400, want: 1},
+			{name: "origin not found", status: 404, origin: true}, {name: "origin forbidden", status: 403, origin: true},
+			{name: "gateway failure", status: 503}, {name: "successful request", status: 200, origin: true},
+			{name: "a client too slow to send its request", status: 408},
+			{name: "refused before admission", rejected: 1, want: 1},
+			{name: "refused before admission past the address's burst of 200", rejected: 200, want: 200, next: Refuse},
+			{name: "WAF forbidden, from a trusted address", status: 403, trusted: true, want: 1},
+			{name: "refused before admission, from a trusted address", rejected: 200, trusted: true, want: 200},
+			{name: "would have been refused in detect mode", would: 300, wantWould: 300},
+			{name: "would have been refused, from a trusted address", would: 1, trusted: true, wantWould: 1},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
-				sh := newTestShield(t, &now, func(c *Config) { c.MonitorOnly = true })
-				d := sh.Admit(req("GET", "/"), netip.MustParseAddr("192.0.2.1"))
+				now := now
+				client, next := netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("192.0.2.1")
+				if tc.trusted {
+					client, next = netip.MustParseAddr("2001:db8::1"), netip.MustParseAddr("2001:db8::2")
+				}
+				sh := newTestShield(t, &now, func(c *Config) {
+					c.MonitorOnly = true
+					if tc.trusted {
+						c.Trusted = []netip.Prefix{netip.PrefixFrom(client, 128)}
+					}
+				})
+				d := sh.Admit(req("GET", "/"), client)
 				if d.Action != Allow {
 					t.Fatal("control request refused")
 				}
-				sh.Done(d, tc.status, tc.origin)
+				if tc.status != 0 {
+					sh.Done(d, tc.status, tc.origin)
+				}
 				sh.Done(Decision{Action: Refuse}, 403, false)
-				if got := sh.Snapshot().SecurityRejections; got != tc.want {
-					t.Fatalf("security rejections=%d want=%d", got, tc.want)
+				for range tc.rejected {
+					sh.Rejected(netip.AddrFrom16(client.As16())) // as the proxy may see an IPv4 address: mapped
+				}
+				for range tc.would {
+					sh.WouldReject(netip.AddrFrom16(client.As16()))
+				}
+				snap := sh.Snapshot()
+				if snap.SecurityRejections != tc.want || snap.WouldRejections != tc.wantWould {
+					t.Fatalf("security rejections=%d would=%d, want %d and %d", snap.SecurityRejections, snap.WouldRejections, tc.want, tc.wantWould)
+				}
+				if next := sh.Admit(req("GET", "/"), next); next.Action != tc.next || (next.Action == Refuse && next.RuleID() != idRate) {
+					t.Fatalf("the next request got %+v, want %v", next, tc.next)
+				}
+				// The detector sees them as rates a second over ten seconds, as the IDS signals do.
+				now = now.Add(2 * time.Second)
+				sh.Tick()
+				if snap := sh.Snapshot(); snap.SecurityRejectionRate != float64(tc.want)/10 || snap.WouldRejectionRate != float64(tc.wantWould)/10 {
+					t.Fatalf("rates %g and %g a second", snap.SecurityRejectionRate, snap.WouldRejectionRate)
 				}
 			})
 		}
@@ -985,6 +1050,9 @@ func TestPerAddressAndPerNetworkLimitsApplyOutsideAnAttack(t *testing.T) {
 			// Rejections are a share of the requests the shield admitted, not of all it saw.
 			{"rejections of what was admitted", aggregate{rate: 150, refused: 80, challenged: 20, securityRejects: 25}, []string{"rejections"}},
 			{"a scanner held over its own limit", aggregate{rate: 150, refused: 100, held: 100, securityRejects: 40}, []string{"rejections", "held"}},
+			{"a campaign let through in detect mode", aggregate{rate: 40, wouldRejects: 25}, []string{"would_reject"}},
+			{"a campaign blocked and one let through", aggregate{rate: 80, securityRejects: 40, wouldRejects: 40}, []string{"rejections", "would_reject"}},
+			{"few would-be rejections on a busy site", aggregate{rate: 1000, wouldRejects: 25}, nil},
 			{"a few requests held", aggregate{rate: 100, refused: 15, held: 15}, nil},
 		} {
 			t.Run(tc.name, func(t *testing.T) {

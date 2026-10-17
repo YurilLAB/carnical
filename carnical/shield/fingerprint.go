@@ -67,6 +67,14 @@ func label(r *http.Request) string {
 	return r.Method + " " + proto + " " + ua
 }
 
+// PathTemplate is the request's target with its variable parts taken out, as the shield counts targets:
+// "/product/1234/reviews?page=2" is "/product/9/reviews?". It holds at most 96 bytes of printable ASCII, so it can go in a
+// log line, and never a query value.
+func PathTemplate(r *http.Request) string {
+	_, t := pathTemplate(r)
+	return t
+}
+
 // pathTemplate returns a hash of the request's target with its variable parts removed, and the template itself.
 // "/product/1234/reviews?page=2" and "/product/98/reviews?page=7" are both "/product/9/reviews?"; a cache-busting flood
 // of "/?r=<random>" is "/?" however the random part changes.

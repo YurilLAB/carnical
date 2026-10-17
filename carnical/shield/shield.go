@@ -78,6 +78,10 @@ type Decision struct {
 	trusted    bool
 }
 
+// RuleID is the rule identifier of a decision that is not Allow, in the range Carnical keeps for the shield (5004001 to
+// 5004008), and 0 for Allow.
+func (d Decision) RuleID() int { return d.ID }
+
 type response struct {
 	body, contentType, location string
 	cookie                      *http.Cookie
@@ -406,7 +410,7 @@ type Shield struct {
 type counters struct {
 	allowed, refused, challenged, solved, banned, connsRefused, evicted, banErrors atomic.Uint64
 	writeErrors, socketOptionErrors                                                atomic.Uint64
-	earlyCloses, securityRejections                                                atomic.Uint64
+	earlyCloses, securityRejections, wouldRejections                               atomic.Uint64
 }
 
 type banReq struct {
@@ -873,6 +877,46 @@ func (s *Shield) closeUnlessRelayed(h http.Header, r *http.Request) {
 	}
 }
 
+// Rejected tells the shield of a request from client that the integrator refused before asking Admit (a target that
+// cannot be forwarded, CONNECT, an upgrade, an address its own block list bans), which Admit and Done therefore never
+// saw. It counts as a later check's refusal does in Done (Snapshot.SecurityRejections and the rejections IDS signal),
+// and it takes from the address's own request limit as Admit would have: an address that sends only what is refused
+// before admission is held to that limit like any other, and during an attack a refusal past it counts toward the
+// address's ban, as Admit's 429 does, so refusals alone can get it banned. Outside an attack, and in monitor mode, it
+// never bans. A refusal of an address in Config.Trusted is counted, as Done counts one, but takes from no limit: its
+// requests are limited by the visitor addresses it relays. It is cheap: one map lookup, no I/O.
+func (s *Shield) Rejected(client netip.Addr) {
+	client = client.Unmap()
+	ns := s.now().UnixNano()
+	s.counters.securityRejections.Add(1)
+	s.det.count(ns, func(w *window) { w.securityRejects++ })
+	if !client.IsValid() || s.trusted(client) {
+		return
+	}
+	key := SourceKey(client)
+	earn := s.det.earn.Load()
+	var over, banned bool
+	s.sources.do(key, ns, func(src *source) {
+		src.last = ns
+		banned = src.bannedUntil > ns
+		scale := s.raise(src.earned.roll(earn, s.cfg.RequestRate), s.cfg.RequestRate)
+		over = !src.req.take(ns, s.cfg.RequestRate*scale, s.cfg.RequestBurst*scale)
+	})
+	if info := s.det.info.Load(); over && !banned && info != nil && !s.cfg.MonitorOnly {
+		s.strike(ns, key, info)
+	}
+}
+
+// WouldReject tells the shield of a request from client that a check in detect or monitor mode would have refused, and
+// let through. It is counted (Snapshot.WouldRejections) and reported as the would_reject IDS signal, held to the same
+// share as the rejections signal, so that a campaign is reported whether the checks block it or not: it is counted for
+// any client, one in Config.Trusted too, as Done and Rejected count a refusal. client is the visitor's address, as for
+// Rejected; it is never used to limit, strike or ban.
+func (s *Shield) WouldReject(client netip.Addr) {
+	s.counters.wouldRejections.Add(1)
+	s.det.count(s.now().UnixNano(), func(w *window) { w.wouldRejects++ })
+}
+
 // StatusClientClosed is the status to give Done, with fromOrigin, for a request whose client hung up (or whose response
 // was ended to free a place) while the application had it and before it answered.
 const StatusClientClosed = 499
@@ -953,7 +997,7 @@ type Snapshot struct {
 	ConnectionRate, ConnectionRefusalRate, EarlyCloseRate, SecurityRejectionRate float64
 	// EarlyCloses counts nontrusted connections closed before HTTP StateActive.
 	// SecurityRejections counts 4xx responses from checks after shield admission, excluding origin responses and 408 (a
-	// client too slow to send its request).
+	// client too slow to send its request), and the refusals before admission given to Rejected.
 	EarlyCloses, SecurityRejections      uint64
 	Connections, MaxConnections          int64
 	RequestScale, NetworkScale           float64 // the most an address's, and a network's, limit was raised above its configured value in the last ten seconds
@@ -961,6 +1005,10 @@ type Snapshot struct {
 	Allowed, Refused, Challenged, Solved uint64
 	Banned, ConnsRefused, Evicted        uint64
 	BanErrors                            uint64
+	// WouldRejections counts the requests given to WouldReject, and WouldRejectionRate is their rate a second over the
+	// last ten seconds.
+	WouldRejections    uint64
+	WouldRejectionRate float64
 	// WriteErrors counts failed response body writes; SocketOptionErrors counts failed optional TCP tuning.
 	WriteErrors, SocketOptionErrors uint64
 	// DroppedEvents counts the Events not given to Config.OnEvent: those found while 256 were already waiting for it, and
@@ -977,7 +1025,8 @@ func (s *Shield) Snapshot() Snapshot {
 	snap := Snapshot{State: d.state, Rate: d.last.rate, BaselineRate: d.base.rate, Sources: d.last.srcs, NewShare: d.last.newShare,
 		Engagement: d.last.engagement, ErrRatio: d.last.errRatio, Reasons: append([]string(nil), d.reasons...),
 		Recent: append([]Incident(nil), d.history...), IDSReasons: append([]string(nil), d.idsReasons...),
-		ConnectionRate: d.last.connRate, ConnectionRefusalRate: d.last.connRefused, EarlyCloseRate: d.last.earlyCloses, SecurityRejectionRate: d.last.securityRejects}
+		ConnectionRate: d.last.connRate, ConnectionRefusalRate: d.last.connRefused, EarlyCloseRate: d.last.earlyCloses, SecurityRejectionRate: d.last.securityRejects,
+		WouldRejectionRate: d.last.wouldRejects}
 	if d.incident != nil {
 		inc := d.incidentEvent("attack_update", s.now().UnixNano()).Incident
 		snap.Current = &inc
@@ -990,7 +1039,7 @@ func (s *Shield) Snapshot() Snapshot {
 	snap.Allowed, snap.Refused, snap.Challenged = c.allowed.Load(), c.refused.Load(), c.challenged.Load()
 	snap.Solved, snap.Banned, snap.ConnsRefused, snap.Evicted, snap.BanErrors = c.solved.Load(), c.banned.Load(), c.connsRefused.Load(), c.evicted.Load(), c.banErrors.Load()
 	snap.WriteErrors, snap.SocketOptionErrors = c.writeErrors.Load(), c.socketOptionErrors.Load()
-	snap.EarlyCloses, snap.SecurityRejections = c.earlyCloses.Load(), c.securityRejections.Load()
+	snap.EarlyCloses, snap.SecurityRejections, snap.WouldRejections = c.earlyCloses.Load(), c.securityRejections.Load(), c.wouldRejections.Load()
 	snap.DroppedEvents = s.det.droppedEvents.Load()
 	return snap
 }

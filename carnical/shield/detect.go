@@ -175,6 +175,7 @@ type window struct {
 	banRefused                               uint32 // of refused, those of banned addresses
 	connsIn, connsRefused                    uint32
 	connClosed, earlyCloses, securityRejects uint32
+	wouldRejects                             uint32  // requests a check in detect or monitor mode would have refused (Shield.WouldReject)
 	maxSrc, maxNet                           uint32  // the most an address's, and a network's, limit was raised in this second, in thousandths
 	lat                                      float64 // milliseconds, summed over latN
 	srcs, nets                               hll
@@ -210,6 +211,7 @@ type aggregate struct {
 	errRatio, lat                        float64 // -1 when nothing completed
 	connRate, connRefused, connSrcs      float64
 	closed, earlyCloses, securityRejects float64
+	wouldRejects                         float64
 	refused, challenged, held            float64
 	banRefused, banSrcs                  float64 // the refusals of banned addresses, and how many addresses they came from
 	served                               float64 // requests a second the application answered without an error
@@ -492,7 +494,7 @@ func (d *detector) advance(ns int64) {
 // aggregate sums the last aggSeconds closed windows (the current, open one is not included).
 func (d *detector) aggregate() aggregate {
 	var a aggregate
-	var reqs, newSrcs, engaged, familiar, done, errs, latN, conns, connsRef, refused, challenged, held, banRefused, maxSrc, maxNet, closed, earlyCloses, securityRejects float64
+	var reqs, newSrcs, engaged, familiar, done, errs, latN, conns, connsRef, refused, challenged, held, banRefused, maxSrc, maxNet, closed, earlyCloses, securityRejects, wouldRejects float64
 	var lat float64
 	d.scratchS.reset()
 	d.scratchN.reset()
@@ -532,6 +534,7 @@ func (d *detector) aggregate() aggregate {
 		closed += float64(w.connClosed)
 		earlyCloses += float64(w.earlyCloses)
 		securityRejects += float64(w.securityRejects)
+		wouldRejects += float64(w.wouldRejects)
 		refused += float64(w.refused)
 		held += float64(w.held)
 		banRefused += float64(w.banRefused)
@@ -553,6 +556,7 @@ func (d *detector) aggregate() aggregate {
 		a.connSrcs = d.scratchC.estimate()
 	}
 	a.closed, a.earlyCloses, a.securityRejects = closed/aggSeconds, earlyCloses/aggSeconds, securityRejects/aggSeconds
+	a.wouldRejects = wouldRejects / aggSeconds
 	a.refused = refused / aggSeconds
 	a.challenged = challenged / aggSeconds
 	a.held = held / aggSeconds
@@ -760,11 +764,12 @@ const (
 	idsConnPressure = iota
 	idsEarlyClose
 	idsRejections
+	idsWouldReject
 	idsHeld
 	idsCodes
 )
 
-var idsCodeNames = [idsCodes]string{"conn_pressure", "early_close", "rejections", "held"}
+var idsCodeNames = [idsCodes]string{"conn_pressure", "early_close", "rejections", "would_reject", "held"}
 
 // idsPace is the least time between two reports of one IDS signal, and how long the signals must have been gone before
 // they are reported clear.
@@ -794,8 +799,14 @@ func (d *detector) detectIDS(ns int64, a aggregate) {
 	}
 	// Later checks see only the requests the shield admitted: a scanner whose own limit refuses most of what it sends
 	// must not hide the share of the rest that the checks reject.
-	if admitted := math.Max(a.rate-a.refused-a.challenged, 0); a.securityRejects >= floor && a.securityRejects >= 0.5*admitted {
+	admitted := math.Max(a.rate-a.refused-a.challenged, 0)
+	if a.securityRejects >= floor && a.securityRejects >= 0.5*admitted {
 		add(idsRejections, "requests rejected before the origin: "+itoa(a.securityRejects)+" a second")
+	}
+	// What a check in detect or monitor mode lets through is held to the same share as what it would have refused in
+	// block mode, so that one campaign is reported in either mode.
+	if a.wouldRejects >= floor && a.wouldRejects >= 0.5*admitted {
+		add(idsWouldReject, "requests that would have been rejected in detect/monitor mode: "+itoa(a.wouldRejects)+" a second")
 	}
 	if a.held >= floor {
 		add(idsHeld, "addresses held over their own limit: "+itoa(a.held)+" refusals a second")
