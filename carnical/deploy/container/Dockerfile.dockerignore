@@ -14,6 +14,8 @@
 !carnical/go.sum
 !carnical/cmd/carnical/**
 !carnical/inspect/**
+!carnical/alert/**
+!carnical/control/feed/**
 !carnical/apiguard/**
 !carnical/crowdsec/**
 !carnical/crs/**
