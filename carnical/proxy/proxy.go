@@ -158,6 +158,10 @@ type Match struct {
 	Disruptive    bool
 	// Set only with Config.LogDetails.
 	ClientIP, URI, Data, ExpandedMessage string
+	// verdict marks the line of a check that decides on the request on its own, whether it refused it or, in detection or
+	// monitor mode, would have: a rule set verdict (see refusesOnItsOwn) or an inspector's. Such a line is never held back
+	// by maxRequestLines, so a request cannot hide its verdict behind the lines of the rules it matched.
+	verdict bool
 }
 
 // Edge is the proxy. It is an http.Handler.
@@ -440,7 +444,8 @@ func (e *Edge) onMatch(m types.MatchedRule) {
 	// The engine marks every match of a rule with a disruptive action (block, which the CRS turns into pass) while it
 	// enforces; only the rule that refused the request is disruptive here.
 	match := Match{RuleID: m.Rule().ID(), Severity: m.Rule().Severity().String(), Message: "Coraza rule matched",
-		TransactionID: m.TransactionID(), Disruptive: m.Disruptive() && refusesOnItsOwn(m.Rule())}
+		TransactionID: m.TransactionID(), verdict: refusesOnItsOwn(m.Rule())}
+	match.Disruptive = m.Disruptive() && match.verdict
 	if label := crs.LocalRuleMessage(match.RuleID); label != "" {
 		match.Message = label
 	}
@@ -499,6 +504,7 @@ func (e *Edge) refuseCrowdSec(w http.ResponseWriter, r *http.Request, action cro
 func (e *Edge) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rec := newRecord()
+		defer e.reportHeld(rec)
 		addr, port, addrErr := clientAddr(r, e.cfg.TrustedProxies)
 		if addrErr == nil {
 			rec.client = addr

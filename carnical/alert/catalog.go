@@ -168,6 +168,7 @@ var proxyRules = map[int]Entry{
 	5000075: {"Request body unreadable", Of(CatProtocol), RiskLow},
 	5000076: {"Request body too slow", Of(CatProtocol), RiskInfo},
 	5000077: {"Request the engine could not process", Of(CatInspection), RiskLow},
+	5000078: {"Rule match lines over the per-request cap", 0, RiskInfo},
 }
 
 // shieldRules are the flood protection's ids (shield/shield.go).

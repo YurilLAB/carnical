@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -547,8 +548,47 @@ func TestMatchesAreReportedWithoutWhatTheVisitorSentUnlessAsked(t *testing.T) {
 			t.Fatalf("unavailable origin status %d", status)
 		}
 	}
+	// What the visitor sent is cut in a detailed line, which says so.
+	if status, _ := b.raw(t, get("/profile?note="+secret+strings.Repeat("x", 2000))); status != 403 {
+		t.Fatalf("macro rule status %d", status)
+	}
+	// One request that matches more rules than a request is reported in: the lines past the cap are counted in one line,
+	// and the line of the rule that refuses the request is never held back. In detection mode the request is let through,
+	// and the lines of the rules that would have refused it, the anomaly verdict and a rule tagged carnical-deny, are not
+	// held back either.
+	var capped, cappedDetect []Match
+	many := make([]string, 0, 41)
+	for i := range 40 {
+		many = append(many, fmt.Sprintf(`SecRule ARGS:x "@rx ." "id:%d,phase:1,pass,log"`, 10001+i))
+	}
+	many = append(many, `SecRule ARGS:x "@rx ." "id:10100,phase:2,deny,status:403,log,tag:'carnical-deny'"`)
+	c := start(t, func(c *Config) { c.OnMatch = collect(&capped); c.CRS.After = strings.Join(many, "\n") })
+	if status, _ := c.raw(t, get("/page?x=1")); status != 403 {
+		t.Fatalf("many rules status %d", status)
+	}
+	cd := start(t, func(c *Config) {
+		c.OnMatch = collect(&cappedDetect)
+		c.CRS.After = strings.Join(many, "\n")
+		c.CRS.Mode = crs.ModeDetect
+	})
+	if status, _ := cd.raw(t, get("/page?x=1&q="+url.QueryEscape("1' OR '1'='1' --"))); status != 200 {
+		t.Fatalf("many rules in detection mode: status %d", status)
+	}
 	mu.Lock()
 	defer mu.Unlock()
+	if n := len(capped); n != maxRequestLines+2 || capped[n-2].RuleID != 10100 || !capped[n-2].Disruptive || capped[n-1].RuleID != idLinesHeld ||
+		capped[n-1].TransactionID != capped[0].TransactionID || !strings.HasSuffix(capped[n-1].Message, " more rule matches not logged") {
+		t.Errorf("a request that matched %d rules was reported in %d lines: %+v", len(many), len(capped), capped[max(len(capped)-2, 0):])
+	} else if held, _ := strconv.Atoi(strings.Fields(capped[n-1].Message)[0]); held < len(many)-1-maxRequestLines {
+		t.Errorf("%d lines said to be held back", held)
+	}
+	if n := len(cappedDetect); n < maxRequestLines+3 || cappedDetect[n-1].RuleID != idLinesHeld ||
+		slices.ContainsFunc(cappedDetect, func(m Match) bool { return m.Disruptive }) ||
+		!slices.ContainsFunc(cappedDetect[maxRequestLines:], func(m Match) bool { return m.RuleID == 949110 }) ||
+		!slices.ContainsFunc(cappedDetect[maxRequestLines:], func(m Match) bool { return m.RuleID == 10100 }) {
+		t.Errorf("in detection mode a request that matched more than %d rules was reported in %d lines, the last ones %+v; want 949110 and 10100 past the cap, none disruptive",
+			maxRequestLines, n, cappedDetect[max(n-4, 0):])
+	}
 	if len(plain) == 0 || len(detailed) == 0 {
 		t.Fatalf("no matches reported (%d, %d)", len(plain), len(detailed))
 	}
@@ -612,16 +652,24 @@ func TestMatchesAreReportedWithoutWhatTheVisitorSentUnlessAsked(t *testing.T) {
 		t.Error("upstream failure has no safe operational label")
 	}
 	found, expandedFound, upstreamDetails := false, false, false
+	cut := false
 	for _, m := range detailed {
 		if m.ClientIP != "127.0.0.1" {
 			t.Errorf("the client is not the visitor's address alone: %+v", m)
 		}
+		if len(m.Data) > maxDetail || len(m.ExpandedMessage) > maxDetail {
+			t.Errorf("a detail over %d bytes: %d and %d", maxDetail, len(m.Data), len(m.ExpandedMessage))
+		}
+		cut = cut || m.RuleID == 5000099 && strings.HasSuffix(m.Data, "…") && strings.HasSuffix(m.ExpandedMessage, "…")
 		found = found || strings.Contains(m.URI, secret) || strings.Contains(m.Data, secret)
 		expandedFound = expandedFound || m.RuleID == 5000099 && strings.Contains(m.ExpandedMessage, secret)
 		upstreamDetails = upstreamDetails || m.RuleID == idUpstreamFailed && strings.Contains(m.URI, secret) && m.ExpandedMessage != ""
 	}
 	if !found || !expandedFound || !upstreamDetails {
 		t.Error("LogDetails did not add the request details")
+	}
+	if !cut {
+		t.Error("a long matched value was not cut with a marker")
 	}
 }
 

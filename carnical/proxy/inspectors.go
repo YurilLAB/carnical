@@ -50,7 +50,8 @@ func (e *Edge) runInspectors(w http.ResponseWriter, r *http.Request, rawPath, ra
 			if sev == "" {
 				sev = "WARNING"
 			}
-			e.log(Match{RuleID: v.ID, Severity: sev, Message: v.Message, Disruptive: v.Block}, r)
+			e.log(Match{RuleID: v.ID, Severity: sev, Message: v.Message, Disruptive: v.Block,
+				verdict: true}, r) // each inspector bounds how many verdicts it gives one request
 			if v.Block && blocking == nil {
 				blocking = &v
 			}

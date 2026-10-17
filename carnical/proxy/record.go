@@ -7,6 +7,21 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"net/netip"
+	"strconv"
+	"sync/atomic"
+
+	"github.com/YurilLAB/coraza/carnical/alert"
+)
+
+const (
+	// maxRequestLines is how many lines one request is reported in. One request can match dozens of rules, and each
+	// line could carry its matched data: past the cap the lines are counted, and one line says how many were held back.
+	// The line of a check that refused the request, or in detection or monitor mode would have, is never held back (see
+	// Match.verdict).
+	maxRequestLines = 32
+	// maxDetail is how much of the matched data and the expanded message a line keeps, with LogDetails; maxURI is how
+	// much of the target. Both come from the visitor.
+	maxDetail, maxURI = 512, 2048
 )
 
 // record is what the proxy holds about one request while it runs. It is made at the top of guard and kept in the
@@ -19,6 +34,17 @@ type record struct {
 	// address, set only when the visitor's cannot be read: it may be a trusted proxy's, which carries other visitors'
 	// requests too, so it names the line and is never counted against as a visitor.
 	client, conn netip.Addr
+	// lines is how many lines the request has been reported in, and held how many of them went over maxRequestLines.
+	lines, held atomic.Int32
+}
+
+// admit counts a line about the request and reports whether it may be logged: a verdict always may.
+func (rec *record) admit(verdict bool) bool {
+	if rec.lines.Add(1) <= maxRequestLines || verdict {
+		return true
+	}
+	rec.held.Add(1)
+	return false
 }
 
 type recordKey struct{}
@@ -55,8 +81,13 @@ func (e *Edge) report(m Match, rec *record, r *http.Request) {
 	if rec == nil && r != nil {
 		rec = recordOf(r.Context())
 	}
-	if rec != nil && m.TransactionID == "" {
-		m.TransactionID = rec.id
+	if rec != nil {
+		if !rec.admit(m.Disruptive || m.verdict) {
+			return
+		}
+		if m.TransactionID == "" {
+			m.TransactionID = rec.id
+		}
 	}
 	if e.cfg.LogDetails {
 		if rec != nil && rec.client.IsValid() {
@@ -67,6 +98,15 @@ func (e *Edge) report(m Match, rec *record, r *http.Request) {
 		if r != nil && m.URI == "" {
 			m.URI = r.RequestURI
 		}
+		m.URI, m.Data, m.ExpandedMessage = alert.Clean(m.URI, maxURI), alert.Clean(m.Data, maxDetail), alert.Clean(m.ExpandedMessage, maxDetail)
 	}
 	e.cfg.OnMatch(m)
+}
+
+// reportHeld says, once a request is done, how many of its lines went over maxRequestLines.
+func (e *Edge) reportHeld(rec *record) {
+	if n := rec.held.Load(); n > 0 && e.cfg.OnMatch != nil {
+		e.cfg.OnMatch(Match{RuleID: idLinesHeld, Severity: "WARNING", TransactionID: rec.id,
+			Message: strconv.FormatInt(int64(n), 10) + " more rule matches not logged"})
+	}
 }

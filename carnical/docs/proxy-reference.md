@@ -185,8 +185,20 @@ checks 901001 and 901500 (status 500 when the rule set is set up wrong), one of 
 site policy adds to its block list and to every custom rule that blocks.
 The CRS rules that only add to the anomaly score are never disruptive, though the engine runs them
 with a disruptive action while it enforces; in detection mode no rule set line is. A rule written
-into `crs.Settings.Before` or `After` that refuses with `deny` should carry `tag:'carnical-deny'`. `-log-details` may include the client address (the
-visitor's, never with a port), URI, matched data, expanded CRS text and inspector panic details.
+into `crs.Settings.Before` or `After` that refuses with `deny` should carry `tag:'carnical-deny'`.
+
+One request is reported in at most 32 rule lines, as it can match dozens of rules, besides the
+lines of the checks named below and one 5000078 line. The lines past that are counted, and once the
+request is done one line, rule 5000078, says how many ("8 more rule matches not logged"). The line of a check that refused the request is always written, and so, in
+detection or monitor mode, is the line of one that would have: the anomaly verdict, a Coraza base
+rule, a rule tagged `carnical-deny` and an inspector's verdict (each inspector bounds how many it gives
+one request).
+
+`-log-details` may include the client address (the visitor's, never with a port), URI, matched data,
+expanded CRS text and inspector panic details. The matched data and the expanded text are cut to 512
+bytes and the URI to 2,048, ending with `…` where they were cut; invalid UTF-8 in them becomes U+FFFD,
+control and bidirectional characters are written as `\xNN` or `\uNNNN` escapes, and a backslash is
+doubled.
 Treat it as sensitive logging.
 
 Format totals are process-local blocked/monitored findings. The default `-formats-stats-interval 1m`
