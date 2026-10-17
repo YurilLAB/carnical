@@ -4,61 +4,100 @@ On Windows (PowerShell) or Linux, run:
 
 ```sh
 carnical setup
+carnical check
+carnical start
 ```
 
 If the binary is not on PATH, use `./carnical setup` on Linux or `./carnical.exe setup`
 in PowerShell. Build from `carnical/` with `go build -o carnical ./cmd/carnical` on Linux
 or `go build -o carnical.exe ./cmd/carnical` on Windows.
 
-The wizard asks for:
+## Commands
 
-- Website names, including every name visitors will use.
-- A separate origin URL or IP. A bare address means HTTPS; use an explicit `http://` for a local HTTP origin.
-- Exact allowances for a local/private origin and the HTTP Host it expects.
-- A listening IP/port and visitor TLS arrangement.
-- Existing visitor certificates, optional origin CA/client certificate files, and trusted gateway peers.
-- Detection or blocking mode, WordPress protection, and an optional origin connection check.
+| Command | What it does |
+| --- | --- |
+| `carnical setup` | Asks about the site, checks the answers and saves them. |
+| `carnical check [FILE]` | Checks the saved settings and connects to the origin (DNS, TCP and TLS; no HTTP request), without listening. |
+| `carnical start [FILE]` | Starts the WAF with the saved settings. |
+| `carnical help [TOPIC]` | A short guide; topics `setup`, `profiles`, `security`, and `flags` for every flag. |
+| `carnical version` | The version of the embedded rules. |
 
-Choose `https` for direct visitor TLS. The certificate must be current, match its key and
-cover every website name. Choose `local` for loopback HTTP tests, or `proxy` behind an
-existing TLS gateway. Gateway HTTP requires a specific loopback/private listener and trusted
-peer addresses; restrict network access to those peers. Trusting forwarding headers alone
-does not restrict who can connect. Certificate issuance and renewal remain with the operator.
+Without `FILE`, `check` and `start` use the site setup saved in its default place (below). Flags
+after the command change a setting for that run only, as in `carnical start -mode block`; every
+flag still works on its own, as in `carnical -config site.json`.
 
-Setup runs the normal startup validation without starting a listener. The optional origin
+## The questions
+
+Press Enter to take the recommended answer shown in `[brackets]`, or type `?` for help on the
+question. A question with no brackets has no safe default and must be answered.
+
+1. **Your website**: the names visitors use, and the origin server Carnical forwards to. A bare
+   address means HTTPS; use an explicit `http://` for a local HTTP origin. A private origin
+   address must be allowed explicitly; for an origin name, give the private addresses it resolves to.
+2. **Visitors**: `https` when Carnical holds the certificate (it must be current, match its key and
+   cover every website name), `proxy` behind an existing TLS gateway (a specific loopback/private
+   listener and the gateway's addresses; restrict network access to those peers, as trusting
+   forwarding headers alone does not restrict who can connect), or `local` for loopback HTTP tests.
+   An HTTPS origin can have its own CA bundle and a client certificate.
+3. **Protection profile**: the site type and the attack detection level.
+4. **Security settings**: whether attacks are blocked or only logged, flood protection, auto-block,
+   a login limit and intrusion alerts.
+5. **Check and save**: the settings are checked as start-up checks them, a summary is shown, and
+   setup asks before saving.
+
+| Site type | Flags it sets |
+| --- | --- |
+| `general` (recommended) | none |
+| `wordpress` | `-wordpress`: no scripts from upload and cache directories, `xmlrpc.php` off, 10 login attempts a minute |
+| `api` | `-api-guard monitor`; flood protection `relaxed` is then recommended |
+| `java` | `-allow-path-params`, for `;jsessionid=` |
+
+| Detection level | Flags it sets |
+| --- | --- |
+| `relaxed` | `-inbound-threshold 8 -outbound-threshold 8`: blocks at a score of 8 |
+| `normal` (recommended) | none: CRS paranoia level 1, blocking at 5 |
+| `strict` | `-paranoia 2`: finds more and flags more ordinary traffic |
+
+| Security question | Recommended | Flags |
+| --- | --- | --- |
+| When an attack is found | `detect` | `-mode`, and `-formats-mode block` with `block` |
+| Flood protection | `normal` (`relaxed` for an API) | `-ddos` |
+| Ban addresses that keep attacking | `monitor` | `-auto-block`; see [repeat offenders](ddos.md#repeat-offenders) |
+| Login page to protect | none | `-limit 'POST PATH 10/m'` (WordPress has its own) |
+| Intrusion alerts | `on` | `-alerts`; see [intrusion alerts](proxy-reference.md#intrusion-alerts) |
+
+Detection mode records CRS findings and monitors request formats. Blocking mode enables both
+content layers. Flood and proxy safety checks still enforce in detection mode. Review real
+application traffic before changing production policy.
+
+The check runs the normal startup validation without starting a listener. The optional origin
 check resolves the origin and checks TCP/TLS within ten seconds; it sends no HTTP request.
 Setup does not change DNS, firewall rules, certificates or installed services.
 
 ## Save and start
 
-After validation, the wizard asks whether to save. Answer `n` to leave no configuration or
-key file. Answer `y`, choose a new site file (default `site.json`) and a separate key file.
-Existing files are never replaced. Interrupted setup before saving also leaves no files.
+After the summary, the wizard asks whether to save. Answer `n` to leave no configuration or key
+file. Otherwise it saves the site file and a separate key file, by default in the account's
+configuration directory, where `check` and `start` find them:
 
-It prints commands such as:
+| Platform | Site file | Key directory |
+| --- | --- | --- |
+| Linux | `$XDG_CONFIG_HOME/carnical/site.json`, or `$HOME/.config/carnical/site.json` | `$XDG_CONFIG_HOME/carnical/keys`, or `$HOME/.config/carnical/keys` |
+| Windows | `%APPDATA%\carnical\site.json` | `%APPDATA%\carnical\keys` |
 
-```sh
-carnical -config site.json -check
-carnical -config site.json
-```
-
-For a custom key location, the printed commands include `-config-key-file`. The printed
-quoting is for the host's shell: PowerShell on Windows, a POSIX shell on Linux.
+Existing files are never replaced: when a site is already saved there, setup offers `site.json`
+in the current directory instead, and the printed commands name it (`carnical start site.json`).
+A custom key location adds `-config-key-file` to them. The printed quoting is for the host's
+shell: PowerShell on Windows, a POSIX shell on Linux. Interrupted setup before saving leaves no files.
 Run the WAF with the same account as setup, or prepare the key for the service account below.
-Settings load once, before listening and confinement; changes require restart.
-
-Detection mode records CRS findings and monitors request formats. Blocking mode enables
-both content layers. Flood and proxy safety checks still enforce in detection mode. Review
-real application traffic before changing production policy. CLI options override site-file
-values, including encrypted fields; invalid ciphertext still fails startup.
-To protect a small or often attacked site more tightly against floods, add `"ddos": "strict"` to
-the `flags` object (or `"relaxed"` for an API); see [strengths](ddos.md#strengths).
-To limit how fast one client may log in or call an API, add rate rules, as in
+Settings load once, before listening and confinement; changes require restart. CLI options
+override site-file values, including encrypted fields; invalid ciphertext still fails startup.
+To limit how fast one client may call an API, add rate rules to the `flags` object, as in
 `"limit": "POST /login 5/m; /api 600/m"`; see [rate rules](proxy-reference.md#rate-rules).
 
 ## What is encrypted
 
-The site file keeps website names, listener, modes and WordPress settings in its readable
+The site file keeps website names, listener, profile and security settings in its readable
 `flags` object. The `private` object contains a random key ID and AES-256-GCM ciphertext for
 the origin URL, origin HTTP Host, private allowances, trusted peers and certificate/key paths.
 Each save creates an independent random 32-byte key and random nonce. Authentication failure,
@@ -68,14 +107,7 @@ An error that stops startup or `-check` leaves the encrypted settings out, along
 (the origin's resolved address follows from them): `invalid origin range "[private setting]"`.
 To see the values, give the same settings as flags on the command line.
 
-The default key location is:
-
-| Platform | Key directory |
-| --- | --- |
-| Linux | `$XDG_CONFIG_HOME/carnical/keys`, or `$HOME/.config/carnical/keys` |
-| Windows | `%APPDATA%\carnical\keys` |
-
-If the account has no configuration directory, enter an explicit key-file path. A blank answer
+The default key location is in the table [above](#save-and-start). If the account has no configuration directory, enter an explicit key-file path. A blank answer
 is refused. The printed check and start commands include `-config-key-file` for that path.
 
 The key file contains exactly 32 binary bytes. Linux keys require owner-only permissions;

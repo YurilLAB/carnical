@@ -8,19 +8,28 @@ them to one origin per process. This guide covers the standalone proxy; the
 
 ## Run it
 
-Once the binary is installed on Windows or Linux, `carnical setup` collects and validates the
-site settings. It asks before saving, encrypts private origin details and credential paths,
-and prints the commands to check and start the WAF. See [setup](docs/setup.md) for the key
-file, service accounts and backups. The wizard uses existing certificates; it does not change DNS.
+Once the binary is installed on Windows or Linux:
+
+```sh
+carnical setup    # answer the questions; Enter takes the recommended answer in [brackets]
+carnical check    # check the saved settings and the connection to your site
+carnical start    # start the WAF
+carnical help     # commands, profiles and common flags
+```
+
+Setup asks about your site, a protection profile (site type and detection level) and basic
+security settings (block or log, flood protection, auto-block, a login limit and alerts),
+checks them as start-up does, and saves them where `check` and `start` find them, with private
+origin details encrypted. See [setup](docs/setup.md) for the key file, service accounts and
+backups. The wizard uses existing certificates; it does not change DNS.
 
 
 From this directory, with an application on `127.0.0.1:8081`:
 
 ```sh
 cp docs/examples/site-local.json site.json
-go run ./cmd/carnical -config site.json -check
-go run ./cmd/carnical -config site.json -check -check-origin
-go run ./cmd/carnical -config site.json
+go run ./cmd/carnical check site.json
+go run ./cmd/carnical start site.json
 ```
 
 Use patched Go 1.26.9 or later on that release branch, or Go 1.27.2 or later on the 1.27 branch.
@@ -29,9 +38,9 @@ format monitoring and flood protection enabled. Review the logs and tune legitim
 then enable both content-blocking layers:
 
 ```sh
-go run ./cmd/carnical -config site.json -mode block -formats-mode block
-go run ./cmd/carnical -h
-go run ./cmd/carnical -version
+go run ./cmd/carnical start site.json -mode block -formats-mode block
+go run ./cmd/carnical help
+go run ./cmd/carnical version
 ```
 
 For a public site, follow [website setup](docs/website-onboarding.md) before changing DNS.

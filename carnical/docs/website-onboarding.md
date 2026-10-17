@@ -11,10 +11,11 @@ Source: [site configuration](../cmd/carnical/siteconfig.go), [origin TLS](../pro
 
 ## Operator: prepare one site file
 
-With an installed binary, run `carnical setup` on Windows or Linux and answer its prompts.
-It validates the settings before asking to save, encrypts private origin details and credential
-paths, and prints the check/start commands. Follow the [setup guide](setup.md) when running
-under another account or transferring the configuration. Existing JSON site files still work.
+With an installed binary, run `carnical setup` on Windows or Linux and answer its prompts, then
+`carnical check` and `carnical start`. Setup validates the settings before asking to save, encrypts
+private origin details and credential paths, and saves the site where those commands find it.
+Follow the [setup guide](setup.md) when running under another account or transferring the
+configuration. Existing JSON site files still work, with `carnical start site.json` or `-config`.
 
 
 From `carnical/`, build and try the local example:
@@ -22,9 +23,8 @@ From `carnical/`, build and try the local example:
 ```sh
 CGO_ENABLED=0 go build -trimpath -o carnical ./cmd/carnical
 cp docs/examples/site-local.json site.json
-./carnical -config site.json -check
-./carnical -config site.json -check -check-origin
-./carnical -config site.json
+./carnical check site.json
+./carnical start site.json
 ```
 
 It protects `127.0.0.1:8081` on `127.0.0.1:8080`, with CRS detection and format monitoring. Proxy
@@ -32,7 +32,7 @@ safety checks and flood limits still enforce. Exercise normal application flows 
 before enabling both content-blocking layers:
 
 ```sh
-./carnical -config site.json -mode block -formats-mode block
+./carnical start site.json -mode block -formats-mode block
 ```
 
 For a public site, copy [site-edge.json](examples/site-edge.json) and replace its names and file
