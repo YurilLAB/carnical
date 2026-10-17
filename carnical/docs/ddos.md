@@ -61,8 +61,8 @@ These alerts report patterns for investigation. They do not change attack state 
 | --- | --- |
 | Connection admission pressure (`conn_pressure`) | At least 50% of incoming TCP connections are refused. |
 | Early TCP closes (`early_close`) | At least 75% of closed nontrusted connections never reached HTTP `StateActive`. |
-| HTTP security rejections (`rejections`) | At least 50% of Shield-admitted requests receive a later WAF/policy 4xx. Requests the Shield refused or challenged are not in the share. Origin 4xx, gateway 5xx and 408 (a client too slow to send its request) responses are excluded. Refusals made before admission count when they are reported with `Shield.Rejected`, which the Carnical proxy does not call yet. |
-| Would-be rejections (`would_reject`) | Requests that would have been rejected in detect/monitor mode, reported with `Shield.WouldReject` (which the Carnical proxy does not call yet), reach the same 50% of Shield-admitted requests, so a campaign is reported whether the checks block it or only report it. |
+| HTTP security rejections (`rejections`) | At least 50% of Shield-admitted requests receive a later WAF/policy 4xx. Requests the Shield refused or challenged are not in the share. Origin 4xx, gateway 5xx and 408 (a client too slow to send its request) responses are excluded. Refusals made before admission count when they are reported with `Shield.Rejected`, as the Carnical proxy reports its own (CONNECT, an upgrade, a target that cannot be forwarded) and CrowdSec's. |
+| Would-be rejections (`would_reject`) | Requests that would have been rejected in detect/monitor mode, reported with `Shield.WouldReject` (the Carnical proxy reports every request a check would have refused), reach the same 50% of Shield-admitted requests, so a campaign is reported whether the checks block it or only report it. |
 | Addresses held over their own limit (`held`) | Requests refused by an address's or a network's own rate limit (429), with no ratio: a scanner that sends faster than its limit is reported even when other traffic is busy. |
 
 Each signal also needs `Detector.MinAttackRate` observations per second (default 20), averaged over
@@ -79,7 +79,7 @@ TCP signals cover accepted sockets and admission refusals. Raw packets, incomple
 UDP and link saturation need [kernel packet guards](network-protection.md) or provider protection.
 Pre-parser failures (the requests `net/http` answers itself) are outside the rejection counter, and
 so are HTTP checks before Shield admission unless the integrator reports each refusal with
-`Shield.Rejected(client)`; the Carnical proxy does not report them yet. Such a refusal (a target
+`Shield.Rejected(client)`, as the Carnical proxy does for its own and CrowdSec's. Such a refusal (a target
 that cannot be forwarded, CONNECT, an upgrade, an address on the integrator's own block list) also
 takes from the address's own request limit as `Admit` would have, so an address that sends only what
 is refused before admission is held to that limit and then refused with 429 by `Admit`; during an
@@ -281,7 +281,35 @@ query values).
 Outside an attack, a source that keeps sending what later checks refuse is refused request by
 request and never banned, unless the integrator tells the shield of each such refusal with
 `Shield.Offend(client, points, sig)` and sets `Config.AutoBlock`. Its zero value is off, and
-`Offend` then does nothing. The proxy's command line does not set it yet.
+`Offend` then does nothing.
+
+The Carnical proxy reports each request once, for its strongest alert, and only a refusal by a
+check that enforces and is sure of what it found scores:
+
+| Refusal | Points |
+| --- | --- |
+| CRS anomaly block (949110, 959100) with two or more attack categories, or a scanner | 4 |
+| CRS anomaly block with one category | 3 |
+| Upload policy (5000010, 5000011), WordPress PHP block (5000020), virtual patch | 4 |
+| High-risk format or API contract block | 2 |
+| CONNECT, an upgrade or a target that cannot be forwarded (5000070 to 5000072) | 1 |
+
+Rate limits, the shield's own refusals, CrowdSec bans, findings below medium risk and anything only
+detected or monitored score nothing. Four blocked SQL injections ban a source at the default 12
+points; one false positive never does. Its command line sets `Config.AutoBlock` with these flags,
+and logs each event as `source blocked`, `source would be blocked`, `source block ended`,
+`auto-block table full; sources not blocked` or `auto-block events not reported`, showing the source
+as `-alert-source` asks:
+
+| Flag | Default | Field |
+| --- | --- | --- |
+| `-auto-block` | `monitor` | `Mode`; `on` bans. An upgrade bans nothing until the owner chooses `on`. Asking for it with `-ddos off` is refused; its default is then off. |
+| `-auto-block-points` | 12 | `Points` |
+| `-auto-block-window` | `10m` | `Window` |
+| `-auto-block-for` | `10m` | `For` |
+| `-auto-block-max-for` | `24h` | `MaxFor` |
+| `-auto-block-max` | 0 (the default) | `Max` |
+| `-auto-block-exempt` | none | `Exempt`, with `-alert-exclude-sources` and this host's own addresses added |
 
 | `Config.AutoBlock` field | Default | Range | Meaning |
 | --- | --- | --- | --- |

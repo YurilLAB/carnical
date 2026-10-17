@@ -93,15 +93,14 @@ cannot crowd out an attack's events; the two counts may use all of it, and a cou
 room is kept for the next tick.
 `Snapshot` counts offences, bans, would-be bans, bans refused for room, and the bans in force.
 
-The intended scale of points, for the proxy's wiring: only enforced, high-confidence refusals score
-(a CRS anomaly block with two or more categories or a scanner 4, with one category 3; a stable
-virtual patch, an upload or WordPress policy block, or the block list 4; a decoy path 10; a
-high-risk format or API contract block 2; a CONNECT, h2c or proxy-form target 1), and low-risk
-findings, rate limits, the shield's own refusals, CrowdSec bans and anything only detected score
-nothing. The proxy does not call `Offend` yet and has no `-auto-block` flag. When it is wired,
-separately from this library change, its command line is to default `-auto-block` to `monitor`, so
-an upgrade bans nothing until the owner chooses `on`, and the alert lines of ADR-0084 are to report
-these events.
+The proxy's scale of points: only enforced, high-confidence refusals score (a CRS anomaly block
+with two or more categories or a scanner 4, with one category 3; a virtual patch, an upload or
+WordPress policy block 4; a high-risk format or API contract block 2; a CONNECT, h2c or proxy-form
+target 1), and low-risk findings, rate limits, the shield's own refusals, CrowdSec bans and anything
+only detected score nothing. A request counts once, for its strongest alert. The command line's
+`-auto-block` flags set `Config.AutoBlock`, `-auto-block` defaults to `monitor`, so an upgrade bans
+nothing until the owner chooses `on`, and its log reports these events with the source shown as
+ADR-0084's `-alert-source` asks. The site's block list and decoy paths do not score yet.
 
 ## Technical Discussion
 
@@ -110,12 +109,12 @@ and no PR thread exists.
 
 ## Consequences
 
-- **Positive:** once the proxy reports offences, a source that keeps attacking is stopped at accept
+- **Positive:** a source that keeps attacking is stopped at accept
   for a while, longer each time it returns; the owner sees every ban, would-be ban and refused ban,
   or how many went unreported when a spray filled the event queue; an attacker cannot evict bans or
   grow memory by spraying addresses; `monitor` shows what `on` would do before it is chosen.
 - **Negative / follow-up:** an address many people share can still be banned once the owner turns
-  `on`, which is why the planned command-line default is `monitor` and why `Exempt` exists. A ban
+  `on`, which is why the command-line default is `monitor` and why `Exempt` exists. A ban
   holds per process and ends with it; kernel bans need a `Banner` or the CrowdSec bouncer. A source
   evicted from a full source table under pressure loses its escalation. An attacker with sixteen
   networks (an IPv6 /44, or sixteen /24s) can still fill the index and keep refilling it as bans

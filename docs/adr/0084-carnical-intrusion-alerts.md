@@ -102,12 +102,12 @@ signal and suppression that only silences**, because it shows every intrusion on
 keeps volume and memory bounded under attack, and never weakens blocking.
 
 Implementation status. This change adds the `alert` package (record, catalog, sanitizer,
-aggregation, suppression, log sink, bounded queue and feed adapter) and the `rule matched` changes
+aggregation, suppression, log sink, bounded queue and feed adapter), the `rule matched` changes
 (`tx` on every layer, `category`, `risk`, a per-request cap, and `disruptive` only on the refusing
-check). The proxy does not feed the aggregator yet: the command-line flags named below
-(`-alert-source`, `-alert-min-risk`, `-alert-suppress`, `-alert-exclude-sources`), the start-up
-listing, the shutdown wait and the webhook sink are follow-up work, and the flag names are the
-planned ones. Until then the options exist as fields of `alert.Config`.
+check) and the proxy's wiring: each request's verdict feeds the aggregator, and the command line
+has the flags named below, `-alerts`, `-alert-path`, `-alert-rate`, `-alert-table`, the intervals and
+`-log-rule-matches`, lists suppressions at start-up and waits for the queue at shutdown. The
+webhook sink is not built yet.
 
 The record. Each alert has an `alert_id` (the request id, equal to the Coraza transaction id and to
 `tx` on `rule matched` lines), `layer`, a stable `sig` (`crs-942100`, `carnical-5000010`,
@@ -169,8 +169,7 @@ process waits at most two seconds for the queue and writes the final totals.
 
 `rule matched` lines stay for compatibility, gain `tx` on every layer, `category` and `risk`, are
 capped per request, and mark `disruptive` only for the rule that refused the request.
-`proxy.Config.NoRuleMatches` lets a program that embeds the proxy keep alerts only; a command-line
-flag for it is follow-up work.
+`proxy.Config.NoRuleMatches`, `-log-rule-matches false` on the command line, keeps alerts only.
 
 ## Technical Discussion
 
@@ -188,7 +187,7 @@ and no PR thread exists.
   an entry evicted from the correlation table forgets that it already alerted, so a source can be
   reported again within the hour; users who share an IPv6 /48 can together be reported as one
   suspected network; the webhook, when built, is a new outbound connection and secret that the
-  operator must protect and monitor; the command-line wiring is still to do.
+  operator must protect and monitor.
 
 ## References
 

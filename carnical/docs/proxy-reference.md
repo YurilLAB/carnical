@@ -232,7 +232,49 @@ forwarding chain that cannot be read 5000073 (400, naming the connection's addre
 `-log-details`). Nothing has limited such a request yet, so each of the four is logged at most once
 a second; how many were not follows in a line of its own ("a CONNECT request (37 more refusals not
 logged)") within about a second, before that kind's next line, and when the proxy stops, naming no
-client or request. They do not count toward an address's standing with the flood protection.
+client or request. The first three are reported to the flood protection with `Shield.Rejected`, so they take
+from the address's own request limit and counts toward its HTTP rejection share, as a later check's
+refusal does.
+
+### Intrusion alerts
+
+Besides the `rule matched` lines, each request's final verdict is written as at most one alert per
+signature, as UniFi's IDS reports it: `intrusion blocked` (refused, rate limited or refused because
+its source is banned), `intrusion detected` (found in detection or monitor mode, or would have been
+refused) or `inspection incomplete` (forwarded without a finished inspection). Each alert carries
+`alert_id` (the request's `tx`), `layer`, a stable `sig` such as `crs-942100`, `sig_name`, `category`,
+`risk`, `action`, `mode`, the status sent, the CRS score, the source, the method, the host and the
+path as a template. The first alert for a source, signature and action is written at once; repeats
+in `-alert-repeat-window` are counted and written as one `alert repeated` line. A source that shows
+three attack categories, a scanner finding with an attack or ten refused or would-be-refused
+findings within ten minutes is reported, at most once an hour, as `suspected intrusion`. `intrusion totals` holds exact counts, `intrusion
+summary` the ten busiest attacking sources, and `alerts dropped` what the line limit held back. The
+lines never contain the query, the body or matched data. [ADR-0084](../../docs/adr/0084-carnical-intrusion-alerts.md)
+describes the record.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `-alerts` | `on` | `off` writes no alert lines; the `rule matched` lines are unchanged. |
+| `-alert-source` | `full` | What an alert shows of the visitor's address: `full`, `prefix` (its /24 or /48) or `off`. `off` also leaves out `intrusion summary`. |
+| `-alert-path` | `template` | The path with identifiers replaced, `full` (without the query) or `off`. |
+| `-alert-min-risk` | `low` | `info`, `low`, `medium` or `high`; findings below it are counted in the totals only. |
+| `-alert-suppress` | none | `SIG [PATH-PREFIX] [until=YYYY-MM-DD] [note=TEXT]`, several separated by `;`. |
+| `-alert-exclude-sources` | none | Comma-separated addresses or networks no wider than /16 (IPv6 /32). |
+| `-alert-rate` | 20 | Most alert lines a second; high and medium risk go first, and the totals stay exact. |
+| `-alert-table` | 16384 | Source and signature pairs remembered for deduplication. |
+| `-alert-repeat-window` | `1m` | How long repeats are counted, 10s to 1h. |
+| `-alert-totals-interval` | `1m` | How often changed totals are written; `0` writes them only at shutdown. |
+| `-alert-summary-interval` | `5m` | How often the busiest sources are listed; `0` never. |
+| `-log-rule-matches` | `true` | `false` keeps the alerts and leaves out the `rule matched` lines of the rule set, the inspectors, the proxy's refusals and the rate rules (`proxy.Config.NoRuleMatches`). |
+| `-eval-budget-detect` | `forward` | In `-mode detect`, a request whose rule evaluation runs past `-eval-budget` is forwarded and reported as not inspected; `refuse` answers 503 instead. |
+
+Suppressions and exclusions only silence alerts: blocking, rate limits and points toward a ban are
+unchanged and the matches are counted as suppressed. Each entry is listed at start-up, and one whose
+`until` date has passed is logged as expired and no longer applies. At shutdown the process waits at
+most two seconds for queued alerts and writes the final totals. The listening line says whether
+alerts are on and the auto-block mode. Alerts also tell the flood protection what each request came
+to: a would-be refusal in detection or monitor mode counts toward its `would_reject` signal, and a
+refusal counts toward a [repeat offender's](ddos.md#repeat-offenders) ban.
 
 See [attack coverage](attacks.md) and [security findings](../../docs/security-findings.md) for
 application-dependent limits and verified fixes.

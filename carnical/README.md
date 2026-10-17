@@ -54,6 +54,8 @@ shutdown, containers and platform support.
 | `-api-per-minute` | Disabled | One sliding-minute budget per verified client across the selected API routes. |
 | `-limit` | None | Per-client rate rules, as in `-limit 'POST /login 5/m; /api 600/m'`; see [rate rules](docs/proxy-reference.md#rate-rules). |
 | `-ddos` | `on` | Flood detection, connection/request budgets and bounded IDS signals; add a strength, `relaxed`, `normal` or `strict`, as in `-ddos strict` or `-ddos monitor,strict`. |
+| `-alerts` | `on` | One deduplicated `intrusion detected`/`intrusion blocked` line per source and signature, with exact totals; see [intrusion alerts](docs/proxy-reference.md#intrusion-alerts). |
+| `-auto-block` | `monitor` | Ban a source whose requests keep being refused as attacks; `monitor` only logs who would be banned. Needs `-ddos on` or `monitor`; see [repeat offenders](docs/ddos.md#repeat-offenders). |
 | `-crowdsec-api` | Disabled | Optional CrowdSec IP/CIDR bans, enforced independently of inspection modes. |
 | `-trusted-proxies` | Empty | Only actual CDN/load-balancer peers may supply client identity headers. |
 | `-origin-allow` | No private-range exception | Explicitly permit only required private origin ranges. |
