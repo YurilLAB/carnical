@@ -79,13 +79,5 @@ func safeInspect(in inspect.Inspector, req *inspect.Request) (res inspect.Result
 	return in.Inspect(req), nil
 }
 
-// log reports a finding of the proxy's own, adding what identifies the request only if details are on.
-func (e *Edge) log(m Match, r *http.Request) {
-	if e.cfg.OnMatch == nil {
-		return
-	}
-	if e.cfg.LogDetails {
-		m.ClientIP, m.URI = r.RemoteAddr, r.RequestURI
-	}
-	e.cfg.OnMatch(m)
-}
+// log reports an inspector's finding, adding what identifies the request only if details are on.
+func (e *Edge) log(m Match, r *http.Request) { e.report(m, nil, r) }

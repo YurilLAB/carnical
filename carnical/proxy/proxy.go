@@ -400,16 +400,16 @@ func (e *Edge) reportTooManyConns(ip netip.Addr) {
 	e.cfg.OnMatch(m)
 }
 
-// reportEval reports a phase of rule evaluation that found no slot or ran out of its budget. Under a flood of expensive
-// requests every one of them can, so each kind is reported at most once a second.
-func (e *Edge) reportEval(timedOut bool) {
+// reportEval reports a phase of rule evaluation that found no slot or ran out of its budget, with the id of the request it
+// was for. Under a flood of expensive requests every one of them can, so each kind is reported at most once a second.
+func (e *Edge) reportEval(timedOut bool, tx string) {
 	if e.cfg.OnMatch == nil {
 		return
 	}
-	kind, m := 0, Match{RuleID: idEvalBusy, Severity: "WARNING", Disruptive: true,
+	kind, m := 0, Match{RuleID: idEvalBusy, Severity: "WARNING", Disruptive: true, TransactionID: tx,
 		Message: "no rule evaluation slot came free within the budget (at most one report a second)"}
 	if timedOut {
-		kind, m = 1, Match{RuleID: idEvalBudget, Severity: "WARNING", Disruptive: e.cfg.CRS.Mode == crs.ModeBlock,
+		kind, m = 1, Match{RuleID: idEvalBudget, Severity: "WARNING", Disruptive: e.cfg.CRS.Mode == crs.ModeBlock, TransactionID: tx,
 			Message: "rule evaluation ran out of its budget (at most one report a second)"}
 	}
 	second := time.Now().Unix()
@@ -434,7 +434,11 @@ func (e *Edge) onMatch(m types.MatchedRule) {
 		match.ClientIP, match.URI, match.Data = m.ClientIPAddress(), m.URI(), m.Data()
 		match.ExpandedMessage = m.Message()
 	}
-	e.cfg.OnMatch(match)
+	var rec *record
+	if c, ok := m.(interface{ Context() context.Context }); ok {
+		rec = recordOf(c.Context()) // the transaction's context is the request's (see budgetWAF)
+	}
+	e.report(match, rec, nil)
 }
 
 // refuseCrowdSec answers a visitor CrowdSec has a decision against, or every visitor while its decisions are not known.
@@ -465,6 +469,7 @@ func (e *Edge) refuseCrowdSec(w http.ResponseWriter, r *http.Request, action cro
 // guard refuses what cannot be inspected faithfully, and tells the WAF and the application who the visitor is.
 func (e *Edge) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec := newRecord()
 		if r.Method == http.MethodConnect {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -482,6 +487,7 @@ func (e *Edge) guard(next http.Handler) http.Handler {
 			http.Error(w, "invalid client address", http.StatusBadRequest)
 			return
 		}
+		rec.client = addr
 		peer := r.RemoteAddr // the connection's own address, before it is replaced by the visitor's
 		// Coraza splits RemoteAddr at its last colon, so an IPv6 address is given without brackets.
 		r.RemoteAddr = fmt.Sprintf("%s:%d", addr, port)
@@ -490,7 +496,7 @@ func (e *Edge) guard(next http.Handler) http.Handler {
 			watch.conn, _ = r.Context().Value(connKey{}).(net.Conn)
 		}
 		w = watch
-		r = r.WithContext(context.WithValue(r.Context(), writeWatchKey{}, watch))
+		r = r.WithContext(context.WithValue(context.WithValue(r.Context(), recordKey{}, rec), writeWatchKey{}, watch))
 		if cs := e.cfg.CrowdSec; cs != nil {
 			if action := cs.Check(addr); action != crowdsec.Allow {
 				e.refuseCrowdSec(w, r, action, e.relayed(peer))
@@ -749,9 +755,9 @@ func (e *Edge) forward() http.Handler {
 	dialer := e.cfg.Origin.Dialer()
 	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
 		conn, err, retries := dialBindRetry(ctx, network, address, dialer.DialContext)
-		if retries > 0 && e.cfg.OnMatch != nil {
-			e.cfg.OnMatch(Match{RuleID: idUpstreamBindRetry, Severity: "WARNING",
-				Message: fmt.Sprintf("upstream socket bind retried %d time(s)", retries), Disruptive: false})
+		if retries > 0 {
+			e.report(Match{RuleID: idUpstreamBindRetry, Severity: "WARNING",
+				Message: fmt.Sprintf("upstream socket bind retried %d time(s)", retries), Disruptive: false}, recordOf(ctx), nil)
 		}
 		return conn, err
 	}
@@ -853,9 +859,9 @@ func (e *Edge) forward() http.Handler {
 					m.Message = "upstream connection ended before a response"
 				}
 				if e.cfg.LogDetails {
-					m.ClientIP, m.URI, m.ExpandedMessage = r.RemoteAddr, r.RequestURI, err.Error()
+					m.ExpandedMessage = err.Error()
 				}
-				e.cfg.OnMatch(m)
+				e.report(m, nil, r)
 			}
 			http.Error(w, "upstream unavailable", http.StatusBadGateway)
 		},
@@ -863,9 +869,9 @@ func (e *Edge) forward() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		watch, _ := r.Context().Value(writeWatchKey{}).(*writeWatch)
 		ok, reclaimed := e.places.acquire(watch)
-		if reclaimed && e.cfg.OnMatch != nil {
-			e.cfg.OnMatch(Match{RuleID: idUpstreamReclaimed, Severity: "WARNING", Disruptive: true,
-				Message: "a response the client stopped reading was ended to free an upstream place"})
+		if reclaimed {
+			e.report(Match{RuleID: idUpstreamReclaimed, Severity: "WARNING", Disruptive: true,
+				Message: "a response the client stopped reading was ended to free an upstream place"}, nil, nil) // another request's
 		}
 		if !ok {
 			markOrigin(r.Context()) // the application has as many requests as it may take: that is its health too

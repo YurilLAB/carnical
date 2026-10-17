@@ -13,12 +13,14 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/YurilLAB/coraza/carnical/crs"
+	"github.com/YurilLAB/coraza/carnical/inspect"
 )
 
 // seen is what the application behind the proxy received.
@@ -432,7 +434,18 @@ func TestMatchesAreReportedWithoutWhatTheVisitorSentUnlessAsked(t *testing.T) {
 		return func(m Match) { mu.Lock(); *into = append(*into, m); mu.Unlock() }
 	}
 	const expanded = "SecRule ARGS:note \"@rx .\" \"id:5000099,phase:2,deny,status:403,log,msg:'request=%{ARGS.note}',logdata:'%{ARGS.note}'\""
-	a := start(t, func(c *Config) { c.OnMatch = collect(&plain); c.CRS.After = expanded })
+	// An inspector that only watches, so that the attack is reported by an inspector as well as by the rule set.
+	watch := fakeInspector{"watcher", func(r *inspect.Request) inspect.Result {
+		if r.Path == "/search" {
+			return inspect.Result{Verdicts: []inspect.Verdict{{ID: 5001002, Message: "a search", Severity: "low"}}}
+		}
+		return inspect.Result{}
+	}}
+	a := start(t, func(c *Config) {
+		c.OnMatch = collect(&plain)
+		c.CRS.After = expanded
+		c.Inspectors = []inspect.Inspector{watch}
+	})
 	b := start(t, func(c *Config) { c.OnMatch = collect(&detailed); c.CRS.After = expanded; c.LogDetails = true })
 	secret := "SECRETMARK-4711"
 	attack := get("/search?q=" + url.QueryEscape("1' OR '"+secret+"'='"+secret+"' --"))
@@ -457,6 +470,25 @@ func TestMatchesAreReportedWithoutWhatTheVisitorSentUnlessAsked(t *testing.T) {
 		t.Fatalf("no matches reported (%d, %d)", len(plain), len(detailed))
 	}
 	localLabel, upstreamLabel := false, false
+	// Every line is about one request and names it, and an inspector's line names it as the rule set's lines do.
+	inspected, hexID := map[string]bool{}, regexp.MustCompile(`^[0-9a-f]{16}$`)
+	for _, m := range plain {
+		if !hexID.MatchString(m.TransactionID) {
+			t.Errorf("a match without the request's id: %+v", m)
+		}
+		if m.RuleID == 5001002 {
+			inspected[m.TransactionID] = true
+		}
+	}
+	joined := map[string]bool{}
+	for _, m := range plain {
+		if m.RuleID != 5001002 && inspected[m.TransactionID] {
+			joined[m.TransactionID] = true
+		}
+	}
+	if len(inspected) != 2 || len(joined) != 2 {
+		t.Errorf("the inspector's lines name %d requests, %d of them also named by the rule set's lines; want 2 and 2", len(inspected), len(joined))
+	}
 	for _, m := range plain {
 		localLabel = localLabel || m.RuleID == 5006001 && m.Message == "XPath predicate injection syntax"
 		upstreamLabel = upstreamLabel || m.RuleID == idUpstreamFailed && strings.HasPrefix(m.Message, "upstream ")
@@ -476,6 +508,9 @@ func TestMatchesAreReportedWithoutWhatTheVisitorSentUnlessAsked(t *testing.T) {
 	}
 	found, expandedFound, upstreamDetails := false, false, false
 	for _, m := range detailed {
+		if m.ClientIP != "127.0.0.1" {
+			t.Errorf("the client is not the visitor's address alone: %+v", m)
+		}
 		found = found || strings.Contains(m.URI, secret) || strings.Contains(m.Data, secret)
 		expandedFound = expandedFound || m.RuleID == 5000099 && strings.Contains(m.ExpandedMessage, secret)
 		upstreamDetails = upstreamDetails || m.RuleID == idUpstreamFailed && strings.Contains(m.URI, secret) && m.ExpandedMessage != ""

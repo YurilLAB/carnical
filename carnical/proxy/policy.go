@@ -177,13 +177,7 @@ func contentEncoded(h http.Header) bool {
 
 // refuse answers a request the proxy itself will not forward, and records why in the same form as a rule match.
 func (e *Edge) refuse(w http.ResponseWriter, r *http.Request, status int, id int, msg string) {
-	if e.cfg.OnMatch != nil {
-		m := Match{RuleID: id, Severity: "CRITICAL", Message: msg, Disruptive: true}
-		if e.cfg.LogDetails {
-			m.ClientIP, m.URI = r.RemoteAddr, r.RequestURI
-		}
-		e.cfg.OnMatch(m)
-	}
+	e.report(Match{RuleID: id, Severity: "CRITICAL", Message: msg, Disruptive: true}, nil, r)
 	http.Error(w, http.StatusText(status), status)
 }
 
@@ -458,10 +452,7 @@ func (e *Edge) logLimit(r *http.Request, rule *compiledRule, now int64) {
 	if rule.monitor {
 		m.Severity = "WARNING"
 	}
-	if e.cfg.LogDetails {
-		m.ClientIP, m.URI = r.RemoteAddr, r.RequestURI
-	}
-	e.cfg.OnMatch(m)
+	e.report(m, nil, r)
 }
 
 // flushLimit logs how many of a rule's refusals were not logged, if any. The refusals may be any clients', so the line names

@@ -169,9 +169,13 @@ not.
 
 ## Monitoring
 
-Default match events contain the rule ID, severity, transaction ID and a fixed summary. The event
-uses `msg`; rule text uses `rule_msg`. `-log-details` may include client address, URI, matched data,
-expanded CRS text and inspector panic details. Treat it as sensitive logging.
+Default match events contain the rule ID, severity, the request's id and a fixed summary. The event
+uses `msg`; rule text uses `rule_msg`. The id, `tx`, is 16 hexadecimal digits made when the request
+arrives; the rule set's transaction is given the same one, so the lines of the rule set, the proxy's
+own checks, the inspectors and the rate rules about one request all carry it and can be read
+together. It joins lines; it is not a secret. `-log-details` may include the client address (the
+visitor's, never with a port), URI, matched data, expanded CRS text and inspector panic details.
+Treat it as sensitive logging.
 
 Format totals are process-local blocked/monitored findings. The default `-formats-stats-interval 1m`
 logs changed snapshots; `0` disables reporting, and graceful shutdown flushes a final changed

@@ -309,7 +309,7 @@ func TestNegativeLimitsAreRefused(t *testing.T) {
 func TestOnlyAsManyEvaluationsRunAtOnceAsThereAreSlots(t *testing.T) {
 	var busyReports atomic.Int32
 	tx := &budgetTx{ctx: &budgetCtx{Context: t.Context()}, d: 80 * time.Millisecond, slots: make(chan struct{}, 1),
-		report: func(timedOut bool) {
+		report: func(timedOut bool, _ string) {
 			if !timedOut {
 				busyReports.Add(1)
 			}

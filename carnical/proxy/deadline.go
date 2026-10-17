@@ -24,9 +24,10 @@ import (
 // every core: the rest wait for a slot for at most the budget, and are refused if none comes free. respLimit is the
 // response body limit the rules were given (0 if it is not known), so that only the response write that reaches it, which
 // runs the response body rules, waits for a slot. report, if set, is told of every phase that found no slot (timedOut false)
-// or ran out of its budget (timedOut true): neither is a matched rule, and in detection mode a phase that ran out lets the
-// request go on with the rest of its rules unread, which an operator tuning the site needs to know.
-func withEvalBudget(waf coraza.WAF, d time.Duration, slots chan struct{}, respLimit int64, report func(timedOut bool)) coraza.WAF {
+// or ran out of its budget (timedOut true), with the transaction's id: neither is a matched rule, and in detection mode a
+// phase that ran out lets the request go on with the rest of its rules unread, which an operator tuning the site needs to
+// know.
+func withEvalBudget(waf coraza.WAF, d time.Duration, slots chan struct{}, respLimit int64, report func(timedOut bool, tx string)) coraza.WAF {
 	inner, ok := waf.(experimental.WAFWithOptions)
 	if !ok || d <= 0 {
 		return waf
@@ -40,13 +41,17 @@ type budgetWAF struct {
 	d         time.Duration
 	slots     chan struct{}
 	respLimit int64
-	report    func(timedOut bool)
+	report    func(timedOut bool, tx string)
 }
 
-// NewTransactionWithOptions is the one the HTTP middleware uses.
+// NewTransactionWithOptions is the one the HTTP middleware uses. The transaction takes the id of the request's record (see
+// record.go), so that the rule set's lines and every other layer's name the request alike.
 func (w *budgetWAF) NewTransactionWithOptions(o experimental.Options) types.Transaction {
 	if o.Context == nil {
 		o.Context = context.Background()
+	}
+	if rec := recordOf(o.Context); rec != nil && o.ID == "" {
+		o.ID = rec.id
 	}
 	ctx := &budgetCtx{Context: o.Context}
 	o.Context = ctx
@@ -98,7 +103,7 @@ type budgetTx struct {
 	d      time.Duration
 	slots  chan struct{}
 	after  func(time.Duration, func()) *time.Timer // time.AfterFunc unless a test orders the callbacks
-	report func(timedOut bool)                     // see withEvalBudget
+	report func(timedOut bool, tx string)          // see withEvalBudget
 
 	respLimit int64 // see withEvalBudget; 0 means every response write is budgeted
 	resp      int64 // response body bytes the engine has buffered
@@ -141,6 +146,14 @@ func asRefusal(it *types.Interruption) *types.Interruption {
 	return &types.Interruption{RuleID: it.RuleID, Action: "deny", Status: http.StatusForbidden, Data: it.Data}
 }
 
+// id is the transaction's id, for a report.
+func (t *budgetTx) id() string {
+	if t.Transaction == nil {
+		return ""
+	}
+	return t.ID()
+}
+
 // run gives one evaluation phase a slot and its budget. It reports false if no slot came free in time.
 func (t *budgetTx) run(phase func()) bool {
 	if t.slots != nil {
@@ -151,7 +164,7 @@ func (t *budgetTx) run(phase func()) bool {
 			defer func() { <-t.slots }()
 		case <-wait.C:
 			if t.report != nil {
-				t.report(false)
+				t.report(false, t.id())
 			}
 			return false
 		}
@@ -166,7 +179,7 @@ func (t *budgetTx) run(phase func()) bool {
 	defer func() { timer.Stop(); t.ctx.current.Add(1) }()
 	phase()
 	if t.report != nil && t.ctx.expired.Load() == gen {
-		t.report(true)
+		t.report(true, t.id())
 	}
 	return true
 }
