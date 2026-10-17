@@ -25,12 +25,15 @@ guard](../proxy/origin.go), [CLI](../cmd/carnical/main.go).
 ## Bodies and evaluation
 
 A request takes an upstream slot after its body has been read, so a stalled upload cannot occupy
-that pool. A prematurely ended or malformed body returns 400/413 rather than an empty 200.
+that pool. A body over its limit is refused with 413 (rule 5000074), and one that cannot be read
+(a malformed chunk, a body that ends early) with 400 (rule 5000075). Should the rule engine still
+leave a request unanswered, it is refused with 400 (rule 5000077) rather than given an empty 200.
 
 A client has 30 seconds to send a whole request (10 for its headers), and a response must be
 finished 120 seconds after the end of the request's headers. A body still arriving at 30 seconds is
 answered with 408 Request Timeout, which the flood protection does not count as a security
-rejection; a longer response is cut. `-read-timeout` and `-write-timeout` set them (in a program
+rejection and which is counted (`Edge.SlowBodies`, rule 5000076) but not logged; a longer response
+is cut. `-read-timeout` and `-write-timeout` set them (in a program
 that embeds the proxy, `proxy.Config.ReadTimeout` and `WriteTimeout`), the read timeout up to 23
 hours and the write timeout up to 24, so that a write timeout longer than the read timeout can
 always be given; 0 is the default and a negative value is refused, and the flags also refuse a
@@ -182,6 +185,15 @@ logs changed snapshots; `0` disables reporting, and graceful shutdown flushes a 
 snapshot. See [format monitoring](formats.md#monitoring-and-logs). Login limits use 5000022, API quotas
 5000042, other rate rules 5000047 (5000048 for a monitor rule), a full rate-limit table 5000041 and
 inspector failures 5000040.
+
+The proxy's own refusals before the flood protection sees a request are logged too: CONNECT 5000070
+(405), a protocol upgrade or h2c 5000071 (501), a target that cannot be forwarded unchanged (absolute
+form, `*`, a raw `#`, `//` or a byte Go would re-encode) 5000072 (400), and a client address or
+forwarding chain that cannot be read 5000073 (400, naming the connection's address with
+`-log-details`). Nothing has limited such a request yet, so each of the four is logged at most once
+a second; how many were not follows in a line of its own ("a CONNECT request (37 more refusals not
+logged)") within about a second, before that kind's next line, and when the proxy stops, naming no
+client or request. They do not count toward an address's standing with the flood protection.
 
 See [attack coverage](attacks.md) and [security findings](../../docs/security-findings.md) for
 application-dependent limits and verified fixes.

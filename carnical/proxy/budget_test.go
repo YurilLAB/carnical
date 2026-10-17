@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strconv"
 	"strings"
@@ -363,28 +364,30 @@ func TestBodiesAreCappedAndAnEngineErrorIsNotAnEmpty200(t *testing.T) {
 		request string
 		want    int
 		reaches bool
+		id      int // the refusal recorded last
 	}{
-		{"a form under the limit", post(form(1000)), 200, true},
-		{"a form over the limit", post(form(5000)), 413, false},
-		{"a chunked form under the limit", chunked(form(1000)), 200, true},
-		{"a chunked form over the limit, which has no length to check up front", chunked(form(5000)), 413, false},
-		{"an upload may exceed the form limit", multipart(20000), 200, true},
-		{"an upload over the body limit", multipart(70000), 413, false},
+		{"a form under the limit", post(form(1000)), 200, true, 0},
+		{"a form over the limit", post(form(5000)), 413, false, idBodyTooLarge},
+		{"a chunked form under the limit", chunked(form(1000)), 200, true, 0},
+		{"a chunked form over the limit, which has no length to check up front", chunked(form(5000)), 413, false, idBodyTooLarge},
+		{"an upload may exceed the form limit", multipart(20000), 200, true, 0},
+		{"an upload over the body limit", multipart(70000), 413, false, idBodyTooLarge},
 		// The fields of a multipart body that are not files are a form, and are held to its limit.
-		{"a multipart field over the form limit", upload(field(5000) + "--XX--\r\n"), 413, false},
-		{"multipart fields together over the form limit", upload(field(1500) + field(1500) + field(1500) + "--XX--\r\n"), 413, false},
-		{"multipart fields under the form limit beside a large file", upload(field(1500) + file(20000) + field(1500) + "--XX--\r\n"), 200, true},
-		{"a multipart body over the form limit that cannot be read as parts", upload(field(1000) + file(20000)), 413, false},
+		{"a multipart field over the form limit", upload(field(5000) + "--XX--\r\n"), 413, false, idMultipartFields},
+		{"multipart fields together over the form limit", upload(field(1500) + field(1500) + field(1500) + "--XX--\r\n"), 413, false, idMultipartFields},
+		{"multipart fields under the form limit beside a large file", upload(field(1500) + file(20000) + field(1500) + "--XX--\r\n"), 200, true, 0},
+		{"a multipart body over the form limit that cannot be read as parts", upload(field(1000) + file(20000)), 413, false, idMultipartFields},
 		// Everything but the content of the files is held to the form limit: part headers, names and file names too.
-		{"a file whose part headers are over the form limit", upload("--XX\r\nContent-Disposition: form-data; name=\"f\"; filename=\"a.txt\"\r\nX-A: " + pad + "\r\nX-B: " + pad + "\r\nX-C: " + pad + "\r\nX-D: " + pad + "\r\nX-E: " + pad + "\r\n\r\ny\r\n--XX--\r\n"), 413, false},
-		{"files whose names are over the form limit together", upload(strings.Repeat("--XX\r\nContent-Disposition: form-data; name=\""+strings.Repeat("n", 1000)+"\"; filename=\""+strings.Repeat("z", 1000)+".txt\"\r\n\r\ny\r\n", 3) + "--XX--\r\n"), 413, false},
+		{"a file whose part headers are over the form limit", upload("--XX\r\nContent-Disposition: form-data; name=\"f\"; filename=\"a.txt\"\r\nX-A: " + pad + "\r\nX-B: " + pad + "\r\nX-C: " + pad + "\r\nX-D: " + pad + "\r\nX-E: " + pad + "\r\n\r\ny\r\n--XX--\r\n"), 413, false, idMultipartFields},
+		{"files whose names are over the form limit together", upload(strings.Repeat("--XX\r\nContent-Disposition: form-data; name=\""+strings.Repeat("n", 1000)+"\"; filename=\""+strings.Repeat("z", 1000)+".txt\"\r\n\r\ny\r\n", 3) + "--XX--\r\n"), 413, false, idMultipartFields},
 		// PHP reads a part that only filename* names as a file as a field, so it is refused rather than left uncounted.
-		{"a field named as a file only by filename*, over the form limit", upload("--XX\r\nContent-Disposition: form-data; name=\"t\"; filename*=utf-8''a.txt\r\n\r\n" + strings.Repeat("z", 20000) + "\r\n--XX--\r\n"), 400, false},
-		{"a malformed chunk", "POST /submit HTTP/1.1\r\n" + preamble + "Content-Type: application/x-www-form-urlencoded\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\nZZ\r\nabc\r\n", 400, false},
+		{"a field named as a file only by filename*, over the form limit", upload("--XX\r\nContent-Disposition: form-data; name=\"t\"; filename*=utf-8''a.txt\r\n\r\n" + strings.Repeat("z", 20000) + "\r\n--XX--\r\n"), 400, false, idAmbiguousType},
+		{"a malformed chunk", "POST /submit HTTP/1.1\r\n" + preamble + "Content-Type: application/x-www-form-urlencoded\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\nZZ\r\nabc\r\n", 400, false, idBodyUnreadable},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s := start(t, small)
+			var seen refusals
+			s := start(t, func(c *Config) { small(c); c.OnMatch = seen.record })
 			status, _ := s.raw(t, tt.request)
 			if status != tt.want {
 				t.Fatalf("status %d, want %d", status, tt.want)
@@ -392,8 +395,22 @@ func TestBodiesAreCappedAndAnEngineErrorIsNotAnEmpty200(t *testing.T) {
 			if got := len(s.up.requests()) > 0; got != tt.reaches {
 				t.Fatalf("reached the application: %v, want %v", got, tt.reaches)
 			}
+			if seen.last() != tt.id {
+				t.Fatalf("recorded id %d, want %d", seen.last(), tt.id)
+			}
 		})
 	}
+	// The proxy reads every body before the engine does, so no request reaches an engine that leaves it unanswered; were
+	// one to, the guard still answers and records it rather than let net/http send an empty 200.
+	t.Run("an engine that does not answer", func(t *testing.T) {
+		var seen refusals
+		e := &Edge{cfg: Config{OnMatch: seen.record, MaxFormBody: 4 << 10}}
+		w := httptest.NewRecorder()
+		e.guard(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/page", nil))
+		if w.Code != http.StatusBadRequest || seen.last() != idEngineUnanswered {
+			t.Fatalf("status %d, recorded id %d", w.Code, seen.last())
+		}
+	})
 }
 
 // interruptingTx stands for an engine transaction whose every phase and body write ends with it.

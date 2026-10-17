@@ -51,6 +51,15 @@ const (
 	idUpstreamReclaimed   = 5000052
 	idCrowdSecBan         = 5000060
 	idCrowdSecUnavailable = 5000061
+	// The refusals before the flood protection admits a request (see refuseEarly), and the body's.
+	idConnect          = 5000070
+	idUpgrade          = 5000071
+	idTarget           = 5000072
+	idClientAddr       = 5000073
+	idBodyTooLarge     = 5000074
+	idBodyUnreadable   = 5000075
+	idBodySlow         = 5000076 // counted (Edge.SlowBodies), not logged: a slow client, not a refusal
+	idEngineUnanswered = 5000077
 )
 
 // PathPolicy says how plain the request path must be. The zero value is the strict default.
@@ -179,6 +188,52 @@ func contentEncoded(h http.Header) bool {
 func (e *Edge) refuse(w http.ResponseWriter, r *http.Request, status int, id int, msg string) {
 	e.report(Match{RuleID: id, Severity: "CRITICAL", Message: msg, Disruptive: true}, nil, r)
 	http.Error(w, http.StatusText(status), status)
+}
+
+// refuseEarly answers a request refused before the flood protection has seen it: a CONNECT, an upgrade, a target that cannot
+// be forwarded or a client address that cannot be read (rules 5000070 to 5000073). Nothing has limited such a request yet,
+// so a client can send them as fast as it likes: each kind is logged at most once a second. The ones not logged are counted,
+// and the count is logged in a line of its own a second later at most, before the kind's next line, or when the edge is
+// closed (see flushEarly), as the rate rules' are. The shield does not count them toward the address yet: that is to be
+// added here, where the kind of refusal is known, as Shield.Rejected(rec.client) only when rec.client is valid. When the
+// visitor's address cannot be read (5000073, or a forwarding chain that is also bad) only the connection's is known, and
+// that may be a trusted proxy's, which carries every visitor behind it: such a refusal is counted globally or not at all,
+// never against that address.
+func (e *Edge) refuseEarly(w http.ResponseWriter, r *http.Request, rec *record, status, id int, msg string) {
+	if i := id - idConnect; e.cfg.OnMatch != nil && i >= 0 && i < len(e.earlyLog) {
+		s, second := &e.earlyLog[i], e.clock()/int64(time.Second)
+		if previous := s.second.Load(); second == previous || !s.second.CompareAndSwap(previous, second) {
+			s.unlogged.Add(1)
+			if s.flushDue.CompareAndSwap(false, true) {
+				time.AfterFunc(time.Second, func() { s.flushDue.Store(false); e.flushEarly(i) })
+			}
+		} else {
+			e.flushEarly(i)
+			e.report(Match{RuleID: id, Severity: "CRITICAL", Message: msg, Disruptive: true}, rec, r)
+		}
+	}
+	http.Error(w, http.StatusText(status), status)
+}
+
+// earlyKinds names the kinds of refusal refuseEarly logs, by their place in Edge.earlyLog, for the line that counts the
+// ones not logged.
+var earlyKinds = [idClientAddr - idConnect + 1]string{"a CONNECT request", "a protocol upgrade", "a request target that cannot be forwarded unchanged",
+	"the client address or forwarding chain"}
+
+// flushEarly logs how many refusals of one kind refuseEarly did not log, if any. They may be any clients', so the line names
+// none and no request, as flushLimit's.
+func (e *Edge) flushEarly(i int) {
+	if n := e.earlyLog[i].unlogged.Swap(0); n > 0 {
+		e.report(Match{RuleID: idConnect + i, Severity: "CRITICAL", Disruptive: true,
+			Message: earlyKinds[i] + " (" + strconv.FormatInt(n, 10) + " more refusals not logged)"}, nil, nil)
+	}
+}
+
+// sampled is the state of a line logged at most once a second: the second it was last logged, how many were not, and
+// whether a line counting them is scheduled.
+type sampled struct {
+	second, unlogged atomic.Int64
+	flushDue         atomic.Bool
 }
 
 // checkRequest applies the request-side policy that does not need the body. It reports whether the request may go on.

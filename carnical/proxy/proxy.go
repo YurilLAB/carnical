@@ -180,6 +180,8 @@ type Edge struct {
 	conns             *connLimiter
 	connLogSecond     atomic.Int64 // the last second a connection refused by MaxConnsPerIP was reported (see reportTooManyConns)
 	connUnlogged      atomic.Int64
+	earlyLog          [idClientAddr - idConnect + 1]sampled // see refuseEarly
+	slowBodies        atomic.Int64                          // see SlowBodies
 }
 
 type contextKey struct{}
@@ -271,6 +273,9 @@ func New(cfg Config) (*Edge, error) {
 	e.rules = compileLimits(cfg)
 	e.evictLogSecond.Store(neverLogged)
 	e.connLogSecond.Store(neverLogged)
+	for i := range e.earlyLog {
+		e.earlyLog[i].second.Store(neverLogged)
+	}
 	for _, h := range cfg.DenyHeaders {
 		e.deny[strings.ReplaceAll(strings.ToLower(strings.TrimSpace(h)), "_", "-")] = true
 	}
@@ -316,13 +321,20 @@ func (e *Edge) RateTotals() RateTotals {
 	return RateTotals{Refused: e.rateRefused.Load(), EvictedLive: e.evictedLive.Load()}
 }
 
+// SlowBodies is how many requests were answered 408 because their body did not arrive within ReadTimeout (rule 5000076). They
+// are counted, not logged: a slow client is not refused for what it sent.
+func (e *Edge) SlowBodies() int64 { return e.slowBodies.Load() }
+
 // ServeHTTP implements http.Handler.
 func (e *Edge) ServeHTTP(w http.ResponseWriter, r *http.Request) { e.handler.ServeHTTP(w, r) }
 
-// Close logs the rate-rule refusals not logged yet and releases the compiled rules.
+// Close logs the rate-rule and early refusals not logged yet and releases the compiled rules.
 func (e *Edge) Close() error {
 	for _, rule := range e.rules {
 		e.flushLimit(rule)
+	}
+	for i := range e.earlyLog {
+		e.flushEarly(i)
 	}
 	if c, ok := e.waf.(experimental.WAFCloser); ok {
 		return c.Close()
@@ -470,24 +482,28 @@ func (e *Edge) refuseCrowdSec(w http.ResponseWriter, r *http.Request, action cro
 func (e *Edge) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rec := newRecord()
+		addr, port, addrErr := clientAddr(r, e.cfg.TrustedProxies)
+		if addrErr == nil {
+			rec.client = addr
+		} else {
+			rec.conn = connAddr(r.RemoteAddr) // the visitor's is not known: the line names the connection's
+		}
 		if r.Method == http.MethodConnect {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			e.refuseEarly(w, r, rec, http.StatusMethodNotAllowed, idConnect, "a CONNECT request")
 			return
 		}
 		if !e.cfg.AllowUpgrade && wantsUpgrade(r.Header) {
-			http.Error(w, "protocol upgrades are not supported", http.StatusNotImplemented)
+			e.refuseEarly(w, r, rec, http.StatusNotImplemented, idUpgrade, "a protocol upgrade")
 			return
 		}
 		if err := checkTarget(r); err != nil {
-			http.Error(w, "invalid request target", http.StatusBadRequest)
+			e.refuseEarly(w, r, rec, http.StatusBadRequest, idTarget, "a request target that cannot be forwarded unchanged: "+err.Error())
 			return
 		}
-		addr, port, err := clientAddr(r, e.cfg.TrustedProxies)
-		if err != nil {
-			http.Error(w, "invalid client address", http.StatusBadRequest)
+		if addrErr != nil {
+			e.refuseEarly(w, r, rec, http.StatusBadRequest, idClientAddr, "the client address or forwarding chain: "+addrErr.Error())
 			return
 		}
-		rec.client = addr
 		peer := r.RemoteAddr // the connection's own address, before it is replaced by the visitor's
 		// Coraza splits RemoteAddr at its last colon, so an IPv6 address is given without brackets.
 		r.RemoteAddr = fmt.Sprintf("%s:%d", addr, port)
@@ -529,7 +545,7 @@ func (e *Edge) guard(next http.Handler) http.Handler {
 
 		limit := e.bodyLimit(r)
 		if r.ContentLength > limit {
-			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			e.refuse(w, r, http.StatusRequestEntityTooLarge, idBodyTooLarge, "the request body is over its size limit")
 			return
 		}
 		capped := &capReader{left: limit}
@@ -547,17 +563,18 @@ func (e *Edge) guard(next http.Handler) http.Handler {
 			// upstream place before it is all in, when the engine does not read it (with the rules off, for one).
 			body, err := io.ReadAll(r.Body)
 			if err != nil {
-				status, msg := http.StatusBadRequest, "the request could not be read"
 				var networkError net.Error
 				switch {
 				case capped.tooLarge:
-					status, msg = http.StatusRequestEntityTooLarge, "request body too large"
+					e.refuse(w, r, http.StatusRequestEntityTooLarge, idBodyTooLarge, "the request body is over its size limit")
 				case errors.Is(err, os.ErrDeadlineExceeded) || errors.As(err, &networkError) && networkError.Timeout():
 					// The client was too slow for ReadTimeout: not a malformed request, and the shield does not count a 408
-					// as a security rejection.
-					status, msg = http.StatusRequestTimeout, "the request took too long to arrive"
+					// as a security rejection. It is counted, not logged.
+					e.slowBodies.Add(1)
+					http.Error(w, "the request took too long to arrive", http.StatusRequestTimeout)
+				default:
+					e.refuse(w, r, http.StatusBadRequest, idBodyUnreadable, "the request body could not be read")
 				}
-				http.Error(w, msg, status)
 				return
 			}
 			ireq, replaced, ok := e.runInspectors(w, r, rawPath, rawQuery, body, addr)
@@ -570,7 +587,7 @@ func (e *Edge) guard(next http.Handler) http.Handler {
 			}
 			// Validate the bytes and media type that will reach Coraza and the application, including after decompression.
 			if int64(len(body)) > e.bodyLimit(r) {
-				http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+				e.refuse(w, r, http.StatusRequestEntityTooLarge, idBodyTooLarge, "the request body is over its size limit once decompressed")
 				return
 			}
 			if readAsMultipart(r.Header) {
@@ -632,11 +649,11 @@ func (e *Edge) guard(next http.Handler) http.Handler {
 			// The engine returns without answering when it could not process the request (the body ended early, a
 			// chunk was malformed, the body went over its limit). net/http would send an empty 200, which tells the
 			// visitor the request was handled when nothing was forwarded.
-			status, msg := http.StatusBadRequest, "the request could not be processed"
 			if capped.tooLarge {
-				status, msg = http.StatusRequestEntityTooLarge, "request body too large"
+				e.refuse(w, r, http.StatusRequestEntityTooLarge, idBodyTooLarge, "the request body is over its size limit")
+			} else {
+				e.refuse(w, r, http.StatusBadRequest, idEngineUnanswered, "the rule engine could not process the request")
 			}
-			http.Error(w, msg, status)
 		}
 	})
 }

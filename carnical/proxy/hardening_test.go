@@ -123,7 +123,7 @@ func TestRefusalsHoldWithTheRuleSetOffAndAreRecorded(t *testing.T) {
 		{"an ordinary request", get("/page"), nil, 200, 0},
 		{"an encoded slash", get("/a%2fb"), nil, 400, idPathNotCanon},
 		{"a dot segment", get("/a/../admin"), nil, 400, idPathNotCanon},
-		{"a raw hash in the query", get("/page?a=1#&q=x"), nil, 400, 0},
+		{"a raw hash in the query", get("/page?a=1#&q=x"), nil, 400, idTarget},
 		{"an encoded hash in the query", get("/page?a=%23&q=x"), nil, 200, 0},
 		{"a name the site does not answer to", get("/page"), func(c *Config) { c.AllowedHosts = []string{"www.other.test"} }, 421, idHostNotAllowed},
 		{"a name it does answer to", get("/page"), func(c *Config) { c.AllowedHosts = []string{"SHOP.example.test."} }, 200, 0},
@@ -141,11 +141,13 @@ func TestRefusalsHoldWithTheRuleSetOffAndAreRecorded(t *testing.T) {
 		{"a file named by filename and filename*", uploadRequest(multipartBody("Content-Disposition: form-data; name=\"q\"; filename=\"a.txt\"; filename*=UTF-8''a.txt\r\n\r\ntext")), nil, 200, 0},
 		{"an empty file input", uploadRequest(multipartBody(filePart("", ""))), nil, 200, 0},
 		{"a chunked JSON body over the form limit", "POST /api HTTP/1.1\r\n" + preamble + "Content-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n1388\r\n" +
-			strings.Repeat("1", 5000) + "\r\n0\r\n\r\n", func(c *Config) { c.MaxFormBody = 4 << 10 }, 413, 0},
+			strings.Repeat("1", 5000) + "\r\n0\r\n\r\n", func(c *Config) { c.MaxFormBody = 4 << 10 }, 413, idBodyTooLarge},
+		{"a forwarding chain that is not addresses", get("/page", "X-Forwarded-For: 198.51.100.10, junk\r\n"), func(c *Config) { c.TrustedProxies = loopback.Allow }, 400, idClientAddr},
+		{"a forwarding chain that is", get("/page", "X-Forwarded-For: 198.51.100.10\r\n"), func(c *Config) { c.TrustedProxies = loopback.Allow }, 200, 0},
 		{"a header the site does not accept", get("/page", "Next-Action: abc\r\n"), func(c *Config) { c.DenyHeaders = []string{"next-action"} }, 400, idInternalHeader},
 		{"the same header with underscores", get("/page", "Next_Action: abc\r\n"), func(c *Config) { c.DenyHeaders = []string{"Next-Action"} }, 400, idInternalHeader},
 		{"that header on a site that did not ask", get("/page", "Next-Action: abc\r\n"), nil, 200, 0},
-		// A slow client, not a refusal: nothing is recorded.
+		// A slow client, not a refusal: it is counted, and nothing is recorded.
 		{"a body that does not arrive within the read timeout", strings.Replace(post("a=1"), "Content-Length: 3", "Content-Length: 30", 1),
 			func(c *Config) { c.ReadTimeout = 300 * time.Millisecond }, 408, 0},
 	}
@@ -168,6 +170,9 @@ func TestRefusalsHoldWithTheRuleSetOffAndAreRecorded(t *testing.T) {
 			}
 			if seen.last() != tt.id {
 				t.Fatalf("recorded id %d, want %d", seen.last(), tt.id)
+			}
+			if slow := s.edge.SlowBodies(); slow != map[bool]int64{true: 1}[tt.want == http.StatusRequestTimeout] {
+				t.Fatalf("%d slow bodies counted", slow)
 			}
 		})
 	}

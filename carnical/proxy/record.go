@@ -15,8 +15,10 @@ type record struct {
 	// id names the request on every line about it. The rule engine's transaction is given it too (see budgetWAF), so
 	// the rule set's lines and the proxy's, the inspectors' and the rate rules' carry the same id.
 	id string
-	// client is the visitor's address once it is known (see clientAddr), without a port.
-	client netip.Addr
+	// client is the visitor's address once it is known (see clientAddr), without a port. conn is the connection's
+	// address, set only when the visitor's cannot be read: it may be a trusted proxy's, which carries other visitors'
+	// requests too, so it names the line and is never counted against as a visitor.
+	client, conn netip.Addr
 }
 
 type recordKey struct{}
@@ -59,6 +61,8 @@ func (e *Edge) report(m Match, rec *record, r *http.Request) {
 	if e.cfg.LogDetails {
 		if rec != nil && rec.client.IsValid() {
 			m.ClientIP = rec.client.String()
+		} else if rec != nil && rec.conn.IsValid() {
+			m.ClientIP = rec.conn.String()
 		}
 		if r != nil && m.URI == "" {
 			m.URI = r.RequestURI

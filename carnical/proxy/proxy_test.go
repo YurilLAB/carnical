@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -200,37 +201,94 @@ func TestTheTargetReachesTheApplicationExactlyAsSent(t *testing.T) {
 	}
 }
 
+// ticking makes every reading of the edge's clock a second after the last, so that no line sampled once a second is held back.
+func ticking(e *Edge) {
+	var now atomic.Int64
+	e.now = func() int64 { return now.Add(int64(time.Second)) }
+}
+
 func TestTargetsThatCouldNotBeForwardedUnchangedAreRefused(t *testing.T) {
-	s := start(t, nil)
-	for name, data := range map[string]string{
-		"absolute form":             "GET http://shop.example.test/page HTTP/1.1\r\nHost: shop.example.test\r\nConnection: close\r\n\r\n",
-		"double slash":              get("//evil.example/x"),
-		"a byte Go would re-encode": get("/a%2fb|"),
-		"a caret":                   get("/a^b"),
-		"CONNECT":                   "CONNECT shop.example.test:443 HTTP/1.1\r\nHost: shop.example.test:443\r\nConnection: close\r\n\r\n",
-		"asterisk":                  "OPTIONS * HTTP/1.1\r\nHost: shop.example.test\r\nConnection: close\r\n\r\n",
+	var seen refusals
+	s := start(t, func(c *Config) { c.OnMatch = seen.record })
+	ticking(s.edge)
+	for _, tc := range []struct {
+		name, data string
+		id         int
+	}{
+		{"absolute form", "GET http://shop.example.test/page HTTP/1.1\r\nHost: shop.example.test\r\nConnection: close\r\n\r\n", idTarget},
+		{"double slash", get("//evil.example/x"), idTarget},
+		{"a byte Go would re-encode", get("/a%2fb|"), idTarget},
+		{"a caret", get("/a^b"), idTarget},
+		{"CONNECT", "CONNECT shop.example.test:443 HTTP/1.1\r\nHost: shop.example.test:443\r\nConnection: close\r\n\r\n", idConnect},
+		{"asterisk", "OPTIONS * HTTP/1.1\r\nHost: shop.example.test\r\nConnection: close\r\n\r\n", idTarget},
 	} {
-		status, _ := s.raw(t, data)
-		if status == 200 {
-			t.Errorf("%s: status %d", name, status)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			before := seen.count(tc.id)
+			if status, _ := s.raw(t, tc.data); status == 200 || status == 0 {
+				t.Fatalf("status %d", status)
+			}
+			if n := seen.count(tc.id) - before; n != 1 {
+				t.Fatalf("recorded %d lines of rule %d, want one", n, tc.id)
+			}
+		})
 	}
 	if n := len(s.up.requests()); n != 0 {
 		t.Fatalf("%d refused requests reached the application", n)
 	}
+	// Nothing has limited these requests yet, so a client can send them as fast as it likes: one line a second, and the ones
+	// not logged are counted in a line of their own within a second or so, and at close.
+	t.Run("a flood of them is logged once a second and counted", func(t *testing.T) {
+		var seen matches
+		s := start(t, func(c *Config) { c.OnMatch = seen.record })
+		var now atomic.Int64
+		s.edge.now = now.Load
+		for range 3 {
+			s.raw(t, get("//evil.example/x"))
+		}
+		for deadline := time.Now().Add(5 * time.Second); len(seen.all()) < 2; time.Sleep(10 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("the count was not logged on its own: %+v", seen.all())
+			}
+		}
+		now.Add(int64(time.Second))
+		for range 4 {
+			s.raw(t, "CONNECT shop.example.test:443 HTTP/1.1\r\nHost: shop.example.test:443\r\nConnection: close\r\n\r\n")
+		}
+		if err := s.edge.Close(); err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, m := range seen.all() {
+			if !m.Disruptive || m.TransactionID == "" && !strings.HasSuffix(m.Message, " more refusals not logged)") {
+				t.Errorf("a line %+v", m)
+			}
+			got = append(got, fmt.Sprint(m.RuleID, " ", m.Message))
+		}
+		want := []string{"5000072 a request target that cannot be forwarded unchanged: not an origin-form target",
+			"5000072 a request target that cannot be forwarded unchanged (2 more refusals not logged)",
+			"5000070 a CONNECT request", "5000070 a CONNECT request (3 more refusals not logged)"}
+		if strings.Join(got, "\n") != strings.Join(want, "\n") {
+			t.Fatalf("logged %q, want %q", got, want)
+		}
+	})
 }
 
 func TestProtocolUpgradesAreRefused(t *testing.T) {
-	s := start(t, nil)
+	var seen refusals
+	s := start(t, func(c *Config) { c.OnMatch = seen.record })
+	ticking(s.edge)
 	for name, headers := range map[string][]string{
 		"websocket":                   {"Connection: Upgrade\r\n", "Upgrade: websocket\r\n", "Sec-WebSocket-Key: x\r\n", "Sec-WebSocket-Version: 13\r\n"},
 		"h2c":                         {"Connection: Upgrade, HTTP2-Settings\r\n", "Upgrade: h2c\r\n", "HTTP2-Settings: AAMAAABkAAQAAP__\r\n"},
 		"upgrade without Connection":  {"Upgrade: websocket\r\n"},
 		"Connection on a second line": {"Connection: keep-alive\r\n", "Connection: Upgrade\r\n", "Upgrade: websocket\r\n"},
 	} {
-		if status, _ := s.raw(t, get("/ws", headers...)); status != http.StatusNotImplemented {
-			t.Errorf("%s: status %d, want 501", name, status)
-		}
+		t.Run(name, func(t *testing.T) {
+			before := seen.count(idUpgrade)
+			if status, _ := s.raw(t, get("/ws", headers...)); status != http.StatusNotImplemented || seen.count(idUpgrade) != before+1 {
+				t.Fatalf("status %d, %d lines of rule %d recorded; want 501 and one", status, seen.count(idUpgrade)-before, idUpgrade)
+			}
+		})
 	}
 	if n := len(s.up.requests()); n != 0 {
 		t.Fatalf("%d upgrade requests reached the application", n)
