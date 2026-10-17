@@ -569,13 +569,16 @@ func (e *Edge) refuseCrowdSec(w http.ResponseWriter, r *http.Request, action cro
 		e.note(Match{RuleID: id, Severity: "CRITICAL", Disruptive: true, status: status}, recordOf(r.Context())) // the alert is not sampled
 		http.Error(w, http.StatusText(status), status)
 	}
+	if rec := recordOf(r.Context()); e.cfg.Shield != nil && id == idCrowdSecBan && rec != nil && rec.client.IsValid() {
+		e.cfg.Shield.Rejected(rec.client) // a banned address counts toward its own limit, as a refusal before admission does
+	}
 }
 
 // guard refuses what cannot be inspected faithfully, and tells the WAF and the application who the visitor is.
 func (e *Edge) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rec := newRecord()
-		rec.alerts = e.cfg.OnAlert != nil
+		rec.alerts = e.cfg.OnAlert != nil || e.cfg.Shield != nil // the shield is told of would-be refusals and offences
 		var watch *writeWatch
 		defer func() {
 			e.reportHeld(rec)
@@ -622,6 +625,11 @@ func (e *Edge) guard(next http.Handler) http.Handler {
 			// Flood admission costs a few map lookups: a request it refuses is never read further.
 			d := sh.Admit(r, addr)
 			if d.Action != shield.Allow {
+				// A refusal has its alert, deduplicated per source: no line per request, which a flood would multiply. The
+				// challenge, shown or solved, is not a finding about the visitor.
+				if d.Action == shield.Refuse || d.Action == shield.Respond && d.Status >= http.StatusBadRequest {
+					e.note(Match{RuleID: d.RuleID(), Severity: "WARNING", Disruptive: true, status: d.Status}, rec)
+				}
 				sh.Write(w, r, d)
 				return
 			}

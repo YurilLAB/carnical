@@ -4,6 +4,7 @@ package proxy
 
 import (
 	"net/http"
+	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
@@ -132,8 +133,8 @@ func layerOf(id int) alert.Layer {
 	return alert.LayerProxy
 }
 
-// note adds a finding to the request's record, for its alerts. It does nothing without Config.OnAlert, outside a request,
-// or once the request is done. A rule set match feeds the rule set's verdict instead (see budgetTx.Close).
+// note adds a finding to the request's record, for its alerts and what the flood protection is told of it. It does
+// nothing without Config.OnAlert or Config.Shield, outside a request, or once the request is done. A rule set match feeds the rule set's verdict instead (see budgetTx.Close).
 func (e *Edge) note(m Match, rec *record) {
 	if rec == nil || !rec.alerts {
 		return
@@ -151,6 +152,13 @@ func (e *Edge) note(m Match, rec *record) {
 		case alert.LayerCrowdSec:
 			if m.RuleID == idCrowdSecBan {
 				x.action = alert.SourceBlocked
+			}
+		case alert.LayerShield:
+			switch m.RuleID {
+			case 5004008: // a banned address
+				x.action = alert.SourceBlocked
+			case 5004001, 5004002, 5004003, 5004004: // over its own, its network's or an attack's budget
+				x.action = alert.RateLimited
 			}
 		}
 	case m.would:
@@ -243,6 +251,14 @@ func (rec *record) finish(e *Edge, r *http.Request, sent int) {
 		defer func() { *f = findings{}; findingsPool.Put(f) }()
 	}
 	base := e.alertBase(rec, r)
+	var out outcome
+	defer out.tell(e, rec.client)
+	emit := func(a alert.Alert) {
+		out.add(&a)
+		if e.cfg.OnAlert != nil {
+			e.cfg.OnAlert(a)
+		}
+	}
 	status := func(own int) int {
 		if sent >= 400 {
 			return sent
@@ -278,23 +294,23 @@ func (rec *record) finish(e *Edge, r *http.Request, sent int) {
 		if end.refused != 0 {
 			a.Action, a.Status = alert.Blocked, status(end.status)
 		}
-		e.cfg.OnAlert(a)
+		emit(a)
 	}
 	// The ends of evaluation that no rule gave.
 	switch {
 	case end.busy:
-		e.engineAlert(base, idEvalBusy, alert.Blocked, mode, status(http.StatusServiceUnavailable))
+		emit(engineAlert(base, idEvalBusy, alert.Blocked, mode, status(http.StatusServiceUnavailable)))
 	case end.cutRefused:
-		e.engineAlert(base, idEvalBudget, alert.Blocked, mode, status(http.StatusServiceUnavailable))
+		emit(engineAlert(base, idEvalBudget, alert.Blocked, mode, status(http.StatusServiceUnavailable)))
 	case end.cut && end.refused == 0:
 		// Detection mode let the request go on with the rest of its rules unread.
-		e.engineAlert(base, idEvalBudget, alert.NotInspected, mode, 0)
+		emit(engineAlert(base, idEvalBudget, alert.NotInspected, mode, 0))
 	case end.closed:
 		a := base
 		a.Layer, a.Mode, a.Action, a.Risk = alert.LayerCRS, mode, alert.ClientClosed, alert.RiskInfo
-		e.cfg.OnAlert(a)
+		emit(a)
 	case end.noRule:
-		e.engineAlert(base, idEngineUnanswered, alert.Blocked, mode, status(http.StatusForbidden))
+		emit(engineAlert(base, idEngineUnanswered, alert.Blocked, mode, status(http.StatusForbidden)))
 	}
 	for i := range f.n {
 		x := &f.list[i]
@@ -308,16 +324,74 @@ func (rec *record) finish(e *Edge, r *http.Request, sent int) {
 		if x.action.Refused() {
 			a.Status = status(x.status)
 		}
-		e.cfg.OnAlert(a)
+		emit(a)
 	}
 }
 
-// engineAlert gives the alert of an end of evaluation that no rule gave.
-func (e *Edge) engineAlert(a alert.Alert, id int, action alert.Action, mode alert.Mode, status int) {
+// engineAlert is the alert of an end of evaluation that no rule gave.
+func engineAlert(a alert.Alert, id int, action alert.Action, mode alert.Mode, status int) alert.Alert {
 	entry, _ := alert.Lookup(id)
 	a.Layer, a.Mode, a.Action, a.RuleID, a.Status = alert.LayerCRS, mode, action, id, status
 	a.Sig, a.SigName, a.Risk, a.Categories = signature(id), entry.Name, entry.Risk, entry.Categories
-	e.cfg.OnAlert(a)
+	return a
+}
+
+// outcome is what the flood protection is told of a request once its alerts are built: whether a check in detection or
+// monitor mode would have refused it, and the offence it counts toward a repeat offender's ban (see offencePoints).
+type outcome struct {
+	would  bool
+	points int
+	sig    string
+}
+
+func (o *outcome) add(a *alert.Alert) {
+	if a.Action == alert.WouldBlock {
+		o.would = true
+	}
+	if p := offencePoints(a); p > o.points {
+		o.points, o.sig = p, a.Sig
+	}
+}
+
+// tell gives the flood protection the request's outcome. client is the visitor's verified address, never one a forwarded
+// header named without a trusted proxy: an untrusted peer that names another address is itself the client.
+func (o *outcome) tell(e *Edge, client netip.Addr) {
+	sh := e.cfg.Shield
+	if sh == nil || !client.IsValid() {
+		return
+	}
+	if o.would {
+		sh.WouldReject(client)
+	}
+	if o.points > 0 {
+		sh.Offend(client, o.points, o.sig)
+	}
+}
+
+// offencePoints is what one alert of a request counts toward its source's ban (ADR-0085): only a refusal by a check that
+// enforces and is sure of what it found. A request counts once, for its strongest alert. Rate limits, the flood
+// protection's own refusals, a CrowdSec ban, a low or informational finding and anything only detected count nothing, so
+// that a burst of ordinary traffic or one false positive never bans an address.
+func offencePoints(a *alert.Alert) int {
+	if a.Action != alert.Blocked || a.Risk < alert.RiskMedium {
+		return 0
+	}
+	switch {
+	case a.RuleID == 949110 || a.RuleID == 959100:
+		if a.Categories.Attacks().Len() >= 2 || a.Categories.Has(alert.CatScanner) {
+			return 4
+		}
+		return 3
+	case a.RuleID == idUploadName || a.RuleID == idUploadScript || a.RuleID == idWordPressPHP:
+		return 4
+	case a.Layer == alert.LayerVPatch:
+		return 4
+	case (a.Layer == alert.LayerFormats || a.Layer == alert.LayerAPIGuard) && a.Risk == alert.RiskHigh:
+		return 2
+	case a.RuleID >= idConnect && a.RuleID <= idConnect+2: // CONNECT, an upgrade, a target that cannot be forwarded
+		return 1
+	}
+	return 0
 }
 
 // signature is an id's signature; an id in no known range gets "rule-" and the id.

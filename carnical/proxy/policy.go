@@ -195,14 +195,16 @@ func (e *Edge) refuse(w http.ResponseWriter, r *http.Request, status int, id int
 // be forwarded or a client address that cannot be read (rules 5000070 to 5000073). Nothing has limited such a request yet,
 // so a client can send them as fast as it likes: each kind is logged at most once a second. The ones not logged are counted,
 // and the count is logged in a line of its own a second later at most, before the kind's next line, or when the edge is
-// closed (see flushEarly), as the rate rules' are. The shield does not count them toward the address yet: that is to be
-// added here, where the kind of refusal is known, as Shield.Rejected(rec.client) only when rec.client is valid. When the
-// visitor's address cannot be read (5000073, or a forwarding chain that is also bad) only the connection's is known, and
-// that may be a trusted proxy's, which carries every visitor behind it: such a refusal is counted globally or not at all,
-// never against that address.
+// closed (see flushEarly), as the rate rules' are. The shield counts each toward the visitor's address (Shield.Rejected),
+// so that one sending only these is held to its own limit. When the visitor's address cannot be read (5000073, or a
+// forwarding chain that is also bad) only the connection's is known, and that may be a trusted proxy's, which carries
+// every visitor behind it: such a refusal is not counted against any address.
 func (e *Edge) refuseEarly(w http.ResponseWriter, r *http.Request, rec *record, status, id int, msg string) {
 	m := Match{RuleID: id, Severity: "CRITICAL", Message: msg, Disruptive: true, status: status}
 	e.note(m, rec) // every refusal has its alert; only the lines are sampled
+	if sh := e.cfg.Shield; sh != nil && rec != nil && rec.client.IsValid() {
+		sh.Rejected(rec.client)
+	}
 	if i := id - idConnect; e.cfg.OnMatch != nil && i >= 0 && i < len(e.earlyLog) {
 		s, second := &e.earlyLog[i], e.clock()/int64(time.Second)
 		if previous := s.second.Load(); second == previous || !s.second.CompareAndSwap(previous, second) {

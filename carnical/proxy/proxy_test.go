@@ -25,6 +25,7 @@ import (
 	"github.com/YurilLAB/coraza/carnical/alert"
 	"github.com/YurilLAB/coraza/carnical/crs"
 	"github.com/YurilLAB/coraza/carnical/inspect"
+	"github.com/YurilLAB/coraza/carnical/shield"
 )
 
 // seen is what the application behind the proxy received.
@@ -907,5 +908,115 @@ func TestTheUpstreamHostCanBePinned(t *testing.T) {
 	}
 	if got := pinned.up.requests(); len(got) != 1 || got[0].Host != "origin.internal" {
 		t.Errorf("a pinned Host is used whatever the visitor sent: %+v", got)
+	}
+}
+
+// A sequence of requests against one shield, which the single-request alert table above cannot express: the offences a
+// request's verdict counts reach the shield's repeat-offender bans (ADR-0085), keyed on the verified visitor only.
+func TestBlockedAttacksBanTheirSourceThroughTheShield(t *testing.T) {
+	sqli := "/search?q=" + url.QueryEscape("1' UNION SELECT password FROM users --")
+	from := func(addr string) string { return "X-Forwarded-For: " + addr + "\r\n" }
+	for _, tt := range []struct {
+		name       string
+		mode       shield.AutoBlockMode
+		crs        crs.Mode
+		exempt     []netip.Prefix
+		after      int    // the status of a clean request from the attacker after four attacks
+		bannedSays string // the alert of that request, if it is refused
+	}{
+		{"four blocked attacks ban the source", shield.AutoBlockOn, crs.ModeBlock, nil, 403, "shield-5004008 source_blocked 403"},
+		{"monitor only reports the source", shield.AutoBlockMonitor, crs.ModeBlock, nil, 200, ""},
+		{"attacks only detected never ban", shield.AutoBlockOn, crs.ModeDetect, nil, 200, ""},
+		{"an exempt source is never banned", shield.AutoBlockOn, crs.ModeBlock, []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24")}, 200, ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var emu sync.Mutex
+			var events []shield.Event
+			sh, err := shield.New(shield.Config{Trusted: loopback.Allow, AutoBlock: shield.AutoBlock{Mode: tt.mode, Exempt: tt.exempt},
+				OnEvent: func(ev shield.Event) { emu.Lock(); events = append(events, ev); emu.Unlock() }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(sh.Close)
+			var amu sync.Mutex
+			var got []alert.Alert
+			s := start(t, func(c *Config) {
+				c.CRS.Mode, c.Shield, c.TrustedProxies = tt.crs, sh, loopback.Allow
+				c.OnAlert = func(a alert.Alert) { amu.Lock(); got = append(got, a); amu.Unlock() }
+			})
+			for range 4 {
+				s.raw(t, get(sqli, from("203.0.113.7")))
+			}
+			amu.Lock()
+			got = got[:0]
+			amu.Unlock()
+			if status, _ := s.raw(t, get("/page", from("203.0.113.7"))); status != tt.after {
+				t.Fatalf("a clean request from the attacker: %d, want %d", status, tt.after)
+			}
+			if status, _ := s.raw(t, get("/page", from("203.0.113.9"))); status != 200 {
+				t.Fatalf("another visitor behind the same proxy: %d", status)
+			}
+			amu.Lock()
+			var says []string
+			for _, a := range got {
+				says = append(says, fmt.Sprintf("%s %s %d", a.Sig, a.Action, a.Status))
+			}
+			amu.Unlock()
+			if tt.bannedSays != "" && !slices.Contains(says, tt.bannedSays) {
+				t.Errorf("alerts %q, want %q", says, tt.bannedSays)
+			}
+			sh.Tick() // the shield's events are delivered on its tick
+			emu.Lock()
+			defer emu.Unlock()
+			var kinds []string
+			for _, ev := range events {
+				if strings.HasPrefix(ev.Kind, "source_") {
+					kinds = append(kinds, ev.Kind+" "+ev.Client.String())
+				}
+			}
+			want := map[shield.AutoBlockMode]string{shield.AutoBlockOn: "source_blocked 203.0.113.7", shield.AutoBlockMonitor: "source_would_block 203.0.113.7"}[tt.mode]
+			if tt.crs == crs.ModeDetect || tt.exempt != nil {
+				want = ""
+			}
+			if (want == "") != (len(kinds) == 0) || want != "" && kinds[0] != want {
+				t.Errorf("shield events %q, want %q", kinds, want)
+			}
+		})
+	}
+}
+
+// The shield's own counters, which no alert shows: a refusal before admission counts as a rejection of its visitor, and a
+// request a check in detection mode would have refused counts as a would-be rejection.
+func TestRefusalsAndWouldBeRefusalsReachTheShield(t *testing.T) {
+	sqli := "/search?q=" + url.QueryEscape("1' UNION SELECT password FROM users --")
+	from := "X-Forwarded-For: 203.0.113.7\r\n"
+	for _, tt := range []struct {
+		name                string
+		request             string
+		rejected, wouldBeen uint64
+	}{
+		{"a CONNECT is a rejection", "CONNECT shop.example.test:443 HTTP/1.1\r\nHost: shop.example.test:443\r\n" + from + "Connection: close\r\n\r\n", 1, 0},
+		{"an attack only detected would have been refused", get(sqli, from), 0, 1},
+		{"a clean request is neither", get("/page", from), 0, 0},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			sh, err := shield.New(shield.Config{Trusted: loopback.Allow})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(sh.Close)
+			s := start(t, func(c *Config) { c.CRS.Mode, c.Shield, c.TrustedProxies = crs.ModeDetect, sh, loopback.Allow })
+			s.raw(t, tt.request)
+			var snap shield.Snapshot
+			for deadline := time.Now().Add(2 * time.Second); ; time.Sleep(10 * time.Millisecond) { // counted once the request is done
+				snap = sh.Snapshot()
+				if snap.SecurityRejections == tt.rejected && snap.WouldRejections == tt.wouldBeen || time.Now().After(deadline) {
+					break
+				}
+			}
+			if snap.SecurityRejections != tt.rejected || snap.WouldRejections != tt.wouldBeen {
+				t.Errorf("rejections %d, would-be rejections %d; want %d and %d", snap.SecurityRejections, snap.WouldRejections, tt.rejected, tt.wouldBeen)
+			}
+		})
 	}
 }
