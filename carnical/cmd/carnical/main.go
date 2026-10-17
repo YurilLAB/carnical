@@ -44,26 +44,25 @@ func main() {
 }
 
 func run() error {
-	if len(os.Args) > 1 && os.Args[1] == "setup" {
-		if len(os.Args) != 2 {
-			return errors.New("use carnical setup without extra arguments")
-		}
-		return runSetup(os.Stdin, os.Stdout, runArgs)
-	}
-	return runArgs(os.Args[1:])
+	return runCommand(os.Args[1:], os.Stdin, os.Stdout)
 }
 
 // runArgs runs the proxy, leaving the settings a site file stores encrypted out of whatever error it returns.
 func runArgs(args []string) error {
-	private := map[string]string{}
-	return redactPrivate(runFlags(args, private), private)
+	return runArgsTo(os.Stderr, os.Stderr, args)
 }
 
-func runFlags(args []string, private map[string]string) error {
+// runArgsTo is runArgs with the flag list of -h written to usage and the log to logs.
+func runArgsTo(usage, logs io.Writer, args []string) error {
+	private := map[string]string{}
+	return redactPrivate(runFlags(usage, logs, args, private), private)
+}
+
+func runFlags(usage, logs io.Writer, args []string, private map[string]string) error {
 	flags := flag.NewFlagSet("carnical", flag.ContinueOnError)
-	flags.SetOutput(os.Stderr)
+	flags.SetOutput(usage)
 	flags.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: carnical setup | carnical [flags]")
+		fmt.Fprintln(usage, "Usage: carnical setup|check|start|help|version, or carnical [flags]\nRun 'carnical help' for a short guide. Every flag:")
 		flags.PrintDefaults()
 	}
 	configFile := flags.String("config", "", "site JSON configuration, including encrypted setup fields (maximum 64 KiB; CLI flags override it)")
@@ -271,7 +270,7 @@ func runFlags(args []string, private map[string]string) error {
 		}
 	}
 
-	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	log := slog.New(slog.NewJSONHandler(logs, nil))
 	alerts, err := configureAlerts(log, alertFlag)
 	if err != nil {
 		return fromSite(err, site, private)

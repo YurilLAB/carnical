@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"math"
 	"math/big"
 	"math/rand"
@@ -203,12 +204,13 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 		defer origin.Close()
 		listen := "127.0.0.1:" + quietPort(t, "tcp", "127.0.0.1")
 		for _, tc := range []struct {
-			name, prefix                                                               string
-			save, bad, exists, defaultKey, sameKey, noProfile, missingKey, outputError bool
+			name, prefix                                                                            string
+			save, bad, exists, defaultKey, defaultSite, sameKey, noProfile, missingKey, outputError bool
 		}{
 			{name: "declined save"},
 			{name: "encrypted saved site", save: true},
 			{name: "default account key store", save: true, defaultKey: true},
+			{name: "saved where check and start find it", save: true, defaultKey: true, defaultSite: true},
 			{name: "explicit key without account directory", save: true, noProfile: true},
 			{name: "missing account directory needs a key path", save: true, bad: true, noProfile: true, missingKey: true},
 			{name: "key fallback output failure saves nothing", save: true, bad: true, noProfile: true, outputError: true},
@@ -216,7 +218,7 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 			{name: "control character", prefix: "example.test\x1b\n", bad: true},
 			{name: "oversized input", prefix: strings.Repeat("x", 4097) + "\n", bad: true},
 			{name: "credentials refused", prefix: "example.test\nhttp://admin:password@127.0.0.1\n", bad: true},
-			{name: "public plaintext listener refused", prefix: "example.test\n" + origin.URL + "\ny\n\n\nlocal\n0.0.0.0:8080\n", bad: true},
+			{name: "public plaintext listener refused", prefix: "example.test\n" + origin.URL + "\ny\n\nlocal\n0.0.0.0:8080\n", bad: true},
 			{name: "existing config preserved", save: true, exists: true, bad: true},
 			{name: "key and config need separate files", save: true, sameKey: true, bad: true},
 		} {
@@ -231,6 +233,14 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 					t.Setenv("APPDATA", filepath.Join(dir, "appdata"))
 					t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
 					keyAnswer = ""
+				}
+				configAnswer, siteType := configPath, ""
+				if tc.defaultSite {
+					saved, err := defaultSitePath()
+					if err != nil {
+						t.Fatal(err)
+					}
+					configPath, configAnswer, siteType = saved, "", "?\n" // and the help of a question on the way
 				}
 				if tc.noProfile {
 					t.Setenv("APPDATA", "")
@@ -251,7 +261,7 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 				}
 				input := tc.prefix
 				if input == "" {
-					input = strings.Join([]string{"example.test", origin.URL, "y", "", "", "local", listen, "block", "n", "n", answer, configPath, keyAnswer, ""}, "\n")
+					input = strings.Join([]string{"example.test", origin.URL, "y", "", "local", listen, siteType, "", "block", "", "", "", "", "n", answer, configAnswer, keyAnswer, ""}, "\n")
 				}
 				var output bytes.Buffer
 				var err error
@@ -319,8 +329,22 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 				if err := runArgs(append(append([]string{}, baseArgs...), "-check")); err != nil {
 					t.Fatal(err)
 				}
+				// The commands setup prints are what check and start need: nothing at all for a site saved in its place.
+				next := "carnical check " + setupQuote(configPath)
+				if tc.defaultSite {
+					next, baseArgs = "carnical check\n", []string{"start"}
+					if !strings.Contains(output.String(), "wordpress: no scripts from uploads") {
+						t.Error("? did not explain the question")
+					}
+					if err := runCommand([]string{"check"}, nil, io.Discard); err != nil {
+						t.Fatalf("carnical check: %v", err)
+					}
+				}
+				if !strings.Contains(output.String(), next) {
+					t.Errorf("setup did not say %q:\n%s", next, &output)
+				}
 				flags := flag.NewFlagSet("encrypted override", flag.ContinueOnError)
-				for _, name := range []string{"hosts", "listen", "mode", "formats-mode", "upstream", "upstream-host", "origin-allow", "config-key-file"} {
+				for _, name := range []string{"hosts", "listen", "mode", "formats-mode", "ddos", "auto-block", "alerts", "upstream", "upstream-host", "origin-allow", "config-key-file"} {
 					flags.String(name, "", "")
 				}
 				flags.Bool("wordpress", false, "")
@@ -705,8 +729,8 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 			{"TLS gateway setup", []string{"proxy", "127.0.0.1:8080", "127.0.0.1/32"}},
 		} {
 			t.Run(flow.name, func(t *testing.T) {
-				answers := append([]string{"localhost", app.URL, "yes", "", ""}, flow.extra...)
-				answers = append(answers, "detect", "no", "no", "no", "")
+				answers := append([]string{"localhost", app.URL, "yes", ""}, flow.extra...)
+				answers = append(answers, "", "", "detect", "", "", "", "", "no", "no")
 				var transcript bytes.Buffer
 				if err := runSetup(strings.NewReader(strings.Join(answers, "\n")), &transcript, runArgs); err != nil {
 					t.Fatalf("setup=%v %s", err, &transcript)
@@ -3136,5 +3160,123 @@ func TestRecoveredProtectionDiagnostics(t *testing.T) {
 		if len(namedFields([]byte(s))) != 0 {
 			t.Fatal("malformed policy fields")
 		}
+	}
+}
+
+// The short commands only choose flags: what each turns into, and what it refuses before anything runs.
+func TestShortCommands(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("APPDATA", filepath.Join(dir, "appdata"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
+	saved, err := defaultSitePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name    string
+		args    []string
+		haveDef bool // a site is saved in the default place
+		want    []string
+		says    string // the error, if refused
+	}{
+		{"start uses the saved site", []string{"start"}, true, []string{"-config", saved}, ""},
+		{"check also checks the origin", []string{"check"}, true, []string{"-config", saved, "-check", "-check-origin"}, ""},
+		{"flags after the command are kept", []string{"start", "-mode", "block"}, true, []string{"-config", saved, "-mode", "block"}, ""},
+		{"a named file", []string{"start", "site.json", "-config-key-file", "k"}, false, []string{"-config", "site.json", "-config-key-file", "k"}, ""},
+		{"-config instead of a file", []string{"check", "--config=site.json"}, false, []string{"-check", "-check-origin", "--config=site.json"}, ""},
+		{"no saved site", []string{"start"}, false, nil, "run carnical setup first"},
+		{"the file given twice", []string{"start", "a.json", "-config", "b.json"}, true, nil, "give the site file once"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_ = os.RemoveAll(filepath.Dir(saved))
+			if tc.haveDef {
+				if err := os.MkdirAll(filepath.Dir(saved), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(saved, []byte(`{"version":1,"flags":{}}`), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := commandArgs(tc.args[0], tc.args[1:])
+			if tc.says != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.says) {
+					t.Fatalf("error %v, want one saying %q", err, tc.says)
+				}
+				return
+			}
+			if err != nil || !slices.Equal(got, tc.want) {
+				t.Fatalf("got %q, %v; want %q", got, err, tc.want)
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name string
+		args []string
+		says string // in the output, or in the error when bad
+		bad  bool
+	}{
+		{"no arguments is the guide", nil, "carnical setup", false},
+		{"help", []string{"help"}, "carnical start [FILE]", false},
+		{"-h is the guide too", []string{"-h"}, "Commands:", false},
+		{"a help topic", []string{"help", "profiles"}, "wordpress", false},
+		{"every flag", []string{"help", "flags"}, "-auto-block", false},
+		{"an unknown topic", []string{"help", "nope"}, "topics: setup", true},
+		{"an unknown command", []string{"launch"}, `unknown command "launch"`, true},
+		{"setup takes no arguments", []string{"setup", "x"}, "without extra arguments", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			err := runCommand(tc.args, strings.NewReader(""), &out)
+			if errors.Is(err, flag.ErrHelp) {
+				err = nil
+			}
+			text := out.String()
+			if err != nil {
+				text = err.Error()
+			}
+			if (err != nil) != tc.bad || !strings.Contains(text, tc.says) {
+				t.Fatalf("error %v, output %q; want bad=%v saying %q", err, out.String(), tc.bad, tc.says)
+			}
+		})
+	}
+}
+
+// Each setup answer becomes flags; a level or site type writes only what differs from the defaults.
+func TestSetupProfilesChooseFlags(t *testing.T) {
+	base := setupProtection{site: "general", level: "normal", mode: "detect", flood: "normal", autoBlock: "monitor", alerts: "on"}
+	common := map[string]any{"mode": "detect", "formats-mode": "monitor", "ddos": "normal", "auto-block": "monitor", "alerts": "on"}
+	with := func(extra map[string]any) map[string]any {
+		out := maps.Clone(common)
+		maps.Copy(out, extra)
+		return out
+	}
+	for _, tc := range []struct {
+		name   string
+		change func(*setupProtection)
+		want   map[string]any
+	}{
+		{"recommended answers add nothing", func(*setupProtection) {}, common},
+		{"block enforces the formats too", func(s *setupProtection) { s.mode = "block" }, with(map[string]any{"mode": "block", "formats-mode": "block"})},
+		{"wordpress", func(s *setupProtection) { s.site = "wordpress" }, with(map[string]any{"wordpress": true})},
+		{"api", func(s *setupProtection) { s.site = "api" }, with(map[string]any{"api-guard": "monitor"})},
+		{"java", func(s *setupProtection) { s.site = "java" }, with(map[string]any{"allow-path-params": true})},
+		{"relaxed blocks at 8", func(s *setupProtection) { s.level = "relaxed" }, with(map[string]any{"inbound-threshold": 8, "outbound-threshold": 8})},
+		{"strict is level 2", func(s *setupProtection) { s.level = "strict" }, with(map[string]any{"paranoia": 2})},
+		{"a login page", func(s *setupProtection) { s.login = "/account/login" }, with(map[string]any{"limit": "POST /account/login 10/m"})},
+		{"the other answers are written as given", func(s *setupProtection) { s.flood, s.autoBlock, s.alerts = "strict", "on", "off" },
+			with(map[string]any{"ddos": "strict", "auto-block": "on", "alerts": "off"})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := base
+			tc.change(&s)
+			got := s.flags()
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("flags %v, want %v", got, tc.want)
+			}
+			// Every value is one the proxy takes as it is.
+			if err := runArgsTo(io.Discard, io.Discard, append(setupValidationArgs(got), "-upstream=http://192.0.2.1", "-origin-allow=192.0.2.1/32")); err != nil {
+				t.Fatalf("the flags are refused: %v", err)
+			}
+		})
 	}
 }
