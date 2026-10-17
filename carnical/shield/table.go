@@ -11,15 +11,16 @@ import (
 
 // table is a bounded map split into shards, each with its own lock. When a shard is full, an entry that is no longer
 // needed is forgotten to make room (one whose state is back to what a new entry would have, or failing that the oldest
-// of a few looked at), so that an attacker with a million addresses cannot make it grow, and a new client is never
-// refused for lack of room.
+// of the lowest rank among a few looked at), so that an attacker with a million addresses cannot make it grow, and a
+// new client is never refused for lack of room.
 type table[K comparable, V any] struct {
 	shards   []tableShard[K, V]
 	per      int
 	seed     maphash.Seed
 	idle     func(v *V, now int64) bool // whether forgetting v loses nothing
 	lastUsed func(v *V) int64
-	keep     func(v *V, now int64) bool // whether v holds standing worth more than a stranger's entry; nil for none
+	rank     func(v *V, now int64) int  // how much v holds: an entry of a higher rank is forgotten after any of a lower; nil for all 0
+	gone     func(k K, v *V, now int64) // told of an entry forgotten that was not idle, under the shard's lock; nil for none
 }
 
 type tableShard[K comparable, V any] struct {
@@ -27,9 +28,9 @@ type tableShard[K comparable, V any] struct {
 	m  map[K]*V
 }
 
-func newTable[K comparable, V any](size int, idle func(*V, int64) bool, lastUsed func(*V) int64, keep func(*V, int64) bool) *table[K, V] {
+func newTable[K comparable, V any](size int, idle func(*V, int64) bool, lastUsed func(*V) int64, rank func(*V, int64) int) *table[K, V] {
 	const shards = 64
-	t := &table[K, V]{shards: make([]tableShard[K, V], shards), per: max(size/shards, 16), seed: maphash.MakeSeed(), idle: idle, lastUsed: lastUsed, keep: keep}
+	t := &table[K, V]{shards: make([]tableShard[K, V], shards), per: max(size/shards, 16), seed: maphash.MakeSeed(), idle: idle, lastUsed: lastUsed, rank: rank}
 	for i := range t.shards {
 		t.shards[i].m = map[K]*V{}
 	}
@@ -66,30 +67,29 @@ func (t *table[K, V]) peek(k K, f func(v *V)) bool {
 }
 
 func (t *table[K, V]) evict(s *tableShard[K, V], now int64) {
-	// The oldest entry without standing goes first; one with standing only if the whole sample has it.
-	var oldest, oldestKept K
-	oldestAt, keptAt, n := int64(-1), int64(-1), 0
+	// The oldest entry of the lowest rank in the sample goes: one with standing only if the whole sample has it.
+	var victim K
+	victimRank, victimAt, n := -1, int64(0), 0
 	for k, v := range s.m { // map order is random: a fair sample
 		if t.idle(v, now) {
 			delete(s.m, k)
 			return
 		}
-		at := t.lastUsed(v)
-		if t.keep != nil && t.keep(v, now) {
-			if keptAt < 0 || at < keptAt {
-				oldestKept, keptAt = k, at
-			}
-		} else if oldestAt < 0 || at < oldestAt {
-			oldest, oldestAt = k, at
+		r, at := 0, t.lastUsed(v)
+		if t.rank != nil {
+			r = t.rank(v, now)
+		}
+		if victimRank < 0 || r < victimRank || (r == victimRank && at < victimAt) {
+			victim, victimRank, victimAt = k, r, at
 		}
 		if n++; n == 32 {
 			break
 		}
 	}
-	if oldestAt < 0 {
-		oldest = oldestKept
+	if t.gone != nil {
+		t.gone(victim, s.m[victim], now)
 	}
-	delete(s.m, oldest)
+	delete(s.m, victim)
 }
 
 func (t *table[K, V]) len() int {
@@ -120,16 +120,27 @@ type source struct {
 	strikeEpoch uint32
 	bannedUntil int64
 	earned      earned
+	off         *offender // the source's offences (see Shield.Offend); nil until it offends
 }
 
 func sourceIdle(s *source, now int64) bool {
-	return s.knownUntil < now && s.bannedUntil < now && now-s.last > 60e9
+	return s.knownUntil < now && s.bannedUntil < now && now-s.last > 60e9 && (s.off == nil || s.off.keep < now)
 }
 
 func sourceLast(s *source) int64 { return s.last }
 
-// sourceKeep is a ban or a known client's standing, which a flood of new addresses must not push out.
-func sourceKeep(s *source, now int64) bool { return s.bannedUntil > now || s.knownUntil > now }
+// sourceRank is what a full table forgets last: a repeat offender's ban (2), which the offender index counts and the
+// table keeps longest, then an attack's ban or a known client's standing (1), which a flood of new addresses must not
+// push out, then the rest (0).
+func sourceRank(s *source, now int64) int {
+	switch {
+	case s.bannedUntil > now && s.off != nil && s.off.until > now:
+		return 2
+	case s.bannedUntil > now || s.knownUntil > now:
+		return 1
+	}
+	return 0
+}
 
 // subnet is what the shield remembers about one /24 (IPv4) or /48 (IPv6).
 type subnet struct {

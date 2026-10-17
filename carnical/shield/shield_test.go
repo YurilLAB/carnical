@@ -3,11 +3,13 @@
 package shield
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/binary"
+	"hash/maphash"
 	"io"
 	"math"
 	"math/rand/v2"
@@ -494,6 +496,32 @@ func TestConfigValidation(t *testing.T) {
 		{"negative known budget", func(c *Config) { c.MinKnownRate = -1 }, false},
 		{"infinite known factor", func(c *Config) { c.KnownFactor = math.Inf(1) }, false},
 		{"a larger known budget", func(c *Config) { c.KnownFactor, c.MinKnownRate = 4, 500 }, true},
+		{"auto-block monitor with its defaults", func(c *Config) { c.AutoBlock.Mode = AutoBlockMonitor }, true},
+		{"auto-block's default with a small source table", func(c *Config) { c.MaxSources = 1024 }, true},
+		{"auto-block at its limits", func(c *Config) {
+			c.MaxSources, c.AutoBlock = 1<<21, AutoBlock{Mode: AutoBlockOn, Points: 1000, Window: 24 * time.Hour, For: 24 * time.Hour, MaxFor: 7 * 24 * time.Hour, Max: 1 << 18}
+		}, true},
+		{"too many auto-block bans", func(c *Config) { c.MaxSources, c.AutoBlock.Max = 1<<22, 1<<18+1 }, false},
+		{"auto-block at its other limits", func(c *Config) {
+			c.MaxSources, c.AutoBlock = 1024, AutoBlock{Mode: AutoBlockOn, Points: 4, Window: time.Minute, For: time.Minute, MaxFor: 10 * time.Minute, Max: 100}
+		}, true},
+		{"an unknown auto-block mode", func(c *Config) { c.AutoBlock.Mode = AutoBlockOn + 1 }, false},
+		{"auto-block points too few", func(c *Config) { c.AutoBlock.Points = 3 }, false},
+		{"auto-block points too many", func(c *Config) { c.AutoBlock.Points = 1001 }, false},
+		{"negative auto-block points", func(c *Config) { c.AutoBlock.Points = -12 }, false},
+		{"an auto-block window under a minute", func(c *Config) { c.AutoBlock.Window = 30 * time.Second }, false},
+		{"an auto-block ban over a day", func(c *Config) { c.AutoBlock.For, c.AutoBlock.MaxFor = 25*time.Hour, 48*time.Hour }, false},
+		{"the longest auto-block ban shorter than the first", func(c *Config) { c.AutoBlock.For, c.AutoBlock.MaxFor = 2*time.Hour, time.Hour }, false},
+		{"the longest auto-block ban over a week", func(c *Config) { c.AutoBlock.MaxFor = 8 * 24 * time.Hour }, false},
+		{"too few auto-block bans", func(c *Config) { c.AutoBlock.Max = 99 }, false},
+		{"auto-block bans an eighth of the sources", func(c *Config) { c.MaxSources, c.AutoBlock.Max = 2048, 256 }, true},
+		{"more auto-block bans than an eighth of the sources", func(c *Config) { c.MaxSources, c.AutoBlock.Max = 2048, 257 }, false},
+		{"an auto-block exemption of /0", func(c *Config) { c.AutoBlock.Exempt = []netip.Prefix{netip.MustParsePrefix("::/0")} }, false},
+		{"too many auto-block exemptions", func(c *Config) {
+			for i := range 257 {
+				c.AutoBlock.Exempt = append(c.AutoBlock.Exempt, netip.PrefixFrom(netip.AddrFrom4([4]byte{10, byte(i >> 8), byte(i), 0}), 24))
+			}
+		}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -902,21 +930,55 @@ func TestTheKnownBudgetFollowsTheBaselineWhenAnAttackStarts(t *testing.T) {
 	}
 }
 
-// A flood of new addresses fills the table; it must push out its own entries before a ban or a known client's standing.
+// A flood of new addresses fills the table; it must push out its own entries before a ban or a known client's standing,
+// and a known client's standing before a repeat offender's ban, which the offender index counts. Each row puts the
+// entries in first (long ago), then fills the table with newer entries: new addresses, or known clients of the shard
+// the entries are in (a 1,024-address table has 64 shards of 16), and one new address more.
 func TestAFloodDoesNotEvictBansOrKnownClients(t *testing.T) {
-	tab := newTable[netip.Addr, source](1024, sourceIdle, sourceLast, sourceKeep)
 	const now = int64(1e12)
-	banned, known := netip.MustParseAddr("203.0.113.1"), netip.MustParseAddr("203.0.113.2")
-	tab.do(banned, 0, func(src *source) { src.bannedUntil = 2 * now })
-	tab.do(known, 0, func(src *source) { src.knownUntil = 2 * now })
-	for i := 0; i < 1<<16; i++ {
-		a := netip.AddrFrom4([4]byte{10, byte(i >> 16), byte(i >> 8), byte(i)})
-		tab.do(a, now, func(src *source) { src.last = now })
-	}
-	for _, a := range []netip.Addr{banned, known} {
-		if !tab.peek(a, func(*source) {}) {
-			t.Fatalf("%s was evicted by the flood", a)
-		}
+	ban := func(src *source) { src.bannedUntil = 2 * now }
+	known := func(src *source) { src.knownUntil = 2 * now }
+	offender := func(src *source) { src.bannedUntil, src.off = 2*now, &offender{until: 2 * now, keep: 3 * now} }
+	for _, tc := range []struct {
+		name    string
+		entries []func(*source)
+		fill    func(*source) // nil: a flood of 65,536 new addresses
+	}{
+		{"a ban and a known client, in a flood of new addresses", []func(*source){ban, known}, nil},
+		{"a repeat offender's ban, in a flood of new addresses", []func(*source){offender}, nil},
+		{"a repeat offender's ban, in a shard of known clients", []func(*source){offender}, known},
+		{"a repeat offender's ban, in a shard of attack bans", []func(*source){offender}, ban},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tab := newTable[netip.Addr, source](1024, sourceIdle, sourceLast, sourceRank)
+			shard := func(a netip.Addr) uint64 { return maphash.Comparable(tab.seed, a) % uint64(len(tab.shards)) }
+			var kept []netip.Addr
+			for i, set := range tc.entries {
+				a := netip.AddrFrom4([4]byte{203, 0, 113, byte(i + 1)})
+				tab.do(a, 0, set)
+				kept = append(kept, a)
+			}
+			for i, n := 0, 0; i < 1<<16; i++ {
+				a := netip.AddrFrom4([4]byte{10, byte(i >> 16), byte(i >> 8), byte(i)})
+				if tc.fill == nil {
+					tab.do(a, now, func(src *source) { src.last = now })
+					continue
+				}
+				if shard(a) != shard(kept[0]) {
+					continue
+				}
+				if n++; n == tab.per { // the shard is full: one more new address
+					tab.do(a, now, func(src *source) { src.last = now })
+					break
+				}
+				tab.do(a, now, func(src *source) { src.last = now; tc.fill(src) })
+			}
+			for _, a := range kept {
+				if !tab.peek(a, func(*source) {}) {
+					t.Fatalf("%s was evicted", a)
+				}
+			}
+		})
 	}
 }
 
@@ -1400,6 +1462,313 @@ func (c addrConn) RemoteAddr() net.Addr { return c.remote }
 type nopBanner struct{}
 
 func (nopBanner) Ban(context.Context, netip.Prefix, time.Duration, string) error { return nil }
+
+// chanBanner passes on each range it is told to ban.
+type chanBanner chan netip.Prefix
+
+func (b chanBanner) Ban(_ context.Context, p netip.Prefix, _ time.Duration, _ string) error {
+	select {
+	case b <- p:
+	default:
+	}
+	return nil
+}
+
+// A function of its own: no existing test covers the points a later check scores against a source. Each row is a
+// sequence of offences (AutoBlock on, 12 points, a 10-minute window, bans of 10 minutes doubling up to an hour), what
+// each did, and then whether the source is refused at Admit and at accept, which bans reached the Banner and which
+// repeat-offender events were sent, the counts of auto_block_full and auto_block_unreported adding up to the bans not
+// made for room and the events dropped.
+func TestRepeatOffenders(t *testing.T) {
+	type step struct {
+		after  time.Duration // the clock moves on first
+		points int
+		sig    string // "" is crs-942100
+		want   OffendOutcome
+		ttl    time.Duration // of the ban, or would-be ban, the step makes
+	}
+	const m = time.Minute
+	in48 := func(i int) netip.Addr { // the ith /64 of 2001:db8:7::/48
+		return netip.AddrFrom16([16]byte{0x20, 0x01, 0x0d, 0xb8, 0, 7, 0, byte(i + 1), 15: 1})
+	}
+	tests := []struct {
+		name   string
+		client string // "" is 203.0.113.9
+		probe  string // the address checked at the end; "" is client
+		mod    func(*Config)
+		known  bool // the client has standing
+		fill   int  // sources banned first, from other addresses
+		// fillAt is the address of the ith of them; nil spreads them over networks other than the client's.
+		fillAt func(i int) netip.Addr
+		burst  bool // the steps follow the fill within its second, before the shield ticks and sends its events
+		steps  []step
+		then   time.Duration // the clock moves on before the checks, and the shield ticks
+		banned bool
+		events string // the repeat-offender events of the client's source, and auto_block_full
+		sigs   string // the signatures of the last ban's event
+	}{
+		{name: "below the points", steps: []step{{0, 4, "", OffendCounted, 0}, {m, 4, "", OffendCounted, 0}, {m, 3, "", OffendCounted, 0}}},
+		{name: "the points ban the source", steps: []step{{0, 4, "", OffendCounted, 0}, {m, 4, "crs-930120", OffendCounted, 0}, {m, 4, "bad\nsig\x1b[31m", OffendBlocked, 10 * m}},
+			banned: true, events: "source_blocked", sigs: "crs-942100 crs-930120 bad_sig__31m"},
+		{name: "a source keeps its first eight signatures", steps: func() []step {
+			var steps []step
+			for i := range 9 {
+				steps = append(steps, step{0, 1, "sig-" + strconv.Itoa(i), OffendCounted, 0})
+			}
+			return append(steps, step{0, 3, "sig-9", OffendBlocked, 10 * m})
+		}(), banned: true, events: "source_blocked", sigs: "sig-0 sig-1 sig-2 sig-3 sig-4 sig-5 sig-6 sig-7"},
+		{name: "flood monitor still bans", mod: func(c *Config) { c.MonitorOnly = true }, steps: []step{{0, 12, "", OffendBlocked, 10 * m}},
+			banned: true, events: "source_blocked"},
+		{name: "an offence while banned counts nothing", steps: []step{{0, 12, "", OffendBlocked, 10 * m}, {5 * m, 12, "", OffendAlreadyBlocked, 0}},
+			banned: true, events: "source_blocked"},
+		{name: "the ban ends", steps: []step{{0, 12, "", OffendBlocked, 10 * m}}, then: 10 * m, events: "source_blocked source_block_ended"},
+		{name: "a trusted source is never banned", mod: func(c *Config) { c.Trusted = []netip.Prefix{netip.MustParsePrefix("203.0.113.9/32")} },
+			steps: []step{{0, 12, "", OffendExempt, 0}, {0, 12, "", OffendExempt, 0}}},
+		{name: "an exempt range is never banned", mod: func(c *Config) { c.AutoBlock.Exempt = []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24")} },
+			steps: []step{{0, 12, "", OffendExempt, 0}, {0, 12, "", OffendExempt, 0}}},
+		{name: "an exempt address exempts its /64", client: "2001:db8:1::9", mod: func(c *Config) { c.AutoBlock.Exempt = []netip.Prefix{netip.MustParsePrefix("2001:db8:1::5/128")} },
+			steps: []step{{0, 12, "", OffendExempt, 0}}},
+		{name: "control: an exempt range elsewhere", mod: func(c *Config) { c.AutoBlock.Exempt = []netip.Prefix{netip.MustParsePrefix("203.0.114.0/24")} },
+			steps: []step{{0, 12, "", OffendBlocked, 10 * m}}, banned: true, events: "source_blocked"},
+		{name: "an IPv6 ban covers the /64", client: "2001:db8:1::9", probe: "2001:db8:1::77", steps: []step{{0, 12, "", OffendBlocked, 10 * m}},
+			banned: true, events: "source_blocked"},
+		{name: "control: a neighbouring /64", client: "2001:db8:1::9", probe: "2001:db8:1:1::9", steps: []step{{0, 12, "", OffendBlocked, 10 * m}},
+			events: "source_blocked"},
+		{name: "loopback", client: "127.0.0.1", steps: []step{{0, 12, "", OffendExempt, 0}}},
+		{name: "IPv4-mapped loopback", client: "::ffff:127.0.0.2", steps: []step{{0, 12, "", OffendExempt, 0}}},
+		{name: "link-local", client: "fe80::1", steps: []step{{0, 12, "", OffendExempt, 0}}},
+		{name: "unspecified", client: "::", steps: []step{{0, 12, "", OffendExempt, 0}}},
+		{name: "escalation doubles up to MaxFor", steps: []step{{0, 12, "", OffendBlocked, 10 * m}, {10 * m, 12, "", OffendBlocked, 20 * m},
+			{20 * m, 12, "", OffendBlocked, 40 * m}, {40 * m, 12, "", OffendBlocked, 60 * m}, {60 * m, 12, "", OffendBlocked, 60 * m}},
+			banned: true, events: "source_blocked source_block_ended source_blocked source_block_ended source_blocked source_block_ended source_blocked source_block_ended source_blocked"},
+		{name: "MaxFor without a ban starts again", steps: []step{{0, 12, "", OffendBlocked, 10 * m}, {70 * m, 12, "", OffendBlocked, 10 * m}},
+			banned: true, events: "source_blocked source_block_ended source_blocked"},
+		{name: "control: a ban within MaxFor of the last escalates", steps: []step{{0, 12, "", OffendBlocked, 10 * m}, {69 * m, 12, "", OffendBlocked, 20 * m}},
+			banned: true, events: "source_blocked source_block_ended source_blocked"},
+		{name: "points within the window add up", steps: []step{{0, 8, "", OffendCounted, 0}, {9 * m, 4, "", OffendBlocked, 10 * m}}, banned: true, events: "source_blocked"},
+		{name: "points two windows old are gone", steps: []step{{0, 8, "", OffendCounted, 0}, {20 * m, 8, "", OffendCounted, 0}}},
+		{name: "control: points two windows old take nothing away", steps: []step{{0, 12, "", OffendBlocked, 10 * m}, {10 * m, 8, "", OffendCounted, 0},
+			{25 * m, 12, "", OffendBlocked, 20 * m}}, banned: true, events: "source_blocked source_block_ended source_blocked"},
+		{name: "the last window's points fade", steps: []step{{0, 8, "", OffendCounted, 0}, {16 * m, 8, "", OffendCounted, 0}}},
+		{name: "control: half faded", steps: []step{{0, 8, "", OffendCounted, 0}, {15 * m, 8, "", OffendBlocked, 10 * m}}, banned: true, events: "source_blocked"},
+		{name: "monitor never bans", mod: func(c *Config) { c.AutoBlock.Mode = AutoBlockMonitor },
+			steps:  []step{{0, 12, "", OffendWouldBlock, 10 * m}, {5 * m, 12, "", OffendAlreadyBlocked, 0}, {5 * m, 12, "", OffendWouldBlock, 20 * m}},
+			events: "source_would_block source_would_block"},
+		{name: "a full table bans no more, and keeps the points", mod: func(c *Config) { c.AutoBlock.Max = 100 }, fill: 100,
+			steps:  []step{{0, 12, "", OffendTableFull, 0}, {10 * m, 1, "", OffendBlocked, 10 * m}},
+			banned: true, events: "auto_block_full source_blocked"},
+		{name: "a full table", mod: func(c *Config) { c.AutoBlock.Max = 100 }, fill: 100,
+			steps:  []step{{0, 12, "", OffendTableFull, 0}, {10 * time.Second, 12, "", OffendTableFull, 0}, {9 * m, 12, "", OffendTableFull, 0}},
+			events: "auto_block_full auto_block_full"},
+		{name: "a full table and its bans, past the repeat offenders' share of the event queue", mod: func(c *Config) { c.AutoBlock.Max = 300 }, fill: 300,
+			burst: true, steps: []step{{0, 12, "", OffendTableFull, 0}}, events: "auto_block_full auto_block_unreported"},
+		{name: "an IPv6 /48 holds a sixteenth of the bans", client: "2001:db8:7::9", mod: func(c *Config) { c.AutoBlock.Max = 160 }, fill: 10,
+			fillAt: in48,
+			steps:  []step{{0, 12, "", OffendTableFull, 0}}, events: "auto_block_full"},
+		{name: "control: an IPv6 /48 below its share", client: "2001:db8:7::9", mod: func(c *Config) { c.AutoBlock.Max = 160 }, fill: 9,
+			fillAt: in48,
+			steps:  []step{{0, 12, "", OffendBlocked, 10 * m}}, banned: true, events: "source_blocked"},
+		{name: "control: another network, with one network's share banned", client: "2001:db8:8::9", mod: func(c *Config) { c.AutoBlock.Max = 160 }, fill: 10,
+			fillAt: in48,
+			steps:  []step{{0, 12, "", OffendBlocked, 10 * m}}, banned: true, events: "source_blocked"},
+		{name: "an IPv4 /24 holds a sixteenth of the bans", mod: func(c *Config) { c.AutoBlock.Max = 100 }, fill: 6,
+			fillAt: func(i int) netip.Addr { return netip.AddrFrom4([4]byte{203, 0, 113, byte(100 + i)}) },
+			steps:  []step{{0, 12, "", OffendTableFull, 0}, {10 * m, 1, "", OffendBlocked, 10 * m}}, banned: true, events: "auto_block_full source_blocked"},
+		{name: "a known source needs twice the points", known: true, steps: []step{{0, 12, "", OffendCounted, 0}, {m, 11, "", OffendCounted, 0}}},
+		{name: "control: a known source's twice the points", known: true, steps: []step{{0, 12, "", OffendCounted, 0}, {m, 12, "", OffendBlocked, 10 * m}},
+			banned: true, events: "source_blocked"},
+		{name: "offences of no points", steps: []step{{0, 0, "", OffendIgnored, 0}, {0, -12, "", OffendIgnored, 0}}},
+		{name: "auto-block off", mod: func(c *Config) { c.AutoBlock.Mode = AutoBlockOff }, steps: []step{{0, 12, "", OffendIgnored, 0}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			now := time.Date(2026, 10, 6, 9, 0, 0, 0, time.UTC)
+			banner := make(chanBanner, 512)
+			var events []Event
+			s := newTestShield(t, &now, func(c *Config) {
+				c.AutoBlock = AutoBlock{Mode: AutoBlockOn, MaxFor: time.Hour}
+				c.Banner, c.OnEvent = banner, func(e Event) { events = append(events, e) }
+				if tt.mod != nil {
+					tt.mod(c)
+				}
+			})
+			client := netip.MustParseAddr(cmp.Or(tt.client, "203.0.113.9"))
+			if tt.known {
+				s.sources.do(SourceKey(client), now.UnixNano(), func(src *source) {
+					src.knownAt, src.knownUntil = now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano()
+				})
+			}
+			blocked := tt.fill
+			for i := range tt.fill {
+				a := netip.AddrFrom4([4]byte{10, byte(i >> 8), byte(i), 1})
+				if tt.fillAt != nil {
+					a = tt.fillAt(i)
+				}
+				if r := s.Offend(a, 12, "crs-942100"); r.Outcome != OffendBlocked {
+					t.Fatalf("filling the table: %v", r.Outcome)
+				}
+			}
+			if !tt.burst {
+				s.Tick() // their events are sent, as they are every second
+			}
+			var would, full uint64
+			for i, st := range tt.steps {
+				now = now.Add(st.after)
+				r := s.Offend(client, st.points, cmp.Or(st.sig, "crs-942100"))
+				if r.Outcome != st.want || r.TTL != st.ttl {
+					t.Fatalf("step %d: %v for %s, want %v for %s (%+v)", i, r.Outcome, r.TTL, st.want, st.ttl, r)
+				}
+				switch r.Outcome {
+				case OffendBlocked:
+					blocked++
+				case OffendWouldBlock:
+					would++
+				case OffendTableFull:
+					full++
+				}
+			}
+			now = now.Add(tt.then)
+			s.Tick()
+			probe := netip.MustParseAddr(cmp.Or(tt.probe, tt.client, "203.0.113.9"))
+			r := req("GET", "/")
+			d := s.Admit(r, probe)
+			w := httptest.NewRecorder()
+			if d.Action != Allow {
+				s.Write(w, r, d)
+			}
+			if banned := d.Action == Refuse && d.ID == idBanned && w.Code == http.StatusForbidden && w.Header().Get("Connection") == "close"; banned != tt.banned || (!tt.banned && d.Action != Allow) {
+				t.Fatalf("Admit gave %+v (%d, Connection %q), want banned %v", d, w.Code, w.Header().Get("Connection"), tt.banned)
+			}
+			mine, theirs := net.Pipe()
+			defer theirs.Close()
+			if c := s.admitConn(addrConn{mine, net.TCPAddrFromAddrPort(netip.AddrPortFrom(probe, 40000))}); (c == nil) != tt.banned {
+				t.Fatalf("the listener accepted the connection: %v, want banned %v", c != nil, tt.banned)
+			} else if c != nil {
+				c.Close()
+			}
+			snap := s.Snapshot()
+			if snap.AutoBlocked != uint64(blocked) || snap.WouldAutoBlock != would || snap.AutoBlockFull != full || snap.Banned != 0 {
+				t.Fatalf("snapshot counts %d bans, %d would-be bans, %d not made for room and %d attack bans, want %d, %d, %d and 0",
+					snap.AutoBlocked, snap.WouldAutoBlock, snap.AutoBlockFull, snap.Banned, blocked, would, full)
+			}
+			// A ban the helper has no room for is counted and not sent (more than 256 at once), so the Banner hears of
+			// each ban or BanErrors counts it, however soon the helper runs.
+			deadline := time.After(10 * time.Second)
+			for got := 0; got < blocked-int(snap.BanErrors); got++ {
+				select {
+				case <-banner:
+				case <-deadline:
+					t.Fatalf("the Banner was told of %d bans and %d were not sent, want %d", got, snap.BanErrors, blocked)
+				}
+			}
+			if len(banner) != 0 || snap.BanErrors > uint64(max(blocked-256, 0)) {
+				t.Fatalf("the Banner was told of %d bans more than the %d made, %d not sent", len(banner), blocked, snap.BanErrors)
+			}
+			src := sourcePrefix(SourceKey(client))
+			var kinds []string
+			var last Event
+			var notMade, unreported uint64
+			for _, e := range events {
+				if e.Kind == "auto_block_full" || e.Kind == "auto_block_unreported" || e.Source == src {
+					kinds = append(kinds, e.Kind)
+				}
+				switch e.Kind {
+				case "auto_block_full":
+					notMade += e.Count
+				case "auto_block_unreported":
+					unreported += e.Count
+				}
+				if e.Source == src && (e.Kind == "source_blocked" || e.Kind == "source_would_block") {
+					last = e
+				}
+			}
+			if got := strings.Join(kinds, " "); got != tt.events {
+				t.Fatalf("events %q, want %q", got, tt.events)
+			}
+			if notMade != full || unreported != snap.DroppedEvents {
+				t.Fatalf("events count %d bans not made and %d events dropped, want %d and %d", notMade, unreported, full, snap.DroppedEvents)
+			}
+			if tt.sigs != "" && strings.Join(last.Sigs, " ") != tt.sigs {
+				t.Fatalf("the ban's signatures are %q, want %q", last.Sigs, tt.sigs)
+			}
+			if last.Kind != "" && (last.Client != client.Unmap() || last.Points < 12 || last.TTL <= 0 || last.Level < 1 || !last.Until.Equal(last.At.Add(last.TTL))) {
+				t.Fatalf("the ban's event is %+v", last)
+			}
+		})
+	}
+	// The bans live in the address table (MaxSources 1,024: 64 shards of 16). Rows of the bans made (AutoBlock.Max of
+	// them, or as many as one shard holds, all in it), then new addresses (3,000, or one in that shard), and the bans the
+	// table had to forget: each is taken off the index and reported as ended now.
+	t.Run("a full address table", func(t *testing.T) {
+		for _, tc := range []struct {
+			name     string
+			oneShard bool
+			lost     int
+		}{
+			{"bans to the default Max, then a spray of new addresses", false, 0},
+			{"a shard of bans only, then a new address in it", true, 1},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				now := time.Date(2026, 10, 6, 9, 0, 0, 0, time.UTC)
+				var events []Event
+				s := newTestShield(t, &now, func(c *Config) {
+					c.MaxSources, c.AutoBlock = 1024, AutoBlock{Mode: AutoBlockOn}
+					c.OnEvent = func(e Event) { events = append(events, e) }
+				})
+				shard := func(a netip.Addr) uint64 {
+					return maphash.Comparable(s.sources.seed, a) % uint64(len(s.sources.shards))
+				}
+				want := s.cfg.AutoBlock.Max
+				if tc.oneShard {
+					want = s.sources.per
+				}
+				var banned []netip.Addr
+				for i := 0; len(banned) < want; i++ {
+					a := netip.AddrFrom4([4]byte{198, byte(i >> 8), byte(i), 1}) // a network each, under its share
+					if tc.oneShard && len(banned) > 0 && shard(a) != shard(banned[0]) {
+						continue
+					}
+					if r := s.Offend(a, 12, "crs-942100"); r.Outcome != OffendBlocked {
+						t.Fatalf("ban %d: %v", len(banned), r.Outcome)
+					}
+					banned = append(banned, a)
+				}
+				now = now.Add(time.Second)
+				newcomers := 3000
+				if tc.oneShard {
+					newcomers = 1
+				}
+				for i, n := 0, 0; n < newcomers; i++ {
+					a := netip.AddrFrom4([4]byte{100, 64, byte(i >> 8), byte(i)})
+					if tc.oneShard && shard(a) != shard(banned[0]) {
+						continue
+					}
+					s.Admit(req("GET", "/"), a)
+					n++
+				}
+				s.Tick()
+				held := 0
+				for _, a := range banned {
+					s.sources.peek(a, func(src *source) {
+						if src.bannedUntil > now.UnixNano() {
+							held++
+						}
+					})
+				}
+				ended := 0
+				for _, e := range events {
+					if e.Kind == "source_block_ended" && e.Until.Equal(now) {
+						ended++
+					}
+				}
+				if active := s.Snapshot().AutoBlockActive; held != len(banned)-tc.lost || active != held || ended != tc.lost {
+					t.Fatalf("%d bans made, %d held, %d in force by the index and %d reported ended, want %d lost",
+						len(banned), held, active, ended, tc.lost)
+				}
+			})
+		}
+	})
+}
 
 // An address's limits are raised by what that address itself has had answered well by the application in seconds that
 // were not an attack's. What one address earns no other address has, and a request that was answered with an error, or

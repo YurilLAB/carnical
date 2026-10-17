@@ -47,7 +47,7 @@ into admission.
 | `Snapshot.ConnsRefused` | Refused connections. |
 | `Snapshot.WriteErrors` | Failed Shield response writes. |
 | `Snapshot.SocketOptionErrors` | Failed optional socket settings, including reset linger. |
-| `Snapshot.DroppedEvents` | Events not given to `Config.OnEvent`: those found while 256 were already waiting for it, and those found after `Shield.Close`. |
+| `Snapshot.DroppedEvents` | Events not given to `Config.OnEvent`: those found while 256 were already waiting for it (192 for [repeat-offender](#repeat-offenders) events, which leave room for an attack's, and which an `auto_block_unreported` event then counts), and those found after `Shield.Close`. |
 
 `Config.OnEvent` is called on the Shield's own goroutine once a second, in order, and never while a
 request or connection waits on it: a log writer that stalls delays later events, never admission.
@@ -261,18 +261,77 @@ answer can be sent many times, so answers take back no more than the address was
 or a wrong answer; a bot behind an address whose people answer is counted for what it is shown
 beyond their answers. An IPv6 address is counted and banned with its /64; a trusted proxy peer is
 never refused for a ban, even one on a /64 it shares.
-In monitor mode nothing is banned: an address over its own limit is refused with 429 as at any other
-time. The shield remembers at most 262,144 addresses and 65,536 networks (/24 or /48): with the
+In monitor mode an attack bans nothing (a [repeat offender's](#repeat-offenders) ban is a separate
+setting): an address over its own limit is refused with 429 as at any other time. The shield remembers at most 262,144 addresses and 65,536 networks (/24 or /48): with the
 address table full they hold about 55 MB of live heap, and about 70 MB when the addresses are spread
 over enough networks to fill the network table too. With Go's default garbage collector setting
 (`GOGC=100`) the heap in use grows to about twice that (about 105 MB and 130 MB measured), which is the
 figure to size a memory limit from. When the address table is full, an entry
 without standing is forgotten first; a ban or a known client's standing goes only when every entry
-in the sample of 32 has one. Rule IDs are 5004001
+in the sample of 32 has one, and a [repeat offender's](#repeat-offenders) ban only when every entry
+in it is one. Rule IDs are 5004001
 (address rate), 5004002 (network rate), 5004003 (attack cluster), 5004004 (unknown-client budget),
-5004005 (challenge shown), 5004006/5004007 (failed/passed) and 5004008 (ban); `Decision.RuleID` gives
+5004005 (challenge shown), 5004006/5004007 (failed/passed) and 5004008 (a ban, an attack's or a
+[repeat offender's](#repeat-offenders)); `Decision.RuleID` gives
 a decision's, and `shield.PathTemplate` the target as the shield counts it (at most 96 printable bytes, no
 query values).
+
+## Repeat offenders
+
+Outside an attack, a source that keeps sending what later checks refuse is refused request by
+request and never banned, unless the integrator tells the shield of each such refusal with
+`Shield.Offend(client, points, sig)` and sets `Config.AutoBlock`. Its zero value is off, and
+`Offend` then does nothing. The proxy's command line does not set it yet.
+
+| `Config.AutoBlock` field | Default | Range | Meaning |
+| --- | --- | --- | --- |
+| `Mode` | `AutoBlockOff` | off, monitor, on | `on` bans; `monitor` scores and reports the sources it would ban, and bans none. |
+| `Points` | 12 | 4 to 1,000 | The score that bans a source. A source the shield knows (it earned [standing](#who-still-gets-through-during-an-attack)) needs twice as many. |
+| `Window` | 10 minutes | 1 minute to 24 hours | How long points count: a source's score is the points of its current window plus a share of the previous window's that falls linearly to nothing as the current one goes on. |
+| `For` | 10 minutes | 1 minute to 24 hours | A first ban's length. |
+| `MaxFor` | 24 hours | 10 minutes to 7 days, at least `For` | The longest ban. Each further ban of a source lasts twice as long as the one before, up to this; a source not banned for this long after its last ban ended starts again at `For`. |
+| `Max` | 10,000, or an eighth of `MaxSources` if fewer | 100 to 262,144, at most an eighth of `MaxSources` | The most sources banned at once, at most a sixteenth of them from one network (an IPv4 /24 or an IPv6 /48). The bans are held in the address table, which keeps room for its other entries. |
+| `Exempt` | none | at most 256 ranges, none /0 | Never banned: monitoring, health checks, the origin, the owner's scanners, the office. A range that overlaps an IPv6 /64 exempts the /64. |
+
+A value out of its range is refused by `Config.Validate` (and `New`) with the field's name and range.
+`points` is the integrator's scale (at most 1,000 count for one offence); `sig` names the finding
+(such as `crs-942100`) and is kept as at most 64 bytes of letters, digits and `._:/-`, anything else
+replaced with `_`. A source is an IPv4 address or an IPv6 /64, never a wider range. When its score
+reaches its threshold it is banned exactly as an attack's ban does it: its connections are reset at
+accept, its requests are refused with 403 and rule 5004008 (with `Retry-After` the seconds left and
+`Connection: close`), it loses its standing and a raised limit, a full address table forgets it
+after any other entry, and a `Config.Banner` is told unless the range holds a trusted address. While
+a source is banned its offences count nothing. Addresses in `Config.Trusted` and `Exempt`, loopback,
+link-local and unspecified addresses are never banned; `Offend` says `OffendExempt` and counts
+nothing for them. In monitor mode the same scoring runs, nothing is banned, and the source is
+treated as banned for the length the ban would have had, so the reports say what `on` would have
+done. `-ddos monitor` (`MonitorOnly`) does not change `AutoBlock`: it is a separate decision.
+
+At most `Max` sources are banned by `Offend` at once, and at most a sixteenth of `Max` from one
+network (an IPv4 /24 or an IPv6 /48; the ban still covers only the source). When that many are, a
+source that reaches its threshold is not banned (`OffendTableFull`) and keeps its points, so a later
+offence bans it once a ban has ended; no ban is pushed out for it, so a spray of addresses can
+neither evict bans nor grow memory, and one /48, which holds 65,536 IPv6 sources, cannot take every
+ban. An attacker with sixteen such networks (an IPv6 /44, or sixteen /24s) can still fill `Max` and
+refill it as bans end; auto-block then bans no other source until there is room, each of their
+requests is still refused by the check that refused it, and `auto_block_full` counts every ban not
+made. The bans take at most an eighth of the address table, and a full table forgets one only when
+every entry in its sample of 32 is such a ban; should that happen, the ban is taken off and reported
+ended at once, never lifted unseen. Ended bans are taken off once a second, at most 512 at a time,
+and at once when the table is full. An address that offends holds about 80 bytes more until its
+points and its escalation have decayed. Nothing is kept across a restart, which ends every such ban.
+
+| Event | When | Fields |
+| --- | --- | --- |
+| `source_blocked` | A source was banned. | `Source` (the /32 or /64), `Client`, `Points`, `Sigs` (at most 8), `TTL`, `Until`, `Level` (1 for a first ban), `Mode` `on` |
+| `source_would_block` | Monitor mode: it would have been. | The same, `Mode` `monitor` |
+| `source_block_ended` | A ban was taken off. | `Source`, `Until` (when it ended) |
+| `auto_block_full` | A ban was not made for lack of room; at most once every 30 seconds. | `Count`: the bans not made since the last one |
+| `auto_block_unreported` | The event queue had no room for some of the events above (a spray of offenders within a second); at most once every 30 seconds. | `Count`: the events not sent since the last one |
+
+`OffendResult` gives the same for each offence. `Snapshot.Offences`, `AutoBlocked`,
+`WouldAutoBlock` and `AutoBlockFull` count offences, bans, would-be bans and bans not made for room
+(an attack's bans stay in `Banned`), and `AutoBlockActive` the bans in force.
 
 ## Strengths
 

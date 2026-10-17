@@ -17,10 +17,12 @@ import (
 // content; the shield never logs one line per refused request, because during a flood that would be a second flood,
 // into the log.
 type Event struct {
-	// Kind is "elevated", "normal", "attack_start", "attack_update", "attack_end", "ids_signal" or "ids_clear".
-	// "normal" follows "elevated" or "attack_end" once the state has stayed normal for ten seconds.
+	// Kind is "elevated", "normal", "attack_start", "attack_update", "attack_end", "ids_signal" or "ids_clear", or for
+	// repeat offenders (see Shield.Offend) "source_blocked", "source_would_block", "source_block_ended",
+	// "auto_block_full" or "auto_block_unreported". "normal" follows "elevated" or "attack_end" once the state has stayed normal for ten seconds.
 	Kind string
-	// Mode is "on" when the shield mitigates attacks and "monitor" when it only reports them (Config.MonitorOnly).
+	// Mode is "on" when the shield mitigates attacks and "monitor" when it only reports them (Config.MonitorOnly); for
+	// the repeat-offender events it is AutoBlock.Mode, "on" or "monitor".
 	Mode         string
 	At           time.Time
 	State        State
@@ -32,6 +34,21 @@ type Event struct {
 	Codes []string
 	// Incident is filled for the attack events.
 	Incident Incident
+	// Source is the range a repeat offender's ban covers (an IPv4 /32 or an IPv6 /64), and Client the address whose
+	// offence banned it (not set for source_block_ended). Points is the score that banned it, Sigs the signatures it
+	// scored with (at most 8, as Offend cleaned them), TTL and Until how long its ban lasts and when it ends, and Level
+	// which ban of the source in a row it is. Until is also set for source_block_ended.
+	Source netip.Prefix
+	Client netip.Addr
+	Points int
+	Sigs   []string
+	TTL    time.Duration
+	Until  time.Time
+	Level  int
+	// Count is, for auto_block_full, the bans not made for lack of room since the last auto_block_full, and for
+	// auto_block_unreported, the repeat-offender events (source_blocked, source_would_block, source_block_ended) the
+	// event queue had no room for since the last auto_block_unreported.
+	Count uint64
 }
 
 // Incident is the record of one attack.

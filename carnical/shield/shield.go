@@ -16,6 +16,7 @@
 //     the shield does not know, while clients it knows (that used the site normally before the attack) and browsers
 //     that answered a challenge go on as usual. Addresses that keep being refused during an attack are banned for a
 //     while: their connections are reset at accept and their requests refused. A Banner, if set, is told of each ban.
+//     With Config.AutoBlock, sources that keep offending at any time are banned too (see Offend), longer each time.
 //   - Answers (Done): what the application answered and how quickly, which is how clients become known, and how the
 //     detector sees that the application is in trouble.
 //
@@ -47,7 +48,7 @@ const (
 	idChallenge       = 5004005 // a browser was asked to answer a challenge
 	idChallengeFailed = 5004006
 	idChallengeSolved = 5004007
-	idBanned          = 5004008 // an address banned during an attack
+	idBanned          = 5004008 // an address banned during an attack, or for repeated offences (see Offend)
 )
 
 // Action is what to do with a request.
@@ -165,6 +166,8 @@ type Config struct {
 	// Trusted are the load balancers or CDN in front of the proxy: their connections bypass per-source and per-network
 	// limits, but share the global connection cap (visitors are limited by the verified address of each request).
 	Trusted []netip.Prefix
+	// AutoBlock bans sources that keep offending (see Shield.Offend). Its zero value is off.
+	AutoBlock AutoBlock
 	// Detector tunes attack detection.
 	Detector DetectorConfig
 	// Banner, if set, is told of the ranges the shield bans (an IPv4 address, an IPv6 /64), except a range that holds a
@@ -308,6 +311,7 @@ func (c *Config) defaults() {
 	d(&c.KnownFor, 7*24*time.Hour)
 	i(&c.MaxSources, 1<<18)
 	c.Detector.defaults()
+	c.AutoBlock.defaults(c.MaxSources)
 }
 
 // Validate reports a setting that cannot work.
@@ -369,7 +373,7 @@ func (c Config) Validate() error {
 			return fmt.Errorf("shield: trusted range %s: a range of /0 would switch the shield off", p)
 		}
 	}
-	return nil
+	return c.AutoBlock.validate(c.MaxSources)
 }
 
 // Shield is one site's protection. It is safe for concurrent use.
@@ -401,6 +405,8 @@ type Shield struct {
 	idle   idleList
 
 	bans     chan banReq
+	sigs     sigTable
+	offIdx   offIndex
 	stop     chan struct{}
 	stopOnce sync.Once
 	wg       sync.WaitGroup
@@ -411,6 +417,7 @@ type counters struct {
 	allowed, refused, challenged, solved, banned, connsRefused, evicted, banErrors atomic.Uint64
 	writeErrors, socketOptionErrors                                                atomic.Uint64
 	earlyCloses, securityRejections, wouldRejections                               atomic.Uint64
+	offences, autoBlocked, wouldAutoBlock, autoBlockFull                           atomic.Uint64
 }
 
 type banReq struct {
@@ -426,8 +433,10 @@ func New(cfg Config) (*Shield, error) {
 	}
 	cfg.defaults()
 	cfg.Trusted = append([]netip.Prefix(nil), cfg.Trusted...)
+	cfg.AutoBlock.Exempt = append([]netip.Prefix(nil), cfg.AutoBlock.Exempt...)
 	s := &Shield{cfg: cfg, wall: time.Now, key: newKey(), det: newDetector(cfg.Detector), stop: make(chan struct{}), bans: make(chan banReq, 256),
 		connNets: make(map[netip.Prefix]int64)}
+	s.offIdx.bans, s.offIdx.nets = map[netip.Addr]int64{}, map[netip.Prefix]int{}
 	s.start = s.wall()
 	// A limit that an address or a network has earned is standing too: a flood of new addresses must not push it out.
 	raisedSrc := func(v *source) bool {
@@ -438,10 +447,21 @@ func New(cfg Config) (*Shield, error) {
 	}
 	s.sources = newTable[netip.Addr, source](cfg.MaxSources,
 		func(v *source, now int64) bool { return sourceIdle(v, now) && !raisedSrc(v) }, sourceLast,
-		func(v *source, now int64) bool { return sourceKeep(v, now) || raisedSrc(v) })
+		func(v *source, now int64) int {
+			if r := sourceRank(v, now); r > 0 || !raisedSrc(v) {
+				return r
+			}
+			return 1
+		})
+	s.sources.gone = s.forgotten
 	s.subnets = newTable[netip.Prefix, subnet](cfg.MaxSources/4,
 		func(v *subnet, now int64) bool { return subnetIdle(v, now) && !raisedNet(v) }, subnetLast,
-		func(v *subnet, _ int64) bool { return raisedNet(v) })
+		func(v *subnet, _ int64) int {
+			if raisedNet(v) {
+				return 1
+			}
+			return 0
+		})
 	s.det.labeler, s.det.onEvent, s.det.monitor = cfg.Labeler, cfg.OnEvent, cfg.MonitorOnly
 	s.det.clusterRate, s.det.clusterShare = cfg.ClusterRate, cfg.ClusterShare
 	s.fdLimit = fdLimit()
@@ -502,9 +522,10 @@ func (s *Shield) ticker() {
 // Tick moves the detector on to now. Only needed with Config.Now set.
 func (s *Shield) Tick() { s.tick(s.now().UnixNano()) }
 
-// tick advances the detector and samples the number of connections, which is learnt like the rest of the baseline: only
+// tick takes the ended repeat-offender bans off their index, advances the detector and samples the number of connections, which is learnt like the rest of the baseline: only
 // while traffic is ordinary.
 func (s *Shield) tick(ns int64) {
+	s.sweep(ns)
 	s.det.tick(ns)
 	if !s.det.learning.Load() {
 		return
@@ -749,7 +770,7 @@ func (s *Shield) mark(ns int64, key netip.Addr, info *attackInfo, shown bool) {
 		// Counting starts again, so an address that goes on after its ban runs out is banned again. Its standing goes
 		// with the ban: being known, and the higher limit it had earned.
 		if int(src.strikes) >= s.cfg.BanAfter {
-			src.bannedUntil, src.knownUntil, src.strikes, src.fromShown, src.shown, ban = ns+int64(s.cfg.BanFor), 0, 0, 0, 0, true
+			src.bannedUntil, src.knownUntil, src.strikes, src.fromShown, src.shown, ban = max(src.bannedUntil, ns+int64(s.cfg.BanFor)), 0, 0, 0, 0, true
 			src.earned = earned{}
 		}
 	})
@@ -763,25 +784,8 @@ func (s *Shield) mark(ns int64, key netip.Addr, info *attackInfo, shown bool) {
 			inc.banned++
 		}
 	})
-	if s.cfg.Banner == nil {
-		return
-	}
-	bits := 32
-	if key.Is6() {
-		bits = 64
-	}
-	p := netip.PrefixFrom(key, bits)
-	// A firewall would drop every packet from the range, a trusted proxy's in it too: the ban then holds only here, where
-	// the proxy's own requests pass it.
-	for _, t := range s.cfg.Trusted {
-		if t.Overlaps(p) {
-			return
-		}
-	}
-	select {
-	case s.bans <- banReq{p: p, ttl: s.cfg.BanFor, reason: "carnical-shield attack " + strconv.Itoa(int(info.epoch))}:
-	default: // the helper is behind; the ban still holds in this process
-		s.counters.banErrors.Add(1)
+	if s.cfg.Banner != nil {
+		s.sendBan(key, s.cfg.BanFor, "carnical-shield attack "+strconv.Itoa(int(info.epoch)))
 	}
 }
 
@@ -1011,11 +1015,20 @@ type Snapshot struct {
 	WouldRejectionRate float64
 	// WriteErrors counts failed response body writes; SocketOptionErrors counts failed optional TCP tuning.
 	WriteErrors, SocketOptionErrors uint64
-	// DroppedEvents counts the Events not given to Config.OnEvent: those found while 256 were already waiting for it, and
-	// those found after Close.
+	// DroppedEvents counts the Events not given to Config.OnEvent: those found while 256 were already waiting for it (192
+	// for the events of repeat offenders, which leave room for an attack's, and which auto_block_unreported then counts),
+	// and those found after Close.
 	DroppedEvents uint64
-	Current       *Incident
-	Recent        []Incident
+	// Offences counts the offences given to Offend while AutoBlock was on or monitor, AutoBlocked the bans it made,
+	// WouldAutoBlock the bans it would have made in monitor mode, and AutoBlockFull the bans it did not make because
+	// AutoBlock.Max sources were banned already, or a sixteenth of them in the source's network. AutoBlockActive is the
+	// sources it has banned whose ban has not been taken off yet (within a second of its end). Its bans are counted apart
+	// from Banned, an attack's.
+	Offences, AutoBlocked, WouldAutoBlock, AutoBlockFull uint64
+	AutoBlockActive                                      int
+
+	Current *Incident
+	Recent  []Incident
 }
 
 // Snapshot returns the current state.
@@ -1041,6 +1054,10 @@ func (s *Shield) Snapshot() Snapshot {
 	snap.WriteErrors, snap.SocketOptionErrors = c.writeErrors.Load(), c.socketOptionErrors.Load()
 	snap.EarlyCloses, snap.SecurityRejections, snap.WouldRejections = c.earlyCloses.Load(), c.securityRejections.Load(), c.wouldRejections.Load()
 	snap.DroppedEvents = s.det.droppedEvents.Load()
+	snap.Offences, snap.AutoBlocked, snap.WouldAutoBlock, snap.AutoBlockFull = c.offences.Load(), c.autoBlocked.Load(), c.wouldAutoBlock.Load(), c.autoBlockFull.Load()
+	s.offIdx.mu.Lock()
+	snap.AutoBlockActive = len(s.offIdx.bans)
+	s.offIdx.mu.Unlock()
 	return snap
 }
 

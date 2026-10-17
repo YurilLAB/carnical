@@ -1063,20 +1063,37 @@ func (d *detector) wallTime(ns int64) time.Time {
 	return time.Unix(0, ns)
 }
 
-// emit queues an event for tick to deliver once mu is released (see deliver).
-func (d *detector) emit(ev Event) {
+// emit queues an event for tick to deliver once mu is released (see deliver), and reports whether it was dropped for
+// lack of room or after Close (and counted in droppedEvents).
+func (d *detector) emit(ev Event) (dropped bool) {
 	if d.onEvent == nil {
-		return
+		return false
 	}
-	ev.Mode = "on"
-	if d.monitor {
-		ev.Mode = "monitor"
+	if ev.Mode == "" {
+		ev.Mode = "on"
+		if d.monitor {
+			ev.Mode = "monitor"
+		}
 	}
 	if d.closed || len(d.pending) >= maxPendingEvents {
 		d.droppedEvents.Add(1)
-		return
+		return true
 	}
 	d.pending = append(d.pending, ev)
+	return false
+}
+
+// bulkEventRoom is the share of the event queue left to the events of repeat offenders, of which a spray of addresses
+// can make many: the rest is kept for an attack's.
+const bulkEventRoom = maxPendingEvents * 3 / 4
+
+// emitBulk queues an event of a repeat offender, as emit does, while the queue holds fewer than bulkEventRoom.
+func (d *detector) emitBulk(ev Event) (dropped bool) {
+	if d.onEvent != nil && len(d.pending) >= bulkEventRoom {
+		d.droppedEvents.Add(1)
+		return true
+	}
+	return d.emit(ev)
 }
 
 func cloneMap(m map[uint64]float64) map[uint64]float64 {
