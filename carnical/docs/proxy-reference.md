@@ -172,20 +172,38 @@ not.
 
 ## Monitoring
 
-Default match events contain the rule ID, severity, the request's id and a fixed summary. The event
-uses `msg`; rule text uses `rule_msg`. The id, `tx`, is 16 hexadecimal digits made when the request
-arrives; the rule set's transaction is given the same one, so the lines of the rule set, the proxy's
-own checks, the inspectors and the rate rules about one request all carry it and can be read
-together. It joins lines; it is not a secret. `disruptive` is true only on the line of the check that
-refused the request: one of the proxy's own refusals, an inspector verdict that blocks, a rate rule
-that enforces, or, in the rule set, the anomaly verdict (949110 inbound, 959100 outbound, or 949111
-and 959101, which give it a phase early when `tx.early_blocking` is set), one of the CRS configuration
-checks 901001 and 901500 (status 500 when the rule set is set up wrong), one of Coraza's base rules
-(2000xx, a body or URI the engine could not take apart) or a rule tagged `carnical-deny`, which the
-site policy adds to its block list and to every custom rule that blocks.
-The CRS rules that only add to the anomaly score are never disruptive, though the engine runs them
-with a disruptive action while it enforces; in detection mode no rule set line is. A rule written
-into `crs.Settings.Before` or `After` that refuses with `deny` should carry `tag:'carnical-deny'`.
+Default match events contain the rule ID, severity, the request's id, a fixed summary, the rule's
+`category` and its `risk`. The event uses `msg`; rule text uses `rule_msg`. The id, `tx`, is 16
+hexadecimal digits made when the request arrives; the rule set's transaction is given the same one,
+so the lines of the rule set, the proxy's own checks, the inspectors and the rate rules about one
+request all carry it and can be read together. It joins lines; it is not a secret.
+
+`category` and `risk` come from the alert catalog. The category is a kind such as `sqli`, `protocol`
+or `rate` (several are joined with commas, and a rule the catalog gives none has an empty one). The
+risk is `info`, `low`, `medium` or `high`: a rule set rule that only adds to the anomaly score is
+`low` when its severity is critical or error and `info` otherwise, the anomaly verdicts 949110 and
+959100 (949111 and 959101 with early blocking) are `high` in detection mode as well as when they
+refuse, an inspector's verdict is rated by its own severity (`low` becomes `medium` when it
+refuses), and every other line, the edge's own included, has the catalog's category and risk. A
+rule the catalog does not know, such as one with an id of its own written into `crs.Settings.Before`
+or `After`, has no category and is rated as a rule that scores, or `medium` when it refuses the
+request or would have.
+
+`disruptive` is true only on the line of the check that refused the request: one of the proxy's own
+refusals, an inspector verdict that blocks, a rate rule that enforces, or, in the rule set, the
+anomaly verdict (949110 inbound, 959100 outbound, or 949111 and 959101, which give it a phase early
+when `tx.early_blocking` is set), one of the CRS configuration checks 901001 and 901500 (status 500
+when the rule set is set up wrong), one of Coraza's base rules (2000xx, a body or URI the engine
+could not take apart) or a rule tagged `carnical-deny`, which the site policy adds to its block list
+and to every custom rule that blocks. The CRS rules that only add to the anomaly score
+are never disruptive, though the engine runs them with a disruptive action while it enforces; in
+detection mode no rule set line is. A rule written into `crs.Settings.Before` or `After` that
+refuses with `deny` should carry `tag:'carnical-deny'`.
+
+A program that embeds the proxy can leave these lines out with `proxy.Config.NoRuleMatches`: the
+rule set's matches, the inspectors' verdicts, the proxy's own refusals and the rate rules' are then
+not given to `OnMatch`, while the lines about the edge itself (an upstream failure, an inspector that
+failed, the evaluation budget, a full table) still are.
 
 One request is reported in at most 32 rule lines, as it can match dozens of rules, besides the
 lines of the checks named below and one 5000078 line. The lines past that are counted, and once the

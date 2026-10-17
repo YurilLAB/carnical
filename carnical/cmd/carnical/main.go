@@ -313,7 +313,8 @@ func runFlags(args []string, private map[string]string) error {
 		AllowRequestEncoding: *requestEncoding, NoJoinedParams: !*joinRepeated, Shield: guard, CrowdSec: cs,
 		ErrorLog: stdlog.New(originErrors, "", 0),
 		OnMatch: func(m proxy.Match) {
-			attrs := []any{"rule", m.RuleID, "severity", m.Severity, "rule_msg", m.Message, "tx", m.TransactionID, "disruptive", m.Disruptive}
+			attrs := []any{"rule", m.RuleID, "severity", m.Severity, "rule_msg", m.Message, "tx", m.TransactionID, "disruptive", m.Disruptive,
+				"category", m.Category, "risk", m.Risk}
 			if *details {
 				attrs = append(attrs, "client", m.ClientIP, "uri", m.URI, "data", m.Data, "expanded_msg", m.ExpandedMessage)
 			}

@@ -187,7 +187,7 @@ func contentEncoded(h http.Header) bool {
 
 // refuse answers a request the proxy itself will not forward, and records why in the same form as a rule match.
 func (e *Edge) refuse(w http.ResponseWriter, r *http.Request, status int, id int, msg string) {
-	e.report(Match{RuleID: id, Severity: "CRITICAL", Message: msg, Disruptive: true}, nil, r)
+	e.finding(Match{RuleID: id, Severity: "CRITICAL", Message: msg, Disruptive: true}, nil, r)
 	http.Error(w, http.StatusText(status), status)
 }
 
@@ -210,7 +210,7 @@ func (e *Edge) refuseEarly(w http.ResponseWriter, r *http.Request, rec *record, 
 			}
 		} else {
 			e.flushEarly(i)
-			e.report(Match{RuleID: id, Severity: "CRITICAL", Message: msg, Disruptive: true}, rec, r)
+			e.finding(Match{RuleID: id, Severity: "CRITICAL", Message: msg, Disruptive: true}, rec, r)
 		}
 	}
 	http.Error(w, http.StatusText(status), status)
@@ -225,7 +225,7 @@ var earlyKinds = [idClientAddr - idConnect + 1]string{"a CONNECT request", "a pr
 // none and no request, as flushLimit's.
 func (e *Edge) flushEarly(i int) {
 	if n := e.earlyLog[i].unlogged.Swap(0); n > 0 {
-		e.report(Match{RuleID: idConnect + i, Severity: "CRITICAL", Disruptive: true,
+		e.finding(Match{RuleID: idConnect + i, Severity: "CRITICAL", Disruptive: true,
 			Message: earlyKinds[i] + " (" + strconv.FormatInt(n, 10) + " more refusals not logged)"}, nil, nil)
 	}
 }
@@ -508,7 +508,7 @@ func (e *Edge) logLimit(r *http.Request, rule *compiledRule, now int64) {
 	if rule.monitor {
 		m.Severity = "WARNING"
 	}
-	e.report(m, nil, r)
+	e.finding(m, nil, r)
 }
 
 // flushLimit logs how many of a rule's refusals were not logged, if any. The refusals may be any clients', so the line names
@@ -523,7 +523,7 @@ func (e *Edge) flushLimit(rule *compiledRule) {
 	if rule.monitor {
 		m.Severity, m.Message = "WARNING", rule.message+" ("+strconv.FormatInt(n, 10)+" more not logged)"
 	}
-	e.cfg.OnMatch(m)
+	e.deliver(m)
 }
 
 // reportEvicted logs that a full rate-limit table dropped clients that were still counting to make room for new ones, at
@@ -543,7 +543,7 @@ func (e *Edge) reportEvicted(now, n int64) {
 	if missed := e.evictUnlogged.Swap(0) + n - 1; missed > 0 {
 		message += " (" + strconv.FormatInt(missed, 10) + " more evictions not logged)"
 	}
-	e.cfg.OnMatch(Match{RuleID: idRateStateFull, Severity: "WARNING", Message: message})
+	e.deliver(Match{RuleID: idRateStateFull, Severity: "WARNING", Message: message})
 }
 
 // WordPressPolicy is the protection for a WordPress site. WordPress and its plugins are most of what is hacked:

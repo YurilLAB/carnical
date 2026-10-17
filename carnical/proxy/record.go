@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/netip"
 	"strconv"
+	"strings"
 	"sync/atomic"
 
 	"github.com/YurilLAB/coraza/carnical/alert"
@@ -71,6 +72,14 @@ func recordOf(ctx context.Context) *record {
 	return rec
 }
 
+// finding is report for a line that says what a request matched or why it was refused, which Config.NoRuleMatches leaves
+// out.
+func (e *Edge) finding(m Match, rec *record, r *http.Request) {
+	if !e.cfg.NoRuleMatches {
+		e.report(m, rec, r)
+	}
+}
+
 // report hands one line about a request to OnMatch, with the request's id, and with the visitor's address and the
 // target only if details are on. r may be nil for a line about a request that is no longer at hand; rec may be nil for
 // one that is about no request.
@@ -100,13 +109,47 @@ func (e *Edge) report(m Match, rec *record, r *http.Request) {
 		}
 		m.URI, m.Data, m.ExpandedMessage = alert.Clean(m.URI, maxURI), alert.Clean(m.Data, maxDetail), alert.Clean(m.ExpandedMessage, maxDetail)
 	}
+	e.deliver(m)
+}
+
+// deliver hands a line to OnMatch, which must be set, with the rule's category and risk from the alert catalog where the
+// line does not give its own. Every line goes through it, so that none is without a risk. A rule the catalog does not
+// know, such as one written into crs.Settings.Before or After, has no category; it is rated as a rule set rule that
+// scores, by its severity, or as medium when it refused the request or would have.
+func (e *Edge) deliver(m Match) {
+	entry, known := alert.Lookup(m.RuleID)
+	if m.Category == "" {
+		m.Category = categoryText(entry.Categories)
+	}
+	if m.Risk == "" {
+		switch {
+		case known:
+			m.Risk = entry.Risk.String()
+		case m.Disruptive || m.verdict:
+			m.Risk = alert.RiskMedium.String()
+		default:
+			m.Risk = alert.CRSRisk(m.Severity).String()
+		}
+	}
 	e.cfg.OnMatch(m)
+}
+
+// categoryText is a set of categories as a line gives them: their names joined with commas. One name, the usual case, is
+// the catalog's own string.
+func categoryText(c alert.Categories) string {
+	switch c.Len() {
+	case 0:
+		return ""
+	case 1:
+		return c.Names(1)[0]
+	}
+	return strings.Join(c.Names(alert.MaxCategories), ",")
 }
 
 // reportHeld says, once a request is done, how many of its lines went over maxRequestLines.
 func (e *Edge) reportHeld(rec *record) {
 	if n := rec.held.Load(); n > 0 && e.cfg.OnMatch != nil {
-		e.cfg.OnMatch(Match{RuleID: idLinesHeld, Severity: "WARNING", TransactionID: rec.id,
+		e.deliver(Match{RuleID: idLinesHeld, Severity: "WARNING", TransactionID: rec.id,
 			Message: strconv.FormatInt(int64(n), 10) + " more rule matches not logged"})
 	}
 }

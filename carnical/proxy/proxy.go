@@ -39,6 +39,7 @@ import (
 	txhttp "github.com/corazawaf/coraza/v3/http"
 	"github.com/corazawaf/coraza/v3/types"
 
+	"github.com/YurilLAB/coraza/carnical/alert"
 	"github.com/YurilLAB/coraza/carnical/crowdsec"
 	"github.com/YurilLAB/coraza/carnical/crs"
 	"github.com/YurilLAB/coraza/carnical/inspect"
@@ -141,6 +142,11 @@ type Config struct {
 	// CrowdSec checks LAPI bans against the verified visitor before reading a body.
 	// Its owner must Sync before serving, run its refresh loop and close it on shutdown.
 	CrowdSec *crowdsec.Client
+	// NoRuleMatches leaves out of OnMatch the lines that report what a request matched or why it was refused: the rule
+	// set's, the inspectors' verdicts, the proxy's own refusals and the rate rules'. The lines about the edge itself (an
+	// upstream failure, an inspector that failed, the evaluation budget, a full table) are still given. By default every
+	// match is reported.
+	NoRuleMatches bool
 	// LogDetails adds the client address, URI, matched data and expanded message to a Match. They hold what the visitor
 	// sent, which can include personal data and credentials, so they are left out unless asked for.
 	LogDetails bool
@@ -156,6 +162,11 @@ type Match struct {
 	Message       string // the rule's own text, which never holds request data
 	TransactionID string
 	Disruptive    bool
+	// Category is the rule's kind from the alert catalog ("sqli", "protocol", "rate"; several are joined with commas),
+	// empty for a rule it gives none. Risk is info, low, medium or high: for a rule set rule that only adds to the anomaly
+	// score, from its severity; for an inspector's verdict, from its severity and whether it refused; otherwise the
+	// catalog's.
+	Category, Risk string
 	// Set only with Config.LogDetails.
 	ClientIP, URI, Data, ExpandedMessage string
 	// verdict marks the line of a check that decides on the request on its own, whether it refused it or, in detection or
@@ -413,7 +424,7 @@ func (e *Edge) reportTooManyConns(ip netip.Addr) {
 	if e.cfg.LogDetails {
 		m.ClientIP = ip.String()
 	}
-	e.cfg.OnMatch(m)
+	e.deliver(m)
 }
 
 // reportEval reports a phase of rule evaluation that found no slot or ran out of its budget, with the id of the request it
@@ -432,7 +443,7 @@ func (e *Edge) reportEval(timedOut bool, tx string) {
 	if previous := e.evalLogSecond[kind].Load(); second == previous || !e.evalLogSecond[kind].CompareAndSwap(previous, second) {
 		return
 	}
-	e.cfg.OnMatch(m)
+	e.deliver(m)
 }
 
 func (e *Edge) onMatch(m types.MatchedRule) {
@@ -453,11 +464,14 @@ func (e *Edge) onMatch(m types.MatchedRule) {
 		match.ClientIP, match.URI, match.Data = m.ClientIPAddress(), m.URI(), m.Data()
 		match.ExpandedMessage = m.Message()
 	}
+	if !match.verdict && (match.RuleID >= 900000 && match.RuleID <= 999999 || match.RuleID >= 5006000 && match.RuleID <= 5006999) {
+		match.Risk = alert.CRSRisk(match.Severity).String() // a rule that scores: the verdict is 949110's or 949111's
+	}
 	var rec *record
 	if c, ok := m.(interface{ Context() context.Context }); ok {
 		rec = recordOf(c.Context()) // the transaction's context is the request's (see budgetWAF)
 	}
-	e.report(match, rec, nil)
+	e.finding(match, rec, nil)
 }
 
 // refusesOnItsOwn reports a rule that refuses a request when it matches, rather than adding to the anomaly score: the

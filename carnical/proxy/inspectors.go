@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"strings"
 
+	"github.com/YurilLAB/coraza/carnical/alert"
 	"github.com/YurilLAB/coraza/carnical/inspect"
 )
 
@@ -30,7 +31,7 @@ func (e *Edge) runInspectors(w http.ResponseWriter, r *http.Request, rawPath, ra
 			if e.cfg.LogDetails {
 				m.ExpandedMessage = in.Name() + " failed: " + err.Error()
 			}
-			e.log(m, r)
+			e.report(m, nil, r) // the edge failed, which NoRuleMatches does not leave out
 			http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
 			return nil, nil, false
 		}
@@ -50,8 +51,8 @@ func (e *Edge) runInspectors(w http.ResponseWriter, r *http.Request, rawPath, ra
 			if sev == "" {
 				sev = "WARNING"
 			}
-			e.log(Match{RuleID: v.ID, Severity: sev, Message: v.Message, Disruptive: v.Block,
-				verdict: true}, r) // each inspector bounds how many verdicts it gives one request
+			e.finding(Match{RuleID: v.ID, Severity: sev, Message: v.Message, Disruptive: v.Block, Risk: alert.InspectorRisk(v.Severity, v.Block).String(),
+				verdict: true}, nil, r) // each inspector bounds how many verdicts it gives one request
 			if v.Block && blocking == nil {
 				blocking = &v
 			}
@@ -79,6 +80,3 @@ func safeInspect(in inspect.Inspector, req *inspect.Request) (res inspect.Result
 	}()
 	return in.Inspect(req), nil
 }
-
-// log reports an inspector's finding, adding what identifies the request only if details are on.
-func (e *Edge) log(m Match, r *http.Request) { e.report(m, nil, r) }

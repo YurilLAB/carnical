@@ -528,7 +528,7 @@ func TestMatchesAreReportedWithoutWhatTheVisitorSentUnlessAsked(t *testing.T) {
 	if status, _ := dt.raw(t, badJSON); status != 200 {
 		t.Fatalf("malformed JSON in detection mode: status %d", status)
 	}
-	// With early blocking on, the rule set refuses in phase 1 with 949111, after many lines of rules that only log.
+	// With early blocking on, the rule set refuses in phase 1 with 949111, after more lines than a request is reported in.
 	var early []Match
 	earlyRules := []string{`SecAction "id:900120,phase:1,pass,nolog,t:none,setvar:tx.early_blocking=1"`}
 	for i := range 40 {
@@ -574,8 +574,28 @@ func TestMatchesAreReportedWithoutWhatTheVisitorSentUnlessAsked(t *testing.T) {
 	if status, _ := cd.raw(t, get("/page?x=1&q="+url.QueryEscape("1' OR '1'='1' --"))); status != 200 {
 		t.Fatalf("many rules in detection mode: status %d", status)
 	}
+	// The lines about the edge itself, which are about no one request, carry their kind and risk too.
+	var own []Match
+	o := start(t, func(c *Config) { c.OnMatch = collect(&own) })
+	o.edge.reportEval(false, "")
+	o.edge.reportEval(true, "")
+	o.edge.reportTooManyConns(netip.MustParseAddr("192.0.2.1"))
+	o.edge.reportEvicted(int64(time.Hour), 1)
+	// With NoRuleMatches only the lines about the edge itself are given.
+	var quiet []Match
+	d := start(t, func(c *Config) { c.OnMatch = collect(&quiet); c.NoRuleMatches = true })
+	if status, _ := d.raw(t, attack); status != 403 {
+		t.Fatalf("attack status %d", status)
+	}
+	d.up.Close()
+	if status, _ := d.raw(t, get("/health")); status != 502 {
+		t.Fatalf("unavailable origin status %d", status)
+	}
 	mu.Lock()
 	defer mu.Unlock()
+	if len(quiet) != 1 || quiet[0].RuleID != idUpstreamFailed {
+		t.Errorf("with NoRuleMatches: %+v", quiet)
+	}
 	if n := len(capped); n != maxRequestLines+2 || capped[n-2].RuleID != 10100 || !capped[n-2].Disruptive || capped[n-1].RuleID != idLinesHeld ||
 		capped[n-1].TransactionID != capped[0].TransactionID || !strings.HasSuffix(capped[n-1].Message, " more rule matches not logged") {
 		t.Errorf("a request that matched %d rules was reported in %d lines: %+v", len(many), len(capped), capped[max(len(capped)-2, 0):])
@@ -604,15 +624,56 @@ func TestMatchesAreReportedWithoutWhatTheVisitorSentUnlessAsked(t *testing.T) {
 		!slices.ContainsFunc(plain, func(m Match) bool { return m.RuleID == 920350 }) {
 		t.Errorf("disruptive rules %v, want 949110, 5000099, 200002 and %d, with 920350 matched", refusing, idUpstreamFailed)
 	}
-	// 949111 is the one disruptive line of a request early blocking refused.
-	if i := slices.IndexFunc(early, func(m Match) bool { return m.Disruptive }); i < 0 || early[i].RuleID != 949111 ||
+	// 949111 is the one disruptive line of a request early blocking refused, is not held back by the cap and is rated as the
+	// verdict.
+	if i := slices.IndexFunc(early, func(m Match) bool { return m.Disruptive }); i < 0 || early[i].RuleID != 949111 || early[i].Risk != "high" ||
 		slices.ContainsFunc(early[i+1:], func(m Match) bool { return m.Disruptive }) {
-		t.Errorf("with early blocking the lines end %+v; want 949111 the one disruptive line", early[max(len(early)-4, 0):])
+		t.Errorf("with early blocking the lines end %+v; want 949111 the one disruptive line, rated high", early[max(len(early)-4, 0):])
 	}
 	// In detection mode nothing refused, so no rule set line is disruptive.
 	if !slices.ContainsFunc(detected, func(m Match) bool { return m.RuleID == 200002 }) ||
 		slices.ContainsFunc(detected, func(m Match) bool { return m.Disruptive }) {
 		t.Errorf("in detection mode: %+v; want 200002 matched and nothing disruptive", detected)
+	}
+	// Every line names its kind and risk from the alert catalog; a rule that only scores is rated by its severity, the
+	// verdict as high.
+	kinds := map[int]string{}
+	for _, m := range slices.Concat(plain, capped, cappedDetect, early) {
+		if m.Risk == "" {
+			t.Errorf("a match without a risk: %+v", m)
+			break
+		}
+	}
+	for _, m := range plain {
+		kinds[m.RuleID] = m.Category + "/" + m.Risk
+	}
+	// A rule the catalog does not know, such as one written into Before or After, is rated as a rule set rule that scores,
+	// or as medium when it refuses or would have.
+	for _, m := range slices.Concat(capped, cappedDetect) {
+		if want := map[bool]string{true: "medium", false: "info"}[m.RuleID == 10100]; m.RuleID >= 10001 && m.RuleID <= 10100 && m.Risk != want {
+			t.Errorf("rule %d is rated %q, want %q", m.RuleID, m.Risk, want)
+			break
+		}
+	}
+	for id, want := range map[int]string{942100: "sqli/low", 920350: "protocol/info", 949110: "/high", 5001002: "/low", idUpstreamFailed: "/info"} {
+		if kinds[id] != want {
+			t.Errorf("rule %d is %q, want %q", id, kinds[id], want)
+		}
+	}
+	// In detection mode the verdict is rated as the verdict, not as a rule that scores.
+	for _, m := range cappedDetect {
+		if m.RuleID == 949110 && m.Category+"/"+m.Risk != "/high" {
+			t.Errorf("in detection mode 949110 is %q, want \"/high\"", m.Category+"/"+m.Risk)
+		}
+	}
+	ownKinds := map[int]string{}
+	for _, m := range own {
+		ownKinds[m.RuleID] = m.Category + "/" + m.Risk
+	}
+	for id, want := range map[int]string{idEvalBusy: "inspection/medium", idEvalBudget: "inspection/medium", idTooManyConns: "flood/low", idRateStateFull: "rate/info"} {
+		if ownKinds[id] != want {
+			t.Errorf("the edge's line %d is %q, want %q", id, ownKinds[id], want)
+		}
 	}
 	localLabel, upstreamLabel := false, false
 	// Every line is about one request and names it, and an inspector's line names it as the rule set's lines do.

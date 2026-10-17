@@ -995,6 +995,9 @@ func TestAPIRatePolicy(t *testing.T) {
 					if m.RuleID != tc.id {
 						t.Fatalf("logged rule %d", m.RuleID)
 					}
+					if m.Category != "rate" || m.Risk == "" {
+						t.Fatalf("a line without its kind or risk: %+v", m)
+					}
 					client, _, _ := strings.Cut(m.ClientIP, ":")
 					_, count, _ := strings.Cut(m.Message, " (")
 					logged = append(logged, client+" "+count)
