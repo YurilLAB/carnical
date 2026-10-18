@@ -720,6 +720,66 @@ func TestWordPressPolicy(t *testing.T) {
 			t.Fatalf("statuses %v, want %v", statuses, want)
 		}
 	})
+
+	// wp.apiFetch, which the block editor saves with, sends PUT, PATCH and DELETE as a POST with this header.
+	t.Run("the REST API's method override", func(t *testing.T) {
+		rules := func(c *Config) { c.WordPress = WordPressPolicy{Enabled: true} } // with the rule set, which restricts the header too
+		save := func(target string, headers ...string) string {
+			body := `{"title":"Hello","content":"<!-- wp:paragraph --><p>Hi</p><!-- /wp:paragraph -->","status":"publish"}`
+			return "POST " + target + " HTTP/1.1\r\n" + preamble + strings.Join(headers, "") + "Content-Type: application/json\r\nContent-Length: " +
+				strconv.Itoa(len(body)) + "\r\nConnection: close\r\n\r\n" + body
+		}
+		tests := []struct {
+			name, request string
+			change        func(*Config)
+			want          int
+			forwarded     string // the override header the application gets
+		}{
+			{"PUT to a post", save("/wp-json/wp/v2/posts/1", "X-HTTP-Method-Override: PUT\r\n"), on, 200, "PUT"},
+			{"PUT to a post, with the rule set", save("/wp-json/wp/v2/posts/1", "X-HTTP-Method-Override: PUT\r\n"), rules, 200, "PUT"},
+			{"DELETE in lower case", save("/wp-json/wp/v2/posts/1", "X-HTTP-Method-Override: delete\r\n"), on, 200, "DELETE"},
+			{"PATCH, the name written with underscores", save("/wp-json/wp/v2/posts/1", "X_HTTP_Method_Override: PATCH\r\n"), on, 200, "PATCH"},
+			{"a site installed in a subdirectory", save("/blog/wp-json/wp/v2/posts/1", "X-HTTP-Method-Override: PUT\r\n"), on, 200, "PUT"},
+			{"rest_route without pretty links", save("/?rest_route=/wp/v2/posts/1", "X-HTTP-Method-Override: PUT\r\n"), on, 200, "PUT"},
+			{"rest_route on index.php", save("/index.php?rest_route=/wp/v2/posts/1", "X-HTTP-Method-Override: PUT\r\n"), on, 200, "PUT"},
+			{"a POST to the API without the header", save("/wp-json/wp/v2/posts/1"), on, 200, ""},
+			{"a site not marked as WordPress", save("/wp-json/wp/v2/posts/1", "X-HTTP-Method-Override: PUT\r\n"), ruleSetOff, 400, ""},
+			{"outside the REST API", save("/wp-admin/post.php", "X-HTTP-Method-Override: PUT\r\n"), on, 400, ""},
+			{"a path only named like the API", save("/my-wp-json/x", "X-HTTP-Method-Override: PUT\r\n"), on, 400, ""},
+			{"rest_route on another page", save("/shop/?rest_route=/wp/v2/posts/1", "X-HTTP-Method-Override: PUT\r\n"), on, 400, ""},
+			{"a GET", get("/wp-json/wp/v2/posts/1", "X-HTTP-Method-Override: DELETE\r\n"), on, 400, ""},
+			{"a method a REST client does not tunnel", save("/wp-json/wp/v2/posts/1", "X-HTTP-Method-Override: TRACE\r\n"), on, 400, ""},
+			{"two values", save("/wp-json/wp/v2/posts/1", "X-HTTP-Method-Override: PUT\r\n", "X-HTTP-Method-Override: DELETE\r\n"), on, 400, ""},
+			{"both spellings", save("/wp-json/wp/v2/posts/1", "X-HTTP-Method-Override: PUT\r\n", "X_HTTP_Method_Override: DELETE\r\n"), on, 400, ""},
+			{"X-Method-Override", save("/wp-json/wp/v2/posts/1", "X-Method-Override: PUT\r\n"), on, 400, ""},
+			{"X-HTTP-Method", save("/wp-json/wp/v2/posts/1", "X-HTTP-Method: PUT\r\n"), on, 400, ""},
+			{"the allowed header with X-HTTP-Method", save("/wp-json/wp/v2/posts/1", "X-HTTP-Method-Override: PUT\r\n", "X-HTTP-Method: DELETE\r\n"), on, 400, ""},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				s := start(t, tt.change)
+				if status, _ := s.raw(t, tt.request); status != tt.want {
+					t.Fatalf("status %d, want %d", status, tt.want)
+				}
+				got := s.up.requests()
+				if tt.want != 200 {
+					if len(got) != 0 {
+						t.Fatal("the request reached the application")
+					}
+					return
+				}
+				var names []string
+				for name := range got[0].Header {
+					if k := strings.ReplaceAll(strings.ToLower(name), "_", "-"); isMethodOverrideHeader(k) {
+						names = append(names, name)
+					}
+				}
+				if tt.forwarded == "" && len(names) != 0 || tt.forwarded != "" && (len(names) != 1 || !slices.Equal(got[0].Header.Values(names[0]), []string{tt.forwarded})) {
+					t.Fatalf("the application got %v (%v), want only %q", names, got[0].Header, tt.forwarded)
+				}
+			})
+		}
+	})
 }
 
 func TestAPIRatePolicy(t *testing.T) {

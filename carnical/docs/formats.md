@@ -194,7 +194,8 @@ query candidates remain ordinary JSON.
 The proxy also rejects mixed/lowercase HTTP method tokens (5000043) and `X-HTTP-Method-Override`,
 `X-Method-Override`, `X-HTTP-Method` headers, including underscore aliases (5000044), with 400
 regardless of CRS or format mode. Sites relying on header method tunneling must change that
-integration. These proxy findings use the individual match log; format-rule counters include the
+integration; the one exception is WordPress's REST API with `-wordpress` (see the
+[proxy reference](proxy-reference.md)). These proxy findings use the individual match log; format-rule counters include the
 three new GraphQL rule identities. Enforce them with `-formats-mode block`; monitor mode
 deliberately forwards and records findings.
 

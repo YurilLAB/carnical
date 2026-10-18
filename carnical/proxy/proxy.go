@@ -333,7 +333,9 @@ func New(cfg Config) (*Edge, error) {
 		}
 		slices.Sort(cfg.CRS.SiteHosts)
 	}
-	directives, err := cfg.CRS.Directives()
+	settings := cfg.CRS
+	settings.WordPress = cfg.WordPress.Enabled // with the override checkRequest lets through (wordPressOverride)
+	directives, err := settings.Directives()
 	if err != nil {
 		return nil, err
 	}
@@ -929,6 +931,9 @@ func (e *Edge) forward() http.Handler {
 				out.Host = e.cfg.UpstreamHost
 			}
 			stripClaims(out.Header)
+			if rec := recordOf(in.Context()); rec != nil && rec.override != "" {
+				out.Header.Set("X-HTTP-Method-Override", rec.override) // checked by checkRequest (wordPressOverride)
+			}
 			if e.cfg.CRS.InspectResponses {
 				// The response rules read the body the application sends. Asked by the client, the application compresses it and
 				// the rules read gzip bytes; without the client's Accept-Encoding the transport asks for gzip itself and hands on

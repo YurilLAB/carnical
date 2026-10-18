@@ -580,32 +580,52 @@ func TestTheSiteWidensTheHTTPPolicy(t *testing.T) {
 		return func(s *crs.Settings) { s.AllowedContentTypes = types }
 	}
 	sh := func(s *crs.Settings) { s.AllowedExtensions = []string{".sh"} }
+	override := func(s *crs.Settings) { s.WordPress = true }
+	put := map[string]string{"X-HTTP-Method-Override": "PUT"}
+	blocks := `{"title":"Notes","content":"<!-- wp:paragraph --><p>Plain words.</p><!-- /wp:paragraph -->"}`
 	pkt := "0032want 0123456789abcdef0123456789abcdef01234567\n00000009done\n\x00\xff\xfe"
 	tests := []struct {
 		name                     string
 		change                   func(*crs.Settings)
 		method, target, ct, body string
 		want                     int
+		headers                  map[string]string
 	}{
-		{"PUT with the CRS methods", nil, "PUT", "/item/1", "application/json", `{"a":1}`, 403},
+		{"PUT with the CRS methods", nil, "PUT", "/item/1", "application/json", `{"a":1}`, 403, nil},
 		{"PUT with PUT allowed", func(s *crs.Settings) {
 			s.AllowedMethods = []string{"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}
-		}, "PUT", "/item/1", "application/json", `{"a":1}`, 200},
-		{"git's type with the CRS types", nil, "POST", "/alice/notes/git-upload-pack", git, pkt, 403},
-		{"git's type with it allowed", allow(git), "POST", "/alice/notes/git-upload-pack", git, pkt, 200},
-		{"git's type in capitals, allowed", allow(git), "POST", "/alice/notes/git-upload-pack", "Application/X-Git-Upload-Pack-Request", pkt, 200},
+		}, "PUT", "/item/1", "application/json", `{"a":1}`, 200, nil},
+		{"git's type with the CRS types", nil, "POST", "/alice/notes/git-upload-pack", git, pkt, 403, nil},
+		{"git's type with it allowed", allow(git), "POST", "/alice/notes/git-upload-pack", git, pkt, 200, nil},
+		{"git's type in capitals, allowed", allow(git), "POST", "/alice/notes/git-upload-pack", "Application/X-Git-Upload-Pack-Request", pkt, 200, nil},
 		{"git's type allowed, an attack in its body that the body rules read", allow(git),
-			"POST", "/alice/notes/git-upload-pack", git, "0032want java.lang.Runtime.getRuntime().exec(\"id\")", 403},
-		{"git's type allowed, JSON still accepted", allow(git), "POST", "/api", "application/json", `{"a":1}`, 200},
-		{"git's type allowed, JSON still read as JSON", allow(git), "POST", "/api", "application/json", `{"q":"1' OR '1'='1' --"}`, 403},
-		{"git's type allowed, another type still refused", allow(git), "POST", "/alice/notes/git-upload-pack", "application/x-git-upload", pkt, 403},
-		{"a JSON type allowed is read as JSON", allow(jsonAPI), "POST", "/api", jsonAPI, `{"q":"1' OR '1'='1' --"}`, 403},
-		{"a JSON type allowed, an ordinary body", allow(jsonAPI), "POST", "/api", jsonAPI, `{"q":"shoes"}`, 200},
-		{"a .sh page with the CRS extensions", nil, "GET", "/src/install.sh", "", "", 403},
-		{"a .sh page with .sh allowed", sh, "GET", "/src/install.sh", "", "", 200},
-		{".sh allowed, a .sql page still refused", sh, "GET", "/dump.sql", "", "", 403},
-		{".sh allowed, a .wsh page still refused", sh, "GET", "/x.wsh", "", "", 403},
-		{".sh allowed, a .shs page still refused", sh, "GET", "/x.shs", "", "", 403},
+			"POST", "/alice/notes/git-upload-pack", git, "0032want java.lang.Runtime.getRuntime().exec(\"id\")", 403, nil},
+		{"git's type allowed, JSON still accepted", allow(git), "POST", "/api", "application/json", `{"a":1}`, 200, nil},
+		{"git's type allowed, JSON still read as JSON", allow(git), "POST", "/api", "application/json", `{"q":"1' OR '1'='1' --"}`, 403, nil},
+		{"git's type allowed, another type still refused", allow(git), "POST", "/alice/notes/git-upload-pack", "application/x-git-upload", pkt, 403, nil},
+		{"a JSON type allowed is read as JSON", allow(jsonAPI), "POST", "/api", jsonAPI, `{"q":"1' OR '1'='1' --"}`, 403, nil},
+		{"a JSON type allowed, an ordinary body", allow(jsonAPI), "POST", "/api", jsonAPI, `{"q":"shoes"}`, 200, nil},
+		{"a .sh page with the CRS extensions", nil, "GET", "/src/install.sh", "", "", 403, nil},
+		{"a .sh page with .sh allowed", sh, "GET", "/src/install.sh", "", "", 200, nil},
+		{".sh allowed, a .sql page still refused", sh, "GET", "/dump.sql", "", "", 403, nil},
+		{".sh allowed, a .wsh page still refused", sh, "GET", "/x.wsh", "", "", 403, nil},
+		{".sh allowed, a .shs page still refused", sh, "GET", "/x.shs", "", "", 403, nil},
+		{"a method override with the CRS headers", nil, "POST", "/wp-json/wp/v2/posts/1", "application/json", `{"a":1}`, 403, put},
+		{"a method override allowed", override, "POST", "/wp-json/wp/v2/posts/1", "application/json", `{"a":1}`, 200, put},
+		{"a method override allowed, on a GET", override, "GET", "/wp-json/wp/v2/posts/1", "", "", 403, put},
+		{"a method override allowed, naming TRACE", override, "POST", "/wp-json/wp/v2/posts/1", "application/json", `{"a":1}`, 403,
+			map[string]string{"X-HTTP-Method-Override": "TRACE"}},
+		{"block markup with the CRS rules", nil, "POST", "/wp-json/wp/v2/posts/1", "application/json", blocks, 403, nil},
+		{"block markup on a WordPress site", override, "POST", "/wp-json/wp/v2/posts/1", "application/json", blocks, 200, nil},
+		{"block markup on a WordPress site in a subdirectory", override, "POST", "/blog/wp-json/wp/v2/pages/2", "application/json", blocks, 200, nil},
+		{"block markup through rest_route", override, "POST", "/?rest_route=/wp/v2/posts/1", "application/json", blocks, 200, nil},
+		{"block markup in another field", override, "POST", "/wp-json/wp/v2/posts/1", "application/json",
+			`{"title":"<!-- wp:paragraph -->","content":"x"}`, 403, nil},
+		{"block markup outside the REST API", override, "POST", "/contact", "application/json", blocks, 403, nil},
+		{"a script in the content of a WordPress save", override, "POST", "/wp-json/wp/v2/posts/1", "application/json",
+			`{"content":"<!-- wp:html --><script>alert(document.domain)</script><!-- /wp:html -->"}`, 403, nil},
+		{"a method override allowed, X-HTTP-Method still refused", override, "POST", "/wp-json/wp/v2/posts/1", "application/json", `{"a":1}`, 403,
+			map[string]string{"X-HTTP-Method": "PUT"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -614,7 +634,7 @@ func TestTheSiteWidensTheHTTPPolicy(t *testing.T) {
 				tt.change(&s)
 			}
 			srv, _ := serve(t, s)
-			if got := do(t, srv, tt.method, tt.target, tt.ct, tt.body, nil); got != tt.want {
+			if got := do(t, srv, tt.method, tt.target, tt.ct, tt.body, tt.headers); got != tt.want {
 				t.Errorf("got %d, want %d", got, tt.want)
 			}
 		})

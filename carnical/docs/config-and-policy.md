@@ -450,7 +450,7 @@ the command-injection rules, and leaves every other cookie checked:
 What an exclusion cannot reach, measured on real applications (see the [validation
 record](validation-2026-10-18.md#tuning-a-site-and-keeping-formats-blocking)): the proxy's own
 refusals, such as 5000044 for `X-HTTP-Method-Override`, which WordPress's block editor sends on
-every save; rule 920420's list of request types (git over HTTP); and rule 920440's restricted file
+every save (`wordpress.enabled` lets it through on WordPress's REST API only); rule 920420's list of request types (git over HTTP); and rule 920440's restricted file
 extensions, which reads the file name (`.sh`, `.sql`), not a target an exclusion names. The two
 lists have settings of their own, `allowed_content_types` and `allowed_extensions`. A code host
 such as Gitea needs:

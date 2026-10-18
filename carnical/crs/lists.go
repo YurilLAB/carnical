@@ -21,6 +21,8 @@ const (
 	contentTypesRuleID = 900220 // the ids crs-setup.conf gives these settings
 	rawBodyRuleID      = 900221
 	extensionsRuleID   = 900240
+	overrideRuleID     = 900250
+	blockMarkupRuleID  = 900251 // and 900252
 )
 
 // contentTypeShape is a media type without parameters, as rule 920420 compares it (lower case). Nothing in it can end a
@@ -37,7 +39,7 @@ func IsRestrictedExtension(ext string) bool {
 	return err == nil && strings.HasPrefix(ext, ".") && slices.Contains(strings.Fields(d.extensions), ext+"/")
 }
 
-type crsLists struct{ contentTypes, extensions string }
+type crsLists struct{ contentTypes, extensions, headers string }
 
 var listDefaults = sync.OnceValues(func() (crsLists, error) {
 	b, err := files.ReadFile("owasp_crs/REQUEST-901-INITIALIZATION.conf")
@@ -55,7 +57,10 @@ var listDefaults = sync.OnceValues(func() (crsLists, error) {
 	if l.contentTypes, err = get("allowed_request_content_type"); err != nil {
 		return l, err
 	}
-	l.extensions, err = get("restricted_extensions")
+	if l.extensions, err = get("restricted_extensions"); err != nil {
+		return l, err
+	}
+	l.headers, err = get("restricted_headers_basic")
 	return l, err
 })
 
@@ -71,8 +76,10 @@ func (s Settings) validateLists() error {
 	if len(s.AllowedExtensions) > MaxExtensions {
 		return fmt.Errorf("more than %d allowed extensions", MaxExtensions)
 	}
-	if _, err := listDefaults(); err != nil {
+	if d, err := listDefaults(); err != nil {
 		return err
+	} else if s.WordPress && !slices.Contains(strings.Fields(d.headers), "/x-http-method-override/") {
+		return fmt.Errorf("the rule set no longer restricts X-HTTP-Method-Override as this setting expects")
 	}
 	for _, ext := range s.AllowedExtensions {
 		if !IsRestrictedExtension(ext) {
@@ -116,6 +123,17 @@ func (s Settings) listDirectives() []string {
 			}
 		}
 		out = append(out, fmt.Sprintf(`SecAction "id:%d,phase:1,pass,t:none,nolog,setvar:'tx.restricted_extensions=%s'"`, extensionsRuleID, strings.Join(kept, " ")))
+	}
+	if s.WordPress {
+		// Only on a POST naming a method a REST client tunnels through POST, as the proxy checked; rule 920450 then reads a
+		// list without this one header for the request.
+		headers := strings.Join(slices.DeleteFunc(strings.Fields(d.headers), func(h string) bool { return h == "/x-http-method-override/" }), " ")
+		out = append(out, fmt.Sprintf(`SecRule REQUEST_METHOD "@streq POST" "id:%d,phase:1,pass,t:none,nolog,chain"`, overrideRuleID),
+			fmt.Sprintf(`SecRule REQUEST_HEADERS:X-HTTP-Method-Override "@rx ^(?:PUT|PATCH|DELETE)$" "t:none,setvar:'tx.restricted_headers_basic=%s'"`, headers))
+		// The REST API at /wp-json/ in any directory, or through rest_route without pretty links.
+		const blockMarkup = "ctl:ruleRemoveTargetById=941180;ARGS:json.content"
+		out = append(out, fmt.Sprintf(`SecRule REQUEST_FILENAME "@contains /wp-json/wp/v2/" "id:%d,phase:1,pass,t:none,t:lowercase,nolog,%s"`, blockMarkupRuleID, blockMarkup),
+			fmt.Sprintf(`SecRule ARGS_GET:rest_route "@beginsWith /wp/v2/" "id:%d,phase:1,pass,t:none,t:lowercase,nolog,%s"`, blockMarkupRuleID+1, blockMarkup))
 	}
 	return out
 }

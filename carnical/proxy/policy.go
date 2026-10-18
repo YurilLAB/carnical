@@ -283,15 +283,31 @@ func (e *Edge) checkRequest(w http.ResponseWriter, r *http.Request, client netip
 			return false
 		}
 	}
+	override := ""
+	if e.cfg.WordPress.Enabled {
+		override = wordPressOverride(r)
+	}
 	for name := range r.Header {
 		key := strings.ReplaceAll(strings.ToLower(name), "_", "-")
-		if isMethodOverrideHeader(key) {
+		if isMethodOverrideHeader(key) && (override == "" || key != "x-http-method-override") {
 			e.refuse(w, r, http.StatusBadRequest, idMethodOverride, "a header that overrides the HTTP method")
 			return false
 		}
 		if e.deny[key] {
 			e.refuse(w, r, http.StatusBadRequest, idInternalHeader, "a header this site does not accept: "+key)
 			return false
+		}
+	}
+	if override != "" {
+		// The rules and the application see one header in one spelling, with the method that was checked.
+		for name := range r.Header {
+			if strings.ReplaceAll(strings.ToLower(name), "_", "-") == "x-http-method-override" {
+				delete(r.Header, name)
+			}
+		}
+		r.Header.Set("X-HTTP-Method-Override", override)
+		if rec := recordOf(r.Context()); rec != nil {
+			rec.override = override
 		}
 	}
 	if e.cfg.Bots != nil && !e.checkBots(w, r, client) {
@@ -615,6 +631,38 @@ var (
 	wpWritable = regexp.MustCompile(`(?i)/wp-content/(uploads|cache|upgrade|backup[^/]*|backups[^/]*|ai1wm-backups|updraft|wc-logs|wflogs|et-cache|litespeed)(/|$)`)
 	wpScript   = regexp.MustCompile(`(?i)\.(php[0-9]?|phtml?|pht|phps|phar|shtml?)([/.:\s]|$)`)
 )
+
+// wordPressOverride returns the method a request to WordPress's REST API asks for in X-HTTP-Method-Override, or "" when
+// the request is not one the proxy lets carry it. WordPress's own JavaScript (wp.apiFetch, which the block editor uses
+// for every save) sends PUT, PATCH and DELETE as a POST with that header, and its REST server runs the named method. Only
+// that is let through: a POST, one value, one of those three methods, to /wp-json/ (in any directory, for a site
+// installed under one) or to the site's root or index.php with rest_route, as WordPress addresses its API without pretty
+// links. The other override headers, and this one anywhere else, are still refused (rule 5000044).
+func wordPressOverride(r *http.Request) string {
+	if r.Method != http.MethodPost {
+		return ""
+	}
+	var values []string
+	for name, v := range r.Header {
+		if strings.ReplaceAll(strings.ToLower(name), "_", "-") == "x-http-method-override" {
+			values = append(values, v...)
+		}
+	}
+	if len(values) != 1 {
+		return ""
+	}
+	switch m := strings.ToUpper(strings.TrimSpace(values[0])); m {
+	case http.MethodPut, http.MethodPatch, http.MethodDelete:
+		route := routePath(r.URL.Path)
+		if strings.Contains(route+"/", "/wp-json/") {
+			return m
+		}
+		if (strings.HasSuffix(route, "/") || strings.HasSuffix(route, "/index.php")) && r.URL.Query().Has("rest_route") {
+			return m
+		}
+	}
+	return ""
+}
 
 // checkWordPress refuses the scripts a WordPress site never runs. The route is the request's routePath: empty segments, a
 // trailing slash, path parameters and path info do not change which script PHP runs. Both the scripts in its writable

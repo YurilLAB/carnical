@@ -71,7 +71,15 @@ KiB for one plain-text workload, with 300 KiB taking 1.8s on one core. A 5ms eva
 reduced that measured request to 48ms. These are workload-specific measurements, not latency
 guarantees.
 
-`-wordpress` adds upload/cache script restrictions, disables XML-RPC and limits login attempts. Its paths
+`-wordpress` adds upload/cache script restrictions, disables XML-RPC and limits login attempts. It
+also lets the block editor save:
+
+- it accepts `X-HTTP-Method-Override` on WordPress's REST API only: a POST naming PUT, PATCH or
+  DELETE, to `/wp-json/` in any directory, or to the root or `index.php` with `rest_route`;
+- it keeps rule 941180 off the posts' content there (`json.content`), because block markup is
+  written as HTML comments.
+
+Posts that quote commands, SQL or scripts still need exclusions of their own. Its paths
 are matched as PHP routes them, ignoring empty segments, a trailing slash, path info and path parameters.
 `wp-login.php` and `xmlrpc.php` are matched in any directory, so a site installed under `/blog/` is covered
 as well; the upload/cache restrictions cover `/wp-content/` at the root only.

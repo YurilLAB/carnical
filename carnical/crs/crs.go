@@ -118,6 +118,13 @@ type Settings struct {
 	// AllowedExtensions are file extensions taken off the CRS list of restricted ones (rule 920440), such as .sh for a
 	// site that shows shell scripts as pages. Each must be on that list.
 	AllowedExtensions []string
+	// WordPress lets WordPress's block editor save. Every save is a request to its REST API (/wp/v2/) whose content is
+	// block markup, written as HTML comments (<!-- wp:paragraph -->), which rule 941180 refuses; that rule is kept off that
+	// one argument (json.content) there, and every other rule still reads it. At paranoia level 2 and above, block markup
+	// matches more rules, which the site's own exclusions must cover. The editor sends PUT,
+	// PATCH and DELETE as a POST with X-HTTP-Method-Override, which rule 920450 then no longer refuses for those three
+	// methods; the proxy, which sets this for a WordPress site, refuses the header itself anywhere but the REST API.
+	WordPress bool
 	// Before and After are extra SecLang directives run before and after the CRS rules, which is where the CRS
 	// documentation puts rule exclusions. They are trusted configuration written by the operator, so never fill
 	// them from a tenant's input. A rule here that refuses a request on its own (deny) is reported as the one that

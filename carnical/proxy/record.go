@@ -52,6 +52,9 @@ type record struct {
 	// kind is the kind of client the bot policy read the request as (see checkBots); 0 when it did not run. The
 	// request's own goroutine writes and reads it.
 	kind alert.Client
+	// override is the method WordPress's REST API is asked to run instead of POST, when checkRequest allowed it (see
+	// wordPressOverride); the forwarded request carries it as the only override header. Written and read like kind.
+	override string
 }
 
 // admit counts a line about the request and reports whether it may be logged: a verdict always may.
