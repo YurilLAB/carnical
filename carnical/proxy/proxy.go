@@ -155,6 +155,10 @@ type Config struct {
 	// is read. Every request's alerts name the kind of client that sent it either way, and the alert totals count
 	// refused bots and people apart.
 	Bots *bots.Policy
+	// Hellos, if set, keeps what each TLS connection's handshake showed, so that a program that sends a browser's user
+	// agent without that browser's TLS is read as disguised (see bots.Classify). Set Hellos.Observe as the server's
+	// tls.Config.GetConfigForClient; Server forgets each connection when it closes.
+	Hellos *bots.Hellos
 	// CrowdSec checks LAPI bans against the verified visitor before reading a body.
 	// Its owner must Sync before serving, run its refresh loop and close it on shutdown.
 	CrowdSec *crowdsec.Client
@@ -439,6 +443,17 @@ func (e *Edge) Server(addr string) *http.Server {
 		}
 		e.conns = newConnLimiter(limit, e.cfg.TrustedProxies, e.reportTooManyConns)
 		srv.ConnState = e.conns.state
+	}
+	if hellos := e.cfg.Hellos; hellos != nil {
+		prev := srv.ConnState
+		srv.ConnState = func(c net.Conn, st http.ConnState) {
+			if prev != nil {
+				prev(c, st)
+			}
+			if st == http.StateClosed || st == http.StateHijacked {
+				hellos.Forget(c)
+			}
+		}
 	}
 	if sh := e.cfg.Shield; sh != nil {
 		prev := srv.ConnState

@@ -3,13 +3,16 @@
 // Package bots tells what kind of client sent a request from what the request says about itself, checks the claims of
 // search engine crawlers by DNS, and refuses the kinds of client a site chooses (ADR-0087).
 //
-// A request's user agent is the client's own claim, so the reading is only as good as the claim: a declared crawler,
-// tool or headless browser is named by it, a bot that copies a browser's headers exactly is read as a person, and only
-// a search engine's claim can be checked, against the engine's DNS.
+// A request's user agent is the client's own claim. A declared crawler, tool or headless browser is named by it; a
+// program that copies a browser's user agent is caught when the rest of its request (other headers, the TLS handshake)
+// is not what that browser sends; one that copies all of it, or drives a real browser, is read as a person. Only a
+// search engine's or crawler operator's claim can be checked, against its DNS.
 package bots
 
 import (
 	"net/http"
+	"slices"
+	"strconv"
 	"strings"
 
 	ahocorasick "github.com/petar-dambovaliev/aho-corasick"
@@ -17,15 +20,17 @@ import (
 	"github.com/YurilLAB/coraza/carnical/alert"
 )
 
-// maxUA is how much of a user agent is read: a real one is well under it.
+// maxUA is the longest a browser's user agent is: a longer one is a bot's. The whole of it is still searched for names,
+// so padding cannot hide one; the server bounds headers (32 KiB).
 const maxUA = 512
 
-// Engine is a search engine whose crawlers can be checked by DNS: the address's name must be in one of the engine's
-// domains, and that name must resolve back to the address. 0 is none.
+// Engine is a search engine or crawler operator whose crawlers can be checked by DNS: the address's name must be in one
+// of the operator's domains, and that name must resolve back to the address. 0 is none.
 type Engine uint8
 
-// The engines that publish their crawlers' DNS names. Google's googleusercontent.com is left out: every Google Cloud
-// machine has a name there, so it would let anyone's VM pass as Googlebot.
+// The operators that publish their crawlers' DNS names. Google's googleusercontent.com is left out: every Google Cloud
+// machine has a name there, so it would let anyone's VM pass as Googlebot. For the same reason Google's user-triggered
+// fetchers, which come from there, are not checked.
 const (
 	EngineGoogle Engine = iota + 1
 	EngineBing
@@ -35,8 +40,9 @@ const (
 	EnginePetal
 	EngineSeznam
 	EngineNaver
+	EngineAmazon
 
-	numEngines = int(EngineNaver) + 1
+	numEngines = int(EngineAmazon) + 1
 )
 
 var engines = [numEngines]struct {
@@ -51,6 +57,7 @@ var engines = [numEngines]struct {
 	EnginePetal:  {"petal", []string{"petalsearch.com"}},
 	EngineSeznam: {"seznam", []string{"seznam.cz"}},
 	EngineNaver:  {"naver", []string{"naver.com"}},
+	EngineAmazon: {"amazon", []string{"crawl.amazonbot.amazon", "amazonadbot.com"}},
 }
 
 func (e Engine) String() string {
@@ -67,140 +74,116 @@ type signature struct {
 	engine Engine
 }
 
+// words gives every word of a list the same kind.
+func words(c alert.Client, ws ...string) []signature {
+	out := make([]signature, len(ws))
+	for i, w := range ws {
+		out[i] = signature{w, c, 0}
+	}
+	return out
+}
+
 // signatures name programs by the words their user agents carry. Where several match, the kind ranked first by rank
 // wins: a scanner that also names a library is a scanner. ClientPerson here is an app's networking library on a phone,
-// which people use.
-var signatures = []signature{
-	// Search engines. A claim from an engine with no published DNS names (DuckDuckGo, Qwant, Mojeek, Sogou) is a search
-	// crawler that cannot be checked.
-	{"googlebot", alert.ClientSearch, EngineGoogle}, {"adsbot-google", alert.ClientSearch, EngineGoogle},
-	{"mediapartners-google", alert.ClientSearch, EngineGoogle}, {"google-inspectiontool", alert.ClientSearch, EngineGoogle},
-	{"storebot-google", alert.ClientSearch, EngineGoogle}, {"apis-google", alert.ClientSearch, EngineGoogle},
-	{"feedfetcher-google", alert.ClientSearch, EngineGoogle},
-	{"bingbot", alert.ClientSearch, EngineBing}, {"msnbot", alert.ClientSearch, EngineBing},
-	{"adidxbot", alert.ClientSearch, EngineBing}, {"bingpreview", alert.ClientSearch, EngineBing},
-	{"applebot", alert.ClientSearch, EngineApple},
-	{"yandexbot", alert.ClientSearch, EngineYandex}, {"yandeximages", alert.ClientSearch, EngineYandex},
-	{"yandexmobilebot", alert.ClientSearch, EngineYandex}, {"yandex.com/bots", alert.ClientSearch, EngineYandex},
-	{"baiduspider", alert.ClientSearch, EngineBaidu}, {"petalbot", alert.ClientSearch, EnginePetal},
-	{"seznambot", alert.ClientSearch, EngineSeznam}, {"yeti/", alert.ClientSearch, EngineNaver},
-	{"duckduckbot", alert.ClientSearch, 0}, {"qwantbot", alert.ClientSearch, 0}, {"qwantify", alert.ClientSearch, 0},
-	{"mojeekbot", alert.ClientSearch, 0}, {"sogou web spider", alert.ClientSearch, 0},
-
-	// AI companies' crawlers and fetchers (the ai.robots.txt project's list, and the companies' own pages).
-	{"gptbot", alert.ClientAI, 0}, {"chatgpt-user", alert.ClientAI, 0}, {"chatgpt agent", alert.ClientAI, 0},
-	{"oai-searchbot", alert.ClientAI, 0}, {"oai-adsbot", alert.ClientAI, 0},
-	{"claudebot", alert.ClientAI, 0}, {"claude-user", alert.ClientAI, 0}, {"claude-searchbot", alert.ClientAI, 0},
-	{"claude-web", alert.ClientAI, 0}, {"anthropic-ai", alert.ClientAI, 0},
-	{"ccbot", alert.ClientAI, 0}, {"bytespider", alert.ClientAI, 0}, {"tiktokspider", alert.ClientAI, 0},
-	{"perplexitybot", alert.ClientAI, 0}, {"perplexity-user", alert.ClientAI, 0},
-	{"amazonbot", alert.ClientAI, 0}, {"amzn-searchbot", alert.ClientAI, 0}, {"amzn-user", alert.ClientAI, 0},
-	{"amazonbuyforme", alert.ClientAI, 0}, {"novaact", alert.ClientAI, 0}, {"bedrockbot", alert.ClientAI, 0},
-	{"meta-externalagent", alert.ClientAI, 0}, {"meta-externalfetcher", alert.ClientAI, 0},
-	{"meta-webindexer", alert.ClientAI, 0}, {"facebookbot", alert.ClientAI, 0},
-	{"googleother", alert.ClientAI, 0}, {"google-cloudvertexbot", alert.ClientAI, 0}, {"google-notebooklm", alert.ClientAI, 0},
-	{"gemini-deep-research", alert.ClientAI, 0}, {"googleagent-", alert.ClientAI, 0}, {"google-agent", alert.ClientAI, 0},
-	{"cohere-ai", alert.ClientAI, 0}, {"cohere-training-data-crawler", alert.ClientAI, 0},
-	{"mistralai-", alert.ClientAI, 0}, {"deepseekbot", alert.ClientAI, 0}, {"duckassistbot", alert.ClientAI, 0},
-	{"xai-grok", alert.ClientAI, 0}, {"grokbot", alert.ClientAI, 0}, {"youbot", alert.ClientAI, 0},
-	{"diffbot", alert.ClientAI, 0}, {"timpibot", alert.ClientAI, 0}, {"imagesiftbot", alert.ClientAI, 0},
-	{"omgili", alert.ClientAI, 0}, {"ai2bot", alert.ClientAI, 0}, {"kangaroo bot", alert.ClientAI, 0},
-	{"pangubot", alert.ClientAI, 0}, {"img2dataset", alert.ClientAI, 0}, {"laion", alert.ClientAI, 0},
-	{"crawl4ai", alert.ClientAI, 0}, {"firecrawl", alert.ClientAI, 0}, {"tavilybot", alert.ClientAI, 0},
-	{"exabot", alert.ClientAI, 0}, {"exasearchbot", alert.ClientAI, 0}, {"iaskspider", alert.ClientAI, 0},
-	{"iaskbot", alert.ClientAI, 0}, {"kimi-", alert.ClientAI, 0}, {"kimibot", alert.ClientAI, 0},
-	{"moonshotbot", alert.ClientAI, 0}, {"linerbot", alert.ClientAI, 0}, {"phindbot", alert.ClientAI, 0},
-	{"qwenbot", alert.ClientAI, 0}, {"tongyibot", alert.ClientAI, 0}, {"doubaobot", alert.ClientAI, 0},
-	{"erniebot", alert.ClientAI, 0}, {"yiyanbot", alert.ClientAI, 0}, {"chatglm-spider", alert.ClientAI, 0},
-	{"yibot", alert.ClientAI, 0}, {"sbintuitionsbot", alert.ClientAI, 0}, {"cotoyogi", alert.ClientAI, 0},
-	{"velenpublicwebcrawler", alert.ClientAI, 0}, {"wardbot", alert.ClientAI, 0}, {"friendlycrawler", alert.ClientAI, 0},
-	{"icc-crawler", alert.ClientAI, 0}, {"apifybot", alert.ClientAI, 0}, {"apifywebsitecontentcrawler", alert.ClientAI, 0},
-	{"cloudflare-autorag", alert.ClientAI, 0}, {"cloudflarebrowserrenderingcrawler", alert.ClientAI, 0},
-	{"manus-user", alert.ClientAI, 0}, {"azureai-searchbot", alert.ClientAI, 0}, {"andibot", alert.ClientAI, 0},
-	{"brightbot", alert.ClientAI, 0}, {"bravebot", alert.ClientAI, 0}, {"yandexadditional", alert.ClientAI, 0},
-	{"webzio-extended", alert.ClientAI, 0}, {"linkupbot", alert.ClientAI, 0}, {"keenablebot", alert.ClientAI, 0},
-	{"channel3bot", alert.ClientAI, 0}, {"aihitbot", alert.ClientAI, 0}, {"agentdatabot", alert.ClientAI, 0},
-	{"kagi-fetcher", alert.ClientAI, 0}, {"quillbot", alert.ClientAI, 0}, {"shapbot", alert.ClientAI, 0},
-
-	// SEO, marketing, archive and data-mining crawlers.
-	{"ahrefsbot", alert.ClientSEO, 0}, {"ahrefssiteaudit", alert.ClientSEO, 0}, {"semrushbot", alert.ClientSEO, 0},
-	{"siteauditbot", alert.ClientSEO, 0}, {"mj12bot", alert.ClientSEO, 0}, {"dotbot", alert.ClientSEO, 0},
-	{"blexbot", alert.ClientSEO, 0}, {"dataforseobot", alert.ClientSEO, 0}, {"serpstatbot", alert.ClientSEO, 0},
-	{"barkrowler", alert.ClientSEO, 0}, {"seekportbot", alert.ClientSEO, 0}, {"megaindex", alert.ClientSEO, 0},
-	{"rogerbot", alert.ClientSEO, 0}, {"screaming frog", alert.ClientSEO, 0}, {"sitebulb", alert.ClientSEO, 0},
-	{"zoominfobot", alert.ClientSEO, 0}, {"linkdexbot", alert.ClientSEO, 0}, {"seokicks", alert.ClientSEO, 0},
-	{"linkpadbot", alert.ClientSEO, 0}, {"spbot", alert.ClientSEO, 0}, {"trendictionbot", alert.ClientSEO, 0},
-	{"turnitinbot", alert.ClientSEO, 0}, {"awario", alert.ClientSEO, 0}, {"brandwatch", alert.ClientSEO, 0},
-	{"proximic", alert.ClientSEO, 0}, {"grapeshot", alert.ClientSEO, 0}, {"babbar", alert.ClientSEO, 0},
-	{"netestate", alert.ClientSEO, 0}, {"sistrix", alert.ClientSEO, 0}, {"domainstatsbot", alert.ClientSEO, 0},
-	{"magpie-crawler", alert.ClientSEO, 0}, {"keys-so-bot", alert.ClientSEO, 0}, {"dataprovider", alert.ClientSEO, 0},
-	{"panscient", alert.ClientSEO, 0}, {"linkfluence", alert.ClientSEO, 0}, {"ia_archiver", alert.ClientSEO, 0},
-	{"archive.org_bot", alert.ClientSEO, 0}, {"heritrix", alert.ClientSEO, 0}, {"factset_spyderbot", alert.ClientSEO, 0},
-	{"mauibot", alert.ClientSEO, 0}, {"serendeputybot", alert.ClientSEO, 0}, {"clarabot", alert.ClientSEO, 0},
-
+// which people use. The lists draw on the CRS scanner list, the nginx Ultimate Bad Bot Blocker's bad user agents and the
+// ai.robots.txt project, keeping only words no browser's user agent contains.
+var signatures = slices.Concat(
+	// Search engines that publish their crawlers' DNS names.
+	[]signature{
+		{"googlebot", alert.ClientSearch, EngineGoogle}, {"adsbot-google", alert.ClientSearch, EngineGoogle},
+		{"mediapartners-google", alert.ClientSearch, EngineGoogle}, {"google-inspectiontool", alert.ClientSearch, EngineGoogle},
+		{"storebot-google", alert.ClientSearch, EngineGoogle}, {"apis-google", alert.ClientSearch, EngineGoogle},
+		{"bingbot", alert.ClientSearch, EngineBing}, {"msnbot", alert.ClientSearch, EngineBing},
+		{"adidxbot", alert.ClientSearch, EngineBing}, {"bingpreview", alert.ClientSearch, EngineBing},
+		{"applebot", alert.ClientSearch, EngineApple},
+		{"yandexbot", alert.ClientSearch, EngineYandex}, {"yandeximages", alert.ClientSearch, EngineYandex},
+		{"yandexmobilebot", alert.ClientSearch, EngineYandex}, {"yandex.com/bots", alert.ClientSearch, EngineYandex},
+		{"baiduspider", alert.ClientSearch, EngineBaidu}, {"petalbot", alert.ClientSearch, EnginePetal},
+		{"seznambot", alert.ClientSearch, EngineSeznam}, {"yeti/", alert.ClientSearch, EngineNaver},
+		{"googleother", alert.ClientAI, EngineGoogle}, {"google-cloudvertexbot", alert.ClientAI, EngineGoogle},
+		{"amazonbot", alert.ClientAI, EngineAmazon}, {"amazonadbot", alert.ClientSEO, EngineAmazon},
+	},
+	// Search engines that publish no DNS names, and Google's user-triggered fetchers: claims that cannot be checked.
+	words(alert.ClientSearch, "feedfetcher-google", "google-site-verification", "duckduckbot", "qwantbot", "qwantify",
+		"mojeekbot", "sogou web spider", "sogouspider", "360spider", "haosouspider", "coccocbot", "istellabot", "mail.ru_bot",
+		"yisouspider", "sosospider", "youdaobot", "aspiegelbot"),
+	// AI companies' crawlers and fetchers, and agents that sign their requests (see Classify).
+	words(alert.ClientAI, "gptbot", "chatgpt-user", "chatgpt agent", "oai-searchbot", "oai-adsbot", "openai.com",
+		"claudebot", "claude-user", "claude-searchbot", "claude-web", "anthropic-ai", "ccbot", "bytespider", "tiktokspider",
+		"perplexitybot", "perplexity-user", "amzn-searchbot", "amzn-user", "amazonbuyforme", "novaact", "bedrockbot",
+		"meta-externalagent", "meta-externalfetcher", "meta-webindexer", "facebookbot", "google-notebooklm",
+		"gemini-deep-research", "googleagent-", "google-agent", "cohere-ai", "cohere-training-data-crawler", "mistralai-",
+		"deepseekbot", "duckassistbot", "xai-grok", "grokbot", "youbot", "diffbot", "timpibot", "imagesiftbot", "omgili",
+		"ai2bot", "allenai.org", "kangaroo bot", "pangubot", "img2dataset", "laion", "crawl4ai", "firecrawl", "tavilybot",
+		"exabot", "exasearchbot", "iaskspider", "iaskbot", "kimi-", "kimibot", "moonshotbot", "linerbot", "phindbot",
+		"qwenbot", "tongyibot", "doubaobot", "erniebot", "yiyanbot", "chatglm-spider", "yibot", "sbintuitionsbot",
+		"cotoyogi", "velenpublicwebcrawler", "wardbot", "friendlycrawler", "icc-crawler", "apifybot",
+		"apifywebsitecontentcrawler", "cloudflare-autorag", "cloudflarebrowserrenderingcrawler", "manus-user",
+		"azureai-searchbot", "andibot", "brightbot", "bravebot", "yandexadditional", "webzio-extended", "linkupbot",
+		"keenablebot", "channel3bot", "aihitbot", "agentdatabot", "kagi-fetcher", "quillbot", "shapbot"),
+	// SEO, marketing, archive and data-mining crawlers, address harvesters and site copiers.
+	words(alert.ClientSEO, "ahrefsbot", "ahrefssiteaudit", "semrushbot", "siteauditbot", "mj12bot", "majestic", "dotbot",
+		"blexbot", "dataforseobot", "serpstatbot", "barkrowler", "seekportbot", "megaindex", "rogerbot", "screaming frog",
+		"sitebulb", "zoominfobot", "linkdexbot", "seokicks", "linkpadbot", "spbot", "trendictionbot", "turnitinbot",
+		"awario", "brandwatch", "proximic", "grapeshot", "babbar", "netestate", "sistrix", "domainstatsbot",
+		"magpie-crawler", "keys-so-bot", "dataprovider", "panscient", "linkfluence", "ia_archiver", "archive.org_bot",
+		"heritrix", "factset_spyderbot", "mauibot", "serendeputybot", "clarabot", "80legs", "builtwith", "buzzsumo",
+		"seobility", "seositecheckup", "sitechecker", "searchmetricsbot", "oncrawl", "openlinkprofiler", "rankactive",
+		"backlinkcrawler", "brandprotect", "markmonitor", "nameprotect", "spyfu", "cognitiveseo", "netcraftsurveyagent",
+		"demandbase", "salesintelligent", "linqia", "meanpathbot", "dnbcrawler", "adscanner", "domcopbot",
+		"domaincrawler", "seolyt", "seoprofiler", "seostats", "screenerbot", "semanticjuice", "senutobot",
+		"seocherrybot", "splitsignalbot", "rankingbot", "rankurbot", "rankivabot", "cocolyzebot", "mediatoolkitbot",
+		"ltx71", "evc-batch", "zauba", "webmeup", "copyscape", "picscout",
+		// Address harvesters and site copiers.
+		"emailcollector", "emailsiphon", "email siphon", "emailwolf", "email wolf", "extractorpro", "blackwidow", "webzip",
+		"teleport pro", "teleportpro", "webcopier", "webstripper", "websucker", "webreaper", "offline explorer",
+		"offline navigator", "sitesnagger", "sitesucker", "cyotekwebcopy", "httrack", "getright", "flashget", "go!zilla",
+		"leechget", "mass downloader", "netants", "pavuk", "wwwoffle"),
 	// Browsers driven by programs.
-	{"headlesschrome", alert.ClientHeadless, 0}, {"phantomjs", alert.ClientHeadless, 0},
-	{"slimerjs", alert.ClientHeadless, 0}, {"lightpanda", alert.ClientHeadless, 0}, {"puppeteer", alert.ClientHeadless, 0},
-	{"playwright", alert.ClientHeadless, 0}, {"selenium", alert.ClientHeadless, 0}, {"webdriver", alert.ClientHeadless, 0},
-	{"htmlunit", alert.ClientHeadless, 0}, {"jsdom/", alert.ClientHeadless, 0},
-
-	// Vulnerability scanners and internet-wide scanning services.
-	{"nikto", alert.ClientScanner, 0}, {"sqlmap", alert.ClientScanner, 0}, {"nmap", alert.ClientScanner, 0},
-	{"masscan", alert.ClientScanner, 0}, {"zgrab", alert.ClientScanner, 0}, {"nuclei", alert.ClientScanner, 0},
-	{"wpscan", alert.ClientScanner, 0}, {"gobuster", alert.ClientScanner, 0}, {"feroxbuster", alert.ClientScanner, 0},
-	{"dirbuster", alert.ClientScanner, 0}, {"dirsearch", alert.ClientScanner, 0}, {"fuzz faster u fool", alert.ClientScanner, 0},
-	{"wfuzz", alert.ClientScanner, 0}, {"whatweb", alert.ClientScanner, 0}, {"acunetix", alert.ClientScanner, 0},
-	{"netsparker", alert.ClientScanner, 0}, {"invicti", alert.ClientScanner, 0}, {"nessus", alert.ClientScanner, 0},
-	{"openvas", alert.ClientScanner, 0}, {"qualys", alert.ClientScanner, 0}, {"jaeles", alert.ClientScanner, 0},
-	{"arachni", alert.ClientScanner, 0}, {"w3af", alert.ClientScanner, 0}, {"skipfish", alert.ClientScanner, 0},
-	{"commix", alert.ClientScanner, 0}, {"xsstrike", alert.ClientScanner, 0}, {"wapiti", alert.ClientScanner, 0},
-	{"censysinspect", alert.ClientScanner, 0}, {"palo alto networks", alert.ClientScanner, 0},
-	{"internet-measurement", alert.ClientScanner, 0}, {"modatscanner", alert.ClientScanner, 0},
-	{"l9explore", alert.ClientScanner, 0}, {"l9tcpid", alert.ClientScanner, 0}, {"netlab360", alert.ClientScanner, 0},
-	{"projectdiscovery", alert.ClientScanner, 0}, {"leakix", alert.ClientScanner, 0}, {"zmeu", alert.ClientScanner, 0},
-	{"morfeus", alert.ClientScanner, 0}, {"jorgee", alert.ClientScanner, 0}, {"isscyberriskcrawler", alert.ClientScanner, 0},
-
-	// Link previews of chat and social sites.
-	{"facebookexternalhit", alert.ClientPreview, 0}, {"facebookcatalog", alert.ClientPreview, 0},
-	{"twitterbot", alert.ClientPreview, 0}, {"slackbot", alert.ClientPreview, 0}, {"slack-imgproxy", alert.ClientPreview, 0},
-	{"discordbot", alert.ClientPreview, 0}, {"telegrambot", alert.ClientPreview, 0}, {"whatsapp/", alert.ClientPreview, 0},
-	{"linkedinbot", alert.ClientPreview, 0}, {"skypeuripreview", alert.ClientPreview, 0}, {"pinterestbot", alert.ClientPreview, 0},
-	{"redditbot", alert.ClientPreview, 0}, {"embedly", alert.ClientPreview, 0}, {"iframely", alert.ClientPreview, 0},
-	{"mastodon/", alert.ClientPreview, 0}, {"bluesky cardyb", alert.ClientPreview, 0}, {"applenewsbot", alert.ClientPreview, 0},
-
-	// Uptime and health checks.
-	{"uptimerobot", alert.ClientMonitor, 0}, {"pingdom", alert.ClientMonitor, 0}, {"statuscake", alert.ClientMonitor, 0},
-	{"site24x7", alert.ClientMonitor, 0}, {"newrelicpinger", alert.ClientMonitor, 0}, {"datadog", alert.ClientMonitor, 0},
-	{"betteruptime", alert.ClientMonitor, 0}, {"better uptime", alert.ClientMonitor, 0}, {"hetrixtools", alert.ClientMonitor, 0},
-	{"freshping", alert.ClientMonitor, 0}, {"uptime-kuma", alert.ClientMonitor, 0}, {"checkly", alert.ClientMonitor, 0},
-	{"elb-healthchecker", alert.ClientMonitor, 0}, {"googlehc", alert.ClientMonitor, 0}, {"kube-probe", alert.ClientMonitor, 0},
-	{"consul health", alert.ClientMonitor, 0}, {"check_http", alert.ClientMonitor, 0}, {"zabbix", alert.ClientMonitor, 0},
-	{"blackbox exporter", alert.ClientMonitor, 0}, {"googlestackdrivermonitoring", alert.ClientMonitor, 0},
-	{"route53-health-check", alert.ClientMonitor, 0}, {"cloudflare-healthchecks", alert.ClientMonitor, 0},
-	{"chrome-lighthouse", alert.ClientMonitor, 0}, {"gtmetrix", alert.ClientMonitor, 0}, {"updown.io", alert.ClientMonitor, 0},
-	{"nodeping", alert.ClientMonitor, 0},
-
+	words(alert.ClientHeadless, "headlesschrome", "phantomjs", "slimerjs", "lightpanda", "puppeteer", "playwright",
+		"selenium", "webdriver", "htmlunit", "jsdom/"),
+	// Vulnerability scanners, attack and brute-force tools, internet-wide scanning services and botnets.
+	words(alert.ClientScanner, "nikto", "sqlmap", "havij", "sqlninja", "sqlworm", "ghauri", "jsql", "nmap", "masscan",
+		"zgrab", "nuclei", "jaeles", "wpscan", "wprecon", "wpprobe", "joomscan", "droopescan", "cmsmap", "whatweb",
+		"whatwaf", "webshag", "libwhisker", "gobuster", "feroxbuster", "dirbuster", "dirsearch", "fuzz faster u fool",
+		"wfuzz", "jbrofuzz", "acunetix", "appscan", "netsparker", "invicti", "nessus", "openvas", "qualys", "detectify",
+		"arachni", "w3af", "skipfish", "commix", "xsstrike", "xsser", "dalfox", "wapiti", "fimap", "lfisuite", "lfimap",
+		"dotdotpwn", "kadimus", "tplmap", "sstimap", "graphw00f", "graphql-cop", "trufflehog", "noseyparker", "nettacker",
+		"bewica-security-scan", "cms-security-auditor", "tlm-audit-scanner", "infrasec scanner", "fhscan", "sysscan",
+		"censysinspect", "palo alto networks", "internet-measurement", "internetmeasurement", "modatscanner", "shodan",
+		"l9explore", "l9tcpid", "l9scan", "netlab360", "projectdiscovery", "leakix", "aliyunsecbot",
+		"isscyberriskcrawler", "spy4x-domain-scanner", "scan.lol", "opendirme-credhunt", "litellm-recon",
+		// Brute-force and credential-stuffing kits.
+		"(hydra)", "forest lobster", "openbullet", "silverbullet", "sentrymba", "sentry mba", "blackbullet",
+		// Botnets, exploit kits and malformed user agents no real client sends.
+		"zmeu", "morfeus", "jorgee", "libredtail", "muhstik", "terrabot", "wp2shell", "t0phackteam", "datacha0s",
+		"voideye", "probethenet", "check1.exe", "xpymep1.exe", "x09mozilla", "x22mozilla", "mozlila", "mozila/",
+		"hello, world", "hello world"),
+	// Link previews of chat and social sites, and feed readers: fetches made for people.
+	words(alert.ClientPreview, "facebookexternalhit", "facebookcatalog", "twitterbot", "slackbot", "slack-imgproxy",
+		"discordbot", "telegrambot", "whatsapp/", "linkedinbot", "skypeuripreview", "microsoftpreview", "pinterestbot",
+		"redditbot", "embedly", "iframely", "mastodon/", "bluesky cardyb", "applenewsbot", "vkshare", "kakaotalk-scrap",
+		"feedly", "feedbin", "newsblur", "inoreader", "freshrss", "tiny tiny rss", "theoldreader",
+		"netnewswire", "miniflux"),
+	// Uptime and health checks, and a certificate authority checking the site's domain (ACME HTTP-01).
+	words(alert.ClientMonitor, "let's encrypt validation server", "uptimerobot", "pingdom", "statuscake", "site24x7", "newrelicpinger", "datadog",
+		"betteruptime", "better uptime", "hetrixtools", "freshping", "uptime-kuma", "checkly", "elb-healthchecker",
+		"googlehc", "kube-probe", "consul health", "check_http", "nagios", "zabbix", "blackbox exporter",
+		"googlestackdrivermonitoring", "route53-health-check", "cloudflare-healthchecks", "azure traffic manager",
+		"chrome-lighthouse", "gtmetrix", "updown.io", "nodeping", "cron-job.org", "elastic-heartbeat", "gatus/"),
 	// HTTP libraries, command-line tools and scraping frameworks.
-	{"curl/", alert.ClientTool, 0}, {"libcurl", alert.ClientTool, 0}, {"wget/", alert.ClientTool, 0},
-	{"python-requests", alert.ClientTool, 0}, {"python-urllib", alert.ClientTool, 0}, {"python-httpx", alert.ClientTool, 0},
-	{"aiohttp/", alert.ClientTool, 0}, {"python/3", alert.ClientTool, 0}, {"go-http-client", alert.ClientTool, 0},
-	{"go-resty", alert.ClientTool, 0}, {"fasthttp", alert.ClientTool, 0}, {"java/", alert.ClientTool, 0},
-	{"java-http-client", alert.ClientTool, 0}, {"apache-httpclient", alert.ClientTool, 0},
-	{"commons-httpclient", alert.ClientTool, 0}, {"libwww-perl", alert.ClientTool, 0}, {"lwp::", alert.ClientTool, 0},
-	{"php/", alert.ClientTool, 0}, {"guzzlehttp", alert.ClientTool, 0}, {"wordpress/", alert.ClientTool, 0},
-	{"node-fetch", alert.ClientTool, 0}, {"axios/", alert.ClientTool, 0}, {"undici", alert.ClientTool, 0},
-	{"got (https://github.com/sindresorhus/got)", alert.ClientTool, 0}, {"scrapy", alert.ClientTool, 0},
-	{"colly", alert.ClientTool, 0}, {"httrack", alert.ClientTool, 0}, {"nutch", alert.ClientTool, 0},
-	{"mechanize", alert.ClientTool, 0}, {"httpie", alert.ClientTool, 0}, {"postmanruntime", alert.ClientTool, 0},
-	{"insomnia/", alert.ClientTool, 0}, {"windowspowershell", alert.ClientTool, 0}, {"winhttp", alert.ClientTool, 0},
-	{"reqwest", alert.ClientTool, 0}, {"dart:io", alert.ClientTool, 0}, {"rest-client", alert.ClientTool, 0},
-	{"faraday v", alert.ClientTool, 0}, {"hackney", alert.ClientTool, 0}, {"http.rb", alert.ClientTool, 0},
-	{"aria2", alert.ClientTool, 0}, {"cpp-httplib", alert.ClientTool, 0}, {"lua-resty-http", alert.ClientTool, 0},
-	{"deno/", alert.ClientTool, 0}, {"bun/", alert.ClientTool, 0},
-
+	words(alert.ClientTool, "curl/", "libcurl", "pycurl", "wget/", "lftp", "python-requests", "python-urllib", "urllib3",
+		"httplib2", "python-httpx", "aiohttp/", "python/3", "trafilatura", "go-http-client", "go-resty", "fasthttp",
+		"java/", "java-http-client", "apache-httpclient", "apache-httpasyncclient", "commons-httpclient", "jetty/",
+		"crawler4j", "scalaj-http", "ktor-client", "libwww-perl", "lwp::", "lwp-request", "lwp-trivial", "mojolicious",
+		"poe-component-client-http", "anyevent-http", "http::lite", "php/", "guzzlehttp", "symfony httpclient", "phpcrawl",
+		"snoopy v", "wordpress/", "node-fetch", "axios/", "undici", "superagent", "got (https://github.com/sindresorhus/got)",
+		"probe-image-size", "scrapy", "colly", "nutch", "mechanize", "httpie", "postmanruntime", "insomnia/",
+		"windowspowershell", "winhttp", "indy library", "restsharp", "reqwest", "dart:io", "rest-client", "faraday v",
+		"typhoeus", "hackney", "http.rb", "aria2", "cpp-httplib", "cpprest", "lua-resty-http", "deno/", "bun/"),
 	// The networking libraries of phone apps, whose users are people.
-	{"cfnetwork/", alert.ClientPerson, 0}, {"dalvik/", alert.ClientPerson, 0}, {"okhttp/", alert.ClientPerson, 0},
-}
+	words(alert.ClientPerson, "cfnetwork/", "dalvik/", "okhttp/"),
+)
 
 // exactTools are whole user agents that name a runtime's default client: Node's fetch, Ruby's Net::HTTP and so on.
 var exactTools = map[string]bool{"node": true, "undici": true, "ruby": true, "python": true, "java": true, "go": true, "perl": true}
@@ -225,17 +208,32 @@ var botWords = func() ahocorasick.AhoCorasick {
 	return b.Build([]string{"bot", "crawl", "spider", "scrape", "slurp", "fetcher", "headless"})
 }()
 
-// Classify reads what kind of client sent a request, and the search engine it claims to be when that can be checked by
-// DNS (see Verifier). It reads the User-Agent, whether the Accept and Accept-Language headers every browser sends are
-// there, and the protocol: a browser's user agent over HTTP/1.0, or without those headers, is a bot.
-func Classify(h http.Header, protoMajor, protoMinor int, method string) (alert.Client, Engine) {
-	ua := strings.TrimSpace(h.Get("User-Agent"))
-	if len(ua) > maxUA {
-		ua = ua[:maxUA]
+// Hello is what the TLS handshake of a request's connection showed, when carnical terminated it (see Hellos).
+type Hello struct {
+	// Seen says the handshake was seen; the rest is meaningful only then.
+	Seen bool
+	// GREASE says the client offered GREASE values (RFC 8701): every Chromium-based browser does, and the TLS stacks of
+	// Python, Go, Java, Node and curl do not.
+	GREASE bool
+	// RecordSizeLimit says the client offered the record_size_limit extension (RFC 8449): Firefox and the other
+	// browsers built on its TLS (NSS) do, and OpenSSL, Go, Java and Node do not.
+	RecordSizeLimit bool
+}
+
+// Classify reads what kind of client sent a request, and the operator it claims to be when that can be checked by DNS
+// (see Verifier). It reads the User-Agent and, for a browser's user agent, whether the rest of the request is what that
+// browser sends (see disguised); hello is the request's TLS handshake, the zero Hello when carnical did not see one.
+func Classify(r *http.Request, hello Hello) (alert.Client, Engine) {
+	h := r.Header
+	agents := h.Values("User-Agent")
+	ua := ""
+	if len(agents) > 0 {
+		ua = strings.TrimSpace(agents[0])
 	}
 	if ua == "" {
 		return alert.ClientBot, 0
 	}
+	long := len(ua) > maxUA
 	best, engine := 0, Engine(0)
 	it := known.IterOverlapping(ua)
 	for m := it.Next(); m != nil; m = it.Next() {
@@ -248,8 +246,8 @@ func Classify(h http.Header, protoMajor, protoMinor int, method string) (alert.C
 	switch {
 	case best != 0 && rank[best-1] != alert.ClientPerson:
 		return rank[best-1], engine
-	case strings.Contains(h.Get("Sec-Ch-Ua"), "HeadlessChrome"):
-		return alert.ClientHeadless, 0
+	case long:
+		return alert.ClientBot, 0 // longer than any browser's
 	case exactTools[strings.ToLower(ua)]:
 		return alert.ClientTool, 0
 	case strings.Contains(ua, "http://") || strings.Contains(ua, "https://") || strings.Contains(ua, "+http"):
@@ -263,12 +261,125 @@ func Classify(h http.Header, protoMajor, protoMinor int, method string) (alert.C
 		return alert.ClientBot, 0
 	case strings.Contains(ua, "compatible;") && botWords.Iter(ua).Next() != nil:
 		return alert.ClientBot, 0
-	case protoMajor == 1 && protoMinor == 0:
-		return alert.ClientBot, 0 // no browser of this century speaks HTTP/1.0
-	case method != http.MethodOptions && (h.Get("Accept") == "" || h.Get("Accept-Language") == ""):
-		return alert.ClientBot, 0 // a browser's user agent without what every browser sends
+	case len(agents) > 1 || disguised(r, ua, hello):
+		return alert.ClientDisguised, 0
+	// Headers a client adds of its own accord come after the checks they could otherwise get a program past.
+	case h.Get("Signature-Agent") != "":
+		return alert.ClientAI, 0 // a browser an agent drives, signing its requests (Web Bot Auth), such as ChatGPT's
+	case strings.Contains(h.Get("Sec-Ch-Ua"), "HeadlessChrome"):
+		return alert.ClientHeadless, 0
 	}
 	return alert.ClientPerson, 0
+}
+
+// disguised reports a browser's user agent on a request that browser would not send. Each sign is one every current
+// release of the browser named shows, so that only a program that copied the user agent (and perhaps some headers)
+// fails it:
+//   - HTTP/1.0, or no Accept or Accept-Language header (a CORS preflight sends no language);
+//   - a version long out of use: Internet Explorer before 11, Chrome before 70, Firefox before 60;
+//   - client hints (Sec-CH-UA) from Firefox or Safari, which send none, or from Chrome naming another version or platform;
+//   - over a TLS connection carnical holds, a current Chrome, Firefox or Safari without the Sec-Fetch headers, or a
+//     current Chrome without client hints (forks and embedded browsers that may not send them are left out);
+//   - a Chromium-based browser whose TLS handshake offered no GREASE values, or a current Firefox whose handshake did not
+//     offer record_size_limit: the TLS of the program that sent it, not of the browser.
+func disguised(r *http.Request, ua string, hello Hello) bool {
+	h := r.Header
+	if r.ProtoMajor == 1 && r.ProtoMinor == 0 {
+		return true
+	}
+	if r.Method != http.MethodOptions && (h.Get("Accept") == "" || h.Get("Accept-Language") == "") {
+		return true
+	}
+	if v, ok := version(ua, "MSIE "); ok && v < 11 {
+		return true
+	}
+	chrome, isChrome := version(ua, "Chrome/")
+	firefox, isFirefox := version(ua, "Firefox/")
+	safari, isSafari := 0, false
+	if !isChrome && strings.Contains(ua, "Safari/") && !strings.Contains(ua, "Chromium/") {
+		safari, isSafari = version(ua, "Version/")
+	}
+	if isChrome && chrome < 70 || isFirefox && !isChrome && firefox < 60 {
+		return true
+	}
+	hints := h.Get("Sec-Ch-Ua")
+	if hints != "" && !isChrome && (isFirefox || isSafari) {
+		return true
+	}
+	if hints != "" && isChrome && (!hintsName(hints, chrome) || !samePlatform(ua, h.Get("Sec-Ch-Ua-Platform"))) {
+		return true
+	}
+	if r.TLS != nil {
+		fetch := h.Get("Sec-Fetch-Mode") != "" || h.Get("Sec-Fetch-Site") != "" || h.Get("Sec-Fetch-Dest") != ""
+		if !fetch && (isChrome && chrome >= 80 || isFirefox && !isChrome && firefox >= 90 || isSafari && safari >= 17) {
+			return true
+		}
+		if hints == "" && isChrome && chrome >= 90 && plainChrome(ua) {
+			return true
+		}
+	}
+	return hello.Seen && (isChrome && !hello.GREASE || isFirefox && !isChrome && firefox >= 90 && !hello.RecordSizeLimit)
+}
+
+// version reads the major version that follows token in a user agent.
+func version(ua, token string) (int, bool) {
+	i := strings.Index(ua, token)
+	if i < 0 {
+		return 0, false
+	}
+	v, digits := 0, 0
+	for _, c := range []byte(ua[i+len(token):]) {
+		if c < '0' || c > '9' || digits == 4 {
+			break
+		}
+		v, digits = v*10+int(c-'0'), digits+1
+	}
+	return v, digits > 0
+}
+
+// hintsName reports whether Sec-CH-UA names the major version the user agent gives, as every Chromium brand list does
+// (`"Chromium";v="141", "Google Chrome";v="141", "Not?A_Brand";v="8"`).
+func hintsName(hints string, major int) bool {
+	if len(hints) > 256 {
+		hints = hints[:256]
+	}
+	want := `v="` + strconv.Itoa(major) + `"`
+	return strings.Contains(hints, want)
+}
+
+// samePlatform reports whether Sec-CH-UA-Platform agrees with the user agent's operating system, when both say one.
+func samePlatform(ua, platform string) bool {
+	platform = strings.Trim(platform, `"`)
+	if platform == "" {
+		return true
+	}
+	var os string
+	switch {
+	case strings.Contains(ua, "Android"):
+		os = "Android"
+	case strings.Contains(ua, "Windows NT"):
+		os = "Windows"
+	case strings.Contains(ua, "Macintosh"):
+		os = "macOS"
+	case strings.Contains(ua, "CrOS"):
+		os = "Chrome OS"
+	case strings.Contains(ua, "Linux"):
+		os = "Linux"
+	default:
+		return true
+	}
+	return platform == os
+}
+
+// plainChrome reports Chrome, Edge or Opera, which send client hints on every secure request, and not a fork or an
+// embedded browser that may not: Samsung Internet, Yandex, UC, Silk, Android's WebView, Electron and Qt.
+func plainChrome(ua string) bool {
+	for _, fork := range [...]string{"SamsungBrowser", "YaBrowser", "UCBrowser", "Silk/", "; wv)", "Electron/", "QtWebEngine"} {
+		if strings.Contains(ua, fork) {
+			return false
+		}
+	}
+	return true
 }
 
 func rankOf(c alert.Client) int {

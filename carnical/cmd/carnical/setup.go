@@ -184,10 +184,10 @@ type setupProtection struct {
 
 // setupBots are the bot answers of setup and the kinds of bot each refuses (-bots).
 var setupBots = map[string]string{
-	"none":   "",
-	"fake":   "fake",
-	"ai":     "fake,ai,seo",
-	"strict": "fake,ai,seo,tool,headless,scanner,bot",
+	"none":   "none",
+	"fake":   "fake,scanner",
+	"ai":     "fake,scanner,ai,seo",
+	"strict": "fake,scanner,ai,seo,tool,headless,disguised,bot",
 }
 
 // loginLimit is the rate rule setup writes for a login page: as many POSTs a minute as -login-per-minute allows WordPress.
@@ -216,10 +216,15 @@ func (s setupProtection) flags() map[string]any {
 	if s.login != "" {
 		values["limit"] = loginLimit(s.login)
 	}
-	if kinds := setupBots[s.bots]; kinds != "" {
-		values["bots"], values["bots-mode"] = kinds, "block"
+	switch kinds := setupBots[s.bots]; kinds {
+	case "":
+	case "none":
+		values["bots"] = kinds
+	default:
+		// Scanners are refused in every mode, as by default; the kinds a site chooses are only logged in detect mode.
+		values["bots"] = kinds
 		if s.mode != "block" {
-			values["bots-mode"] = "monitor"
+			values["bots"], values["bots-monitor"] = "scanner", kinds
 		}
 	}
 	return values
@@ -272,7 +277,7 @@ func askProtection(p setupPrompt) (setupProtection, error) {
 			return s, err
 		}
 	}
-	if s.bots, err = p.choose("Bots to block", "fake", "Every bot is counted, blocked or not; scanners are refused by the rules anyway.\nnone: block no bot for being one.\nfake: block bots that pretend to be Google, Bing and other search engines (checked by DNS).\nai: also AI crawlers and SEO or data-mining crawlers.\nstrict: also HTTP tools and scripts, headless browsers and unnamed bots; for sites only browsers use.\nIn detect mode they are only logged.",
+	if s.bots, err = p.choose("Bots to block", "fake", "Every bot is counted, blocked or not.\nnone: block no bot for being one.\nfake: block scanners and attack tools, and bots that pretend to be Google, Bing and other search engines (checked by DNS).\nai: also AI crawlers and SEO or data-mining crawlers.\nstrict: also HTTP tools and scripts, headless browsers, programs disguised as browsers and unnamed bots; for sites only browsers use.\nIn detect mode only scanners are refused; the rest are logged.",
 		"none", "fake", "ai", "strict"); err != nil {
 		return s, err
 	}

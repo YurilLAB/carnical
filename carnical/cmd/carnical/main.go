@@ -30,6 +30,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/YurilLAB/coraza/carnical/bots"
 	"github.com/YurilLAB/coraza/carnical/crowdsec"
 	"github.com/YurilLAB/coraza/carnical/crs"
 	"github.com/YurilLAB/coraza/carnical/proxy"
@@ -316,6 +317,10 @@ func runFlags(usage, logs io.Writer, args []string, private map[string]string) e
 	// the servers' do, under the name "origin".
 	originErrors := newServerErrors(log.With("server", "origin"), *details)
 	defer originErrors.flush()
+	var hellos *bots.Hellos // what each TLS handshake showed, for the bot reading, when the proxy holds the certificate
+	if *certFile != "" {
+		hellos = bots.NewHellos(0)
+	}
 	cfg := proxy.Config{
 		Upstream: target, Origin: proxy.OriginPolicy{Allow: origin}, OriginTLS: originTLS, UpstreamHost: *upstreamHost, CRS: settings, TrustedProxies: trusted, AllowUpgrade: *allowUpgrade,
 		MaxUpstreamInFlight: *maxUpstream, LogDetails: *details, EvalBudget: *evalBudget, MaxEvaluations: *maxEval, MaxFormBody: *maxForm,
@@ -325,7 +330,7 @@ func runFlags(usage, logs io.Writer, args []string, private map[string]string) e
 		APIRate: proxy.APIRatePolicy{PerMinute: *apiRate, Paths: splitList(*apiPaths)}, Limits: limits.rules,
 		Uploads:   proxy.UploadPolicy{AllowExecutableNames: *scriptNames, AllowScriptContent: *scriptContent},
 		Responses: proxy.ResponsePolicy{KeepBanners: *keepBanners, KeepCaching: *keepCaching}, MaxConnsPerIP: *maxConns,
-		AllowRequestEncoding: *requestEncoding, NoJoinedParams: !*joinRepeated, Shield: guard, CrowdSec: cs, Bots: botsPolicy,
+		AllowRequestEncoding: *requestEncoding, NoJoinedParams: !*joinRepeated, Shield: guard, CrowdSec: cs, Bots: botsPolicy, Hellos: hellos,
 		ErrorLog: stdlog.New(originErrors, "", 0), OnAlert: alerts.onAlert, Alerts: alerts.options, EvalBudgetDetect: alerts.evalMode,
 		NoRuleMatches: !*alertFlag.ruleMatches,
 		OnMatch: func(m proxy.Match) {
@@ -374,7 +379,7 @@ func runFlags(usage, logs io.Writer, args []string, private map[string]string) e
 		if err != nil {
 			return fmt.Errorf("the certificate: %w", err)
 		}
-		server.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert}}
+		server.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert}, GetConfigForClient: hellos.Observe}
 	}
 	var confinement sandbox.Policy
 	if *confine {

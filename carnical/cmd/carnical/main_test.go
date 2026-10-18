@@ -344,7 +344,7 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 					t.Errorf("setup did not say %q:\n%s", next, &output)
 				}
 				flags := flag.NewFlagSet("encrypted override", flag.ContinueOnError)
-				for _, name := range []string{"hosts", "listen", "mode", "formats-mode", "ddos", "auto-block", "bots", "bots-mode", "alerts", "upstream", "upstream-host", "origin-allow", "config-key-file"} {
+				for _, name := range []string{"hosts", "listen", "mode", "formats-mode", "ddos", "auto-block", "bots", "bots-monitor", "alerts", "upstream", "upstream-host", "origin-allow", "config-key-file"} {
 					flags.String(name, "", "")
 				}
 				flags.Bool("wordpress", false, "")
@@ -3266,10 +3266,11 @@ func TestSetupProfilesChooseFlags(t *testing.T) {
 		{"a login page", func(s *setupProtection) { s.login = "/account/login" }, with(map[string]any{"limit": "POST /account/login 10/m"})},
 		{"the other answers are written as given", func(s *setupProtection) { s.flood, s.autoBlock, s.alerts = "strict", "on", "off" },
 			with(map[string]any{"ddos": "strict", "auto-block": "on", "alerts": "off"})},
-		{"bots are only logged in detect", func(s *setupProtection) { s.bots = "fake" }, with(map[string]any{"bots": "fake", "bots-mode": "monitor"})},
+		{"in detect only scanners are blocked, and the bots chosen logged", func(s *setupProtection) { s.bots = "fake" },
+			with(map[string]any{"bots": "scanner", "bots-monitor": "fake,scanner"})},
 		{"strict bots are blocked in block", func(s *setupProtection) { s.mode, s.bots = "block", "strict" },
-			with(map[string]any{"mode": "block", "formats-mode": "block", "bots": "fake,ai,seo,tool,headless,scanner,bot", "bots-mode": "block"})},
-		{"no bots blocked adds nothing", func(s *setupProtection) { s.bots = "none" }, common},
+			with(map[string]any{"mode": "block", "formats-mode": "block", "bots": "fake,scanner,ai,seo,tool,headless,disguised,bot"})},
+		{"no bots blocked turns the default off", func(s *setupProtection) { s.bots = "none" }, with(map[string]any{"bots": "none"})},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := base

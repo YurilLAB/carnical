@@ -119,7 +119,7 @@ Common flags:
   -mode detect|block              only log attacks, or block them
   -ddos relaxed|normal|strict     flood protection strength
   -auto-block off|monitor|on      ban addresses that keep attacking
-  -bots fake,ai,...               kinds of bot to block (help bots)
+  -bots scanner,fake,...          kinds of bot to block (help bots)
   -wordpress                      WordPress protections
   -log-details                    log addresses and matched data (sensitive)
 
@@ -165,32 +165,40 @@ Detection levels (OWASP CRS paranoia level and blocking score):
                monitor only logs who would be banned. Needs mode block to ban.
   login limit  POSTs one address may make to your login page a minute.
   bots         which bots to block: none, fake (recommended), ai or strict.
-               See carnical help bots.
+               Scanners are refused in every mode unless none. See help bots.
   alerts       one log line per attacker and attack, with exact totals.
 
 Proxy safety checks and flood protection enforce in every mode.
 `,
-	"bots": `Carnical reads what kind of client sent each request from its user agent and
-headers, names it in every alert ("client"), and counts blocked requests by it:
-the "intrusion totals" line has blocked_bots, blocked_people, how many addresses
-each came from, and blocked_by_client.
+	"bots": `Carnical reads what kind of client sent each request from its user agent,
+headers and, when it holds the certificate, its TLS handshake. It names the kind in
+every alert ("client") and counts blocked requests by it: the "intrusion totals"
+line has blocked_bots, blocked_people, how many addresses each came from, and
+blocked_by_client.
 
-Kinds -bots can block (-bots-mode monitor only logs them):
-  fake      claims to be Google, Bing, Apple, Yandex, Baidu, Petal, Seznam or
-            Naver, from an address that engine's DNS does not confirm
+Kinds -bots can refuse (-bots-monitor only logs them as would-be refusals):
+  scanner   vulnerability scanners, attack and brute-force tools, botnets and
+            internet-wide scanners: sqlmap, Nuclei, Hydra, zgrab, ZmEu, ...
+            Refused by default, in every mode; their refusals count to auto-block.
+  fake      claims to be Google, Bing, Apple, Yandex, Baidu, Petal, Seznam,
+            Naver or Amazon, from an address that engine's DNS does not confirm
   ai        AI crawlers and fetchers: GPTBot, ClaudeBot, CCBot, Bytespider, ...
-  seo       SEO, marketing, archive and data-mining crawlers: AhrefsBot, ...
+  seo       SEO, marketing, archive and data-mining crawlers, address harvesters
+            and site copiers: AhrefsBot, SemrushBot, HTTrack, ...
   tool      HTTP libraries and scripts: curl, python-requests, Go, Scrapy, ...
   headless  browsers driven by programs: HeadlessChrome, PhantomJS, ...
-  scanner   vulnerability scanners (the rules also refuse them in block mode)
-  bot       other bots: no user agent, a contact URL, or a browser's user
-            agent without the headers every browser sends
+  disguised a program sending a browser's user agent: headers, client hints or
+            the TLS handshake that do not match the browser it names
+  bot       other bots: no user agent, a contact URL, or a crawler's words
 
-Never blocked for being a bot: people, search engines that are what they claim,
-link previews (Slack, WhatsApp, ...) and uptime checks.
+Never refused for being a bot: people, search engines that are what they claim,
+link previews (Slack, WhatsApp, ...) and uptime checks. -bots-exempt names
+addresses never refused, such as your own scanners; -bots none refuses none.
 
-Setup's answers: none; fake; ai = fake,ai,seo; strict = every kind above.
-Use strict only for a site browsers alone use: apps and API clients are tools.
+Setup's answers: none; fake = fake,scanner; ai = also ai,seo; strict = every kind.
+Use strict only for a site browsers alone use: apps and API clients are tools,
+and a browser behind antivirus or a company proxy that reads HTTPS can look
+disguised.
 `,
 }
 

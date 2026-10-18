@@ -187,15 +187,17 @@ var shieldRules = map[int]Entry{
 }
 
 // botRules are the bot policy's ids (bots/policy.go): 5005000 and the number of the kind of client refused. A declared
-// crawler or tool is low; a client that claims to be a search engine from an address that is not the engine's is
-// medium, as it is lying about itself.
+// crawler or tool is low; a scanner or attack tool, and a client that claims to be a search engine from an address that
+// is not the engine's, are medium: the first is probing the site, the second lying about itself.
 var botRules = map[int]Entry{
 	5005003: {"AI crawler", Of(CatBot), RiskLow},
 	5005004: {"SEO or data-mining crawler", Of(CatBot), RiskLow},
 	5005005: {"HTTP tool or script", Of(CatBot), RiskLow},
 	5005006: {"Headless or automated browser", Of(CatBot), RiskLow},
+	5005007: {"Scanner or attack tool", Of(CatBot, CatScanner), RiskMedium},
 	5005010: {"Unidentified bot", Of(CatBot), RiskLow},
 	5005011: {"Fake search engine crawler", Of(CatBot), RiskMedium},
+	5005012: {"Program disguised as a browser", Of(CatBot), RiskLow},
 }
 
 // apiRules are the API guard's ids (apiguard/verdict.go). The guard's own severity sets the risk of a finding.

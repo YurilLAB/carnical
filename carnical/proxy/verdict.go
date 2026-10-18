@@ -255,7 +255,7 @@ func (rec *record) finish(e *Edge, r *http.Request, sent int) {
 	}
 	base := e.alertBase(rec, r)
 	if base.Client = rec.kind; base.Client == 0 {
-		base.Client, _ = bots.Classify(r.Header, r.ProtoMajor, r.ProtoMinor, r.Method)
+		base.Client, _ = bots.Classify(r, e.helloOf(r))
 	}
 	var out outcome
 	defer out.tell(e, rec.client)
@@ -377,7 +377,8 @@ func (o *outcome) tell(e *Edge, client netip.Addr) {
 // offencePoints is what one alert of a request counts toward its source's ban (ADR-0085): only a refusal by a check that
 // enforces and is sure of what it found. A request counts once, for its strongest alert. Rate limits, the flood
 // protection's own refusals, a CrowdSec ban, a low or informational finding and anything only detected count nothing, so
-// that a burst of ordinary traffic or one false positive never bans an address.
+// that a burst of ordinary traffic or one false positive never bans an address. Of the bot policy's refusals only a
+// scanner's and a fake search engine's count (ADR-0087): a declared crawler or tool is not attacking.
 func offencePoints(a *alert.Alert) int {
 	if a.Action != alert.Blocked || a.Risk < alert.RiskMedium {
 		return 0
@@ -392,6 +393,10 @@ func offencePoints(a *alert.Alert) int {
 		return 4
 	case a.Layer == alert.LayerVPatch:
 		return 4
+	case a.RuleID == bots.RuleID(alert.ClientScanner): // a scanner refused by name, as the rule set's scanner verdict
+		return 4
+	case a.RuleID == bots.RuleID(alert.ClientFake): // a client lying about being a search engine
+		return 3
 	case (a.Layer == alert.LayerFormats || a.Layer == alert.LayerAPIGuard) && a.Risk == alert.RiskHigh:
 		return 2
 	case a.RuleID >= idConnect && a.RuleID <= idConnect+2: // CONNECT, an upgrade, a target that cannot be forwarded

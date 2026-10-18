@@ -810,7 +810,7 @@ func TestMatchesAreReportedWithoutWhatTheVisitorSentUnlessAsked(t *testing.T) {
 					t.Errorf("refusal %+v", a)
 				}
 			}},
-		{"in monitor mode it would have been", func(c *Config) { c.Bots = &bots.Policy{Refuse: 1 << alert.ClientAI, Monitor: true} }, gptbot, 200,
+		{"in monitor mode it would have been", func(c *Config) { c.Bots = &bots.Policy{Watch: 1 << alert.ClientAI} }, gptbot, 200,
 			[]string{"bots-5005003 would_block 0"}, nil},
 		{"a kind it does not list passes", func(c *Config) { c.Bots = &bots.Policy{Refuse: 1 << alert.ClientTool} }, gptbot, 200, nil, nil},
 		{"a clean request has none", nil, get("/page"), 200, nil, nil},
@@ -941,11 +941,17 @@ func TestBlockedAttacksBanTheirSourceThroughTheShield(t *testing.T) {
 		exempt     []netip.Prefix
 		after      int    // the status of a clean request from the attacker after four attacks
 		bannedSays string // the alert of that request, if it is refused
+		ua         string // the attacks' user agent, when it is what they are refused for
+		bots       *bots.Policy
 	}{
-		{"four blocked attacks ban the source", shield.AutoBlockOn, crs.ModeBlock, nil, 403, "shield-5004008 source_blocked 403"},
-		{"monitor only reports the source", shield.AutoBlockMonitor, crs.ModeBlock, nil, 200, ""},
-		{"attacks only detected never ban", shield.AutoBlockOn, crs.ModeDetect, nil, 200, ""},
-		{"an exempt source is never banned", shield.AutoBlockOn, crs.ModeBlock, []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24")}, 200, ""},
+		{"four blocked attacks ban the source", shield.AutoBlockOn, crs.ModeBlock, nil, 403, "shield-5004008 source_blocked 403", "", nil},
+		{"monitor only reports the source", shield.AutoBlockMonitor, crs.ModeBlock, nil, 200, "", "", nil},
+		{"attacks only detected never ban", shield.AutoBlockOn, crs.ModeDetect, nil, 200, "", "", nil},
+		{"an exempt source is never banned", shield.AutoBlockOn, crs.ModeBlock, []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24")}, 200, "", "", nil},
+		{"a scanner refused by name is banned, whatever the rule set's mode", shield.AutoBlockOn, crs.ModeDetect, nil, 403,
+			"shield-5004008 source_blocked 403", "sqlmap/1.8.11#stable (https://sqlmap.org)", &bots.Policy{Refuse: 1 << alert.ClientScanner}},
+		{"a declared crawler refused by name is not", shield.AutoBlockOn, crs.ModeBlock, nil, 200, "", "GPTBot/1.3",
+			&bots.Policy{Refuse: 1 << alert.ClientAI}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var emu sync.Mutex
@@ -959,11 +965,15 @@ func TestBlockedAttacksBanTheirSourceThroughTheShield(t *testing.T) {
 			var amu sync.Mutex
 			var got []alert.Alert
 			s := start(t, func(c *Config) {
-				c.CRS.Mode, c.Shield, c.TrustedProxies = tt.crs, sh, loopback.Allow
+				c.CRS.Mode, c.Shield, c.TrustedProxies, c.Bots = tt.crs, sh, loopback.Allow, tt.bots
 				c.OnAlert = func(a alert.Alert) { amu.Lock(); got = append(got, a); amu.Unlock() }
 			})
+			attack := get(sqli, from("203.0.113.7"))
+			if tt.ua != "" {
+				attack = strings.Replace(get("/", from("203.0.113.7")), "Mozilla/5.0 Chrome/120", tt.ua, 1)
+			}
 			for range 4 {
-				s.raw(t, get(sqli, from("203.0.113.7")))
+				s.raw(t, attack)
 			}
 			amu.Lock()
 			got = got[:0]
@@ -993,7 +1003,7 @@ func TestBlockedAttacksBanTheirSourceThroughTheShield(t *testing.T) {
 				}
 			}
 			want := map[shield.AutoBlockMode]string{shield.AutoBlockOn: "source_blocked 203.0.113.7", shield.AutoBlockMonitor: "source_would_block 203.0.113.7"}[tt.mode]
-			if tt.crs == crs.ModeDetect || tt.exempt != nil {
+			if tt.crs == crs.ModeDetect && tt.bots == nil || tt.exempt != nil || tt.bots != nil && tt.after == 200 {
 				want = ""
 			}
 			if (want == "") != (len(kinds) == 0) || want != "" && kinds[0] != want {

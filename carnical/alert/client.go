@@ -36,16 +36,20 @@ const (
 	ClientPreview
 	// ClientMonitor is an uptime or health check.
 	ClientMonitor
-	// ClientBot is a bot that names no known program: no user agent, a contact URL, a crawler word, or a browser's
-	// user agent without the headers every browser sends.
+	// ClientBot is a bot that names no known program: no user agent, a contact URL, a crawler word, or a user agent too
+	// long for any browser.
 	ClientBot
 	// ClientFake is a client that claims to be a search engine's crawler from an address its DNS does not confirm.
 	ClientFake
+	// ClientDisguised is a program that sends a browser's user agent and is not that browser: its other headers or its
+	// TLS handshake are not the ones that browser sends.
+	ClientDisguised
 
-	numClients = int(ClientFake) + 1
+	numClients = int(ClientDisguised) + 1
 )
 
-var clientNames = [numClients]string{"", "person", "search", "ai", "seo", "tool", "headless", "scanner", "preview", "monitor", "bot", "fake"}
+var clientNames = [numClients]string{"", "person", "search", "ai", "seo", "tool", "headless", "scanner", "preview", "monitor", "bot", "fake",
+	"disguised"}
 
 func (c Client) String() string {
 	if int(c) < numClients {

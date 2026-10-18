@@ -21,6 +21,11 @@ const (
 	verifiedFor, refutedFor, failedFor = 24 * time.Hour, time.Hour, time.Minute
 	// maxNames is how many names of one address are checked.
 	maxNames = 4
+	// maxPerNetwork is how many checks of one network (an IPv4 /24, an IPv6 /48) run at once, so that one network's
+	// impostors, whose own reverse zone can answer as slowly as it likes, cannot hold every slot.
+	maxPerNetwork = 2
+	// maxNetworks is how many networks with a verified crawler are remembered (see Verify).
+	maxNetworks = 4096
 	// DefaultLookups is how many checks run at once by default; DefaultCache how many answers are kept.
 	DefaultLookups = 8
 	DefaultCache   = 65536
@@ -36,6 +41,10 @@ type Resolver interface {
 // sites to: the address's DNS name must be in one of the engine's domains, and the name must resolve back to the address.
 // Answers are cached. A client that does not pass is not the engine, including when the lookup fails: the reverse zone
 // of an address is its owner's, so an impostor can make it fail at will. It is safe for concurrent use.
+//
+// Impostors cannot crowd the engine's crawlers out: a verified answer is the last kind a full cache drops, one network
+// runs at most maxPerNetwork checks at once, and when no check can start, an address in a network where a crawler of the
+// engine was verified passes.
 type Verifier struct {
 	res   Resolver
 	slots chan struct{}
@@ -44,6 +53,23 @@ type Verifier struct {
 
 	mu    sync.Mutex
 	cache map[verifyKey]*verifyEntry
+	busy  map[netip.Prefix]int // checks running, by network
+	nets  map[netKey]time.Time // networks with a verified crawler, until when
+}
+
+type netKey struct {
+	net    netip.Prefix
+	engine Engine
+}
+
+// network is the network an address's checks are counted by: its /24 or /48.
+func network(a netip.Addr) netip.Prefix {
+	bits := 48
+	if a.Is4() {
+		bits = 24
+	}
+	p, _ := a.Prefix(bits)
+	return p
 }
 
 type verifyKey struct {
@@ -69,12 +95,14 @@ func NewVerifier(res Resolver, lookups, cache int) *Verifier {
 	if cache <= 0 {
 		cache = DefaultCache
 	}
-	return &Verifier{res: res, slots: make(chan struct{}, lookups), max: cache, now: time.Now, cache: map[verifyKey]*verifyEntry{}}
+	return &Verifier{res: res, slots: make(chan struct{}, lookups), max: cache, now: time.Now, cache: map[verifyKey]*verifyEntry{},
+		busy: map[netip.Prefix]int{}, nets: map[netKey]time.Time{}}
 }
 
 // Verify reports whether addr is one of engine's crawlers. It waits for a check that is not cached yet, at most
-// lookupTimeout or until ctx ends. When every check slot is taken, as under a flood of impostors from many addresses,
-// the answer is no: the engine's own crawlers come from addresses that are already cached.
+// lookupTimeout or until ctx ends. When no check can start (every slot is taken, as under a flood of impostors from many
+// addresses, or the address's network has its share running), the answer is yes only for an address in a network where
+// one of engine's crawlers was verified: the engine's own crawlers come from addresses or networks already seen.
 func (v *Verifier) Verify(ctx context.Context, addr netip.Addr, engine Engine) bool {
 	if int(engine) == 0 || int(engine) >= numEngines || !addr.IsValid() {
 		return false
@@ -96,15 +124,23 @@ func (v *Verifier) Verify(ctx context.Context, addr netip.Addr, engine Engine) b
 		}
 	}
 	if e == nil {
+		nw := network(addr)
+		if v.busy[nw] >= maxPerNetwork {
+			ok := v.knownNetwork(nw, engine, now)
+			v.mu.Unlock()
+			return ok
+		}
 		select {
 		case v.slots <- struct{}{}:
 		default:
+			ok := v.knownNetwork(nw, engine, now)
 			v.mu.Unlock()
-			return false
+			return ok
 		}
 		if len(v.cache) >= v.max {
 			v.evict(now)
 		}
+		v.busy[nw]++
 		e = &verifyEntry{done: make(chan struct{})}
 		v.cache[k] = e
 		go v.check(e, addr, engine) // #nosec G118 -- the check outlives this request on purpose: other requests wait for its answer.
@@ -131,8 +167,42 @@ func (v *Verifier) check(e *verifyEntry, addr netip.Addr, engine Engine) {
 	case err != nil:
 		ttl = failedFor
 	}
-	e.ok, e.until = ok, v.now().Add(ttl)
+	now := v.now()
+	e.ok, e.until = ok, now.Add(ttl)
 	close(e.done)
+	nw := network(addr)
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.busy[nw]--; v.busy[nw] <= 0 {
+		delete(v.busy, nw)
+	}
+	if ok {
+		if len(v.nets) >= maxNetworks {
+			v.forgetNetwork(now)
+		}
+		v.nets[netKey{nw, engine}] = e.until
+	}
+}
+
+// knownNetwork reports whether a crawler of engine was verified in nw and the answer still holds. v.mu is held.
+func (v *Verifier) knownNetwork(nw netip.Prefix, engine Engine, now time.Time) bool {
+	until, ok := v.nets[netKey{nw, engine}]
+	return ok && now.Before(until)
+}
+
+// forgetNetwork makes room among the verified networks: the expired go, or else one of the others. v.mu is held.
+func (v *Verifier) forgetNetwork(now time.Time) {
+	for k, until := range v.nets {
+		if !now.Before(until) {
+			delete(v.nets, k)
+		}
+	}
+	for k := range v.nets {
+		if len(v.nets) < maxNetworks {
+			return
+		}
+		delete(v.nets, k)
+	}
 }
 
 // lookup does the reverse lookup and the forward ones. An error is a lookup that failed, not an answer.
@@ -179,26 +249,23 @@ func inDomains(name string, domains []string) bool {
 	return false
 }
 
-// evict makes room in a full cache: the expired answers go, and if that is not enough, an eighth of the rest. A check
-// still running is never dropped, so its waiters keep their entry. v.mu is held.
+// evict makes room in a full cache: the expired answers go, then the answers that refuted a claim, and only if that is
+// not enough the verified ones, until an eighth of the cache is free. A flood of impostors therefore drops its own
+// answers, not the crawlers'. A check still running is never dropped, so its waiters keep their entry. v.mu is held.
 func (v *Verifier) evict(now time.Time) {
-	for k, e := range v.cache {
-		select {
-		case <-e.done:
-			if !now.Before(e.until) {
-				delete(v.cache, k)
+	room := v.max - v.max/8
+	for pass := 0; pass < 3 && len(v.cache) >= room; pass++ {
+		for k, e := range v.cache {
+			if len(v.cache) < room {
+				return
 			}
-		default:
-		}
-	}
-	for k, e := range v.cache {
-		if len(v.cache) < v.max-v.max/8 {
-			return
-		}
-		select {
-		case <-e.done:
-			delete(v.cache, k)
-		default:
+			select {
+			case <-e.done:
+				if pass == 0 && !now.Before(e.until) || pass == 1 && !e.ok || pass == 2 {
+					delete(v.cache, k)
+				}
+			default:
+			}
 		}
 	}
 }

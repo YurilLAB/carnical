@@ -299,23 +299,31 @@ func (e *Edge) checkRequest(w http.ResponseWriter, r *http.Request, client netip
 	return e.checkLimits(w, r, client, route)
 }
 
-// checkBots refuses a kind of client the bot policy lists (rules 5005003 to 5005011), or in monitor mode reports that it
-// would have. The kind is kept for the request's alerts.
+// checkBots refuses a kind of client the bot policy refuses (rules 5005003 to 5005012), or reports a kind it watches as
+// one it would have refused. The kind is kept for the request's alerts.
 func (e *Edge) checkBots(w http.ResponseWriter, r *http.Request, client netip.Addr) bool {
-	kind, refuse := e.cfg.Bots.Judge(r.Context(), r, client)
+	kind, action := e.cfg.Bots.Judge(r.Context(), r, client, e.helloOf(r))
 	if rec := recordOf(r.Context()); rec != nil {
 		rec.kind = kind
 	}
-	if !refuse {
-		return true
-	}
 	msg := "a kind of client this site refuses: " + kind.String()
-	if e.cfg.Bots.Monitor {
+	switch action {
+	case bots.Watch:
 		e.finding(Match{RuleID: bots.RuleID(kind), Severity: "WARNING", Message: msg, would: true}, nil, r)
-		return true
+	case bots.Refuse:
+		e.refuse(w, r, http.StatusForbidden, bots.RuleID(kind), msg)
+		return false
 	}
-	e.refuse(w, r, http.StatusForbidden, bots.RuleID(kind), msg)
-	return false
+	return true
+}
+
+// helloOf is what the TLS handshake of r's connection showed, when Config.Hellos keeps it.
+func (e *Edge) helloOf(r *http.Request) bots.Hello {
+	if e.cfg.Hellos == nil || r.TLS == nil {
+		return bots.Hello{}
+	}
+	c, _ := r.Context().Value(connKey{}).(net.Conn)
+	return e.cfg.Hellos.Of(c)
 }
 
 // APIRatePolicy gives each client its own sliding-minute budget, shared across all matching prefixes and HTTP methods.

@@ -21,21 +21,23 @@ func RuleID(c alert.Client) int { return ruleBase + int(c) }
 
 // Refusable are the kinds a site can refuse, in the order -bots lists them. People, search engines that are what they
 // claim, link previews and uptime checks cannot be: a site that does not want them says so in robots.txt or its policy.
-var Refusable = []alert.Client{alert.ClientFake, alert.ClientAI, alert.ClientSEO, alert.ClientTool, alert.ClientHeadless,
-	alert.ClientScanner, alert.ClientBot}
+var Refusable = []alert.Client{alert.ClientFake, alert.ClientScanner, alert.ClientAI, alert.ClientSEO, alert.ClientTool,
+	alert.ClientHeadless, alert.ClientDisguised, alert.ClientBot}
 
-// Policy is which kinds of client a site refuses.
+// Policy is which kinds of client a site refuses, and which it only reports.
 type Policy struct {
-	// Refuse is the kinds refused, a bit for each alert.Client.
-	Refuse uint32
-	// Monitor reports the clients the policy would refuse and lets them through.
-	Monitor bool
+	// Refuse is the kinds refused, a bit for each alert.Client; Watch the kinds reported as would-be refusals and let
+	// through. A kind in both is refused.
+	Refuse, Watch uint32
 	// Verifier checks search engine claims. Without it no client is taken for a fake search engine crawler.
 	Verifier *Verifier
+	// Exempt are the addresses never refused for their kind, such as the site's own scanners; their requests are still
+	// read and counted.
+	Exempt []netip.Prefix
 }
 
-// ParseKinds reads a comma-separated list of the kinds to refuse: fake, ai, seo, tool, headless, scanner and bot, or
-// "none" (the same as an empty list).
+// ParseKinds reads a comma-separated list of the kinds to refuse: fake, scanner, ai, seo, tool, headless, disguised and
+// bot, or "none" (the same as an empty list).
 func ParseKinds(s string) (uint32, error) {
 	var set uint32
 	s = strings.TrimSpace(s)
@@ -88,13 +90,45 @@ func refusable(c alert.Client) bool {
 // Refuses reports whether the policy refuses the kind c.
 func (p *Policy) Refuses(c alert.Client) bool { return p != nil && p.Refuse&(1<<c) != 0 }
 
-// Judge reads what kind of client sent r from addr, the visitor's verified address, and whether the policy refuses
-// it. A search engine claim is checked by DNS only when the policy refuses fakes: one that fails is ClientFake.
-func (p *Policy) Judge(ctx context.Context, r *http.Request, addr netip.Addr) (alert.Client, bool) {
-	c, engine := Classify(r.Header, r.ProtoMajor, r.ProtoMinor, r.Method)
-	if c == alert.ClientSearch && engine != 0 && p.Refuses(alert.ClientFake) && p.Verifier != nil &&
-		!p.Verifier.Verify(ctx, addr, engine) {
+// Watches reports whether the policy reports the kind c without refusing it.
+func (p *Policy) Watches(c alert.Client) bool {
+	return p != nil && p.Watch&(1<<c) != 0 && !p.Refuses(c)
+}
+
+// Action is what the policy does with a request.
+type Action uint8
+
+// The actions.
+const (
+	Pass   Action = iota // let through
+	Watch                // let through, reported as a would-be refusal
+	Refuse               // refused
+)
+
+// Judge reads what kind of client sent r from addr, the visitor's verified address, and what the policy does with it;
+// hello is the request's TLS handshake (see Classify). A claim to be a crawler of an operator that publishes its DNS
+// names is checked only when the policy refuses or watches fakes: one that fails is ClientFake. An exempt address is
+// always let through.
+func (p *Policy) Judge(ctx context.Context, r *http.Request, addr netip.Addr, hello Hello) (alert.Client, Action) {
+	c, engine := Classify(r, hello)
+	fakes := p.Refuses(alert.ClientFake) || p.Watches(alert.ClientFake)
+	if engine != 0 && fakes && p.Verifier != nil && !p.Verifier.Verify(ctx, addr, engine) {
 		c = alert.ClientFake
 	}
-	return c, p.Refuses(c)
+	var action Action
+	switch {
+	case p.Refuses(c):
+		action = Refuse
+	case p.Watches(c):
+		action = Watch
+	default:
+		return c, Pass
+	}
+	a := addr.Unmap()
+	for _, e := range p.Exempt {
+		if e.Contains(a) {
+			return c, Pass
+		}
+	}
+	return c, action
 }
