@@ -278,6 +278,9 @@ func runFlags(usage, logs io.Writer, args []string, private map[string]string) e
 		return fromSite(err, site, private)
 	}
 	defer alerts.close() // after the server has stopped: the last requests' alerts and the final totals
+	matches := newMatchLog(log.Handler())
+	defer matches.close(2 * time.Second)
+	matchLogger := slog.New(matches)
 	if limitReplaced {
 		// The rules of -limit are one setting, as every flag is: the command line's do not add to the site's.
 		log.Info("site configuration limit replaced by the command line")
@@ -339,7 +342,7 @@ func runFlags(usage, logs io.Writer, args []string, private map[string]string) e
 			if *details {
 				attrs = append(attrs, "client", m.ClientIP, "uri", m.URI, "data", m.Data, "expanded_msg", m.ExpandedMessage)
 			}
-			log.Warn("rule matched", attrs...)
+			matchLogger.Warn("rule matched", attrs...)
 		},
 	}
 	formatInspector, effectiveFormatsMode, patches, err := configureSite(siteFlag, explicit, &cfg, log, *formatsMode, *formatsPolicy, *requestEncoding)

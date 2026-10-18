@@ -3,11 +3,14 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/YurilLAB/coraza/carnical/alert"
@@ -135,6 +138,89 @@ func (a *alerting) start() {
 	if a.agg != nil {
 		a.agg.Start()
 		a.started = true
+	}
+}
+
+// matchLog writes the "rule matched" lines from a bounded queue, so that a request never waits on a log that has fallen
+// behind, as the alerts do not: under attack every matched rule is a line. A line the queue has no room for is
+// dropped, and the drops are written as "rule matched lines dropped", at most once a second and at the end.
+type matchLog struct {
+	next    slog.Handler
+	ch      chan slog.Record
+	mu      sync.RWMutex // held for reading by Handle, for writing by close, so that nothing is queued after close
+	closed  bool
+	dropped atomic.Uint64
+	done    chan struct{}
+}
+
+// matchQueue is how many lines matchLog holds; a few seconds of a busy attack.
+const matchQueue = 8192
+
+func newMatchLog(next slog.Handler) *matchLog {
+	l := &matchLog{next: next, ch: make(chan slog.Record, matchQueue), done: make(chan struct{})}
+	go l.run()
+	return l
+}
+
+func (l *matchLog) Enabled(ctx context.Context, level slog.Level) bool {
+	return l.next.Enabled(ctx, level)
+}
+func (l *matchLog) WithAttrs(attrs []slog.Attr) slog.Handler { return l } // not used: the lines carry their own
+func (l *matchLog) WithGroup(name string) slog.Handler       { return l }
+
+// Handle queues r, or counts it as dropped: when the queue is full, or after close. It never blocks.
+func (l *matchLog) Handle(_ context.Context, r slog.Record) error {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	if l.closed {
+		l.dropped.Add(1)
+		return nil
+	}
+	select {
+	case l.ch <- r.Clone():
+	default:
+		l.dropped.Add(1)
+	}
+	return nil
+}
+
+func (l *matchLog) run() {
+	defer close(l.done)
+	tick := time.NewTicker(time.Second)
+	defer tick.Stop()
+	for {
+		select {
+		case r, ok := <-l.ch:
+			if !ok {
+				l.reportDrops()
+				return
+			}
+			_ = l.next.Handle(context.Background(), r) // a line the log refuses is lost, as any other line would be
+		case <-tick.C:
+			l.reportDrops()
+		}
+	}
+}
+
+func (l *matchLog) reportDrops() {
+	if n := l.dropped.Swap(0); n > 0 {
+		r := slog.NewRecord(time.Now(), slog.LevelWarn, "rule matched lines dropped", 0)
+		r.AddAttrs(slog.Uint64("count", n), slog.String("reason", "the log is not keeping up"))
+		_ = l.next.Handle(context.Background(), r)
+	}
+}
+
+// close writes what is queued, waiting at most wait for the log.
+func (l *matchLog) close(wait time.Duration) {
+	l.mu.Lock()
+	if !l.closed {
+		l.closed = true
+		close(l.ch)
+	}
+	l.mu.Unlock()
+	select {
+	case <-l.done:
+	case <-time.After(wait):
 	}
 }
 

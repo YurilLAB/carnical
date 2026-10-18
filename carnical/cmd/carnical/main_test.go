@@ -1689,9 +1689,10 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 					time.Sleep(20 * time.Millisecond)
 				}
 			}
-			// Alerts are written through a queue, and cancel kills the process: wait for the line first.
-			for deadline := time.Now().Add(2 * time.Second); tc.says != "" && time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
-				if data, err := os.ReadFile(logPath); err == nil && bytes.Contains(data, []byte(tc.says)) {
+			// Alerts and rule matches are written through queues, and cancel kills the process: wait for the lines first.
+			for deadline := time.Now().Add(2 * time.Second); (tc.says != "" || tc.logRule != "") && time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+				if data, err := os.ReadFile(logPath); err == nil && bytes.Contains(data, []byte(tc.says)) &&
+					(tc.logRule == "" || bytes.Count(data, []byte(tc.logRule)) >= max(tc.repeat, 1)) {
 					break
 				}
 			}
@@ -3284,5 +3285,57 @@ func TestSetupProfilesChooseFlags(t *testing.T) {
 				t.Fatalf("the flags are refused: %v", err)
 			}
 		})
+	}
+}
+
+// gatedWriter holds every write until open is closed, as a log that has fallen behind does.
+type gatedWriter struct {
+	open chan struct{}
+	mu   sync.Mutex
+	buf  bytes.Buffer
+}
+
+func (w *gatedWriter) Write(p []byte) (int, error) {
+	<-w.open
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.Write(p)
+}
+
+// Not a profile: this is the command's own log path. Under attack every matched rule is a line, so a log that cannot
+// keep up must cost lines, which are counted, and never hold up the requests.
+func TestRuleMatchLinesNeverWaitOnTheLog(t *testing.T) {
+	w := &gatedWriter{open: make(chan struct{})}
+	l := newMatchLog(slog.NewJSONHandler(w, nil))
+	log := slog.New(l)
+	const sent = 20000
+	start := time.Now()
+	for i := range sent {
+		log.Warn("rule matched", "rule", 942100, "tx", i)
+	}
+	if took := time.Since(start); took > 2*time.Second {
+		t.Fatalf("%d lines took %v while the log was stalled", sent, took)
+	}
+	close(w.open)
+	l.close(5 * time.Second)
+	log.Warn("rule matched", "rule", 942100) // after close: dropped, not a panic
+	written, dropped := 0, 0
+	for _, line := range strings.Split(strings.TrimSpace(w.buf.String()), "\n") {
+		var rec struct {
+			Msg   string
+			Count int
+		}
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("line %q: %v", line, err)
+		}
+		switch rec.Msg {
+		case "rule matched":
+			written++
+		case "rule matched lines dropped":
+			dropped += rec.Count
+		}
+	}
+	if written == 0 || dropped == 0 || written+dropped != sent {
+		t.Fatalf("%d written and %d counted as dropped, want both, adding up to %d", written, dropped, sent)
 	}
 }
