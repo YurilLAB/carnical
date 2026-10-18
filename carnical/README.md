@@ -65,7 +65,7 @@ shutdown, containers and platform support.
 | `-ddos` | `on` | Flood detection, connection/request budgets and bounded IDS signals; add a strength, `relaxed`, `normal` or `strict`, as in `-ddos strict` or `-ddos monitor,strict`. |
 | `-alerts` | `on` | One deduplicated `intrusion detected`/`intrusion blocked` line per source and signature, with exact totals; see [intrusion alerts](docs/proxy-reference.md#intrusion-alerts). |
 | `-auto-block` | `monitor` | Ban a source whose requests keep being refused as attacks; `monitor` only logs who would be banned. Needs `-ddos on` or `monitor`; see [repeat offenders](docs/ddos.md#repeat-offenders). |
-| `-bots` | None | Kinds of bot to block: `fake` (claims to be a search engine; checked by DNS), `ai`, `seo`, `tool`, `headless`, `scanner`, `bot`. Every alert names the kind of client, and the totals count blocked bots and people; see [bots](docs/bots.md). |
+| `-bots` | `scanner` | Kinds of bot to refuse: `scanner` (attack tools and botnets), `fake` (claims to be a search engine; checked by DNS), `ai`, `seo`, `tool`, `headless`, `disguised` (a program with a browser's user agent), `bot`, or `none`. `-bots-monitor` only logs kinds and `-bots-exempt` spares addresses. Every alert names the kind of client, and the totals count blocked bots and people; see [bots](docs/bots.md). |
 | `-crowdsec-api` | Disabled | Optional CrowdSec IP/CIDR bans, enforced independently of inspection modes. |
 | `-trusted-proxies` | Empty | Only actual CDN/load-balancer peers may supply client identity headers. |
 | `-origin-allow` | No private-range exception | Explicitly permit only required private origin ranges. |

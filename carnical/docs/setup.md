@@ -64,7 +64,7 @@ question. A question with no brackets has no safe default and must be answered.
 | Flood protection | `normal` (`relaxed` for an API) | `-ddos` |
 | Ban addresses that keep attacking | `monitor` | `-auto-block`; see [repeat offenders](ddos.md#repeat-offenders) |
 | Login page to protect | none | `-limit 'POST PATH 10/m'` (WordPress has its own) |
-| Bots to block | `fake` | `-bots`, and `-bots-mode monitor` in detect mode; `ai` adds AI and SEO crawlers, `strict` every kind; see [bots](bots.md) |
+| Bots to block | `fake` | `-bots`; `fake` refuses scanners and fake search engines, `ai` adds AI and SEO crawlers, `strict` every kind. In detect mode only scanners are refused and the rest go in `-bots-monitor`; see [bots](bots.md) |
 | Intrusion alerts | `on` | `-alerts`; see [intrusion alerts](proxy-reference.md#intrusion-alerts) |
 
 Detection mode records CRS findings and monitors request formats. Blocking mode enables both
