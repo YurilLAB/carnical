@@ -50,23 +50,47 @@ func TestXMLAttribures(t *testing.T) {
 }
 
 func TestXMLPayloadFlexibility(t *testing.T) {
-	xmldoc := `<note>
+	testCases := []struct {
+		name  string
+		input string
+		want  []string
+	}{
+		{
+			name: "an element left open",
+			input: `<note>
 			<to>Tove</to>
 			<from>Jani</from>
 			<heading>Reminder</heading>
 			<body>Don't forget me this weekend!
-		</note>`
-	_, contents, err := readXML(bytes.NewReader([]byte(xmldoc)))
-	if err != nil {
-		t.Error(err)
+		</note>`,
+			want: []string{"Tove", "Jani", "Reminder", "Don't forget me this weekend!"},
+		},
+		{
+			name:  "XML-RPC parameters",
+			input: `<?xml version="1.0"?><methodCall><methodName>wp.getUsersBlogs</methodName><params><param><value>admin</value></param><param><value><string>' OR 1=1--</string></value></param></params></methodCall>`,
+			want:  []string{"wp.getUsersBlogs", "admin", "' OR 1=1--"},
+		},
+		{
+			name:  "an RSS link",
+			input: `<rss version="2.0"><channel><title>News</title><link>https://example.com/</link><item><link>https://example.com/a</link></item></channel></rss>`,
+			want:  []string{"News", "https://example.com/", "https://example.com/a"},
+		},
 	}
-	for _, content := range []string{"Tove", "Jani", "Reminder", "Don't forget me this weekend!"} {
-		if !strings.InSlice(content, contents) {
-			t.Errorf("Expected content %s, got %v", content, contents)
-		}
-	}
-	if len(contents) != 4 {
-		t.Errorf("Expected 4 contents, got %d", len(contents))
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, contents, err := readXML(bytes.NewReader([]byte(tc.input)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(contents) != len(tc.want) {
+				t.Fatalf("contents %q, want %q", contents, tc.want)
+			}
+			for i := range tc.want {
+				if contents[i] != tc.want[i] {
+					t.Errorf("content %d is %q, want %q", i, contents[i], tc.want[i])
+				}
+			}
+		})
 	}
 }
 

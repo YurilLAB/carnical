@@ -41,8 +41,10 @@ func readXML(reader io.Reader) ([]string, []string, error) {
 	var attrs []string
 	var content []string
 	dec := xml.NewDecoder(reader)
+	// Not strict, so that a malformed document is still read; but no AutoClose: HTML's empty elements are ordinary
+	// elements in XML, and closing <param> or <link> as soon as it opens makes </param> an error, which refused every
+	// XML-RPC call and RSS document.
 	dec.Strict = false
-	dec.AutoClose = xml.HTMLAutoClose
 	dec.Entity = xml.HTMLEntity
 	endedEarly := false
 	for {
