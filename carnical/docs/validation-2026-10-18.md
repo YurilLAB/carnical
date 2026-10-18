@@ -1,7 +1,7 @@
 # Validation record: 18 October 2026
 
 This record measures revision `deb80b41` of `edge-crs`, after the bot policy, intrusion alerts
-and auto-block work; the sections on varied agents and on application traffic name their own. The local runs
+and auto-block work; the sections on varied agents, application traffic and independent corpora name their own. The local runs
 used a cloud container (Ubuntu 24.04.5, Linux 6.18.44, Go 1.26.9, running as root, no IPv6). The CI runs used GitHub's Ubuntu 24.04 runners. The counts
 belong to these runs. Attacks targeted isolated local origins.
 
@@ -255,6 +255,88 @@ nothing else that was measured:
 - Carnical's attack and benign corpus: 3,355 of 3,414 attacks blocked and 387 of 410 benign
   requests passed, before and after, with no case changed;
 - GoTestWAF: no request had a different outcome.
+
+## Independent corpora
+
+These corpora were written by others, not for Carnical. They were measured on `98834421`, and
+again on the final revision with the fixes below. The comparison uses the same harness as
+[Detection compared with upstream Coraza](#detection-compared-with-upstream-coraza): upstream
+Coraza v3.8.1 with CRS 4.30.0 at paranoia level 1, against Carnical in `-mode block`. A control
+run with no WAF passed every request to the origin.
+
+[nemesida-waf/waf-bypass](https://github.com/nemesida-waf/waf-bypass) at `887f2f9` (July 2026)
+sends each payload in the zones it names (URL, query, form body, cookie, user agent, referer and
+another header), as written and encoded in Base64 and UTF-16. The tool counted a status of 403,
+400, 413 or 415 as a block.
+
+| | Upstream | Carnical, formats blocking |
+| --- | --- | --- |
+| Attacks as written (2,992) | 2,398 (80.1%) | 2,471 (82.6%) |
+| Attacks encoded (3,818) | 2,643 (69.2%) | 2,660 (69.7%) |
+| Its false-positive probes refused (19) | 9 | 9 |
+
+All 90 requests that had a different outcome were blocked by Carnical and passed by upstream.
+Carnical's rules blocked 24 of them. Its query and path checks (status 400) blocked the other 66.
+Both refused the same false-positive probes, which the tool sends as a body with no Content-Type.
+
+The [open-appsec WAF comparison project](https://github.com/openappsec/waf-comparison-project)
+publishes 73,924 attacks and 1,040,242 requests that real browsers sent to 185 sites. The
+legitimate set was sampled: every 12th of its 692 files in name order, 58 sites, 78,208
+requests. A request with no Host header was sent with `Host: localhost`.
+
+| Requests refused | Upstream | Carnical | Carnical, formats blocking |
+| --- | --- | --- | --- |
+| Attacks (73,924) | 66,132 (89.5%) | 66,186 (89.5%) | 73,614 (99.6%) |
+| Legitimate, all (78,208) | 18,706 (23.9%) | 19,576 (25.0%) | 19,903 (25.4%) |
+| Legitimate, first-party (33,987) | 8,583 (25.3%) | 8,641 (25.4%) | 8,839 (26.0%) |
+
+"Carnical" is the build as it ships, with format checks in monitor. First-party requests are the
+ones the browser marked `Sec-Fetch-Site: same-origin` or `none`. The rest went to other hosts,
+mostly analytics and advertising, which a site's own edge never sees. Upstream's figures include
+16 requests that timed out. No request was passed by Carnical and refused by upstream.
+
+As shipped, Carnical adds 54 command executions. With formats blocking it also adds 7,424 path
+traversals (by its path and query checks) and 4 SQL injections.
+
+Most refusals of legitimate traffic come from the CRS itself. In a random sample of 600
+first-party requests that upstream refused:
+
+- 312 matched rule 932270, a shell expression. 239 of them carried Akamai Bot Manager's `_abck`
+  cookie, whose value holds `||~-1`. That cookie is on every visit to a site behind Akamai. The
+  [policy guide](config-and-policy.md#exclusions) shows the exclusion that takes it out of the
+  command-injection rules. With it, the shipped build refused 13.9% of
+  first-party requests instead of 25.4% (6,231 fewer refusals in the whole sample, none added), and
+  refused the same 66,186 attacks.
+- 201 matched 920420, the request type: mostly `text/plain` beacons, as in
+  [Legitimate application traffic](#legitimate-application-traffic).
+
+Carnical's own refusals of legitimate traffic, before the fixes (898 requests):
+
+- 549 had a `;` in the path, on 21 sites. Most went to advertising hosts such as `doubleclick.net`.
+  `-allow-path-params` lets them through.
+- 197 began with `//` (`//i/aurora/...`), 183 of them on one site.
+- 50 had an encoded slash (`-allow-encoded-slash`).
+- 15 named a product with a percent sign (`100%25-WHEY`).
+- 86 were refused by Carnical's URL rules:
+  - 5006021: a `.php` page in Google Analytics' and Facebook's `dl` and `rl` parameters;
+  - 5006016: a URL with no scheme (`//cdn.example/`) in a parameter;
+  - 5006015: a URL in `layout=`;
+  - 5006008: schema.org markup.
+- 1 was refused by 5006003, for an advertising code list `|NC|NC|` (netcat between pipes).
+
+Fixed:
+
+- **A percent sign in a path** is refused only when it starts another escape (`%252e`), not in
+  `100%25-WHEY`.
+- **Rule 5006008** ends a URL's userinfo at a double quote. `"https://schema.org","@type"` is
+  JSON, not a URL with userinfo.
+- **Exclusions can name cookies and arguments that start with `_`**: `_abck`, `_ga`,
+  `__cf_bm`, `_token`. Before, the `_abck` exclusion could not be written.
+
+With the fixes, the shipped build refuses 58 first-party requests that upstream lets through
+(0.17%), down from 72. None of the corpora lost a detection: Carnical's own 3,824 cases,
+waf-bypass and GoTestWAF had no request with a different outcome, and open-appsec's attacks were
+refused as before.
 
 ## Alerts and auto-block under sustained hostile traffic
 

@@ -426,9 +426,10 @@ starts alike, the path in another case, and another group's attack are all still
 
 A site behind Akamai Bot Manager needs one. Akamai's `_abck` cookie holds values such as
 `~-1~||0||~-1`, which CRS rule 932270 reads as a shell expression, so every visitor that has the
-cookie is refused. In a sample of real browser traffic it caused 40% of the CRS's refusals (see the
-[validation record](validation-2026-10-18.md#independent-corpora)). This takes that one cookie out
-of the command-injection rules, and leaves every other cookie checked:
+cookie is refused. In a sample of real browser traffic, this exclusion cut the share of a site's
+own requests refused from 25.4% to 13.9%, and every attack was refused as before (see the
+[validation record](validation-2026-10-18.md#independent-corpora)). It takes that one cookie out of
+the command-injection rules, and leaves every other cookie checked:
 
 ```json
 {"exclusions":[{"path":"/","categories":["rce"],"targets":["cookie:_abck"],"note":"Akamai Bot Manager"}]}
