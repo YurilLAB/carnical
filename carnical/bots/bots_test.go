@@ -371,30 +371,33 @@ func TestVerify(t *testing.T) {
 		close(r.gate)
 		wg.Wait()
 	})
-	t.Run("with no check free, a verified crawler's network passes and no other", func(t *testing.T) {
-		r := dns()
-		v := NewVerifier(r, 1, 0)
-		if !v.Verify(context.Background(), google, EngineGoogle) {
-			t.Fatal("not verified")
-		}
-		r.gate = make(chan struct{})
-		var wg sync.WaitGroup
-		wg.Go(func() { v.Verify(context.Background(), netip.MustParseAddr("203.0.113.5"), EngineGoogle) })
-		for r.ptrs.Load() < 2 {
-			time.Sleep(time.Millisecond)
-		}
-		if !v.Verify(context.Background(), netip.MustParseAddr("66.249.66.77"), EngineGoogle) {
-			t.Error("an address of the verified network was refused while the slot was taken")
-		}
-		if v.Verify(context.Background(), netip.MustParseAddr("66.249.66.77"), EngineBing) {
-			t.Error("the network was taken for another engine's")
-		}
-		if v.Verify(context.Background(), netip.MustParseAddr("66.249.99.5"), EngineGoogle) {
-			t.Error("an address of another network passed")
-		}
-		close(r.gate)
-		wg.Wait()
-	})
+	for _, trust := range []bool{false, true} {
+		t.Run(fmt.Sprintf("with no check free, a verified crawler's network passes only when trusted (%v)", trust), func(t *testing.T) {
+			r := dns()
+			v := NewVerifier(r, 1, 0)
+			v.TrustNetworks = trust
+			if !v.Verify(context.Background(), google, EngineGoogle) {
+				t.Fatal("not verified")
+			}
+			r.gate = make(chan struct{})
+			var wg sync.WaitGroup
+			wg.Go(func() { v.Verify(context.Background(), netip.MustParseAddr("203.0.113.5"), EngineGoogle) })
+			for r.ptrs.Load() < 2 {
+				time.Sleep(time.Millisecond)
+			}
+			if v.Verify(context.Background(), netip.MustParseAddr("66.249.66.77"), EngineGoogle) != trust {
+				t.Errorf("an unchecked address of the verified network passed: %v, want %v", !trust, trust)
+			}
+			if v.Verify(context.Background(), netip.MustParseAddr("66.249.66.77"), EngineBing) {
+				t.Error("the network was taken for another engine's")
+			}
+			if v.Verify(context.Background(), netip.MustParseAddr("66.249.99.5"), EngineGoogle) {
+				t.Error("an address of another network passed")
+			}
+			close(r.gate)
+			wg.Wait()
+		})
+	}
 	t.Run("a full cache makes room", func(t *testing.T) {
 		v := NewVerifier(dns(), 0, 16)
 		for i := range 100 {

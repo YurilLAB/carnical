@@ -13,6 +13,7 @@ import (
 // botFlags are the flags of the bot policy (ADR-0087).
 type botFlags struct {
 	kinds, watch, mode, exempt *string
+	trustNetworks              *bool
 }
 
 func declareBotFlags(flags *flag.FlagSet) botFlags {
@@ -22,6 +23,8 @@ func declareBotFlags(flags *flag.FlagSet) botFlags {
 		watch:  flags.String("bots-monitor", "", "kinds of bot only logged as ones that would be refused, in the same words as -bots"),
 		mode:   flags.String("bots-mode", "block", "block the kinds -bots lists, or monitor (only log them, as -bots-monitor does)"),
 		exempt: flags.String("bots-exempt", "", "comma-separated addresses or ranges never refused by -bots, such as your own scanners"),
+		trustNetworks: flags.Bool("bots-trust-networks", false, "when every DNS check of a crawler is busy, let an address pass unchecked if a crawler "+
+			"of the same engine was verified in its /24 or /48 (off: such an address is a fake until checked)"),
 	}
 }
 
@@ -58,6 +61,7 @@ func botPolicy(f botFlags) (*bots.Policy, error) {
 	p.Exempt = exempt
 	if (p.Refuse|p.Watch)&(1<<alert.ClientFake) != 0 {
 		p.Verifier = bots.NewVerifier(nil, 0, 0)
+		p.Verifier.TrustNetworks = *f.trustNetworks
 	}
 	return p, nil
 }

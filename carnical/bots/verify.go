@@ -24,7 +24,7 @@ const (
 	// maxPerNetwork is how many checks of one network (an IPv4 /24, an IPv6 /48) run at once, so that one network's
 	// impostors, whose own reverse zone can answer as slowly as it likes, cannot hold every slot.
 	maxPerNetwork = 2
-	// maxNetworks is how many networks with a verified crawler are remembered (see Verify).
+	// maxNetworks is how many networks with a verified crawler are remembered (see Verifier.TrustNetworks).
 	maxNetworks = 4096
 	// DefaultLookups is how many checks run at once by default; DefaultCache how many answers are kept.
 	DefaultLookups = 8
@@ -42,10 +42,16 @@ type Resolver interface {
 // Answers are cached. A client that does not pass is not the engine, including when the lookup fails: the reverse zone
 // of an address is its owner's, so an impostor can make it fail at will. It is safe for concurrent use.
 //
-// Impostors cannot crowd the engine's crawlers out: a verified answer is the last kind a full cache drops, one network
-// runs at most maxPerNetwork checks at once, and when no check can start, an address in a network where a crawler of the
-// engine was verified passes.
+// Impostors cannot crowd the engine's crawlers out of the cache: a verified answer is the last kind a full cache drops,
+// and one network runs at most maxPerNetwork checks at once. When no check can start the answer is no, unless
+// TrustNetworks is set.
 type Verifier struct {
+	// TrustNetworks, set before the Verifier is used, lets an address pass unchecked when no check can start and a
+	// crawler of the same engine was verified in its network (its /24 or /48) within verifiedFor. It keeps an engine's
+	// crawlers passing under a flood of impostors, but trusts every address of such a network as the engine's: leave
+	// it off where a network's addresses need not belong to one owner, as in a cloud's shared ranges.
+	TrustNetworks bool
+
 	res   Resolver
 	slots chan struct{}
 	max   int
@@ -101,8 +107,8 @@ func NewVerifier(res Resolver, lookups, cache int) *Verifier {
 
 // Verify reports whether addr is one of engine's crawlers. It waits for a check that is not cached yet, at most
 // lookupTimeout or until ctx ends. When no check can start (every slot is taken, as under a flood of impostors from many
-// addresses, or the address's network has its share running), the answer is yes only for an address in a network where
-// one of engine's crawlers was verified: the engine's own crawlers come from addresses or networks already seen.
+// addresses, or the address's network has its share running), the answer is no; with TrustNetworks it is yes for an
+// address in a network where one of engine's crawlers was verified.
 func (v *Verifier) Verify(ctx context.Context, addr netip.Addr, engine Engine) bool {
 	if int(engine) == 0 || int(engine) >= numEngines || !addr.IsValid() {
 		return false
@@ -176,7 +182,7 @@ func (v *Verifier) check(e *verifyEntry, addr netip.Addr, engine Engine) {
 	if v.busy[nw]--; v.busy[nw] <= 0 {
 		delete(v.busy, nw)
 	}
-	if ok {
+	if ok && v.TrustNetworks {
 		if len(v.nets) >= maxNetworks {
 			v.forgetNetwork(now)
 		}
@@ -186,6 +192,9 @@ func (v *Verifier) check(e *verifyEntry, addr netip.Addr, engine Engine) {
 
 // knownNetwork reports whether a crawler of engine was verified in nw and the answer still holds. v.mu is held.
 func (v *Verifier) knownNetwork(nw netip.Prefix, engine Engine, now time.Time) bool {
+	if !v.TrustNetworks {
+		return false
+	}
 	until, ok := v.nets[netKey{nw, engine}]
 	return ok && now.Before(until)
 }
