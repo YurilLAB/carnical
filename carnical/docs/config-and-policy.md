@@ -445,6 +445,12 @@ the command-injection rules, and leaves every other cookie checked:
 {"exclusions":[{"path":"/","categories":["rce"],"targets":["cookie:_abck"],"note":"Akamai Bot Manager"}]}
 ```
 
+What an exclusion cannot reach, measured on real applications (see the [validation
+record](validation-2026-10-18.md#tuning-a-site-and-keeping-formats-blocking)): the proxy's own
+refusals, such as 5000044 for `X-HTTP-Method-Override`, which WordPress's block editor sends on
+every save; rule 920420's list of request types (git over HTTP); and rule 920440's restricted file
+extensions, which reads the file name (`.sh`, `.sql`), not a target an exclusion names.
+
 ### Custom rules, and why no input can write anything else
 
 A custom rule is one field, one operator, a value, and `block` or `log` (`block` refuses the request

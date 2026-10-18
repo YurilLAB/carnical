@@ -1,7 +1,7 @@
 # Validation record: 18 October 2026
 
 This record measures revision `deb80b41` of `edge-crs`, after the bot policy, intrusion alerts
-and auto-block work; the sections on varied agents, application traffic, independent corpora and the crawler list updater name their own. The local runs
+and auto-block work; the sections on varied agents, application traffic, independent corpora, the crawler list updater, the real applications and the tuning name their own. The local runs
 used a cloud container (Ubuntu 24.04.5, Linux 6.18.44, Go 1.26.9, running as root, no IPv6). The CI runs used GitHub's Ubuntu 24.04 runners. The counts
 belong to these runs. Attacks targeted isolated local origins.
 
@@ -380,6 +380,144 @@ Limits of the test:
   cgroup2 mount with no controllers;
 - journald could not start there, so its log lines were not seen; the exit codes and files were
   checked as on the others.
+
+## Real applications in a browser
+
+Four applications ran in containers behind each configuration, and real use of each was replayed:
+
+- **WordPress 6.8.3** (PHP 8.3, MariaDB 11.4): an author writing in the block editor, uploading an
+  image, changing settings and a profile, a visitor reading, commenting and searching, a REST client
+  and XML-RPC;
+- **Keycloak 26.4**: a web app's OpenID Connect sign-in with PKCE, its back channel (code
+  exchange, userinfo, introspection, refresh), single sign-on, the account console, sign-out,
+  self-registration, and an administrator in the admin console and the admin API;
+- **Gitea 1.24**: a developer creating a repository, an issue with code blocks, a previewed and
+  posted comment, a file in the web editor, a wiki page, a search, the REST API, and git cloning,
+  pushing and pulling over HTTP;
+- **Matomo 5.14**: the JavaScript tracker on a shop's pages (a campaign visit, events, outlinks,
+  site searches, an order), the dashboard and reports, segments and goals, and a server-side SDK
+  sending bulk tracking.
+
+Browser steps used real Chromium 141 with a desktop Chrome user agent; API clients and git sent
+their own. Each step ran on a page of its own. When a WAF refused a step that made something later
+steps need (a post, a repository, a token), that thing was made inside the application instead, so
+every step was measured on its own. The sites had names (`wp.example.test` and so on): a first run
+on `localhost` was refused everywhere, because CRS rule 934110 reads `http://localhost` in a
+parameter as SSRF, and real sites do not send that. The configurations were upstream Coraza v3.8.1
+with CRS 4.30.0 at paranoia level 1, and Carnical in `-mode block` with and without `-formats-mode
+block`. Revision `612790ac`.
+
+| Steps passed | No WAF | Upstream | Carnical | Carnical, formats blocking |
+| --- | --- | --- | --- | --- |
+| WordPress (19) | 19 | 12 | 12 | 12 |
+| Keycloak (18) | 18 | 15 | 15 | 15 |
+| Gitea (17) | 17 | 3 | 3 | 3 |
+| Matomo (16) | 16 | 16 | 16 | 16 |
+| All (70) | 70 | 46 | 46 | 46 |
+
+All three refused the same 24 steps, and no request reached the application through one of them
+that the others refused. Carnical's own rules matched only requests the CRS refused anyway. Its
+one refusal of its own is 5000044, on the block editor's saves: the editor sends PUT as POST with
+`X-HTTP-Method-Override`, and the CRS refuses the same requests with rule 920450 (a restricted
+header). Matomo was never refused. What was:
+
+- **WordPress:**
+  - updating a post or the user's preferences in the block editor (the method override);
+  - post content with code, an `<iframe>` or a block comment `<!--`, sent by the editor or a REST
+    client (930, 932 and 941 rules);
+  - a comment quoting `rm -rf node_modules` and `DATE_SUB(`;
+  - a search for `/etc/nginx/sites-enabled`;
+  - REST deletes (DELETE is not an allowed method by default);
+  - every XML-RPC call (a defect, below).
+- **Keycloak:**
+  - the admin console, because its `/admin/master/console/whoami` path holds the command `whoami`
+    (932260);
+  - a client whose redirect URIs include `http://localhost:3000`;
+  - a password policy `length(12) and notUsername(undefined)`, which libinjection reads as SQL;
+  - PUT on the admin API.
+- **Gitea:**
+  - a repository described as "bash, SQL & PowerShell snippets";
+  - issues, comments, previews, API issues and markdown with shell or SQL in code blocks;
+  - a script in the web editor;
+  - a wiki page showing `<script>` example code;
+  - a search for `../config`;
+  - a `.sql` file through the contents API, and the page of any `.sh` file (920440, restricted
+    extensions);
+  - `git clone` (930130 reads `.git/` in the path as a request for a repository's files).
+
+Found and fixed:
+
+- **XML-RPC and RSS bodies.** The engine's XML reader closed HTML's empty elements (`param`,
+  `link`, `meta` and others) as soon as they opened, so a `</param>` was a syntax error and rule
+  200002 refused the body. Every XML-RPC call (the WordPress apps, Jetpack, pingbacks) and every RSS
+  document was refused, by upstream Coraza too. Since the fix, a `wp.getUsersBlogs` call passes and
+  SQL, script and shell values inside `<param>` are refused by the rules. Neither GoTestWAF's XML
+  cases nor waf-bypass changed.
+
+## Tuning a site, and keeping formats blocking
+
+Could these sites run with `-formats-mode block` once tuned? A policy for each was written from the
+refusals above alone. The steps were then run again with the same operations and different words
+(other commands, other SQL, other paths), which the policies had not seen.
+
+The policies:
+
+- **WordPress:** `allowed_methods` with PUT, PATCH and DELETE; `wordpress.enabled` with
+  `allow_xmlrpc`. Exclusions:
+  - `lfi`, `rce` and `xss` from `arg:json.content` under `/wp-json/wp/v2/posts`;
+  - `protocol` from `header:x-http-method-override` under `/wp-json/wp/v2/`;
+  - `rce` and `sqli` from `arg:comment` on `/wp-comments-post.php`;
+  - `lfi` from `arg:s` everywhere.
+- **Keycloak:** `rce` from the path `/admin/master/console/whoami`; `ssrf` and `sqli` from the
+  arguments under `/admin/realms/`; PUT and DELETE allowed.
+- **Gitea:**
+  - the four injection groups from `arg:content` and `arg:text` under the owner's path, and from
+    the JSON bodies under `/api/v1/`;
+  - `rce` from the repository description;
+  - `lfi` from `arg:q` and the path under the owner's path;
+  - git's two request types added to `body_formats.allowed_types`.
+- **Matomo:** none.
+
+| Steps passed | Formats blocking | Tuned |
+| --- | --- | --- |
+| Words the policies were written from (70) | 46 | 62 |
+| New words (70) | 46 | 57 |
+
+What tuning could not fix:
+
+- **The block editor.** 5000044 has no setting, so editing a post fails even with 920450 excluded.
+- **Git over HTTP.** CRS rule 920420 refuses git's request types, and no setting reaches the CRS's
+  list of request types.
+- **Gitea file pages.** The page of a `.sh` file and a `.sql` file through the API are refused by
+  920440, which reads the file name (`REQUEST_BASENAME`). That is not a target an exclusion can name.
+
+New words found what the policies left out: a search for "union select", a redirect URI to
+`http://127.0.0.1:8080` (an `rfi` rule; the policy had excluded `ssrf`), and `system("rm -f
+/tmp/lock")` in a Python traceback (a `php` rule). The remaining Keycloak failure, the admin
+console's user list, also failed once with no WAF, and no WAF refused it.
+
+The formats checks added no refusal of their own except git's request types, which the policy
+then accepted: for these four sites, `-formats-mode block` costs one setting.
+
+An exclusion is not free. Each plain payload of waf-bypass's SQLi, XSS, RCE and LFI sets was sent
+as the value of an excluded field, and of one the policy does not name. Counts are payloads that
+reached the application, untuned then tuned:
+
+| Field | SQLi (20) | XSS (230) | RCE (16) | LFI (4) |
+| --- | --- | --- | --- | --- |
+| WordPress post content (`lfi`, `rce`, `xss` excluded) | 4, 4 | 10, 164 | 1, 8 | 0, 4 |
+| WordPress comment (`rce`, `sqli` excluded) | 4, 20 | 10, 13 | 1, 8 | 0, 0 |
+| Gitea issue content (four groups excluded) | 4, 20 | 10, 185 | 1, 9 | 0, 4 |
+| A field the policy does not name, on the same pages | 4, 4 | 10, 10 | 1, 1 | 0, 0 |
+
+So exclude a field only where the application already treats it as code or markup it trusts: an
+editor's content, an issue tracker's text. Keep the exclusion's path as narrow as the
+application's.
+
+Found and fixed: an exclusion removed only the CRS rules of its groups. A field excluded from `rce`
+or `lfi` was still refused by Carnical's local shell and traversal rules (5006003, 5006006). In
+the first tuned run, that left every Gitea issue and comment refused. Each group now names its
+local rules too ([rule groups](config-and-policy.md#rule-groups)).
 
 ## Alerts and auto-block under sustained hostile traffic
 
