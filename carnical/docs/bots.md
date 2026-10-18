@@ -31,7 +31,7 @@ how fast it can go. Only a search engine's claim can be checked, against its DNS
 
 | Kind | Examples | Can be refused |
 | --- | --- | --- |
-| `person` | Chrome, Safari, Firefox, Edge; apps on phones (okhttp, CFNetwork, Dalvik); Microsoft Office opening a link; Roku players | no |
+| `person` | Chrome, Safari, Firefox, Edge; apps on phones (okhttp, CFNetwork, Dalvik) and their video players (ExoPlayer, Media3); Microsoft Office opening a link; Roku players | no |
 | `search` | Googlebot, Bingbot, Applebot, YandexBot, Baiduspider, DuckDuckBot, Qwant, Mojeek | no, when real |
 | `fake` | A search engine's user agent from an address its DNS does not confirm | `fake` |
 | `ai` | GPTBot, ChatGPT-User, OAI-SearchBot, ClaudeBot, Claude-User, CCBot, Bytespider, PerplexityBot, Amazonbot, meta-externalagent, GoogleOther, Google-CloudVertexBot, Diffbot, a `Signature-Agent` header (ChatGPT agent), ... | `ai` |
@@ -57,7 +57,8 @@ when any of these holds:
 - it came over HTTP/1.0, or has no `Accept` or `Accept-Language` header (OPTIONS aside, and a
   WebSocket handshake needs no `Accept`);
 - it names a browser no one still runs: Internet Explorer before 11, Chrome before 70, Firefox
-  before 60 (the old Edge, which named an old Chrome, is left alone);
+  before 60 (the old Edge, which named an old Chrome, is left alone, and so is a television's
+  browser, which is never updated: LG's televisions of 2016 to 2020 name Chrome 38 to 68);
 - it carries Chrome's client hints (`Sec-Ch-Ua`) while naming Firefox or Safari, or Chrome's hints
   do not name the version or the platform its user agent gives;
 - it names two user agents.
@@ -65,8 +66,10 @@ when any of these holds:
 Over HTTPS, when Carnical holds the certificate (`-tls-cert`), it is also `disguised` when:
 
 - Chrome 80 or later, Firefox 90 or later or Safari 17 or later sends no `Sec-Fetch-*` header;
-- Chrome 90 or later sends no client hints (Chrome's forks that do not send them, such as
-  Samsung Internet, Yandex Browser, Android web views and Electron, are left alone);
+- Chrome 90 or later sends no client hints, when its user agent is Chrome's, Edge's or Opera's
+  and names nothing else. Forks and embedded browsers add a name of their own and may send no
+  hints, so they are left alone: Samsung Internet, Yandex Browser, Android web views, Electron,
+  apps built on Chromium (WeChat, CEF), in-app browsers and televisions;
 - Chrome opens a WebSocket with neither (it sends none on a handshake), so a handshake, with its
   `Upgrade`, key, version and `Origin` headers, is excused from those two checks and from `Accept`,
   never from the TLS one;
@@ -91,9 +94,15 @@ Carnical does not use the connection's HTTP version, its TLS handshake, or the H
 and the visitor may have reached the proxy without HTTPS, when a browser sends neither header.
 Tools that copy a
 browser's handshake as well as its headers (curl-impersonate, curl_cffi, a real browser driven by
-Playwright or Selenium with its user agent changed) pass as people. A browser behind antivirus or a
-company proxy that reads HTTPS shows the proxy's handshake, so it can be read as `disguised`: run
-`-bots-monitor disguised` first and read the alerts.
+Playwright or Selenium with its user agent changed) pass as people.
+
+A browser behind antivirus or a company proxy that reads HTTPS shows the proxy's handshake, which
+offers neither GREASE nor `record_size_limit`. Carnical then reads every Chrome, Edge and Firefox
+behind it as `disguised`; Safari, whose handshake is not checked, passes. Through mitmproxy, real
+Chromium 141 and Firefox were both refused, and they loaded the same page directly. Chrome and
+Firefox send more than half of browser traffic. So do not refuse `disguised` for visitors on
+company or school networks, or with antivirus that scans HTTPS: keep it in `-bots-monitor`, and
+read whether its alerts come from your visitors' networks.
 
 ## Flags
 
@@ -117,7 +126,9 @@ the answer's kinds in `-bots-monitor`.
 | `strict` | `fake,scanner,ai,seo,tool,headless,disguised,bot` |
 
 Use `strict` only for a site that browsers alone use: mobile apps and API clients that set their
-own user agent are `tool` or `bot`. Watch the kinds with `-bots-monitor` for a few days first and
+own user agent are `tool` or `bot`. So are Flutter apps that keep Dart's (`Dart/3.5 (dart:io)`),
+Unity games (`UnityPlayer`, which names libcurl), and Windows fetching a certificate revocation
+list (`Microsoft-CryptoAPI`). Watch the kinds with `-bots-monitor` for a few days first and
 read which clients would be refused.
 
 A refused request is answered 403 and reported under its own id: 5005003 `ai`, 5005004 `seo`,

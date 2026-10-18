@@ -44,6 +44,8 @@ func TestClassify(t *testing.T) {
 		{"a CORS preflight sends no language", chrome, http.Header{"Accept": {"*/*"}}, [2]int{}, http.MethodOptions, alert.ClientPerson, 0},
 		{"an app's library on a phone", "okhttp/4.12.0", http.Header{}, [2]int{}, "", alert.ClientPerson, 0},
 		{"an iPhone app", "Shop/4.2 (iPhone; iOS 17.4; Scale/3.00)", http.Header{}, [2]int{}, "", alert.ClientPerson, 0},
+		{"an Android app's video player", "ExoPlayerLib/2.19.1", http.Header{}, [2]int{}, "", alert.ClientPerson, 0},
+		{"and its successor", "AndroidXMedia3/1.4.1", http.Header{}, [2]int{}, "", alert.ClientPerson, 0},
 		{"a browser's user agent without its language", chrome, http.Header{"Accept": {"*/*"}}, [2]int{}, "", alert.ClientDisguised, 0},
 		{"a browser's user agent without Accept", chrome, http.Header{"Accept-Language": {"en"}}, [2]int{}, "", alert.ClientDisguised, 0},
 		{"a browser's user agent over HTTP/1.0", firefox, nil, [2]int{1, 0}, "", alert.ClientDisguised, 0},
@@ -52,6 +54,7 @@ func TestClassify(t *testing.T) {
 		{"Internet Explorer 9 is not", "Mozilla/5.0 (compatible; MSIE 9.0; Windows NT 6.1; Trident/5.0)", nil, [2]int{}, "", alert.ClientDisguised, 0},
 		{"Metasploit's old Internet Explorer", "Mozilla/4.0 (compatible; MSIE 6.0; Windows NT 5.1)", nil, [2]int{}, "", alert.ClientBot, 0},
 		{"Chrome 58, years out of use", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36", nil, [2]int{}, "", alert.ClientDisguised, 0},
+		{"a television's browser is never updated", "Mozilla/5.0 (Web0S; Linux/SmartTV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/53.0.2785.34 Safari/537.36 WebAppManager", nil, [2]int{}, "", alert.ClientPerson, 0},
 		{"Firefox 45, years out of use", "Mozilla/5.0 (Windows NT 6.1; rv:45.0) Gecko/20100101 Firefox/45.0", nil, [2]int{}, "", alert.ClientDisguised, 0},
 		{"Firefox sends no client hints", firefox, withHints(`"Chromium";v="141"`, ""), [2]int{}, "", alert.ClientDisguised, 0},
 		{"nor does Safari", safari, withHints(`"Chromium";v="141"`, ""), [2]int{}, "", alert.ClientDisguised, 0},
@@ -165,6 +168,7 @@ func TestClassifyOverTLS(t *testing.T) {
 	websocket := http.Header{"Connection": {"Upgrade"}, "Upgrade": {"websocket"}, "Origin": {"https://shop.example"},
 		"Sec-Websocket-Version": {"13"}, "Sec-Websocket-Key": {"xSigGCz9DJMNplmLC15MhA=="}, "Accept-Language": {"en-US,en;q=0.9"}}
 	samsung := "Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/28.0 Chrome/130.0.0.0 Mobile Safari/537.36"
+	tv := "Mozilla/5.0 (Web0S; Linux/SmartTV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/%d.0.0.0 Safari/537.36 WebAppManager"
 	oldSafari := "Mozilla/5.0 (iPhone; CPU iPhone OS 15_8 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.6 Mobile/15E148 Safari/604.1"
 	tests := []struct {
 		name   string
@@ -183,6 +187,11 @@ func TestClassifyOverTLS(t *testing.T) {
 		}(), grease, alert.ClientDisguised},
 		{"Chrome without client hints", chrome, fetch(nil), grease, alert.ClientDisguised},
 		{"Samsung Internet may send no client hints", samsung, fetch(nil), grease, alert.ClientPerson},
+		{"nor may an app built on Chromium", "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36 NetType/WIFI MicroMessenger/7.0.20.1781(0x6700143B) WindowsWechat(0x63090c11) XWEB/11275 Flue", fetch(nil), grease, alert.ClientPerson},
+		{"Edge without client hints", chrome + " Edg/141.0.0.0", fetch(nil), grease, alert.ClientDisguised},
+		{"Chrome on a phone without client hints", "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36", fetch(nil), grease, alert.ClientDisguised},
+		{"a television's Chrome 53 offers no GREASE", fmt.Sprintf(tv, 53), http.Header{"Accept": {"text/html"}, "Accept-Language": {"en"}}, plain, alert.ClientPerson},
+		{"a later one does", fmt.Sprintf(tv, 120), fetch(nil), plain, alert.ClientDisguised},
 		{"a program with Chrome's headers but not its TLS", chrome, fetch(hints), plain, alert.ClientDisguised},
 		{"a signing agent with Chrome's TLS", chrome, fetch(http.Header{"Sec-Ch-Ua": hints["Sec-Ch-Ua"], "Sec-Ch-Ua-Platform": hints["Sec-Ch-Ua-Platform"], "Signature-Agent": {`"https://chatgpt.com"`}}), grease, alert.ClientAI},
 		{"Chrome's WebSocket handshake", linuxChrome, websocket, grease, alert.ClientPerson},

@@ -186,7 +186,7 @@ var signatures = slices.Concat(
 		"windowspowershell", "winhttp", "indy library", "restsharp", "reqwest", "dart:io", "rest-client", "faraday v",
 		"typhoeus", "hackney", "http.rb", "aria2", "cpp-httplib", "cpprest", "lua-resty-http", "deno/", "bun/"),
 	// The networking libraries of phone apps, and apps and devices that fetch for the person using them.
-	words(alert.ClientPerson, "cfnetwork/", "dalvik/", "okhttp/", "microsoft office", "roku/dvp-"),
+	words(alert.ClientPerson, "cfnetwork/", "dalvik/", "okhttp/", "exoplayerlib/", "androidxmedia3/", "microsoft office", "roku/dvp-"),
 )
 
 // exactTools are whole user agents that name a runtime's default client: Node's fetch, Ruby's Net::HTTP and so on.
@@ -285,7 +285,8 @@ func Classify(r *http.Request, hello Hello) (alert.Client, Engine) {
 // fails it:
 //   - HTTP/1.0, or no Accept or Accept-Language header (a CORS preflight sends no language, a WebSocket handshake no
 //     Accept);
-//   - a version long out of use: Internet Explorer before 11, Chrome before 70, Firefox before 60;
+//   - a version long out of use: Internet Explorer before 11, Chrome before 70 (but on a television, whose browser is
+//     never updated: LG's of 2016 to 2020 name Chrome 38 to 68), Firefox before 60;
 //   - client hints (Sec-CH-UA) from Firefox or Safari, which send none, or from Chrome naming another version or platform;
 //   - over a TLS connection carnical holds, a current Chrome, Firefox or Safari without the Sec-Fetch headers, or a
 //     current Chrome without client hints (forks and embedded browsers that may not send them are left out);
@@ -317,7 +318,8 @@ func disguised(r *http.Request, ua string, hello Hello) bool {
 	if !isChrome && strings.Contains(ua, "Safari/") && !strings.Contains(ua, "Chromium/") {
 		safari, isSafari = version(ua, "Version/")
 	}
-	if isChrome && chrome < 70 || isFirefox && !isChrome && firefox < 60 {
+	tv := isChrome && chrome < 70 && television(ua) // and some older than GREASE
+	if isChrome && chrome < 70 && !tv || isFirefox && !isChrome && firefox < 60 {
 		return true
 	}
 	hints := h.Get("Sec-Ch-Ua")
@@ -336,7 +338,7 @@ func disguised(r *http.Request, ua string, hello Hello) bool {
 			return true
 		}
 	}
-	return hello.Seen && (isChrome && !hello.GREASE || isFirefox && !isChrome && firefox >= 90 && !hello.RecordSizeLimit)
+	return hello.Seen && (isChrome && !tv && !hello.GREASE || isFirefox && !isChrome && firefox >= 90 && !hello.RecordSizeLimit)
 }
 
 // version reads the major version that follows token in a user agent.
@@ -389,15 +391,43 @@ func samePlatform(ua, platform string) bool {
 	return platform == os
 }
 
-// plainChrome reports Chrome, Edge or Opera, which send client hints on every secure request, and not a fork or an
-// embedded browser that may not: Samsung Internet, Yandex, UC, Silk, Android's WebView, Electron and Qt.
+// plainChrome reports the user agent Chrome, Edge or Opera sends, which send client hints on every secure request:
+// nothing but Safari (and Mobile) after the Chrome version, then Edge's or Opera's own name. The forks and embedded
+// browsers that may send none add a name of their own: Samsung Internet, Yandex, UC, Silk, Android's WebView,
+// Electron, Qt, apps built on CEF, in-app browsers and televisions.
 func plainChrome(ua string) bool {
-	for _, fork := range [...]string{"SamsungBrowser", "YaBrowser", "UCBrowser", "Silk/", "; wv)", "Electron/", "QtWebEngine"} {
-		if strings.Contains(ua, fork) {
-			return false
+	const engine = ") AppleWebKit/537.36 (KHTML, like Gecko) Chrome/"
+	i := strings.Index(ua, engine)
+	if i < 0 {
+		return false
+	}
+	rest := ua[i+len(engine):]
+	if i = strings.IndexByte(rest, ' '); i < 0 {
+		return false
+	}
+	rest, ok := strings.CutPrefix(strings.TrimPrefix(rest[i:], " Mobile"), " Safari/537.36")
+	if !ok {
+		return false
+	}
+	if rest == "" {
+		return true
+	}
+	for _, brand := range [...]string{" Edg/", " EdgA/", " OPR/"} {
+		if name, ok := strings.CutPrefix(rest, brand); ok {
+			return !strings.Contains(name, " ")
 		}
 	}
-	return true
+	return false
+}
+
+// television reports a television's browser, which is never updated.
+func television(ua string) bool {
+	for _, word := range [...]string{"SmartTV", "SMART-TV", "Web0S", "Tizen", "HbbTV"} {
+		if strings.Contains(ua, word) {
+			return true
+		}
+	}
+	return false
 }
 
 func rankOf(c alert.Client) int {
