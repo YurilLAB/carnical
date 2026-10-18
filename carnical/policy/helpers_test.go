@@ -130,7 +130,8 @@ type edge struct {
 
 var loopbackOrigin = proxy.OriginPolicy{Allow: []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")}}
 
-func newEdge(t testing.TB, p Policy) *edge {
+// newEdge serves the compiled policy in front of a test application. opts change the proxy's configuration last.
+func newEdge(t testing.TB, p Policy, opts ...func(*proxy.Config)) *edge {
 	t.Helper()
 	c, err := Compile(p)
 	if err != nil {
@@ -166,6 +167,9 @@ func newEdge(t testing.TB, p Policy) *edge {
 	// supplemental rules may still deny the same payload after a CRS group is
 	// disabled or set to log; crs tests and live WAF regressions cover that layer.
 	cfg.CRS.DisableLocalRules = true
+	for _, o := range opts {
+		o(&cfg)
+	}
 	cfg.OnMatch = func(m proxy.Match) {
 		e.mu.Lock()
 		e.matches = append(e.matches, m)

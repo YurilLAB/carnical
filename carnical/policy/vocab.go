@@ -15,22 +15,25 @@ type GroupInfo struct {
 	Title string
 	// First and Last are the Core Rule Set rule ids the group covers.
 	First, Last int
+	// Local are Carnical's own rules (crs/local) that find the same kind of attack. An exclusion of the group keeps them away
+	// too, or a field excluded from the group would still be refused by them.
+	Local []int
 }
 
 // groups are the ten rule groups, by the ranges of rule ids the Core Rule Set gives its categories (which is why the groups
 // are made of id ranges and not of the CRS's tags: the tags cross the ranges, 934 carries attack-rce, attack-ssrf and
 // attack-ssti and 944 carries attack-rce, so a tag would put a Java rule in the RCE group).
 var groups = []GroupInfo{
-	{"sqli", "SQL injection", 942000, 942999},
-	{"xss", "Cross-site scripting", 941000, 941999},
-	{"lfi", "Reading local files", 930000, 930999},
-	{"rfi", "Including remote files", 931000, 931999},
-	{"rce", "Running commands", 932000, 932999},
-	{"php", "PHP code injection", 933000, 933999},
-	{"ssrf", "Requests to inner addresses and other generic attacks", 934000, 934999},
-	{"java", "Java and Log4j", 944000, 944999},
-	{"scanner", "Scanners and attack tools", 913000, 913999},
-	{"protocol", "Malformed requests and protocol attacks", 920000, 922999},
+	{"sqli", "SQL injection", 942000, 942999, []int{5006001, 5006002, 5006009}}, // and XPath, the other query language
+	{"xss", "Cross-site scripting", 941000, 941999, nil},
+	{"lfi", "Reading local files", 930000, 930999, []int{5006006}},
+	{"rfi", "Including remote files", 931000, 931999, []int{5006015, 5006016, 5006017, 5006021, 5006102}},
+	{"rce", "Running commands", 932000, 932999, []int{5006003, 5006004, 5006010}},
+	{"php", "PHP code injection", 933000, 933999, nil},
+	{"ssrf", "Requests to inner addresses and other generic attacks", 934000, 934999, []int{5006005, 5006008}},
+	{"java", "Java and Log4j", 944000, 944999, []int{5006007}},
+	{"scanner", "Scanners and attack tools", 913000, 913999, []int{5006011, 5006012, 5006013, 5006014, 5006018, 5006019, 5006020, 5006101}},
+	{"protocol", "Malformed requests and protocol attacks", 920000, 922999, []int{5006022, 5006023, 5006103}},
 }
 
 var groupByName = func() map[string]GroupInfo {

@@ -153,18 +153,26 @@ func chunks(list []string) [][]string {
 // exclusionRule keeps one category of rules away from some parts of the requests whose path begins with the exclusion's path.
 // With no targets the whole category is removed for the request; with targets, only those parts are taken out of what the
 // category's rules look at (ctl:ruleRemoveTargetById, which is the Core Rule Set's own way of excluding a part of a request).
+// The category's local rules are kept away in the same way.
 func exclusionRule(id int, e Exclusion, g GroupInfo) (string, error) {
-	rng := fmt.Sprintf("%d-%d", g.First, g.Last)
+	ids := []string{fmt.Sprintf("%d-%d", g.First, g.Last)}
+	for _, id := range g.Local {
+		ids = append(ids, fmt.Sprint(id))
+	}
 	var ctl []string
 	if len(e.Targets) == 0 {
-		ctl = append(ctl, "ctl:ruleRemoveById="+rng)
+		for _, id := range ids {
+			ctl = append(ctl, "ctl:ruleRemoveById="+id)
+		}
 	}
 	for _, t := range e.Targets {
 		v, ok := targetVariable(t, false)
 		if !ok {
 			return "", errors.New("an exclusion names a part of a request that is not one")
 		}
-		ctl = append(ctl, fmt.Sprintf("ctl:ruleRemoveTargetById=%s;%s", rng, v))
+		for _, id := range ids {
+			ctl = append(ctl, fmt.Sprintf("ctl:ruleRemoveTargetById=%s;%s", id, v))
+		}
 	}
 	return fmt.Sprintf(`SecRule REQUEST_FILENAME "@beginsWith %s" "id:%d,phase:1,pass,nolog,t:none,%s"`, e.Path, id, strings.Join(ctl, ",")), nil
 }

@@ -386,6 +386,13 @@ rule in the RCE group):
 | `rfi` | 931000-931999 | | `protocol` | 920000-922999 |
 | `rce` | 932000-932999 | | `php` | 933000-933999 |
 
+Carnical's own [local rules](input-hardening.md#local-rules) belong to the group that finds the
+same kind of attack: `sqli` 5006001, 5006002, 5006009 (XPath); `lfi` 5006006; `rfi` 5006015,
+5006016, 5006017, 5006021, 5006102; `rce` 5006003, 5006004, 5006010; `ssrf` 5006005, 5006008;
+`java` 5006007; `scanner` 5006011 to 5006014, 5006018 to 5006020, 5006101; `protocol` 5006022,
+5006023, 5006103. An exclusion keeps them away with the group's CRS rules. The states below switch
+the CRS rules only; `-local-rules-off` switches a local rule off for the whole site.
+
 - **on**: nothing is generated.
 - **off**: `SecRuleRemoveById <first>-<last>` after the rules are loaded.
 - **log**: the rules run and record their matches, and add nothing to the score. The Core Rule Set cannot do this from outside (every rule adds its own score to `tx.inbound_anomaly_score_plN` and rule 949110 reads the sum), so each rule that is one condition gets a second `setvar` that takes its own back (`SecRuleUpdateActionById 942100 "setvar:'tx.inbound_anomaly_score_pl1=-%{tx.critical_anomaly_score}'"`). Which rule adds what is **read from the embedded rule set at first use**, so the table cannot drift from the rules, and a test reads the files again independently and requires the two to agree for every rule. A rule that needs several conditions (a chain: 920180, 920480 and 43 others) keeps its score in its last link, which an action added to the rule cannot reach (the engine runs a rule's own actions when its first link matches, so a compensation would also lower the score of a request whose later links did not match), so **in a group set to log those 45 rules are switched off instead** (no match, no score, no record). 30 of them are in `protocol`. `Compiled.Notes` says so for every group set to log; the UI should show it.
@@ -410,7 +417,10 @@ SecRule REQUEST_FILENAME "@beginsWith /api/"    "id:1010004,phase:1,pass,nolog,t
 ```
 
 With no targets the whole category is removed for the request; with targets only those parts are
-taken out of what its rules look at, which is the Core Rule Set's own exclusion model. Targets:
+taken out of what its rules look at, which is the Core Rule Set's own exclusion model. The
+category's local rules (listed under [rule groups](#rule-groups)) are kept away the same way: the
+shell rule 5006003 reads the same fields as the CRS command rules, and a field excluded from `rce`
+was still refused by it before. Targets:
 `args argnames cookies cookienames headers body query path uri method filenames`, or `arg:NAME`,
 `cookie:NAME`, `header:NAME` (names of letters, digits and `_ . - [ ]` that start with a letter, a
 digit or `_`, 64 at most; headers without `_ . [ ]`; lower case, because the engine compares in

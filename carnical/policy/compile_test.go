@@ -417,9 +417,11 @@ func TestExclusionsKeepRulesAwayOnlyWhereTheyAreAimed(t *testing.T) {
 			{Path: "/cookie/", Categories: []string{"xss"}, Targets: []string{"cookie:note"}},
 			{Path: "/hdr/", Categories: []string{"xss"}, Targets: []string{"header:x-note"}},
 			{Path: "/", Categories: []string{"rce"}, Targets: []string{"cookie:_abck"}},
+			{Path: "/issues/", Categories: []string{"rce", "lfi"}, Targets: []string{"arg:body"}},
 		}
 	})
-	e := newEdge(t, p)
+	// With the local rules, which an exclusion keeps away as well as the group's CRS rules.
+	e := newEdge(t, p, func(c *proxy.Config) { c.CRS.DisableLocalRules = false })
 	rows := []struct {
 		name   string
 		method string
@@ -445,6 +447,10 @@ func TestExclusionsKeepRulesAwayOnlyWhereTheyAreAimed(t *testing.T) {
 		{"xss in another header", "GET", "/hdr/x", header("X-Other", "<script>alert(1)</script>"), "", 403},
 		{"Akamai's _abck cookie, which reads as a shell expression", "GET", "/x", header("Cookie", "_abck=0A1B~-1~||0||~-1"), "", 200},
 		{"the same value in another cookie", "GET", "/x", header("Cookie", "bm=0A1B~-1~||0||~-1"), "", 403},
+		{"a command in the excluded argument, which a local rule reads too", "POST", "/issues/new", nil, form("body", "build fails; uname -a says 6.1"), 200},
+		{"a parent path in the excluded argument, which a local rule reads too", "POST", "/issues/new", nil, form("body", "cannot open ../../config.yml"), 200},
+		{"a command in another argument on that page", "POST", "/issues/new", nil, form("title", "build fails; uname -a says 6.1"), 403},
+		{"a parent path in another argument on that page", "POST", "/issues/new", nil, form("title", "cannot open ../../config.yml"), 403},
 		{"an ordinary request", "GET", "/editor/save", nil, "", 200},
 		{"xss in a page with no exclusion", "GET", "/?q=%3Cscript%3Ealert(1)%3C%2Fscript%3E", nil, "", 403},
 	}
