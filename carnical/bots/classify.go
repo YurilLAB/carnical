@@ -28,9 +28,10 @@ const maxUA = 512
 // of the operator's domains, and that name must resolve back to the address. 0 is none.
 type Engine uint8
 
-// The operators that publish their crawlers' DNS names. Google's googleusercontent.com is left out: every Google Cloud
-// machine has a name there, so it would let anyone's VM pass as Googlebot. For the same reason Google's user-triggered
-// fetchers, which come from there, are not checked.
+// The operators that publish their crawlers' DNS names. Google has two: its common crawlers (Googlebot, GoogleOther, ...)
+// are under googlebot.com, and its special-case crawlers (AdsBot, ...) are rate-limited-proxy-*.google.com. Neither
+// accepts the rest of google.com, where Google's user-triggered fetchers (google-proxy-*.google.com) fetch whatever
+// any user asks, nor googleusercontent.com, where every Google Cloud machine has a name.
 const (
 	EngineGoogle Engine = iota + 1
 	EngineBing
@@ -41,23 +42,25 @@ const (
 	EngineSeznam
 	EngineNaver
 	EngineAmazon
+	EngineGoogleSpecial
 
-	numEngines = int(EngineAmazon) + 1
+	numEngines = int(EngineGoogleSpecial) + 1
 )
 
 var engines = [numEngines]struct {
 	name    string
 	domains []string
 }{
-	EngineGoogle: {"google", []string{"googlebot.com", "google.com"}},
-	EngineBing:   {"bing", []string{"search.msn.com"}},
-	EngineApple:  {"apple", []string{"applebot.apple.com"}},
-	EngineYandex: {"yandex", []string{"yandex.ru", "yandex.net", "yandex.com"}},
-	EngineBaidu:  {"baidu", []string{"baidu.com", "baidu.jp"}},
-	EnginePetal:  {"petal", []string{"petalsearch.com"}},
-	EngineSeznam: {"seznam", []string{"seznam.cz"}},
-	EngineNaver:  {"naver", []string{"naver.com"}},
-	EngineAmazon: {"amazon", []string{"crawl.amazonbot.amazon", "amazonadbot.com"}},
+	EngineGoogle:        {"google", []string{"googlebot.com"}},
+	EngineBing:          {"bing", []string{"search.msn.com"}},
+	EngineApple:         {"apple", []string{"applebot.apple.com"}},
+	EngineYandex:        {"yandex", []string{"yandex.ru", "yandex.net", "yandex.com"}},
+	EngineBaidu:         {"baidu", []string{"baidu.com", "baidu.jp"}},
+	EnginePetal:         {"petal", []string{"petalsearch.com"}},
+	EngineSeznam:        {"seznam", []string{"seznam.cz"}},
+	EngineNaver:         {"naver", []string{"naver.com"}},
+	EngineAmazon:        {"amazon", []string{"crawl.amazonbot.amazon", "amazonadbot.com"}},
+	EngineGoogleSpecial: {"google-special", []string{"rate-limited-proxy-*.google.com"}},
 }
 
 func (e Engine) String() string {
@@ -90,9 +93,9 @@ func words(c alert.Client, ws ...string) []signature {
 var signatures = slices.Concat(
 	// Search engines that publish their crawlers' DNS names.
 	[]signature{
-		{"googlebot", alert.ClientSearch, EngineGoogle}, {"adsbot-google", alert.ClientSearch, EngineGoogle},
-		{"mediapartners-google", alert.ClientSearch, EngineGoogle}, {"google-inspectiontool", alert.ClientSearch, EngineGoogle},
-		{"storebot-google", alert.ClientSearch, EngineGoogle}, {"apis-google", alert.ClientSearch, EngineGoogle},
+		{"googlebot", alert.ClientSearch, EngineGoogle}, {"adsbot-google", alert.ClientSearch, EngineGoogleSpecial},
+		{"mediapartners-google", alert.ClientSearch, EngineGoogleSpecial}, {"google-inspectiontool", alert.ClientSearch, EngineGoogle},
+		{"storebot-google", alert.ClientSearch, EngineGoogle}, {"apis-google", alert.ClientSearch, EngineGoogleSpecial},
 		{"bingbot", alert.ClientSearch, EngineBing}, {"msnbot", alert.ClientSearch, EngineBing},
 		{"adidxbot", alert.ClientSearch, EngineBing}, {"bingpreview", alert.ClientSearch, EngineBing},
 		{"applebot", alert.ClientSearch, EngineApple},

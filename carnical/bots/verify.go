@@ -248,11 +248,23 @@ func (v *Verifier) lookup(ctx context.Context, addr netip.Addr, engine Engine) (
 	return false, failed
 }
 
-// inDomains reports whether name is one of the domains or a name under one.
+// inDomains reports whether name is one of the domains or a name under one. A domain "prefix*.domain" takes only a name
+// of one label more than domain, a label that starts with prefix.
 func inDomains(name string, domains []string) bool {
 	for _, d := range domains {
-		if name == d || strings.HasSuffix(name, d) && name[len(name)-len(d)-1] == '.' {
+		prefix, rest, one := strings.Cut(d, "*.")
+		if !one {
+			rest = d
+		}
+		under := strings.HasSuffix(name, rest) && len(name) > len(rest) && name[len(name)-len(rest)-1] == '.'
+		switch {
+		case !one && (name == d || under):
 			return true
+		case one && under:
+			label := name[:len(name)-len(rest)-1]
+			if strings.HasPrefix(label, prefix) && !strings.Contains(label, ".") {
+				return true
+			}
 		}
 	}
 	return false
