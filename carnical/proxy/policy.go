@@ -118,8 +118,13 @@ func (p PathPolicy) check(path string) error {
 				if !p.AllowEncodedSlash {
 					return errors.New("an encoded slash in the path")
 				}
-			case b == '?' || b == '#' || b == '%' || b == 0:
-				return errors.New("an encoded delimiter, percent sign or NUL in the path")
+			case b == '?' || b == '#' || b == 0:
+				return errors.New("an encoded delimiter or NUL in the path")
+			case b == '%' && i+3 < len(path) && isHex(path[i+3]):
+				// "%252e" is "%2e" once decoded and "." to an application that decodes twice. A percent sign that
+				// starts no escape ("100%25-cotton") reads the same however often it is decoded; "%25%32e" is refused
+				// below for its needless "%32".
+				return errors.New("an encoded percent sign that starts another escape in the path")
 			case b < 0x20 || b == 0x7f:
 				return errors.New("an encoded control character in the path")
 			case isUnreserved(b) && b != '~':
