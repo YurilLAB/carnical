@@ -74,6 +74,11 @@ Over HTTPS, when Carnical holds the certificate (`-tls-cert`), it is also `disgu
   Firefox always offers `record_size_limit` (RFC 8449). Python, Go, curl and most HTTP libraries
   offer neither.
 
+A handshake is all those excuses buy: an answer to a WebSocket handshake that neither switches
+protocols nor is an error (a page, a redirect) is withheld and answered 502 (rule 5000079), so a
+program that copies a handshake's headers cannot fetch a page with them. Upgrades are refused anyway
+unless `-allow-upgrade` is set.
+
 A browser that passes these checks and sends a `Signature-Agent` header (an agent such as ChatGPT's
 signing its requests) is `ai`, and one whose client hints say HeadlessChrome is `headless`. A
 program cannot use those headers to get past the checks: it is still `disguised`. A long user agent
@@ -93,6 +98,7 @@ company proxy that reads HTTPS shows the proxy's handshake, so it can be read as
 | `-bots-monitor` | none | Kinds only logged: `intrusion detected` with `would_block`. A kind in both lists is refused. |
 | `-bots-mode` | `block` | `monitor` only logs every kind `-bots` lists, as if they were in `-bots-monitor`. |
 | `-bots-trust-networks` | off | When every DNS check is busy, let a crawler claim pass if the engine was verified in the address's /24 or /48 (see [Search engine checks](#search-engine-checks)). |
+| `-bots-ranges` | none | `ENGINE=FILE` pairs separated by commas: the address ranges an engine publishes for its crawlers, verified without DNS (see [Search engine checks](#search-engine-checks)). |
 | `-bots-exempt` | none | Addresses or ranges never refused by `-bots`, such as your own scanners; a range is no wider than a /16 (IPv4) or a /32 (IPv6). |
 
 Setup asks "Bots to block" and writes these flags. In detect mode it keeps `-bots scanner` and puts
@@ -140,8 +146,32 @@ the engine's domains, and that name must resolve back to the address.
 Google's user-triggered fetchers (`google-proxy-*.google.com`, `gae.googleusercontent.com`) are not
 accepted for any crawler: they fetch whatever a user asks Google to, so a request through one could
 otherwise claim to be Googlebot and pass. Nor is the rest of `googleusercontent.com`, where every
-Google Cloud machine has a name. Amazon now publishes only IP lists for its crawlers; a real
-Amazonbot from an address with no `crawl.amazonbot.amazon` name is read as `fake`.
+Google Cloud machine has a name.
+
+Some engines publish their crawlers' addresses instead, or as well: Amazon publishes only addresses
+for Amazonbot now, so without them a real Amazonbot from an address with no
+`crawl.amazonbot.amazon` name is read as `fake`. `-bots-ranges` takes those lists, by engine
+(`google`, `google-special`, `bing`, `apple`, `yandex`, `baidu`, `petal`, `seznam`, `naver`,
+`amazon`), each a file in the JSON form the engines publish or one range or address a line, with
+`#` comments. An address in its engine's list is verified without DNS; any other is still checked
+by DNS. Name an engine twice to join two of its lists:
+
+```sh
+carnical start -bots fake,scanner \
+  -bots-ranges amazon=/etc/carnical/amazonbot.json,google=/etc/carnical/common-crawlers.json,google-special=/etc/carnical/special-crawlers.json
+```
+
+| Engine | List |
+| --- | --- |
+| Amazon | the JSON under "Copy code" at `developer.amazon.com/amazonbot/ip-addresses/` |
+| Google | `developers.google.com/static/crawling/ipranges/common-crawlers.json` (`google`), `special-crawlers.json` (`google-special`) |
+| Bing | `www.bing.com/toolbox/bingbot.json` |
+| Apple | `search.developer.apple.com/applebot.json` |
+
+The files are read when Carnical starts, so restart it after refreshing them. Do not give Google's
+`user-triggered-fetchers*.json`: those fetchers would pass as crawlers, which DNS refuses. A file
+must be a regular file (no symlinks) of at most 4 MiB, and a range no wider than a /16 (IPv4) or a
+/32 (IPv6), so a mistake cannot verify the whole Internet as an engine's.
 DuckDuckGo, Qwant, Mojeek, Sogou and the other engines that publish no DNS names stay `search`.
 
 How the check behaves:

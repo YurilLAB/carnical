@@ -1,7 +1,7 @@
 # ADR-0087: Carnical bot policy and bot and people counts
 
 - **Status:** proposed
-- **Date:** 2026-10-17 (expected; update before merge)
+- **Date:** 2026-10-18 (expected; update before merge)
 - **Version:** unreleased (post-v3.8.1)
 - **PR:** No PR opened (owner-authorized Carnical development)
 - **Issue(s):** No linked issue
@@ -38,7 +38,8 @@ address harvesters, and scripts that send a browser's user agent to pass as peop
   crawler adds 5 and is refused with every other finding, never on its own terms. They also cannot
   check DNS, and give no kind for the counts.
 - Verify search engines against their published IP-range files. The files must be fetched and
-  refreshed. Several engines publish only DNS names.
+  refreshed. Several engines publish only DNS names. Taken as an addition for engines that publish
+  only addresses (Amazon), with DNS still checking every address not in a list.
 - A `bots` package that classifies requests into a closed set of client kinds, refuses the kinds
   `-bots` lists, verifies search engine claims by forward-confirmed reverse DNS, and stamps the
   kind on every alert so the totals count refusals by it.
@@ -72,8 +73,10 @@ browser sends are present, and the protocol. The kinds are:
   Firefox or Safari, hints that do not name the agent's version or platform, or two user agents.
   When Carnical ends TLS: no `Sec-Fetch-*` from Chrome 80, Firefox 90 or Safari 17 and later, no
   hints from Chrome 90 and later (forks that send none are left out; a WebSocket handshake, where
-  Chrome sends neither, nor Accept, is excused from those checks), or a ClientHello without
-  Chrome's GREASE or Firefox's `record_size_limit`. `Hellos` keeps each connection's ClientHello,
+  Chrome sends neither, nor Accept, is excused from those checks; the proxy withholds, as rule
+  5000079 with 502, any answer to a handshake that neither switches protocols nor is an error, so
+  the excuse fetches no page), or a ClientHello without Chrome's GREASE or Firefox's
+  `record_size_limit`. `Hellos` keeps each connection's ClientHello,
   read through `tls.Config.GetConfigForClient`, until `http.Server.ConnState` reports it closed.
 - A browser's agent that passes those checks is `ai` with a `Signature-Agent` header (Web Bot Auth,
   sent by ChatGPT's agent) and `headless` with HeadlessChrome client hints. These checks come last,
@@ -119,6 +122,13 @@ cache fills, eviction drops expired answers first, then refuted ones, and
 verified ones last, so impostors from many addresses cannot push real crawlers out. Engines that
 publish no DNS names (DuckDuckGo, Qwant, Mojeek, Sogou, ...) stay `search`.
 
+`-bots-ranges ENGINE=FILE,...` gives `Verifier.Ranges`, the address lists engines publish, read with
+`ParseRanges` at start: the JSON form Google, Bing, Apple and Amazon publish, or one range or
+address a line. An address in its engine's list is verified without DNS, and any other is still
+checked by DNS, so a list only adds crawlers. Amazon publishes only addresses for Amazonbot, which
+otherwise reads as `fake` from an address with no `crawl.amazonbot.amazon` name. A range wider than
+a /16 or a /32, the floor `-bots-exempt` has, is refused, so a mistake cannot verify everyone.
+
 Every alert of a request carries its kind (`client` in the alert line). It comes from the policy
 when it ran, otherwise from `Classify` when the request is finished, only for requests that have
 alerts. The aggregator counts refused requests (blocked, rate limited, source blocked) by kind,
@@ -162,6 +172,9 @@ and no PR thread exists.
     are not counted by kind.
   - The word lists need updates as new crawlers appear.
   - Verification needs outbound DNS; `-confine` already allows port 53.
+  - `-bots-ranges` files are read at start: a list goes stale until it is refreshed and Carnical
+    restarted, and a list holding addresses that are not crawlers (Google's user-triggered
+    fetchers) passes them.
   - Without `-bots-trust-networks`, a flood of impostors that keeps every check busy can get a real
     crawler from an uncached address refused as fake until its check runs.
 

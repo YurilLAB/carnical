@@ -234,7 +234,9 @@ a second; how many were not follows in a line of its own ("a CONNECT request (37
 logged)") within about a second, before that kind's next line, and when the proxy stops, naming no
 client or request. The first three are reported to the flood protection with `Shield.Rejected`, so they take
 from the address's own request limit and counts toward its HTTP rejection share, as a later check's
-refusal does.
+refusal does. With `-allow-upgrade`, an answer to a WebSocket handshake that neither switches
+protocols nor is an error is withheld and answered 502 (5000079): a page sent for a handshake would
+reach a program that copied a browser's handshake to pass the bot checks a page request faces.
 
 ### Intrusion alerts
 
