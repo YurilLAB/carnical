@@ -62,6 +62,9 @@ const (
 	idBodySlow         = 5000076 // counted (Edge.SlowBodies), not logged: a slow client, not a refusal
 	idEngineUnanswered = 5000077
 	idLinesHeld        = 5000078 // how many of a request's lines went over the cap (see maxRequestLines)
+
+	// An answer of the application the edge withholds: a WebSocket handshake it answered without switching protocols.
+	idSocketNotSwitched = 5000079
 )
 
 // PathPolicy says how plain the request path must be. The zero value is the strict default.

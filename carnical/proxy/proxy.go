@@ -803,6 +803,9 @@ type capReader struct {
 
 var errTooLarge = errors.New("request body too large")
 
+// errSocketNotSwitched is returned for a WebSocket handshake the application answered with anything but a switch or an error.
+var errSocketNotSwitched = errors.New("the application answered a WebSocket handshake without switching protocols")
+
 func (c *capReader) Read(p []byte) (int, error) {
 	if c.tooLarge {
 		return 0, errTooLarge
@@ -956,6 +959,12 @@ func (e *Edge) forward() http.Handler {
 			out.Header.Set("X-Forwarded-Host", in.Host)
 		},
 		ModifyResponse: func(resp *http.Response) error {
+			if resp.StatusCode < http.StatusBadRequest && resp.StatusCode != http.StatusSwitchingProtocols &&
+				strings.EqualFold(resp.Request.Header.Get("Upgrade"), "websocket") {
+				// A page sent for a handshake would reach a script that only had to copy a browser's handshake headers to
+				// pass the bot checks a page request faces. Not marked as the application's answer: the refusal is the edge's.
+				return errSocketNotSwitched
+			}
 			markOrigin(resp.Request.Context())
 			if resp.StatusCode == http.StatusSwitchingProtocols && !e.cfg.AllowUpgrade {
 				return errors.New("upstream protocol upgrade is not supported")
@@ -976,6 +985,10 @@ func (e *Edge) forward() http.Handler {
 			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			if errors.Is(err, errSocketNotSwitched) {
+				e.refuse(w, r, http.StatusBadGateway, idSocketNotSwitched, "a WebSocket handshake the application did not switch")
+				return
+			}
 			// A request cancelled because its client went away, or because its response was ended to free a place (see
 			// stall.go), was not failed by the application, unless the client had waited long: the shield decides which.
 			if errors.Is(err, context.Canceled) && r.Context().Err() != nil {

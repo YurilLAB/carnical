@@ -346,6 +346,33 @@ func TestProtocolUpgradesAreRefused(t *testing.T) {
 			time.Sleep(20 * time.Millisecond)
 		}
 	})
+	// A browser fails a handshake that is not switched, so a page in answer to one is only of use to a program that dressed
+	// a request as a handshake to pass the bot checks (bots.Classify): the page is withheld, a refusal kept.
+	for _, tt := range []struct {
+		name   string
+		status int // what the application answers the handshake with
+		want   int
+	}{
+		{"a handshake answered with a page gets no page", http.StatusOK, http.StatusBadGateway},
+		{"or with a redirect", http.StatusFound, http.StatusBadGateway},
+		{"a handshake the application refuses keeps its answer", http.StatusForbidden, http.StatusForbidden},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Location", "/elsewhere")
+				w.WriteHeader(tt.status)
+				fmt.Fprint(w, "the account page")
+			}))
+			defer app.Close()
+			var seen refusals
+			s := start(t, func(c *Config) { c.AllowUpgrade = true; c.Upstream = mustURL(app.URL); c.OnMatch = seen.record })
+			status, reply := s.raw(t, get("/account", "Connection: Upgrade\r\n", "Upgrade: websocket\r\n",
+				"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n", "Sec-WebSocket-Version: 13\r\n", "Origin: http://shop.example.test\r\n"))
+			if status != tt.want || tt.want == http.StatusBadGateway && (strings.Contains(reply, "account page") || seen.count(idSocketNotSwitched) != 1) {
+				t.Fatalf("status %d, want %d, %d refusals recorded:\n%.300s", status, tt.want, seen.count(idSocketNotSwitched), reply)
+			}
+		})
+	}
 }
 
 func TestTrailersAreNotForwarded(t *testing.T) {
