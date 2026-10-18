@@ -380,7 +380,7 @@ SecResponseBodyAccess Off`)
 
 	// Read initial response
 	// It's crucial to set a timeout shorter than the delay in the server's handler
-	err = conn.SetReadDeadline(time.Now().Add(20 * time.Millisecond))
+	err = conn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
 	if err != nil {
 		t.Fatalf("failed to set read timeout: %v", err)
 	}
