@@ -87,9 +87,9 @@ signing its requests) is `ai`, and one whose client hints say HeadlessChrome is 
 program cannot use those headers to get past the checks: it is still `disguised`. A long user agent
 is searched whole, so padding cannot push a scanner's name out of sight.
 
-Behind a load balancer or CDN, only the header checks apply. That holds whether it ends TLS or
-opens a TLS connection of its own to Carnical. For a request from a `-trusted-proxies` peer,
-Carnical does not use the connection's HTTP version, its TLS handshake, or the HTTPS-only checks of
+Behind a load balancer or CDN listed in `-trusted-proxies`, only the header checks apply. That
+holds whether it ends TLS or opens a TLS connection of its own to Carnical. For a request from a
+`-trusted-proxies` peer, Carnical does not use the connection's HTTP version, its TLS handshake, or the HTTPS-only checks of
 `Sec-Fetch-*` and client hints. Those are the proxy's (nginx forwards over HTTP/1.0 by default),
 and the visitor may have reached the proxy without HTTPS, when a browser sends neither header.
 Tools that copy a
@@ -103,6 +103,22 @@ Chromium 141 and Firefox were both refused, and they loaded the same page direct
 Firefox send more than half of browser traffic. So do not refuse `disguised` for visitors on
 company or school networks, or with antivirus that scans HTTPS: keep it in `-bots-monitor`, and
 read whether its alerts come from your visitors' networks.
+
+The same happens with a front you did not list. A load balancer or CDN that opens a TLS connection
+of its own to Carnical shows its own handshake, so without `-trusted-proxies` every Chrome and
+Firefox behind it is `disguised`. One that forwards plain HTTP shows no handshake, and they pass.
+
+If you do refuse `disguised`:
+
+- list your load balancers and CDN in `-trusted-proxies`;
+- put the outgoing addresses of a company proxy you know of in `-bots-exempt`. Nothing from them
+  is then refused by `-bots`, scanners included, though the rules still apply to them;
+- a proxy that only tunnels HTTPS (`CONNECT`) and does not read it needs nothing: the browser's
+  own handshake reaches Carnical.
+
+Each of these was tested with real Chromium and Firefox, through mitmproxy, Squid and a Go
+interceptor, and behind nginx and HAProxy; see the
+[validation record](validation-2026-10-18.md#browsers-behind-interception-and-cdns).
 
 ## Flags
 

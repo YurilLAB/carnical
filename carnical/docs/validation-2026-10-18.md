@@ -1,7 +1,7 @@
 # Validation record: 18 October 2026
 
 This record measures revision `deb80b41` of `edge-crs`, after the bot policy, intrusion alerts
-and auto-block work; the sections on varied agents, application traffic, independent corpora, the crawler list updater, the real applications and the tuning name their own. The local runs
+and auto-block work; the sections on varied agents, application traffic, independent corpora, the crawler list updater, the real applications, the tuning and the browsers behind proxies name their own. The local runs
 used a cloud container (Ubuntu 24.04.5, Linux 6.18.44, Go 1.26.9, running as root, no IPv6). The CI runs used GitHub's Ubuntu 24.04 runners. The counts
 belong to these runs. Attacks targeted isolated local origins.
 
@@ -201,6 +201,51 @@ Fixed in the classifier:
 Not fixed. A browser behind a proxy that reads HTTPS cannot be told apart, by its handshake, from a
 program that copies a browser's headers. [Bots](bots.md#disguised-programs) now says to keep
 `disguised` in `-bots-monitor` for such visitors.
+
+## Browsers behind interception and CDNs
+
+Measured on `f887b767`; the bot and proxy code is the same at `11c0cdf5`. Chromium 141 and
+Firefox 158 loaded a page from Carnical with `-bots scanner,disguised`, over eight routes:
+
+- **direct** to Carnical over HTTPS;
+- three proxies that read HTTPS with a company CA the browsers trust:
+  [mitmproxy](https://mitmproxy.org) 12.2.3, Squid 6.13 with `ssl-bump`, and a small interceptor
+  on Go's `crypto/tls`;
+- **Squid tunnel**: the same Squid, passing `CONNECT` through without reading it;
+- **nginx TLS** (nginx 1.29.8) and **HAProxy TLS** (HAProxy 3.2.26): end TLS, then open TLS of
+  their own to Carnical;
+- **nginx HTTP**: ends TLS, then forwards plain HTTP to Carnical.
+
+Each route was run four ways: as configured above (**none**), with nginx and HAProxy listed in
+`-trusted-proxies`, with Squid's outgoing address in `-bots-exempt`, and with `disguised` moved to
+`-bots-monitor`. Both browsers gave the same result on every route.
+
+| Route | None | Trusted proxies | Squid exempt | Monitor |
+| --- | --- | --- | --- | --- |
+| Direct | served | served | served | served |
+| mitmproxy | 403 | 403 | 403 | served, alert |
+| Squid ssl-bump | 403 | 403 | served | served, alert |
+| Go interceptor | 403 | 403 | 403 | served, alert |
+| Squid tunnel | served | served | served | served |
+| nginx TLS | 403 | served | 403 | served, alert |
+| HAProxy TLS | 403 | served | 403 | served, alert |
+| nginx HTTP | served | served | served | served |
+
+Every 403 was rule 5005012, `disguised`, and every alert in monitor mode was the same rule as
+`would_block`. No other rule refused anything.
+
+What this shows:
+
+- Any proxy that reads HTTPS makes both browsers `disguised`, whichever TLS library it uses.
+- A front that opens its own TLS connection does the same until it is in `-trusted-proxies`.
+  [Bots](bots.md#disguised-programs) said that only the header checks apply behind any load
+  balancer or CDN; that holds only for one in `-trusted-proxies`, and the page now says so.
+- A proxy that only tunnels, and a front that forwards plain HTTP, change nothing.
+- `-bots-exempt` lets through only the proxy it names.
+
+So `-bots disguised` is safe only when the site knows its fronts and its visitors' proxies.
+Without that, keep `disguised` in `-bots-monitor`. The default, `-bots scanner`, refused none of
+these browsers.
 
 ## Legitimate application traffic
 
