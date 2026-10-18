@@ -348,6 +348,11 @@ func netOf(a netip.Addr) netip.Prefix {
 // IPv6 client is counted by its /64, as the limits count it, so that one host that changes the last 64 bits of its
 // address does not look to the detector like thousands of new addresses, the spread of a botnet.
 func (d *detector) observe(ns int64, key netip.Addr, fp uint64, fpLabel string, pt uint64, ptLabel string) bool {
+	return d.observeAt(ns, key, fp, fpLabel, pt, ptLabel, reqMeta{})
+}
+
+// observeAt is observe for a request that came as m says, which an attack's record counts.
+func (d *detector) observeAt(ns int64, key netip.Addr, fp uint64, fpLabel string, pt uint64, ptLabel string, m reqMeta) bool {
 	h := hashAddr(key)
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -371,6 +376,7 @@ func (d *detector) observe(ns int64, key netip.Addr, fp uint64, fpLabel string, 
 	}
 	if inc := d.incident; inc != nil {
 		inc.requests++
+		inc.addRequest(m)
 		inc.srcs.add(h)
 		inc.nets.add(maphashPrefix(netOf(key)))
 		if d.labeler != nil {
@@ -671,6 +677,15 @@ func (d *detector) evaluate(ns int64) {
 	}
 	evidence := gate && (strongFP || pathConc && spread && lowEngage || pain && spread) || connFlood
 	evidence = evidence && trained
+	var kinds uint8
+	for _, k := range [...]struct {
+		on  bool
+		bit uint8
+	}{{gate, kindRequestFlood}, {connFlood, kindConnFlood}, {strongFP, kindOneTool}, {pathConc, kindOneTarget}, {spread, kindNewAddresses}, {pain, kindStrain}} {
+		if k.on {
+			kinds |= k.bit
+		}
+	}
 	if gate {
 		reasons = append([]string{"about " + itoa(a.rate) + " requests a second, the usual is " + itoa(rateBase)}, reasons...)
 	}
@@ -683,7 +698,7 @@ func (d *detector) evaluate(ns int64) {
 			d.run = 0
 		}
 		if d.run >= d.cfg.Confirm {
-			d.startAttack(ns, a, reasons, strongFP, pathConc && spread && lowEngage)
+			d.startAttack(ns, a, reasons, kinds, strongFP, pathConc && spread && lowEngage)
 		} else if gate {
 			d.state = Elevated
 			// Once until the state has been announced normal again: a rate that hovers at the threshold is one rise.
@@ -736,6 +751,7 @@ func (d *detector) evaluate(ns int64) {
 			inc.peak = a.rate
 		}
 		inc.addReasons(reasons)
+		inc.kinds |= kinds
 		d.widen(a, strongFP, pathConc && spread && lowEngage)
 		if time.Duration(ns-d.since) >= d.cfg.MinAttack && (time.Duration(d.quiet)*time.Second >= d.cfg.ExitQuiet ||
 			time.Duration(d.noEvidence)*time.Second >= d.cfg.EvidenceTimeout) {
@@ -983,13 +999,13 @@ func learnShares(m map[uint64]float64, now []share, alpha float64) {
 	}
 }
 
-func (d *detector) startAttack(ns int64, a aggregate, reasons []string, fpAttack, pathAttack bool) {
+func (d *detector) startAttack(ns int64, a aggregate, reasons []string, kinds uint8, fpAttack, pathAttack bool) {
 	d.state, d.since, d.quiet, d.noEvidence, d.run = Attack, ns, 0, 0, 0
 	d.epoch++
 	d.frozen = baseline{rate: d.base.rate, rateVar: d.base.rateVar, srcs: d.base.srcs, newShare: d.base.newShare, familiar: d.base.familiar, errRatio: d.base.errRatio, lat: d.base.lat,
 		connRate: d.base.connRate, connSrcs: d.base.connSrcs, fps: cloneMap(d.base.fps), paths: cloneMap(d.base.paths)}
 	d.incident = &incidentAcc{start: ns, peak: a.rate, baseRate: d.base.rate, srcs: newHLL(14), nets: newHLL(12),
-		labels: newTopK(32), labelSet: newHLL(10)}
+		labels: newTopK(32), labelSet: newHLL(10), kinds: kinds}
 	d.incident.addReasons(reasons)
 	unknown, known := d.cfg.MinAttackRate, d.cfg.MinAttackRate
 	if d.unknownRate != nil {

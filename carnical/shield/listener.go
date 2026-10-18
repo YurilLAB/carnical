@@ -96,6 +96,28 @@ func remoteAddr(c net.Conn) (netip.Addr, bool) {
 	return ap.Addr().Unmap(), true
 }
 
+// addrPort is the port of a listener's address, 0 when it has none.
+func addrPort(a net.Addr) uint16 {
+	switch a := a.(type) {
+	case *net.TCPAddr:
+		if a.Port > 0 && a.Port <= 0xffff {
+			return uint16(a.Port)
+		}
+	case nil:
+	default:
+		if ap, err := netip.ParseAddrPort(a.String()); err == nil {
+			return ap.Port()
+		}
+	}
+	return 0
+}
+
+// localPort is the local port a request came to, 0 when the server did not say.
+func localPort(r *http.Request) uint16 {
+	a, _ := r.Context().Value(http.LocalAddrContextKey).(net.Addr)
+	return addrPort(a)
+}
+
 // reset closes a connection with a RST rather than a FIN.
 func (s *Shield) reset(c net.Conn) {
 	if tc, ok := c.(*net.TCPConn); ok {
@@ -153,13 +175,27 @@ func (s *Shield) admitConn(c net.Conn) net.Conn {
 	// The detector counts the addresses connections come from, as the limits count them: one address's flood of
 	// connections is that address's, and not the spread of a botnet.
 	h := hashAddr(sc.key)
+	port := addrPort(c.LocalAddr())
 	if refused {
 		s.counters.connsRefused.Add(1)
-		s.det.count(ns, func(w *window) { w.connsIn++; w.connsRefused++; w.connSrcs.add(h) })
+		s.det.note(ns, func(w *window, inc *incidentAcc) {
+			w.connsIn++
+			w.connsRefused++
+			w.connSrcs.add(h)
+			if inc != nil {
+				inc.addPort(port, 0, 1)
+			}
+		})
 		s.reset(c)
 		return nil
 	}
-	s.det.count(ns, func(w *window) { w.connsIn++; w.connSrcs.add(h) })
+	s.det.note(ns, func(w *window, inc *incidentAcc) {
+		w.connsIn++
+		w.connSrcs.add(h)
+		if inc != nil {
+			inc.addPort(port, 0, 1)
+		}
+	})
 	if s.cfg.UserTimeout > 0 {
 		if err := setUserTimeout(c, s.cfg.UserTimeout); err != nil {
 			s.counters.socketOptionErrors.Add(1)

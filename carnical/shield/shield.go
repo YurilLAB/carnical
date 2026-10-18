@@ -570,7 +570,12 @@ func (s *Shield) Admit(r *http.Request, client netip.Addr) Decision {
 	trusted := s.trusted(client)
 	fp, fpLabel := fingerprint(r)
 	pt, ptLabel := pathTemplate(r)
-	isNew := s.det.observe(ns, key, fp, fpLabel, pt, ptLabel)
+	// How the request came is only recorded during an attack, so ordinary requests do not pay for reading it.
+	var via reqMeta
+	if s.det.info.Load() != nil {
+		via = reqMeta{port: localPort(r), known: true, tls: r.TLS != nil, h2: r.ProtoMajor == 2}
+	}
+	isNew := s.det.observeAt(ns, key, fp, fpLabel, pt, ptLabel, via)
 	info := s.det.info.Load()
 
 	earn := s.det.earn.Load()

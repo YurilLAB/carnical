@@ -367,7 +367,15 @@ func logShieldEvent(log *slog.Logger, ev shield.Event, monitor bool) {
 		for _, l := range inc.Labels {
 			labels = append(labels, fmt.Sprintf("%s %d", l.Label, l.Requests))
 		}
+		ports := make([]string, 0, len(inc.Ports)+1)
+		for _, p := range inc.Ports {
+			ports = append(ports, fmt.Sprintf("tcp/%d %d requests %d connections", p.Port, p.Requests, p.Connections))
+		}
+		if o := inc.OtherPorts; o.Requests+o.Connections > 0 {
+			ports = append(ports, fmt.Sprintf("other ports %d requests %d connections", o.Requests, o.Connections))
+		}
 		attrs = append(attrs, "started", inc.Start, "peak_rate", math.Round(inc.PeakRate), "requests", inc.Requests,
+			"kinds", inc.Kinds, "ports", ports, "tls", inc.TLS, "plain", inc.Plain, "http1", inc.HTTP1, "http2", inc.HTTP2,
 			"addresses", inc.Sources, "networks", inc.Networks, "clusters", clusters,
 			"refused", inc.Refused, "challenged", inc.Challenged, "solved", inc.Solved, "banned", inc.Banned)
 		if inc.DistinctLabels > 0 {

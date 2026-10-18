@@ -4,6 +4,8 @@ package shield
 
 import (
 	"cmp"
+	"context"
+	"crypto/tls"
 	"fmt"
 	"math"
 	"math/rand/v2"
@@ -71,6 +73,13 @@ type sim struct {
 	natShare float64       // the share of returning visits that come through them
 	lat      time.Duration // how long the application takes to answer a visit
 	queue    time.Duration // when set, the application queues what it cannot serve, and the clients hang up after this long
+	// via, when set, is how the next request comes: the local address the server saw, and whether over TLS and HTTP/2.
+	via *simVia
+}
+
+type simVia struct {
+	local   net.Addr
+	tls, h2 bool
 }
 
 type tally struct{ sent, ok int }
@@ -157,6 +166,15 @@ func (m *sim) do(class string, v *simVisitor, path string, nav bool, headers []s
 	tl.sent++
 	for attempt := 0; attempt < 2; attempt++ {
 		r := simRequest(path)
+		if v := m.via; v != nil {
+			r = r.WithContext(context.WithValue(r.Context(), http.LocalAddrContextKey, v.local))
+			if v.tls {
+				r.TLS = &tls.ConnectionState{}
+			}
+			if v.h2 {
+				r.Proto, r.ProtoMajor, r.ProtoMinor = "HTTP/2.0", 2, 0
+			}
+		}
 		for i := 0; i+1 < len(headers); i += 2 {
 			r.Header.Set(headers[i], headers[i+1])
 		}
@@ -372,6 +390,48 @@ func TestSimulatedAttacks(t *testing.T) {
 					t.Fatalf("the record misjudges the attack's spread: %+v", res.inc)
 				}
 			})
+		}
+	})
+
+	// The record names what was attacked and how: the ports, TLS or not, the HTTP version, and the kinds of evidence. The
+	// visitors' requests carry no local address, so the ports count the attack's requests only.
+	t.Run("the record of an attack names its ports, protocols and kinds", func(t *testing.T) {
+		m := newSim(t, nil)
+		m.warm(10)
+		bots := botnet(20_000, m.r)
+		web := &simVia{local: &net.TCPAddr{IP: net.IPv4(192, 0, 2, 10), Port: 443}, tls: true, h2: true}
+		plain := &simVia{local: &net.TCPAddr{IP: net.IPv4(192, 0, 2, 10), Port: 80}}
+		res := m.run(40, 3000, func(i int) {
+			m.via = web
+			if i%3 == 0 {
+				m.via = plain
+			}
+			m.do("attack", bots[m.r.IntN(len(bots))], "/?r="+strconv.Itoa(m.r.IntN(1e9)), false, python)
+			m.via = nil
+		})
+		if res.inc == nil {
+			t.Fatalf("no attack: %s", res)
+		}
+		inc := res.inc
+		t.Logf("kinds %q, ports %+v, other %+v, TLS %d, plain %d, HTTP/1 %d, HTTP/2 %d of %d", inc.Kinds, inc.Ports, inc.OtherPorts,
+			inc.TLS, inc.Plain, inc.HTTP1, inc.HTTP2, inc.Requests)
+		if len(inc.Ports) != 2 || inc.Ports[0].Port != 443 || inc.Ports[1].Port != 80 || inc.OtherPorts != (PortCount{}) {
+			t.Fatalf("ports %+v, other %+v; want 443 then 80", inc.Ports, inc.OtherPorts)
+		}
+		attack := inc.Ports[0].Requests + inc.Ports[1].Requests
+		if share := float64(inc.Ports[1].Requests) / float64(attack); share < 0.3 || share > 0.37 {
+			t.Fatalf("port 80 has %.1f%% of the attack's requests, want about a third", 100*share)
+		}
+		if inc.TLS != inc.Ports[0].Requests || inc.HTTP2 != inc.TLS || inc.TLS+inc.Plain > inc.Requests || inc.TLS+inc.Plain < inc.Requests*9/10 || inc.HTTP1+inc.HTTP2 != inc.TLS+inc.Plain {
+			t.Fatal("the protocol counts do not add up to the requests")
+		}
+		for _, k := range []string{"request_flood", "many_new_addresses", "one_client_tool"} {
+			if !slices.Contains(inc.Kinds, k) {
+				t.Fatalf("kinds %q lack %s", inc.Kinds, k)
+			}
+		}
+		if slices.Contains(inc.Kinds, "connection_flood") {
+			t.Fatalf("kinds %q name a connection flood the attack did not make", inc.Kinds)
 		}
 	})
 
@@ -799,12 +859,13 @@ func TestSimulatedAttacks(t *testing.T) {
 		// flood is ten minutes of ordinary traffic in which visitors open twenty connections a second, then a minute in
 		// which 300 connections a second more, each sending nothing, come from the addresses given; it returns the highest
 		// state the site was in and the reasons then.
-		flood := func(from []netip.Addr) (State, []string) {
+		flood := func(from []netip.Addr) (State, []string, *Incident) {
 			m := newSim(t, nil)
+			edge := &net.TCPAddr{IP: net.IPv4(192, 0, 2, 10), Port: 443}
 			open := func(a netip.Addr) {
 				mine, theirs := net.Pipe()
 				defer theirs.Close()
-				if c := m.s.admitConn(addrConn{mine, net.TCPAddrFromAddrPort(netip.AddrPortFrom(a, 40000))}); c != nil {
+				if c := m.s.admitConn(addrConn{mine, net.TCPAddrFromAddrPort(netip.AddrPortFrom(a, 40000)), edge}); c != nil {
 					c.Close()
 				}
 			}
@@ -816,6 +877,7 @@ func TestSimulatedAttacks(t *testing.T) {
 				t.Fatalf("after warm-up the state is %v", st)
 			}
 			worst, reasons := Normal, []string(nil)
+			var inc *Incident
 			for i := 0; i < 60; i++ {
 				m.second(m.kv, m.nv, 20+300, func(n int) {
 					if n < 20 {
@@ -827,18 +889,26 @@ func TestSimulatedAttacks(t *testing.T) {
 				if st := m.s.State(); st > worst {
 					worst, reasons = st, m.s.Snapshot().Reasons
 				}
+				if cur := m.s.Snapshot().Current; cur != nil {
+					inc = cur
+				}
 			}
-			return worst, reasons
+			return worst, reasons, inc
 		}
-		if st, reasons := flood([]netip.Addr{netip.MustParseAddr("203.0.113.5")}); st == Attack {
+		if st, reasons, _ := flood([]netip.Addr{netip.MustParseAddr("203.0.113.5")}); st == Attack {
 			t.Fatalf("one address opening connections put the whole site into attack mode: %q", reasons)
 		}
 		var many []netip.Addr
 		for _, b := range botnet(400, rand.New(rand.NewPCG(3, 5))) {
 			many = append(many, b.addr)
 		}
-		if st, _ := flood(many); st != Attack {
+		st, _, inc := flood(many)
+		if st != Attack {
 			t.Fatalf("control: the same connections from 400 addresses were not taken for an attack (state %v), so the test proves nothing", st)
+		}
+		// The record names the port the connections came to and the kind of attack.
+		if inc == nil || len(inc.Ports) != 1 || inc.Ports[0].Port != 443 || inc.Ports[0].Connections < 1000 || !slices.Contains(inc.Kinds, "connection_flood") {
+			t.Fatalf("the record of a connection flood does not name its port and kind: %+v", inc)
 		}
 	})
 }

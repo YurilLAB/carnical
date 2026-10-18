@@ -789,7 +789,7 @@ func TestABanIsRenewedWithinOneAttack(t *testing.T) {
 			s.det.info.Store(&attackInfo{epoch: 1, since: now.UnixNano(), fps: map[uint64]bool{}, paths: map[uint64]bool{}})
 			mine, theirs := net.Pipe()
 			defer theirs.Close()
-			c := s.admitConn(addrConn{mine, net.TCPAddrFromAddrPort(netip.AddrPortFrom(key, 40000))})
+			c := s.admitConn(addrConn{mine, net.TCPAddrFromAddrPort(netip.AddrPortFrom(key, 40000)), nil})
 			if c == nil {
 				t.Fatalf("monitor %v: the connection was refused", monitor)
 			}
@@ -921,7 +921,7 @@ func TestTheKnownBudgetFollowsTheBaselineWhenAnAttackStarts(t *testing.T) {
 			s := newTestShield(t, &now, tc.mod)
 			s.det.mu.Lock()
 			s.det.base.rate = tc.baseline
-			s.det.startAttack(now.UnixNano(), aggregate{}, nil, false, false)
+			s.det.startAttack(now.UnixNano(), aggregate{}, nil, 0, false, false)
 			s.det.mu.Unlock()
 			if got := s.det.info.Load().knownRate; got != tc.want {
 				t.Fatalf("known budget %v, want %v", got, tc.want)
@@ -1453,10 +1453,17 @@ func (failedResponseWriter) Write([]byte) (int, error) { return 0, io.ErrClosedP
 // addrConn is a connection that says it comes from the address given.
 type addrConn struct {
 	net.Conn
-	remote net.Addr
+	remote, local net.Addr // local nil: the pipe's own
 }
 
 func (c addrConn) RemoteAddr() net.Addr { return c.remote }
+
+func (c addrConn) LocalAddr() net.Addr {
+	if c.local == nil {
+		return c.Conn.LocalAddr()
+	}
+	return c.local
+}
 
 // nopBanner accepts every ban and does nothing with it.
 type nopBanner struct{}
@@ -1641,7 +1648,7 @@ func TestRepeatOffenders(t *testing.T) {
 			}
 			mine, theirs := net.Pipe()
 			defer theirs.Close()
-			if c := s.admitConn(addrConn{mine, net.TCPAddrFromAddrPort(netip.AddrPortFrom(probe, 40000))}); (c == nil) != tt.banned {
+			if c := s.admitConn(addrConn{mine, net.TCPAddrFromAddrPort(netip.AddrPortFrom(probe, 40000)), nil}); (c == nil) != tt.banned {
 				t.Fatalf("the listener accepted the connection: %v, want banned %v", c != nil, tt.banned)
 			} else if c != nil {
 				c.Close()
@@ -1839,7 +1846,7 @@ func TestEachAddressEarnsItsOwnLimits(t *testing.T) {
 					mine, theirs := net.Pipe()
 					defer theirs.Close()
 					defer mine.Close()
-					if c := s.admitConn(addrConn{mine, net.TCPAddrFromAddrPort(netip.AddrPortFrom(a, 40000))}); c != nil {
+					if c := s.admitConn(addrConn{mine, net.TCPAddrFromAddrPort(netip.AddrPortFrom(a, 40000)), nil}); c != nil {
 						conns++
 						defer c.Close() // gives its place back
 					}
@@ -1994,7 +2001,7 @@ func TestNothingIsEarnedOrLostDuringAnAttack(t *testing.T) {
 		t.Fatalf("after two minutes at four requests a second the address has earned %.2f", had)
 	}
 	s.det.mu.Lock()
-	s.det.startAttack(now.UnixNano(), aggregate{}, nil, false, false)
+	s.det.startAttack(now.UnixNano(), aggregate{}, nil, 0, false, false)
 	s.det.mu.Unlock()
 	for i := 0; i < 50; i++ {
 		second(during)

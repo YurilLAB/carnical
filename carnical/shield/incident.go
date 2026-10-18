@@ -66,8 +66,62 @@ type Incident struct {
 	DistinctLabels int
 	Reasons        []string
 	Clusters       []Cluster
+	// Kinds name what the attack is, from the evidence the detector found during it, in this order: "request_flood"
+	// (far more requests than usual), "connection_flood" (connections opened without requests), "one_client_tool" (one
+	// client fingerprint), "one_target" (one page or endpoint), "many_new_addresses" (addresses not seen before, or
+	// many more of them) and "application_strain" (the application failing or slow).
+	Kinds []string
+	// Ports are the local TCP ports the attack's requests and connections came to, the most requested first, at most
+	// maxIncidentPorts of them; OtherPorts counts what came to any other port (Port is 0).
+	Ports      []PortCount
+	OtherPorts PortCount
+	// The requests by how they came: over TLS or plain HTTP, and as HTTP/1.x or HTTP/2. The first requests of an attack,
+	// those before it was declared, are not counted.
+	TLS, Plain, HTTP1, HTTP2 uint64
 	// What the shield did during the attack.
 	Refused, Challenged, Solved, Banned uint64
+}
+
+// PortCount is one local TCP port and what an attack sent to it.
+type PortCount struct {
+	Port        uint16
+	Requests    uint64
+	Connections uint64
+}
+
+// maxIncidentPorts is the most local ports an attack's record names; an edge listens on one or two.
+const maxIncidentPorts = 4
+
+// The kinds of attack evidence (Incident.Kinds), as bits.
+const (
+	kindRequestFlood uint8 = 1 << iota
+	kindConnFlood
+	kindOneTool
+	kindOneTarget
+	kindNewAddresses
+	kindStrain
+	numKinds = iota
+)
+
+var kindNames = [numKinds]string{"request_flood", "connection_flood", "one_client_tool", "one_target", "many_new_addresses", "application_strain"}
+
+// kindList names the kinds in the set, in kindNames order.
+func kindList(set uint8) []string {
+	var out []string
+	for i, name := range kindNames {
+		if set&(1<<i) != 0 {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// reqMeta is what the detector is told of how a request came: its local port (0 when unknown) and, when known is
+// set, its protocol.
+type reqMeta struct {
+	port    uint16
+	known   bool
+	tls, h2 bool
 }
 
 // LabelCount is one label and how many requests carried it.
@@ -103,6 +157,51 @@ type incidentAcc struct {
 	challenged     uint64
 	solved         uint64
 	banned         uint64
+	kinds          uint8
+	// ports holds the first nports local ports seen, other what came to any further port.
+	ports              [maxIncidentPorts]PortCount
+	nports             int
+	other              PortCount
+	tls, plain, h1, h2 uint64
+}
+
+// addPort counts reqs requests and conns connections to a local port; port 0 (unknown) is not counted.
+func (i *incidentAcc) addPort(port uint16, reqs, conns uint64) {
+	if port == 0 {
+		return
+	}
+	for k := 0; k < i.nports; k++ {
+		if i.ports[k].Port == port {
+			i.ports[k].Requests += reqs
+			i.ports[k].Connections += conns
+			return
+		}
+	}
+	if i.nports < maxIncidentPorts {
+		i.ports[i.nports] = PortCount{Port: port, Requests: reqs, Connections: conns}
+		i.nports++
+		return
+	}
+	i.other.Requests += reqs
+	i.other.Connections += conns
+}
+
+// addRequest counts one request of the attack by its port and protocol.
+func (i *incidentAcc) addRequest(m reqMeta) {
+	i.addPort(m.port, 1, 0)
+	if !m.known {
+		return
+	}
+	if m.tls {
+		i.tls++
+	} else {
+		i.plain++
+	}
+	if m.h2 {
+		i.h2++
+	} else {
+		i.h1++
+	}
 }
 
 func (i *incidentAcc) addReasons(rs []string) {
@@ -144,6 +243,13 @@ func (d *detector) incidentEvent(kind string, ns int64) Event {
 		Sources: int(inc.srcs.estimate()), Networks: int(inc.nets.estimate()),
 		Reasons: slices.Clone(inc.reasons), Clusters: slices.Clone(inc.clusters),
 		Refused: inc.refused, Challenged: inc.challenged, Solved: inc.solved, Banned: inc.banned,
+		Kinds: kindList(inc.kinds), OtherPorts: inc.other, TLS: inc.tls, Plain: inc.plain, HTTP1: inc.h1, HTTP2: inc.h2,
+	}
+	if inc.nports > 0 {
+		out.Ports = slices.Clone(inc.ports[:inc.nports])
+		slices.SortStableFunc(out.Ports, func(a, b PortCount) int {
+			return cmp.Or(cmp.Compare(b.Requests, a.Requests), cmp.Compare(b.Connections, a.Connections))
+		})
 	}
 	if inc.requests == 0 {
 		out.Sources, out.Networks = 0, 0

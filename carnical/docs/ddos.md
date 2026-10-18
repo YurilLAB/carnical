@@ -173,6 +173,24 @@ are still learned over their own five minutes, from seconds under the volume thr
 of the site's own clients soon after a restart is not taken for an attack and a flood running at
 the restart is not learned as the site's usual look.
 
+### What the attack record says
+
+The `attack_start`, `attack_update` (every ten seconds) and `attack_end` lines carry the record of the
+attack, without request content:
+
+| Field | Meaning |
+|---|---|
+| `kinds` | What the attack is, from the evidence seen during it: `request_flood`, `connection_flood`, `one_client_tool`, `one_target`, `many_new_addresses`, `application_strain` |
+| `ports` | The local TCP ports the attack's requests and connections came to, the most requested first (at most four), then what came to any other port |
+| `tls`, `plain`, `http1`, `http2` | The attack's requests over TLS or plain HTTP, and by HTTP version |
+| `requests`, `peak_rate`, `addresses`, `networks` | Requests during the attack, the highest ten-second rate, and estimates of the different addresses and networks |
+| `clusters`, `top_origins` | The fingerprints and targets it was recognised by, and its most common countries or networks (with `-ddos-ranges`) |
+| `refused`, `challenged`, `solved`, `banned` | What the shield did |
+
+Every request and connection while the attack goes on is counted, the site's own included. The
+ports cover the attack layer the Go listener sees, TCP only; UDP and SYN floods are counted by the
+[kernel packet guards](network-protection.md).
+
 ## Limits that follow your traffic
 
 The limits of an address, and of a network, grow to follow that address's or network's own traffic,
