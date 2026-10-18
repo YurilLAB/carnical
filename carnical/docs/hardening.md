@@ -49,7 +49,22 @@ stopped for an attacker who is **only** the edge user.
 
 ## What was verified, and how
 
-**On a real kernel (Linux 6.18, Landlock ABI 7, Ubuntu 26.04 under WSL2), measured:**
+**Re-run on 2026-10-18** at `deb80b41`, in a cloud container (Ubuntu 24.04.5, Linux 6.18.44, Landlock ABI 7):
+
+* `carnical-confine check`, built with `CGO_ENABLED=0`, runs 37 actions and all behave as expected: 9 allowed, 15 refused and 13
+  ended by the filter. A binary built with cgo is refused before any action runs (`build with CGO_ENABLED=0`), since a
+  restriction could not reach all of its threads.
+* The unconfined control kills none of the 37. 27 go through; 10 are refused by the container itself (SCTP, vsock and AF_ALG
+  sockets, user namespaces, BPF, io_uring, perf events and module loading) or, as an unconfined process should, report it
+  dumpable and without the filter.
+* `go test ./sandbox` passes: the filter's interpreter decides 61 calls, and the check notices a run without seccomp and one
+  without Landlock.
+* `systemd-analyze security --offline` (systemd 255) gives the edge unit **1.4 (OK)**, the audit unit 2.2 and the root
+  host-audit unit 2.8, which reads every process and so keeps ptrace and the process tree.
+* The confined proxy's host audit was not repeated: it needs the unprivileged service account, and the container runs as root,
+  whose capabilities the audit rightly reports. CI runs it.
+
+**First measured on a real kernel (Linux 6.18, Landlock ABI 7, Ubuntu 26.04 under WSL2):**
 
 * `carnical-confine` runs 34 actions from inside the confinement, each in its own process: **33 behave as expected**, and the 34th was
   a wrong expectation that is now corrected (a child that tries to exec is killed, so its parent sees a failed command, not a kill).
@@ -81,7 +96,8 @@ stopped for an attacker who is **only** the edge user.
 * The units, sysctls, modprobe entries, nftables policy for real users (`meta skuid`), and audit rules have not been installed on any machine.
   In particular, how the unit's system call filter, `SocketBindDeny=any` and `IPAddressDeny=link-local 168.63.129.16` behave with the proxy running under them
   has not been seen; the first start should be watched, with `SystemCallErrorNumber=EPERM` set temporarily so that a filtered call is an error and not a kill.
-* Landlock ABIs 1 to 6 and kernels older than 6.18, and Ubuntu 22.04, Ubuntu 24.04 and Debian 12 (see `deploy/README.md`).
+* Landlock ABIs 1 to 6 and kernels older than 6.18, and Ubuntu 22.04 and Debian 12; Ubuntu 24.04 only in a container, without
+  the units (above; see `deploy/README.md`).
 * The audit rules have not been loaded (`augenrules`), so their syntax is checked only by reading.
 * `host-processes` and `host-edge-confined` need root: a process that is not dumpable hides its program from other processes of the same user
   (**measured**), so the unprivileged audit sees nothing. They run in the root host-audit unit and report "needs root" otherwise.

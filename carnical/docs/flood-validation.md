@@ -40,10 +40,16 @@ second, 32 requests a second of ordinary traffic from 400 returning and many new
 
 The attack record estimated the first botnet at 20,421 addresses (true 20,000) in 106 country/network labels.
 
+Re-run on 18 October 2026 at `deb80b41` (`go test ./shield -run 'TestSimulatedAttacks|TestASiteWithMuchTrafficIsNotLimitedAsIfItWereSmall|TestStandingDoesNotCarryAFlood' -v`):
+every simulated figure in this record was reproduced, within 0.1 point, except that the attack record now estimates the first
+botnet at 20,494 addresses in 105 labels.
+
 Live (`proxy/shield_linux_test.go`, Linux): the real proxy and listener, 1,000 bot addresses (127.1.x.y; Linux routes all of
 127/8 to loopback) sending about 500 requests a second, 20 regular visitors. Detected 3.0 s after the flood began; after
 detection 180 of 180 visitor requests were served and 17 of 21,751 flood requests reached the application (0.08%). With
 `-ddos monitor` (control) all 22,767 flood requests reached it.
+Re-run on 18 October 2026 in a cloud container: detected 2.2 s after the flood began, 180 of 180 visitor requests served
+and 22 of 23,662 flood requests (0.09%) reached the application; with `-ddos monitor` all 21,335 did.
 
 Two flaws were found later, by testing a busy site and a site whose traffic is one app calling one endpoint, and are fixed. The
 detector had a fixed floor of 50 requests a second and a baseline that started at zero, so a bursty busy site was declared under
