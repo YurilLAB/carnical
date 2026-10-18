@@ -1,0 +1,11 @@
+# Once a day, at a random time, so that many edges do not fetch at once. Carnical warns of a list not refreshed for a week.
+[Unit]
+Description=Refresh the crawler address lists once a day
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=4h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

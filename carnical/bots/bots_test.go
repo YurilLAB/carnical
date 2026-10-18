@@ -343,6 +343,28 @@ func TestVerify(t *testing.T) {
 		})
 	}
 
+	t.Run("ranges replaced while requests are checked", func(t *testing.T) {
+		v := NewVerifier(&resolver{}, 0, 0)
+		old, fresh := netip.MustParseAddr("198.18.0.7"), netip.MustParseAddr("192.0.2.7")
+		v.SetRanges(map[Engine][]netip.Prefix{EngineAmazon: {netip.MustParsePrefix("198.18.0.0/24")}})
+		var wg sync.WaitGroup
+		for range 4 {
+			wg.Go(func() {
+				for range 1000 {
+					v.Verify(context.Background(), old, EngineAmazon)
+				}
+			})
+		}
+		v.SetRanges(map[Engine][]netip.Prefix{EngineAmazon: {netip.MustParsePrefix("192.0.2.0/24")}})
+		wg.Wait()
+		if !v.Verify(context.Background(), fresh, EngineAmazon) {
+			t.Fatal("an address in the new ranges is not verified")
+		}
+		if v.Verify(context.Background(), netip.MustParseAddr("198.18.0.8"), EngineAmazon) {
+			t.Fatal("an address only in the old ranges is still verified")
+		}
+	})
+
 	t.Run("an answer is checked again once it expires", func(t *testing.T) {
 		r := dns()
 		v := NewVerifier(r, 0, 0)
@@ -462,27 +484,33 @@ func TestParseRanges(t *testing.T) {
 		in   string
 		want []string // the ranges, or the error's text
 		fail bool
+		// published is the creationTime read from the file, if any.
+		published string
 	}{
 		{"the JSON form Google publishes", `{"creationTime": "2026-10-01T00:00:00", "prefixes": [{"ipv4Prefix": "66.249.64.0/27"},
-			{"ipv6Prefix": "2001:4860:4801:10::/64"}]}`, []string{"66.249.64.0/27", "2001:4860:4801:10::/64"}, false},
+			{"ipv6Prefix": "2001:4860:4801:10::/64"}]}`, []string{"66.249.64.0/27", "2001:4860:4801:10::/64"}, false, "2026-10-01T00:00:00Z"},
+		{"the time as Amazon writes it", `{"creationTime": "2026-09-08T05:24:10.610952+00:00", "prefixes": [{"ipv4Prefix": "3.81.245.78"}]}`,
+			[]string{"3.81.245.78/32"}, false, "2026-09-08T05:24:10.610952Z"},
+		{"a time that is not one", `{"creationTime": "yesterday", "prefixes": [{"ipv4Prefix": "3.81.245.78"}]}`,
+			[]string{"3.81.245.78/32"}, false, ""},
 		{"one range or address a line, with comments", "# Amazonbot\n52.70.240.171\n\n  3.224.220.0/24 # crawl\n2600:1f18::1\n",
-			[]string{"52.70.240.171/32", "3.224.220.0/24", "2600:1f18::1/128"}, false},
-		{"a range given with its host bits", "66.249.64.5/27", []string{"66.249.64.0/27"}, false},
-		{"a mapped IPv6 range is an IPv4 one", "::ffff:198.18.0.0/120", []string{"198.18.0.0/24"}, false},
-		{"a line that is no range", "66.249.64.0/27\ncrawl.amazonbot.amazon\n", []string{`line 2: "crawl.amazonbot.amazon"`}, true},
-		{"a prefix that is no range", `{"prefixes": [{"ipv4Prefix": "66.249.64.0/33"}]}`, []string{"prefix 1:"}, true},
-		{"an address with a zone", "fe80::1%eth0", []string{"line 1:"}, true},
-		{"a range wider than a /16", "10.0.0.0/8", []string{"wider than a /16"}, true},
-		{"the whole Internet as a mapped range", "::ffff:0.0.0.0/96", []string{"wider than a /16"}, true},
-		{"an IPv6 range wider than a /32", "2600::/16", []string{"wider than a /32"}, true},
-		{"broken JSON", `{"prefixes": [`, []string{"not the JSON form"}, true},
-		{"JSON with no prefixes", `{"creationTime": "2026-10-01T00:00:00"}`, []string{"no ranges"}, true},
-		{"only comments", "# nothing yet\n", []string{"no ranges"}, true},
-		{"a file over the limit", strings.Repeat("#", MaxRangesFile+1), []string{"more than"}, true},
+			[]string{"52.70.240.171/32", "3.224.220.0/24", "2600:1f18::1/128"}, false, ""},
+		{"a range given with its host bits", "66.249.64.5/27", []string{"66.249.64.0/27"}, false, ""},
+		{"a mapped IPv6 range is an IPv4 one", "::ffff:198.18.0.0/120", []string{"198.18.0.0/24"}, false, ""},
+		{"a line that is no range", "66.249.64.0/27\ncrawl.amazonbot.amazon\n", []string{`line 2: "crawl.amazonbot.amazon"`}, true, ""},
+		{"a prefix that is no range", `{"prefixes": [{"ipv4Prefix": "66.249.64.0/33"}]}`, []string{"prefix 1:"}, true, ""},
+		{"an address with a zone", "fe80::1%eth0", []string{"line 1:"}, true, ""},
+		{"a range wider than a /16", "10.0.0.0/8", []string{"wider than a /16"}, true, ""},
+		{"the whole Internet as a mapped range", "::ffff:0.0.0.0/96", []string{"wider than a /16"}, true, ""},
+		{"an IPv6 range wider than a /32", "2600::/16", []string{"wider than a /32"}, true, ""},
+		{"broken JSON", `{"prefixes": [`, []string{"not the JSON form"}, true, ""},
+		{"JSON with no prefixes", `{"creationTime": "2026-10-01T00:00:00"}`, []string{"no ranges"}, true, ""},
+		{"only comments", "# nothing yet\n", []string{"no ranges"}, true, ""},
+		{"a file over the limit", strings.Repeat("#", MaxRangesFile+1), []string{"more than"}, true, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := ParseRanges(strings.NewReader(tt.in))
+			got, published, err := ParseRanges(strings.NewReader(tt.in))
 			if tt.fail {
 				if err == nil || !strings.Contains(err.Error(), tt.want[0]) {
 					t.Fatalf("error %v, want one saying %q", err, tt.want[0])
@@ -498,6 +526,9 @@ func TestParseRanges(t *testing.T) {
 			}
 			if !slices.Equal(texts, tt.want) {
 				t.Fatalf("ranges %v, want %v", texts, tt.want)
+			}
+			if at := published.Format(time.RFC3339Nano); (tt.published == "") != published.IsZero() || !published.IsZero() && at != tt.published {
+				t.Fatalf("published %v, want %q", published, tt.published)
 			}
 		})
 	}

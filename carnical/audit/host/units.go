@@ -236,6 +236,7 @@ var Files = []FileRule{
 	{"/var/lib/carnical/ctl", "carnical-ctl", 0o700},
 	{"/var/lib/carnical/signer", "carnical-signer", 0o700},
 	{"/var/lib/carnical/audit", "carnical-audit", 0o700},
+	{"/var/lib/carnical/ranges", "root", 0o755},
 	{"/var/lib/carnical/host-audit", "root", 0o700},
 	{"/var/log/carnical", "carnical-audit", 0o750},
 	{"/var/log/carnical-host", "root", 0o700},

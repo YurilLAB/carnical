@@ -32,7 +32,7 @@ core for the scan alone.
 
 - The cost of a claim must not grow with the size of the list an operator supplies.
 - No new dependency, and no change to what is verified.
-- A list is read once, at start; lookups must be safe for concurrent use without a lock.
+- Lookups must be safe for concurrent use without a lock.
 
 ## Considered Options
 
@@ -49,8 +49,9 @@ core for the scan alone.
 
 Chosen: **sorted, disjoint spans with binary search**, because it makes a lookup logarithmic in
 the list's size with a few dozen lines of standard library code. The `Verifier.Ranges` field
-becomes `Verifier.SetRanges`, which builds the index once. As before, it is called before the
-Verifier is used, so lookups take no lock.
+becomes `Verifier.SetRanges`, which builds the index once and swaps it in with one atomic pointer,
+so lookups take no lock. [ADR-0089](0089-carnical-crawler-lists-kept-current.md) uses that to
+replace the lists while the edge runs.
 
 After, on the same machine and benchmark, from ranges that do not touch (so none are joined):
 
@@ -88,11 +89,10 @@ and no PR thread exists.
 
 - **Positive:** a claimed crawler costs the same whatever the list's size, so a long list no
   longer lets impostors make each request expensive.
-- **Negative / follow-up:** the lists are still read only at start. Keeping them current is the
-  operator's job, which the bot guide describes.
+- **Negative / follow-up:** keeping the lists current is the subject of ADR-0089.
 
 ## References
 
-- Related ADRs: ADR-0087
+- Related ADRs: ADR-0087, ADR-0089
 - Code: `carnical/bots/verify.go` (`SetRanges`, `rangeSet`), `carnical/bots/bots_test.go`
   (`TestVerify`, `BenchmarkVerifyRanges`)

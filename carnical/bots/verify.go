@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -65,7 +66,7 @@ type Verifier struct {
 	// it off where a network's addresses need not belong to one owner, as in a cloud's shared ranges.
 	TrustNetworks bool
 
-	ranges [numEngines]rangeSet // see SetRanges
+	ranges atomic.Pointer[[numEngines]rangeSet] // see SetRanges
 	res    Resolver
 	slots  chan struct{}
 	max    int
@@ -128,7 +129,7 @@ func (v *Verifier) Verify(ctx context.Context, addr netip.Addr, engine Engine) b
 		return false
 	}
 	addr = addr.Unmap()
-	if v.ranges[engine].contains(addr) {
+	if ranges := v.ranges.Load(); ranges != nil && ranges[engine].contains(addr) {
 		return true
 	}
 	k := verifyKey{addr, engine}
@@ -207,16 +208,18 @@ func (v *Verifier) check(e *verifyEntry, addr netip.Addr, engine Engine) {
 	}
 }
 
-// SetRanges gives, before the Verifier is used, the address ranges engines publish for their crawlers (see ParseRanges).
-// An address in its engine's ranges is verified without DNS; any other address is still checked by DNS. Amazon, for one,
-// publishes ranges for its crawlers but no DNS names for some of them. Finding an address takes a binary search, however
-// many ranges there are.
+// SetRanges gives the address ranges engines publish for their crawlers (see ParseRanges), in place of any given before;
+// it may be called while the Verifier is in use. An address in its engine's ranges is verified without DNS; any other
+// address is still checked by DNS. Amazon, for one, publishes ranges for its crawlers but no DNS names for some of them.
+// Finding an address takes a binary search, however many ranges there are.
 func (v *Verifier) SetRanges(ranges map[Engine][]netip.Prefix) {
+	var sets [numEngines]rangeSet
 	for engine, list := range ranges {
 		if int(engine) > 0 && int(engine) < numEngines {
-			v.ranges[engine] = newRangeSet(list)
+			sets[engine] = newRangeSet(list)
 		}
 	}
+	v.ranges.Store(&sets)
 }
 
 // rangeSet is an engine's ranges as the sorted, disjoint spans of addresses they cover, IPv4 and IPv6 apart.
@@ -412,26 +415,35 @@ func EngineNames() string {
 
 // ParseRanges reads the ranges an engine publishes for its crawlers (see Verifier.SetRanges): a JSON file in the form
 // Google, Bing and Apple publish ({"prefixes": [{"ipv4Prefix": "66.249.64.0/27"}, {"ipv6Prefix": ...}]}), or one range
-// or address a line, with # comments. A range may be no wider than a /16 (IPv4) or a /32 (IPv6).
-func ParseRanges(r io.Reader) ([]netip.Prefix, error) {
+// or address a line, with # comments. A range may be no wider than a /16 (IPv4) or a /32 (IPv6). published is the
+// file's creationTime, when its JSON gives one that reads as a time (taken as UTC when it names no zone); it is zero
+// otherwise. It says when the engine last rewrote the list, which may be long ago for a list that has not changed.
+func ParseRanges(r io.Reader) (ranges []netip.Prefix, published time.Time, err error) {
 	data, err := io.ReadAll(io.LimitReader(r, MaxRangesFile+1))
 	if err != nil {
-		return nil, err
+		return nil, time.Time{}, err
 	}
 	if len(data) > MaxRangesFile {
-		return nil, fmt.Errorf("more than %d bytes", MaxRangesFile)
+		return nil, time.Time{}, fmt.Errorf("more than %d bytes", MaxRangesFile)
 	}
 	type entry struct{ where, text string }
 	var texts []entry
 	if t := bytes.TrimSpace(data); len(t) > 0 && t[0] == '{' {
 		var doc struct {
-			Prefixes []struct {
+			CreationTime string `json:"creationTime"`
+			Prefixes     []struct {
 				IPv4 string `json:"ipv4Prefix"`
 				IPv6 string `json:"ipv6Prefix"`
 			} `json:"prefixes"`
 		}
 		if err := json.Unmarshal(t, &doc); err != nil {
-			return nil, fmt.Errorf("not the JSON form engines publish: %w", err)
+			return nil, time.Time{}, fmt.Errorf("not the JSON form engines publish: %w", err)
+		}
+		for _, layout := range []string{time.RFC3339Nano, "2006-01-02T15:04:05.999999999"} {
+			if at, err := time.Parse(layout, doc.CreationTime); err == nil {
+				published = at
+				break
+			}
 		}
 		for i, p := range doc.Prefixes {
 			texts = append(texts, entry{fmt.Sprintf("prefix %d", i+1), p.IPv4 + p.IPv6})
@@ -445,16 +457,16 @@ func ParseRanges(r io.Reader) ([]netip.Prefix, error) {
 			}
 		}
 		if err := lines.Err(); err != nil {
-			return nil, err
+			return nil, time.Time{}, err
 		}
 	}
-	ranges := make([]netip.Prefix, 0, len(texts))
+	ranges = make([]netip.Prefix, 0, len(texts))
 	for _, t := range texts {
 		p, err := netip.ParsePrefix(t.text)
 		if err != nil {
 			a, aerr := netip.ParseAddr(t.text)
 			if aerr != nil || a.Zone() != "" {
-				return nil, fmt.Errorf("%s: %q is not a range or an address", t.where, t.text)
+				return nil, time.Time{}, fmt.Errorf("%s: %q is not a range or an address", t.where, t.text)
 			}
 			p = netip.PrefixFrom(a, a.BitLen())
 		}
@@ -466,12 +478,12 @@ func ParseRanges(r io.Reader) ([]netip.Prefix, error) {
 			floor = minRangeBitsIPv4
 		}
 		if p.Bits() < floor {
-			return nil, fmt.Errorf("%s: %s is wider than a /%d", t.where, t.text, floor)
+			return nil, time.Time{}, fmt.Errorf("%s: %s is wider than a /%d", t.where, t.text, floor)
 		}
 		ranges = append(ranges, p.Masked())
 	}
 	if len(ranges) == 0 {
-		return nil, errors.New("no ranges")
+		return nil, time.Time{}, errors.New("no ranges")
 	}
-	return ranges, nil
+	return ranges, published, nil
 }

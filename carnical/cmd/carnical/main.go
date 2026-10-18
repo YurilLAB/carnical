@@ -305,9 +305,12 @@ func runFlags(usage, logs io.Writer, args []string, private map[string]string) e
 	if err != nil {
 		return fromSite(err, site, private)
 	}
-	botsPolicy, err := botPolicy(botFlag)
+	botsPolicy, crawlerLists, err := botPolicy(botFlag)
 	if err != nil {
 		return fromSite(err, site, private)
+	}
+	if crawlerLists != nil {
+		crawlerLists.logRead(log, "crawler ranges", time.Now())
 	}
 	guard, err := configureShieldWith(log, *ddos, explicit, trusted, autoBlock, alerts.source)
 	if err != nil {
@@ -487,6 +490,9 @@ func runFlags(usage, logs io.Writer, args []string, private map[string]string) e
 	stopStats := startFormatStats(log, formatInspector, *formatsStats)
 	defer stopStats()
 	alerts.start()
+	if crawlerLists != nil {
+		go crawlerLists.keepCurrent(ctx, log)
+	}
 	health := &runtimeHealth{available: func() bool { return cs == nil || *csFailOpen || !cs.Stats().Stale }}
 	log.Info("listening", slices.Concat([]any{"addr", ln.Addr().String(), "crs", crs.Version(), "mode", cfg.CRS.Mode, "paranoia", cfg.CRS.ParanoiaLevel,
 		"inbound_threshold", cfg.CRS.InboundThreshold, "tls", *certFile != "", "confined", *confine, "formats_mode", effectiveFormatsMode, "request_encoding", *requestEncoding,

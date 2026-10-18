@@ -43,6 +43,7 @@ import (
 
 	"github.com/YurilLAB/coraza/carnical/alert"
 	"github.com/YurilLAB/coraza/carnical/apiguard"
+	"github.com/YurilLAB/coraza/carnical/bots"
 	"github.com/YurilLAB/coraza/carnical/crs"
 	"github.com/YurilLAB/coraza/carnical/formats"
 	"github.com/YurilLAB/coraza/carnical/inspect"
@@ -3343,5 +3344,145 @@ func TestRuleMatchLinesNeverWaitOnTheLog(t *testing.T) {
 	}
 	if written == 0 || dropped == 0 || written+dropped != sent {
 		t.Fatalf("%d written and %d counted as dropped, want both, adding up to %d", written, dropped, sent)
+	}
+}
+
+// noDNS answers every lookup with "no such host", so that an address outside the lists is refused without the network.
+type noDNS struct{}
+
+func (noDNS) LookupAddr(context.Context, string) ([]string, error) {
+	return nil, &net.DNSError{Err: "no such host", IsNotFound: true}
+}
+
+func (noDNS) LookupNetIP(context.Context, string, string) ([]netip.Addr, error) {
+	return nil, &net.DNSError{Err: "no such host", IsNotFound: true}
+}
+
+// The crawler lists are read again when a new copy is put in place, a copy that cannot be used leaves them as they were,
+// and a list not refreshed for a week is reported once a day. Not a profile: it is the command line's files and clock.
+func TestCrawlerListsStayCurrent(t *testing.T) {
+	const listA = `{"creationTime": "2026-10-01T00:00:00", "prefixes": [{"ipv4Prefix": "66.249.64.0/27"}]}`
+	const listB = "192.0.2.0/24\n"
+	inA, inB := netip.MustParseAddr("66.249.64.1"), netip.MustParseAddr("192.0.2.1")
+	start := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
+	type step struct {
+		change func(t *testing.T, dir, path string) // what happens to the files
+		after  time.Duration                        // when, after start, the files are looked at
+		logs   []string                             // what that look logs, in order; nil for nothing
+		in     []netip.Addr                         // verified as Google's crawlers afterwards
+		out    []netip.Addr                         // not verified
+	}
+	replace := func(data string, mtime time.Time) func(*testing.T, string, string) {
+		return func(t *testing.T, dir, path string) {
+			tmp := filepath.Join(dir, ".new")
+			if err := os.WriteFile(tmp, []byte(data), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chtimes(tmp, mtime, mtime); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(tmp, path); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	for _, tt := range []struct {
+		name    string
+		written time.Time // the first copy's time
+		first   []string  // what reading it at start logs, in order; nil to not look
+		steps   []step
+	}{
+		{name: "an unchanged list is not read again", written: start, first: []string{`"msg":"crawler ranges","engine":"google"`},
+			steps: []step{{after: time.Minute, in: []netip.Addr{inA}, out: []netip.Addr{inB}}}},
+		{name: "the start-up line says what was read", written: start.Add(-50 * time.Hour),
+			first: []string{`"msg":"crawler ranges","engine":"google","file":`, `"ranges":1,"fetched":"2026-10-16T10:00:00Z","age_days":2,"published":"2026-10-01T00:00:00Z"`}},
+		{name: "a new copy moved into place replaces the list", written: start, steps: []step{{
+			change: replace(listB, start.Add(time.Minute)), after: 2 * time.Minute,
+			logs: []string{`"msg":"crawler ranges reloaded","engine":"google"`}, in: []netip.Addr{inB}, out: []netip.Addr{inA}}}},
+		{name: "a copy that does not parse leaves the list as it was, and is reported once", written: start, steps: []step{
+			{change: replace(`{"prefixes": [{"ipv4Prefix": "10.0.0.0/8"}]}`, start.Add(time.Minute)), after: 2 * time.Minute,
+				logs: []string{`"msg":"crawler ranges not reloaded","error":"google: prefix 1: 10.0.0.0/8 is wider than a /16"`},
+				in:   []netip.Addr{inA}},
+			{after: 3 * time.Minute, in: []netip.Addr{inA}},
+			{change: replace(listB, start.Add(4*time.Minute)), after: 5 * time.Minute,
+				logs: []string{`"msg":"crawler ranges reloaded"`}, in: []netip.Addr{inB}, out: []netip.Addr{inA}}}},
+		{name: "a removed list leaves the list as it was", written: start, steps: []step{{
+			change: func(t *testing.T, _, path string) { os.Remove(path) }, after: 2 * time.Minute,
+			logs: []string{`"msg":"crawler ranges not reloaded","error":"google: lstat `}, in: []netip.Addr{inA}}}},
+		{name: "a symbolic link put in its place is refused", written: start, steps: []step{{
+			change: func(t *testing.T, dir, path string) {
+				target := filepath.Join(dir, "elsewhere.txt")
+				if err := os.WriteFile(target, []byte(listB), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				os.Remove(path)
+				if err := os.Symlink(target, path); err != nil {
+					t.Skip("no symbolic links here:", err)
+				}
+			}, after: 2 * time.Minute,
+			logs: []string{`"msg":"crawler ranges not reloaded","error":"google: must be a regular file`}, in: []netip.Addr{inA}, out: []netip.Addr{inB}}}},
+		{name: "a list a week old is reported at start, then once a day", written: start.Add(-8 * 24 * time.Hour),
+			first: []string{`"msg":"crawler ranges"`, `"msg":"crawler ranges not refreshed","engine":"google"`, `"age_days":8`},
+			steps: []step{
+				{after: time.Hour, in: []netip.Addr{inA}},
+				{after: 25 * time.Hour, logs: []string{`"msg":"crawler ranges not refreshed"`, `"age_days":9`}},
+				{change: replace(listB, start.Add(26*time.Hour)), after: 26 * time.Hour,
+					logs: []string{`"msg":"crawler ranges reloaded"`}, in: []netip.Addr{inB}}}},
+		{name: "a list six days old is reported only once it is a week old", written: start.Add(-6 * 24 * time.Hour), first: []string{`"msg":"crawler ranges"`},
+			steps: []step{{after: 23 * time.Hour}, {after: 25 * time.Hour, logs: []string{`"msg":"crawler ranges not refreshed"`, `"age_days":7`}}}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "common-crawlers.json")
+			replace(listA, tt.written)(t, dir, path)
+			v := bots.NewVerifier(noDNS{}, 0, 0)
+			lists, err := readCrawlerLists("google="+path, v)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var out bytes.Buffer
+			log := slog.New(slog.NewJSONHandler(&out, nil))
+			expect := func(when string, want []string) {
+				t.Helper()
+				got := out.String()
+				out.Reset()
+				rest := got
+				for _, w := range want {
+					i := strings.Index(rest, w)
+					if i < 0 {
+						t.Fatalf("%s: the log lacks %q (in order):\n%s", when, w, got)
+					}
+					rest = rest[i+len(w):]
+				}
+				if want == nil && got != "" {
+					t.Fatalf("%s: logged %s, want nothing", when, got)
+				}
+				if lines := strings.Count(got, "\n"); len(want) > 0 && lines > len(want) {
+					t.Fatalf("%s: %d lines, want at most %d:\n%s", when, lines, len(want), got)
+				}
+			}
+			lists.logRead(log, "crawler ranges", start)
+			if tt.first != nil {
+				expect("at start", tt.first)
+			}
+			out.Reset()
+			for i, s := range tt.steps {
+				if s.change != nil {
+					s.change(t, dir, path)
+				}
+				lists.refresh(log, start.Add(s.after))
+				expect(fmt.Sprintf("step %d", i+1), s.logs)
+				for _, a := range s.in {
+					if !v.Verify(context.Background(), a, bots.EngineGoogle) {
+						t.Fatalf("step %d: %v is not verified", i+1, a)
+					}
+				}
+				for _, a := range s.out {
+					if v.Verify(context.Background(), a, bots.EngineGoogle) {
+						t.Fatalf("step %d: %v is verified", i+1, a)
+					}
+				}
+			}
+		})
 	}
 }

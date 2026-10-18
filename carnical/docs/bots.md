@@ -158,7 +158,7 @@ by DNS. Name an engine twice to join two of its lists:
 
 ```sh
 carnical start -bots fake,scanner \
-  -bots-ranges amazon=/etc/carnical/amazonbot.json,google=/etc/carnical/common-crawlers.json,google-special=/etc/carnical/special-crawlers.json
+  -bots-ranges amazon=/var/lib/carnical/ranges/amazonbot.json,google=/var/lib/carnical/ranges/common-crawlers.json,google-special=/var/lib/carnical/ranges/special-crawlers.json
 ```
 
 | Engine | List |
@@ -168,10 +168,11 @@ carnical start -bots fake,scanner \
 | Bing | `www.bing.com/toolbox/bingbot.json` |
 | Apple | `search.developer.apple.com/applebot.json` |
 
-The files are read when Carnical starts, so restart it after refreshing them. Do not give Google's
-`user-triggered-fetchers*.json`: those fetchers would pass as crawlers, which DNS refuses. A file
-must be a regular file (no symlinks) of at most 4 MiB, and a range no wider than a /16 (IPv4) or a
-/32 (IPv6), so a mistake cannot verify the whole Internet as an engine's.
+Do not give Google's `user-triggered-fetchers*.json`: those fetchers would pass as crawlers, which
+DNS refuses. A file must be a regular file (no symlinks) of at most 4 MiB, and a range no wider than
+a /16 (IPv4) or a /32 (IPv6), so a mistake cannot verify the whole Internet as an engine's. Finding
+an address in the lists takes a binary search, however long they are
+([ADR-0088](../../docs/adr/0088-carnical-indexed-crawler-ranges.md)).
 DuckDuckGo, Qwant, Mojeek, Sogou and the other engines that publish no DNS names stay `search`.
 
 How the check behaves:
@@ -192,6 +193,43 @@ How the check behaves:
 - An impostor sending from many addresses cannot push verified crawlers out of the cache: when it
   fills, expired answers go first, then impostors', and verified ones last.
 - Carnical needs outbound DNS for this. `-confine` allows port 53 by default.
+
+### Keeping the lists current
+
+Engines move their crawlers, so a list goes out of date. Carnical keeps the lists current while it
+runs ([ADR-0089](../../docs/adr/0089-carnical-crawler-lists-kept-current.md)):
+
+- At start it logs `crawler ranges` for each file:
+  - the engine, the file and how many ranges it holds;
+  - `fetched`, the file's modification time, and `age_days`;
+  - `published`, the engine's own `creationTime`, when the JSON has one. This is when the engine
+    last rewrote the list: Bing's says 2024, because its list has not changed.
+- Every minute it looks at the files. When one has been replaced or changed, it reads them all
+  again and logs `crawler ranges reloaded`. Write a new copy beside the old one and move it into
+  place (`mv`), so that a half-written file is never read.
+- A file that cannot be used leaves the lists as they were. That includes a missing file, a
+  symbolic link, a range that is too wide, or a file that does not parse. Carnical logs
+  `crawler ranges not reloaded` with the reason, once, and keeps checking.
+- A file last written more than 7 days ago is reported as `crawler ranges not refreshed`: at start,
+  then at most once a day. The age is counted from the file's modification time, so it measures
+  when the list was last fetched, not when the engine last changed it.
+- Under `-confine`, Carnical can read a replaced file only from a directory listed in
+  `-confine-read`. Keep the lists in a directory of their own, such as `/var/lib/carnical/ranges`,
+  and list that directory. Without it, the lists read at start stay in use and each attempt is
+  reported once.
+
+Changing the lists needs no restart, so the flood shield's learnt baseline, its bans and its known
+clients are kept.
+
+[`deploy/ranges/refresh.sh`](../deploy/ranges/refresh.sh) fetches Google's, Bing's and Apple's lists
+over HTTPS. It checks each with `carnical -check` and moves each one that passes into place. A list
+that fails to download or to check is kept as it was, and the script exits 1.
+`deploy/systemd/carnical-ranges.timer` runs it once a day; see the
+[deployment recipe](../deploy/README.md). Amazon publishes Amazonbot's addresses only on a web page,
+so copy them into `amazonbot.json` by hand.
+
+Whoever can write the lists decides which addresses pass as a search engine. Keep the directory
+writable by root only, as the recipe's `tmpfiles.d` line does; the host audit checks this.
 
 ## Counting
 

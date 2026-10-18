@@ -157,5 +157,6 @@ Superseding does not delete the old record. Set its status and let the history s
 | [0086](0086-carnical-short-commands-and-setup-profiles.md) | — | — | unreleased (post-v3.8.1) | F | Short commands and setup profiles |
 | [0087](0087-carnical-bot-policy-and-counts.md) | — | — | unreleased (post-v3.8.1) | F | Bot policy and bot and people counts |
 | [0088](0088-carnical-indexed-crawler-ranges.md) | — | — | unreleased (post-v3.8.1) | ⚡ | Indexed lookup of published crawler ranges |
+| [0089](0089-carnical-crawler-lists-kept-current.md) | — | — | unreleased (post-v3.8.1) | F | Crawler address lists kept current while the edge runs |
 
 Categories: **F**eature · **P**arity · **⚡** Perf · **R**efactor
