@@ -1,7 +1,7 @@
 # Validation record: 18 October 2026
 
 This record measures revision `deb80b41` of `edge-crs`, after the bot policy, intrusion alerts
-and auto-block work; the sections on varied agents, application traffic, independent corpora, the crawler list updater, the real applications, the tuning and the browsers behind proxies name their own. The local runs
+and auto-block work; the sections on varied agents, application traffic, independent corpora, the crawler list updater, the real applications, the tuning, the browsers behind proxies, and the code hosts and WordPress editor name their own. The local runs
 used a cloud container (Ubuntu 24.04.5, Linux 6.18.44, Go 1.26.9, running as root, no IPv6). The CI runs used GitHub's Ubuntu 24.04 runners. The counts
 belong to these runs. Attacks targeted isolated local origins.
 
@@ -563,6 +563,44 @@ Found and fixed: an exclusion removed only the CRS rules of its groups. A field 
 or `lfi` was still refused by Carnical's local shell and traversal rules (5006003, 5006006). In
 the first tuned run, that left every Gitea issue and comment refused. Each group now names its
 local rules too ([rule groups](config-and-policy.md#rule-groups)).
+
+## Code hosts and the WordPress editor
+
+Two of the refusals that no site tuning could fix now have settings: `-allowed-content-types` and
+`-allowed-extensions` ([ADR-0090](../../docs/adr/0090-carnical-widened-crs-request-policy.md)),
+and the block editor under `-wordpress` ([ADR-0091](../../docs/adr/0091-carnical-wordpress-block-editor.md)).
+Both were measured in block mode against a fresh application, before (`43c8a268`) and after.
+
+Gitea 1.24, with `git` 2 over HTTP:
+
+| | Clone | Push | Pull | `.sh` and `.sql` pages |
+| --- | --- | --- | --- | --- |
+| Before | refused (920420) | not reached | not reached | 403 (920440) |
+| Git's two content types allowed | served | refused (920250, 920270) | served | 403 |
+| Same, after a raw body for added types | served | served | served | 403 |
+| `-allowed-extensions .sh,.sql` | | | | served |
+
+- The push was refused at first because Coraza reads a body of an unknown type as a form, so the
+  binary pack looked like malformed arguments. The fix reads a body of an added type whole, as
+  ModSecurity does.
+- A clone URL ending in `.git` is still refused by rule 930130 (`.git/` in a path). The same URL
+  without `.git` works.
+
+WordPress 6.8, saving with the editor's own `wp.apiFetch` (a draft, publishing, an update, moving
+to the trash):
+
+| Carnical | Pretty links | Plain links (`?rest_route=`) |
+| --- | --- | --- |
+| Before, with `-wordpress` | 0 of 4 (5000044) | 0 of 4 (5000044) |
+| After, without `-wordpress` | 0 of 4 (5000044) | |
+| After, with the override only | 1 of 4 (941180 on block markup) | 1 of 4 (941180) |
+| After, with `-wordpress` | 4 of 4, no rule matched | 4 of 4, no rule matched |
+
+The full WordPress scenario of [Real applications in a browser](#real-applications-in-a-browser)
+gave 10 of 19 with `-wordpress` both before and after. Its editor steps save posts that quote
+shell commands, SQL and a `<script>` embed. Those are now refused by the content rules (932, 941,
+930), not by 5000044 or 941180, and need the exclusions shown under
+[Tuning a site](#tuning-a-site-and-keeping-formats-blocking).
 
 ## Alerts and auto-block under sustained hostile traffic
 
