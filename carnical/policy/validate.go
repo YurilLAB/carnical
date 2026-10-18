@@ -8,6 +8,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/YurilLAB/coraza/carnical/crs"
 )
 
 // Validate checks every field of the policy, on its normalised form (see Normalize), and returns an *Error that lists what is
@@ -48,6 +50,7 @@ func (p Policy) validate() (rendered, error) {
 
 	validateBody(&c, q.Body)
 	validateMethods(&c, q.AllowedMethods)
+	validateCRSLists(&c, q.AllowedContentTypes, q.AllowedExtensions)
 	if len(q.AllowedHosts) > MaxHosts {
 		c.add("allowed_hosts", "at most %d names", MaxHosts)
 	}
@@ -159,6 +162,25 @@ func validateMethods(c *checker, methods []string) {
 			c.add(fmt.Sprintf("allowed_methods[%d]", i), "%q is not an HTTP method (upper-case letters and hyphens)", safeName(m))
 		case m == "CONNECT" || m == "TRACE":
 			c.add(fmt.Sprintf("allowed_methods[%d]", i), "%s is not allowed: CONNECT is a proxy method and TRACE reflects a request back to the page that sent it", m)
+		}
+	}
+}
+
+func validateCRSLists(c *checker, types, extensions []string) {
+	if len(types) > crs.MaxContentTypes {
+		c.add("allowed_content_types", "at most %d content types", crs.MaxContentTypes)
+	}
+	for i, t := range types {
+		if !crs.IsContentType(t) {
+			c.add(fmt.Sprintf("allowed_content_types[%d]", i), "%q is not a content type without parameters, as in application/x-git-upload-pack-request", safeName(t))
+		}
+	}
+	if len(extensions) > crs.MaxExtensions {
+		c.add("allowed_extensions", "at most %d extensions", crs.MaxExtensions)
+	}
+	for i, e := range extensions {
+		if !crs.IsRestrictedExtension(e) {
+			c.add(fmt.Sprintf("allowed_extensions[%d]", i), "%q is not an extension the Core Rule Set restricts (a dot and the extension, as in .sh)", safeName(e))
 		}
 	}
 }

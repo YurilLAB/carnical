@@ -155,6 +155,33 @@ func TestValidateMethods(t *testing.T) {
 	runRows(t, 15, rows)
 }
 
+func TestValidateCRSLists(t *testing.T) {
+	types := func(v ...string) func(*Policy) { return func(p *Policy) { p.AllowedContentTypes = v } }
+	exts := func(v ...string) func(*Policy) { return func(p *Policy) { p.AllowedExtensions = v } }
+	many := make([]string, 33)
+	for i := range many {
+		many[i] = fmt.Sprintf("application/x-%d", i)
+	}
+	rows := []vrow{
+		{"git's content types", types("application/x-git-upload-pack-request", "application/x-git-receive-pack-request"), ""},
+		{"upper case is made lower case", types("Application/X-Git-Upload-Pack-Request"), ""},
+		{"32 content types", types(many[:32]...), ""},
+		{"33 content types", types(many...), "allowed_content_types"},
+		{"a content type with parameters", types("text/plain; charset=utf-8"), "allowed_content_types"},
+		{"a content type with no subtype", types("application"), "allowed_content_types"},
+		{"two content types in one", types("a/b|c/d"), "allowed_content_types"},
+		{"a content type with a quote", types("a/b'"), "allowed_content_types"},
+		{"a content type with a macro", types("a/%{tx.0}"), "allowed_content_types"},
+		{"shell and SQL files", exts(".sh", ".sql"), ""},
+		{"upper case is made lower case", exts(".SH"), ""},
+		{"an extension the rule set does not restrict", exts(".html"), "allowed_extensions"},
+		{"an extension without its dot", exts("sh"), "allowed_extensions"},
+		{"an extension with its slash", exts(".sh/"), "allowed_extensions"},
+		{"two extensions in one", exts(".sh/ .sql"), "allowed_extensions"},
+	}
+	runRows(t, 15, rows)
+}
+
 func TestValidateHosts(t *testing.T) {
 	set := func(h ...string) func(*Policy) { return func(p *Policy) { p.AllowedHosts = h } }
 	label63, label64 := strings.Repeat("a", 63), strings.Repeat("a", 64)

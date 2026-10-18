@@ -307,6 +307,8 @@ name cannot appear together. Property names inside `api` and `body_formats` rema
 | `body.max_upload_bytes` | 1 KiB to 64 MiB | 1 MiB. Also the size of the largest upload (read whole into memory per request in flight, which is why 64 MiB is the ceiling) |
 | `body.max_form_bytes` | 1 KiB to 1 MiB, at most the upload limit | 128 KiB. The rules cost time in proportion to a body; the evaluation budget cuts a request off long before 1 MiB is useful |
 | `allowed_methods` | 1 to 20 of `[A-Z][A-Z-]{0,19}`, never `CONNECT` or `TRACE` | `GET HEAD OPTIONS POST` |
+| `allowed_content_types` | up to 32 lower-case `type/subtype`, no parameters | none: the Core Rule Set's list (rule 920420). Added to it. A body of an added type that is not JSON or XML is kept whole for the few rules that read the raw body, not split into arguments |
+| `allowed_extensions` | up to 32 extensions the Core Rule Set restricts, such as `.sh` | none. Taken off its list (rule 920440) |
 | `allowed_hosts` | 0 to 100 DNS names; empty means any name | none. No wildcards (the proxy compares exactly), no ports, punycode for non-ASCII |
 | `rule_groups` | map from `sqli xss lfi rfi rce php ssrf java scanner protocol` to `on`, `log`, `off` | all on |
 | `exclusions` | up to 100 of `{path, categories (1 to 10 groups), targets (0 to 8), note}` | none |
@@ -449,7 +451,18 @@ What an exclusion cannot reach, measured on real applications (see the [validati
 record](validation-2026-10-18.md#tuning-a-site-and-keeping-formats-blocking)): the proxy's own
 refusals, such as 5000044 for `X-HTTP-Method-Override`, which WordPress's block editor sends on
 every save; rule 920420's list of request types (git over HTTP); and rule 920440's restricted file
-extensions, which reads the file name (`.sh`, `.sql`), not a target an exclusion names.
+extensions, which reads the file name (`.sh`, `.sql`), not a target an exclusion names. The two
+lists have settings of their own, `allowed_content_types` and `allowed_extensions`. A code host
+such as Gitea needs:
+
+```json
+{"allowed_content_types":["application/x-git-upload-pack-request","application/x-git-receive-pack-request"],
+ "allowed_extensions":[".sh",".sql"]}
+```
+
+With these, `git clone`, `push` and `pull` work, but at the clone URL without `.git`
+(`https://git.example.com/alice/notes`): rule 930130 still refuses `.git/` in a path, which is how
+an exposed repository is found.
 
 ### Custom rules, and why no input can write anything else
 

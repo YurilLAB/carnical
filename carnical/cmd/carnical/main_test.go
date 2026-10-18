@@ -3125,10 +3125,12 @@ func TestRecoveredPolicyKeepsOperatorSettings(t *testing.T) {
 	flags.CRS.OutboundThreshold = 9
 	flags.CRS.InspectResponses = true
 	flags.CRS.AllowedMethods = []string{"GET"}
+	flags.CRS.AllowedContentTypes = []string{"application/x-flag"}
+	flags.CRS.AllowedExtensions = []string{".sh"}
 	flags.CRS.UploadDir = "private-uploads"
 	flags.CRS.LocalRulesOff = []int{5006001}
 	set := map[string]bool{}
-	for _, name := range strings.Fields("hosts allow-encoded-slash allow-path-params deny-headers wordpress allow-xmlrpc login-per-minute allow-script-names allow-script-content keep-banners keep-caching max-form-body max-body mode paranoia detection-paranoia inbound-threshold outbound-threshold inspect-responses allowed-methods") {
+	for _, name := range strings.Fields("hosts allow-encoded-slash allow-path-params deny-headers wordpress allow-xmlrpc login-per-minute allow-script-names allow-script-content keep-banners keep-caching max-form-body max-body mode paranoia detection-paranoia inbound-threshold outbound-threshold inspect-responses allowed-methods allowed-content-types allowed-extensions") {
 		set[name] = true
 	}
 	sp := &sitePolicy{compiled: policy.Compiled{CRS: crs.DefaultSettings(), MaxFormBody: 8192, DenyHeaders: []string{"x-policy"}}}

@@ -185,6 +185,12 @@ func applyPolicy(cfg *proxy.Config, flagsCfg proxy.Config, set map[string]bool, 
 	if set["allowed-methods"] {
 		cfg.CRS.AllowedMethods = slices.Clone(flagsCfg.CRS.AllowedMethods)
 	}
+	if set["allowed-content-types"] {
+		cfg.CRS.AllowedContentTypes = slices.Clone(flagsCfg.CRS.AllowedContentTypes)
+	}
+	if set["allowed-extensions"] {
+		cfg.CRS.AllowedExtensions = slices.Clone(flagsCfg.CRS.AllowedExtensions)
+	}
 }
 
 // normalizeHeaderNames writes header names the way the policy does (lower case, "-" for "_"), so that the union of the two lists

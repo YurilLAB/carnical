@@ -30,6 +30,13 @@ func (p Policy) Normalize() Policy {
 	}
 	q.AllowedMethods = sortedUnique(mapStrings(p.AllowedMethods, strings.ToUpper))
 	q.AllowedHosts = sortedUnique(mapStrings(p.AllowedHosts, strings.ToLower))
+	q.AllowedContentTypes, q.AllowedExtensions = nil, nil // absent, so that a policy without them keeps its hash
+	if len(p.AllowedContentTypes) > 0 {
+		q.AllowedContentTypes = sortedUnique(mapStrings(p.AllowedContentTypes, lowerTrimmed))
+	}
+	if len(p.AllowedExtensions) > 0 {
+		q.AllowedExtensions = sortedUnique(mapStrings(p.AllowedExtensions, lowerTrimmed))
+	}
 	q.DenyHeaders = sortedUnique(mapStrings(p.DenyHeaders, func(s string) string {
 		return strings.ReplaceAll(strings.ToLower(strings.TrimSpace(s)), "_", "-")
 	}))
@@ -123,6 +130,8 @@ func mapStrings(in []string, f func(string) string) []string {
 	}
 	return out
 }
+
+func lowerTrimmed(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
 
 func sortedUnique(in []string) []string {
 	out := make([]string, len(in))

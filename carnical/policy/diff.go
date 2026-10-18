@@ -166,6 +166,18 @@ func (d *differ) methods(a, b Policy) {
 	for _, m := range removed {
 		d.add("method.removed", "allowed_methods", false, "The method %s is no longer accepted.", m)
 	}
+	for _, t := range setDiff(b.AllowedContentTypes, a.AllowedContentTypes) {
+		d.add("content_type.added", "allowed_content_types", true, "Requests of the type %s are now accepted.", t)
+	}
+	for _, t := range setDiff(a.AllowedContentTypes, b.AllowedContentTypes) {
+		d.add("content_type.removed", "allowed_content_types", false, "Requests of the type %s are no longer accepted.", t)
+	}
+	for _, e := range setDiff(b.AllowedExtensions, a.AllowedExtensions) {
+		d.add("extension.allowed", "allowed_extensions", true, "Files ending in %s can now be requested.", e)
+	}
+	for _, e := range setDiff(a.AllowedExtensions, b.AllowedExtensions) {
+		d.add("extension.restricted", "allowed_extensions", false, "Files ending in %s are refused again.", e)
+	}
 }
 
 func (d *differ) hosts(a, b Policy) {

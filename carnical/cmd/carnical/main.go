@@ -99,6 +99,8 @@ func runFlags(usage, logs io.Writer, args []string, private map[string]string) e
 	apiSpec := flags.String("api-spec", "", "local OpenAPI JSON/YAML contract; scalar/array parameters and JSON bodies (no fetching or learning)")
 	apiSpecMode := flags.String("api-spec-mode", "block", "OpenAPI contract action: block or monitor (block requires formats block)")
 	methods := flags.String("allowed-methods", "", "comma-separated HTTP methods to allow (default: the CRS list GET HEAD POST OPTIONS)")
+	contentTypes := flags.String("allowed-content-types", "", "comma-separated request content types to accept besides the CRS list, such as application/x-git-upload-pack-request")
+	extensions := flags.String("allowed-extensions", "", "comma-separated file extensions to take off the CRS list of restricted ones, such as .sh,.sql")
 	trustedList := flags.String("trusted-proxies", "", "comma-separated addresses or ranges that may supply X-Forwarded-For")
 	originAllow := flags.String("origin-allow", "", "comma-separated addresses or ranges the upstream may be at even though they are not public (default: public addresses only)")
 	hosts := flags.String("hosts", "", "comma-separated names this site answers to; any other Host gets 421 (default: any)")
@@ -269,6 +271,16 @@ func runFlags(usage, logs io.Writer, args []string, private map[string]string) e
 	if *methods != "" {
 		for _, m := range strings.Split(*methods, ",") {
 			settings.AllowedMethods = append(settings.AllowedMethods, strings.ToUpper(strings.TrimSpace(m)))
+		}
+	}
+	if *contentTypes != "" {
+		for _, c := range strings.Split(*contentTypes, ",") {
+			settings.AllowedContentTypes = append(settings.AllowedContentTypes, strings.ToLower(strings.TrimSpace(c)))
+		}
+	}
+	if *extensions != "" {
+		for _, e := range strings.Split(*extensions, ",") {
+			settings.AllowedExtensions = append(settings.AllowedExtensions, strings.ToLower(strings.TrimSpace(e)))
 		}
 	}
 

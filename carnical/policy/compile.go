@@ -83,6 +83,8 @@ func Compile(p Policy) (Compiled, error) {
 			RequestBodyLimit:       q.Body.MaxUploadBytes,
 			InspectResponses:       q.Responses.Inspect,
 			AllowedMethods:         append([]string(nil), q.AllowedMethods...),
+			AllowedContentTypes:    append([]string(nil), q.AllowedContentTypes...),
+			AllowedExtensions:      append([]string(nil), q.AllowedExtensions...),
 			Before:                 out.before,
 			After:                  out.after,
 		},
@@ -116,6 +118,8 @@ func (c Compiled) ApplyTo(cfg *proxy.Config) {
 	cfg.MaxFormBody = c.MaxFormBody
 	cfg.CRS = c.CRS
 	cfg.CRS.AllowedMethods = append([]string(nil), c.CRS.AllowedMethods...)
+	cfg.CRS.AllowedContentTypes = append([]string(nil), c.CRS.AllowedContentTypes...)
+	cfg.CRS.AllowedExtensions = append([]string(nil), c.CRS.AllowedExtensions...)
 	cfg.CRS.UploadDir = uploadDir
 	cfg.CRS.DisableLocalRules, cfg.CRS.LocalRulesOff, cfg.CRS.LocalRulesOn = localOff, localRulesOff, localRulesOn
 }

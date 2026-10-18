@@ -17,6 +17,8 @@ func richBase() Policy {
 	p.Threshold = nil
 	p.AllowedMethods = []string{"GET", "HEAD", "OPTIONS", "POST", "PUT"}
 	p.AllowedHosts = []string{"example.test", "www.example.test"}
+	p.AllowedContentTypes = []string{"application/x-git-upload-pack-request"}
+	p.AllowedExtensions = []string{".sh"}
 	p.RuleGroups = map[string]GroupState{"xss": GroupLog, "lfi": GroupOff}
 	p.Exclusions = []Exclusion{{Path: "/editor/", Categories: []string{"xss"}, Targets: []string{"arg:content"}}, {Path: "/api/", Categories: []string{"rce", "lfi"}}}
 	p.CustomRules = []CustomRule{
@@ -89,6 +91,10 @@ func TestWeakensReportsEachKindOfWeakeningAndOnlyThose(t *testing.T) {
 		{"the upload limit raised", func(p *Policy) { p.Body.MaxUploadBytes *= 2 }, []string{"body.upload_limit_raised"}, nil},
 		{"the form limit raised", func(p *Policy) { p.Body.MaxFormBytes *= 2 }, []string{"body.form_limit_raised"}, nil},
 		{"a method added", func(p *Policy) { p.AllowedMethods = append(p.AllowedMethods, "PATCH") }, []string{"method.added"}, nil},
+		{"a content type accepted", func(p *Policy) {
+			p.AllowedContentTypes = append(p.AllowedContentTypes, "application/x-git-receive-pack-request")
+		}, []string{"content_type.added"}, nil},
+		{"an extension allowed", func(p *Policy) { p.AllowedExtensions = append(p.AllowedExtensions, ".sql") }, []string{"extension.allowed"}, nil},
 		{"a host added", func(p *Policy) { p.AllowedHosts = append(p.AllowedHosts, "shop.example.test") }, []string{"host.added"}, nil},
 		{"the host list emptied", func(p *Policy) { p.AllowedHosts = nil }, []string{"hosts.opened"}, nil},
 		{"script names in uploads allowed", func(p *Policy) { p.Uploads.AllowScriptNames = true }, []string{"uploads.script_names_allowed"}, nil},
@@ -149,6 +155,8 @@ func TestWeakensReportsEachKindOfWeakeningAndOnlyThose(t *testing.T) {
 		{"the upload limit lowered", func(p *Policy) { p.Body.MaxUploadBytes /= 2 }, nil, []string{"body.upload_limit_lowered"}},
 		{"the form limit lowered", func(p *Policy) { p.Body.MaxFormBytes /= 2 }, nil, []string{"body.form_limit_lowered"}},
 		{"a method removed", func(p *Policy) { p.AllowedMethods = []string{"GET", "HEAD", "OPTIONS", "POST"} }, nil, []string{"method.removed"}},
+		{"a content type no longer accepted", func(p *Policy) { p.AllowedContentTypes = nil }, nil, []string{"content_type.removed"}},
+		{"an extension restricted again", func(p *Policy) { p.AllowedExtensions = nil }, nil, []string{"extension.restricted"}},
 		{"a host removed", func(p *Policy) { p.AllowedHosts = []string{"example.test"} }, nil, []string{"host.removed"}},
 		{"WordPress protections switched on", func(p *Policy) { p.WordPress.Enabled = true }, nil, nil},
 		{"xmlrpc.php refused", func(p *Policy) { p.WordPress.AllowXMLRPC = false }, nil, nil},
@@ -376,7 +384,7 @@ func TestEveryCodeThatWeakensIsStable(t *testing.T) {
 	// The codes are an interface to the web UI; this is the list, so that a rename is a deliberate act.
 	want := []string{
 		"allow_ip.added", "allow_path.added", "api.config_changed", "api.mode_lowered", "block_ip.removed", "body.form_limit_raised", "body.upload_limit_raised",
-		"body_formats.config_changed", "custom_rule.changed", "custom_rule.relaxed", "custom_rule.removed", "deny_header.removed", "exclusion.added",
+		"body_formats.config_changed", "content_type.added", "custom_rule.changed", "custom_rule.relaxed", "custom_rule.removed", "deny_header.removed", "exclusion.added", "extension.allowed",
 		"framework.next_action_allowed", "host.added", "hosts.opened", "method.added", "mode.lowered", "outbound_threshold.raised", "paranoia.lowered", "paths.encoded_slash_allowed",
 		"paths.path_params_allowed", "responses.banners_kept", "responses.caching_kept", "responses.inspection_disabled", "rule_group.log", "rule_group.off",
 		"threshold.raised", "uploads.script_content_allowed", "uploads.script_names_allowed", "vpatch.software_removed", "vpatch.tier_removed",
@@ -393,6 +401,8 @@ func TestEveryCodeThatWeakensIsStable(t *testing.T) {
 		func(p *Policy) { p.CustomRules = p.CustomRules[1:] }, func(p *Policy) { p.CustomRules[0].Action = ActionLog }, func(p *Policy) { p.CustomRules[0].Value = "x" },
 		func(p *Policy) { p.AllowIPs = append(p.AllowIPs, "192.0.2.77") }, func(p *Policy) { p.BlockIPs = nil }, func(p *Policy) { p.AllowPaths = append(p.AllowPaths, "/p/") },
 		func(p *Policy) { p.Body.MaxUploadBytes *= 2 }, func(p *Policy) { p.Body.MaxFormBytes *= 2 }, func(p *Policy) { p.AllowedMethods = append(p.AllowedMethods, "PATCH") },
+		func(p *Policy) { p.AllowedContentTypes = append(p.AllowedContentTypes, "application/x-new") },
+		func(p *Policy) { p.AllowedExtensions = append(p.AllowedExtensions, ".sql") },
 		func(p *Policy) { p.AllowedHosts = append(p.AllowedHosts, "n.test") }, func(p *Policy) { p.AllowedHosts = nil },
 		func(p *Policy) { p.Uploads.AllowScriptNames, p.Uploads.AllowScriptContent = true, true },
 		func(p *Policy) { p.Paths.AllowEncodedSlash, p.Paths.AllowPathParams = true, true },

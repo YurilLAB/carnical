@@ -133,6 +133,18 @@ func TestSettingsAreValidated(t *testing.T) {
 		"a default rule as stricter": func(s *crs.Settings) { s.LocalRulesOn = []int{5006012} },
 		"an unknown stricter rule":   func(s *crs.Settings) { s.LocalRulesOn = []int{5006101, 5006199} },
 		"a rule both on and off":     func(s *crs.Settings) { s.LocalRulesOn, s.LocalRulesOff = []int{5006101}, []int{5006101} },
+		"a content type with parameters": func(s *crs.Settings) {
+			s.AllowedContentTypes = []string{"application/json; charset=utf-8"}
+		},
+		"an upper-case content type":         func(s *crs.Settings) { s.AllowedContentTypes = []string{"Application/X-Thing"} },
+		"two content types joined by a pipe": func(s *crs.Settings) { s.AllowedContentTypes = []string{"a/b|c/d"} },
+		"a content type with a quote":        func(s *crs.Settings) { s.AllowedContentTypes = []string{"a/b'"} },
+		"a content type with no subtype":     func(s *crs.Settings) { s.AllowedContentTypes = []string{"application"} },
+		"33 content types":                   func(s *crs.Settings) { s.AllowedContentTypes = slices.Repeat([]string{"a/b"}, 33) },
+		"an extension the CRS allows":        func(s *crs.Settings) { s.AllowedExtensions = []string{".html"} },
+		"an extension without its dot":       func(s *crs.Settings) { s.AllowedExtensions = []string{"sh"} },
+		"an upper-case extension":            func(s *crs.Settings) { s.AllowedExtensions = []string{".SH"} },
+		"33 extensions":                      func(s *crs.Settings) { s.AllowedExtensions = slices.Repeat([]string{".sh"}, 33) },
 	} {
 		s := good
 		change(&s)
@@ -158,6 +170,11 @@ func TestSettingsAreValidated(t *testing.T) {
 		"one stricter rule on": func(s *crs.Settings) { s.LocalRulesOn, s.LocalRulesOff = []int{5006102}, []int{5006101} },
 		"site names":           func(s *crs.Settings) { s.SiteHosts = []string{"shop.example.test", "192.0.2.7", "[2001:db8::1]"} },
 		"256 site names":       func(s *crs.Settings) { s.SiteHosts = slices.Repeat([]string{"shop.example.test"}, 256) },
+		"git's content types": func(s *crs.Settings) {
+			s.AllowedContentTypes = []string{"application/x-git-upload-pack-request", "application/x-git-receive-pack-request"}
+		},
+		"a content type the CRS allows": func(s *crs.Settings) { s.AllowedContentTypes = []string{"application/json"} },
+		"shell and SQL pages":           func(s *crs.Settings) { s.AllowedExtensions = []string{".sh", ".sql"} },
 	} {
 		s := good
 		change(&s)
@@ -556,16 +573,51 @@ func TestAThresholdOfOneBlocksWhatTheDefaultTolerates(t *testing.T) {
 	}
 }
 
-func TestOnlyAllowedMethodsPass(t *testing.T) {
-	plain, _ := serve(t, crs.DefaultSettings())
-	api := crs.DefaultSettings()
-	api.AllowedMethods = []string{"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}
-	rest, _ := serve(t, api)
-	if got := do(t, plain, "PUT", "/item/1", "application/json", `{"a":1}`, nil); got != 403 {
-		t.Errorf("PUT with the CRS default list: %d, want 403", got)
+// The CRS's HTTP policy (rules 911100, 920420 and 920440) is the site's to widen, one list at a time.
+func TestTheSiteWidensTheHTTPPolicy(t *testing.T) {
+	git, jsonAPI := "application/x-git-upload-pack-request", "application/vnd.api+json"
+	allow := func(types ...string) func(*crs.Settings) {
+		return func(s *crs.Settings) { s.AllowedContentTypes = types }
 	}
-	if got := do(t, rest, "PUT", "/item/1", "application/json", `{"a":1}`, nil); got != 200 {
-		t.Errorf("PUT with PUT allowed: %d, want 200", got)
+	sh := func(s *crs.Settings) { s.AllowedExtensions = []string{".sh"} }
+	pkt := "0032want 0123456789abcdef0123456789abcdef01234567\n00000009done\n\x00\xff\xfe"
+	tests := []struct {
+		name                     string
+		change                   func(*crs.Settings)
+		method, target, ct, body string
+		want                     int
+	}{
+		{"PUT with the CRS methods", nil, "PUT", "/item/1", "application/json", `{"a":1}`, 403},
+		{"PUT with PUT allowed", func(s *crs.Settings) {
+			s.AllowedMethods = []string{"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}
+		}, "PUT", "/item/1", "application/json", `{"a":1}`, 200},
+		{"git's type with the CRS types", nil, "POST", "/alice/notes/git-upload-pack", git, pkt, 403},
+		{"git's type with it allowed", allow(git), "POST", "/alice/notes/git-upload-pack", git, pkt, 200},
+		{"git's type in capitals, allowed", allow(git), "POST", "/alice/notes/git-upload-pack", "Application/X-Git-Upload-Pack-Request", pkt, 200},
+		{"git's type allowed, an attack in its body that the body rules read", allow(git),
+			"POST", "/alice/notes/git-upload-pack", git, "0032want java.lang.Runtime.getRuntime().exec(\"id\")", 403},
+		{"git's type allowed, JSON still accepted", allow(git), "POST", "/api", "application/json", `{"a":1}`, 200},
+		{"git's type allowed, JSON still read as JSON", allow(git), "POST", "/api", "application/json", `{"q":"1' OR '1'='1' --"}`, 403},
+		{"git's type allowed, another type still refused", allow(git), "POST", "/alice/notes/git-upload-pack", "application/x-git-upload", pkt, 403},
+		{"a JSON type allowed is read as JSON", allow(jsonAPI), "POST", "/api", jsonAPI, `{"q":"1' OR '1'='1' --"}`, 403},
+		{"a JSON type allowed, an ordinary body", allow(jsonAPI), "POST", "/api", jsonAPI, `{"q":"shoes"}`, 200},
+		{"a .sh page with the CRS extensions", nil, "GET", "/src/install.sh", "", "", 403},
+		{"a .sh page with .sh allowed", sh, "GET", "/src/install.sh", "", "", 200},
+		{".sh allowed, a .sql page still refused", sh, "GET", "/dump.sql", "", "", 403},
+		{".sh allowed, a .wsh page still refused", sh, "GET", "/x.wsh", "", "", 403},
+		{".sh allowed, a .shs page still refused", sh, "GET", "/x.shs", "", "", 403},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := crs.DefaultSettings()
+			if tt.change != nil {
+				tt.change(&s)
+			}
+			srv, _ := serve(t, s)
+			if got := do(t, srv, tt.method, tt.target, tt.ct, tt.body, nil); got != tt.want {
+				t.Errorf("got %d, want %d", got, tt.want)
+			}
+		})
 	}
 }
 

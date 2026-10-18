@@ -668,6 +668,33 @@ func TestProxyOptionsFollowThePolicy(t *testing.T) {
 			t.Errorf("PUT with PUT allowed: %d, want 200", got)
 		}
 	})
+	t.Run("content types and extensions", func(t *testing.T) {
+		git := "application/x-git-upload-pack-request"
+		plain := newEdge(t, Default())
+		code := newEdge(t, mut(func(p *Policy) { p.AllowedContentTypes, p.AllowedExtensions = []string{git}, []string{".sh"} }))
+		for _, tt := range []struct {
+			name       string
+			e          *edge
+			method, to string
+			opt        func(*http.Request)
+			want       int
+		}{
+			{"git's type with the default list", plain, "POST", "/alice/notes/git-upload-pack", header("Content-Type", git), 403},
+			{"git's type accepted", code, "POST", "/alice/notes/git-upload-pack", header("Content-Type", git), 200},
+			{"another type still refused", code, "POST", "/alice/notes/git-upload-pack", header("Content-Type", "application/x-other"), 403},
+			{"a .sh page with the default list", plain, "GET", "/alice/notes/src/install.sh", nil, 403},
+			{"a .sh page allowed", code, "GET", "/alice/notes/src/install.sh", nil, 200},
+			{"a .sql page still refused", code, "GET", "/alice/notes/src/dump.sql", nil, 403},
+		} {
+			body := ""
+			if tt.method == "POST" {
+				body = "0032want 0123456789abcdef0123456789abcdef01234567\n"
+			}
+			if got := tt.e.do(tt.method, tt.to, tt.opt, body); got != tt.want {
+				t.Errorf("%s: %d, want %d", tt.name, got, tt.want)
+			}
+		}
+	})
 	t.Run("deny headers and Next-Action", func(t *testing.T) {
 		e := newEdge(t, mut(func(p *Policy) {
 			p.DenyHeaders = []string{"x_internal"}

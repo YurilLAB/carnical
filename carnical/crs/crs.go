@@ -111,6 +111,13 @@ type Settings struct {
 	InspectResponses bool
 	// AllowedMethods replaces the CRS list (GET HEAD POST OPTIONS). REST APIs need PUT, PATCH and DELETE here.
 	AllowedMethods []string
+	// AllowedContentTypes are request content types accepted on top of the CRS list (rule 920420), such as git's
+	// application/x-git-upload-pack-request. Each is a lower-case type/subtype without parameters. A body of a type
+	// with no body processor is not read into arguments, so the rules see little of it: allow only what the site needs.
+	AllowedContentTypes []string
+	// AllowedExtensions are file extensions taken off the CRS list of restricted ones (rule 920440), such as .sh for a
+	// site that shows shell scripts as pages. Each must be on that list.
+	AllowedExtensions []string
 	// Before and After are extra SecLang directives run before and after the CRS rules, which is where the CRS
 	// documentation puts rule exclusions. They are trusted configuration written by the operator, so never fill
 	// them from a tenant's input. A rule here that refuses a request on its own (deny) is reported as the one that
@@ -188,6 +195,9 @@ func (s Settings) Validate() error {
 	}
 	if len(s.AllowedMethods) > 20 {
 		return fmt.Errorf("more than 20 allowed methods")
+	}
+	if err := s.validateLists(); err != nil {
+		return err
 	}
 	if len(s.LocalRulesOff) > 32 {
 		return fmt.Errorf("more than 32 local rules switched off")
@@ -304,6 +314,9 @@ func (s Settings) Directives() (string, error) {
 		s.InboundThreshold, s.OutboundThreshold)
 	if len(s.AllowedMethods) > 0 {
 		line(`SecAction "id:900200,phase:1,pass,t:none,nolog,setvar:'tx.allowed_methods=%s'"`, strings.Join(s.AllowedMethods, " "))
+	}
+	for _, d := range s.listDirectives() {
+		line("%s", d)
 	}
 	if s.Before != "" {
 		line("%s", s.Before)

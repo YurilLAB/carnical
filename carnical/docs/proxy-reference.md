@@ -88,6 +88,8 @@ HTML from a stylesheet address. Connection limits and a 100-stream HTTP/2 cap bo
 | `-tls-cert`, `-tls-key` | none: plain HTTP | Serve HTTPS with this visitor certificate and key, which then also enables the TLS checks of the [bot policy](bots.md#disguised-programs). The key may not be readable by everyone or writable by its group. |
 | `-systemd-socket` | off | Serve on the socket systemd passes in, so the proxy needs no privilege for port 443. |
 | `-allowed-methods` | `GET HEAD POST OPTIONS` | The methods the rule set lets through. |
+| `-allowed-content-types` | the CRS list | Request content types accepted besides the rule set's own list (rule 920420), such as git's `application/x-git-upload-pack-request` and `application/x-git-receive-pack-request`. |
+| `-allowed-extensions` | none | File extensions taken off the rule set's list of restricted ones (rule 920440), such as `.sh,.sql` for a code host that shows those files as pages. |
 | `-allow-encoded-slash`, `-allow-path-params` | off | Let `%2f`/`%5c`, or a `;` (Java's `;jsessionid=`), through in paths. |
 | `-allow-xmlrpc` | off | With `-wordpress`, leave `xmlrpc.php` reachable. |
 | `-keep-banners`, `-keep-caching` | off | Keep the application's `X-Powered-By` and `Server` headers, or add no `Cache-Control: private, no-store` to the responses described above. |

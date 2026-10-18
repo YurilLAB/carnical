@@ -122,6 +122,12 @@ type Policy struct {
 	Body BodyLimits `json:"body"`
 	// AllowedMethods are the HTTP methods the site accepts. At least one.
 	AllowedMethods []string `json:"allowed_methods"`
+	// AllowedContentTypes are request content types accepted besides the Core Rule Set's own list (rule 920420), such as
+	// git's application/x-git-upload-pack-request. Lower case, without parameters.
+	AllowedContentTypes []string `json:"allowed_content_types,omitempty"`
+	// AllowedExtensions are file extensions taken off the Core Rule Set's list of restricted ones (rule 920440), such as
+	// ".sh" for a code host that shows shell scripts as pages.
+	AllowedExtensions []string `json:"allowed_extensions,omitempty"`
 	// AllowedHosts are the only names the site answers to; a request for any other is refused. Empty means any name.
 	AllowedHosts []string `json:"allowed_hosts"`
 	// RuleGroups sets a group (sqli, xss, lfi, rfi, rce, php, ssrf, java, scanner, protocol) to on, log or off. A group not
