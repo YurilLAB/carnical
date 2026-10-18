@@ -1,7 +1,7 @@
 # Validation record: 18 October 2026
 
 This record measures revision `deb80b41` of `edge-crs`, after the bot policy, intrusion alerts
-and auto-block work; the sections on varied agents, application traffic and independent corpora name their own. The local runs
+and auto-block work; the sections on varied agents, application traffic, independent corpora and the crawler list updater name their own. The local runs
 used a cloud container (Ubuntu 24.04.5, Linux 6.18.44, Go 1.26.9, running as root, no IPv6). The CI runs used GitHub's Ubuntu 24.04 runners. The counts
 belong to these runs. Attacks targeted isolated local origins.
 
@@ -337,6 +337,49 @@ With the fixes, the shipped build refuses 58 first-party requests that upstream 
 (0.17%), down from 72. None of the corpora lost a detection: Carnical's own 3,824 cases,
 waf-bypass and GoTestWAF had no request with a different outcome, and open-appsec's attacks were
 refused as before.
+
+## Crawler list updater on five distributions
+
+`carnical-ranges.service`, its timer, `refresh.sh` and the tmpfiles entry from `f887b767` were
+installed by the [deployment steps](../deploy/README.md#order) in containers booted with systemd as
+PID 1, one per distribution. The edge itself was not installed. A test-only drop-in gave the unit
+the sandbox's HTTPS proxy; the proxy's CA was in the system trust store, and TLS was verified.
+
+| | Ubuntu 22.04.5 | Debian 12 | Ubuntu 24.04.5 | Debian 13 | Ubuntu 26.04.1 |
+| --- | --- | --- | --- | --- | --- |
+| systemd | 249 | 252 | 255 | 257 | 259 |
+| `systemd-analyze verify` | clean | clean | clean | clean | clean |
+| Four lists fetched and checked, exit 0 | yes | yes | yes | yes | yes |
+| `systemd-analyze security` exposure | 1.7 | 1.7 | 1.7 | 1.7 | 1.7 |
+
+On every one:
+
+- `systemd-tmpfiles --create` made `/var/lib/carnical/ranges` mode 0755, owned by root;
+- `carnical -check` read the four installed lists with the paths step 10 gives the edge;
+- the timer was listed with its next run within the 4-hour random delay;
+- the service could write the lists' directory and nothing else (`/etc` was read-only to it).
+
+Both failure paths were tested:
+
+- with downloads failing, the unit exited 1 and showed as failed;
+- with the check failing (`CARNICAL=/bin/false`), it also exited 1.
+
+In both, the lists in place were byte-identical afterwards, and no temporary file was left.
+
+A unit denying `127.0.0.1` could not reach the proxy on loopback, and the same unit without it
+could, on both cgroup layouts used here. So `IPAddressDeny` is enforced, not just accepted.
+
+Found and fixed in the steps:
+
+- neither `/etc/sysusers.d` nor `/usr/local/lib/carnical` exists on a fresh Ubuntu or Debian, so
+  steps 3 and 10 failed as written; they now use `install -D`.
+
+Limits of the test:
+
+- the host had cgroup v1, which systemd 259 does not boot on, so Ubuntu 26.04 ran on a separate
+  cgroup2 mount with no controllers;
+- journald could not start there, so its log lines were not seen; the exit codes and files were
+  checked as on the others.
 
 ## Alerts and auto-block under sustained hostile traffic
 
