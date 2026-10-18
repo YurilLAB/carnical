@@ -51,7 +51,7 @@ management endpoints. They are not services automatically started by `cmd/carnic
 | [Security tooling](../../docs/security-tooling.md) | CI categories, scanner scope, exceptions and local commands. |
 | [Protection validation](enterprise-validation.md) | Dated regression/live results and the conditions used. |
 | [Network validation](network-validation.md) | Kernel, small/large deployment and flood-latency measurements. |
-| [Validation of 18 October 2026](validation-2026-10-18.md) | The current build: CI, detection against upstream Coraza, bot false positives, apps, TLS-inspecting proxies, real browsers and auto-block under sustained attack. |
+| [Validation of 18 October 2026](validation-2026-10-18.md) | The current build: CI, detection against upstream Coraza, bot false positives, apps, TLS-inspecting proxies, real browsers, legitimate application traffic and auto-block under sustained attack. |
 | [Flood validation](flood-validation.md) | Flood detector simulations, live floods through the proxy, and the faults they found. |
 | [Format validation](formats-validation.md) | Parser costs, regression tests and source-mutation results for the request format checks. |
 | [Attack coverage](attacks.md) | The responsible protection layer and application-dependent limits. |

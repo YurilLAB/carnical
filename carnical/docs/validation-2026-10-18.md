@@ -1,7 +1,7 @@
 # Validation record: 18 October 2026
 
 This record measures revision `deb80b41` of `edge-crs`, after the bot policy, intrusion alerts
-and auto-block work; the section on varied agents, apps and proxies names its own. The local runs
+and auto-block work; the sections on varied agents and on application traffic name their own. The local runs
 used a cloud container (Ubuntu 24.04.5, Linux 6.18.44, Go 1.26.9, running as root, no IPv6). The CI runs used GitHub's Ubuntu 24.04 runners. The counts
 belong to these runs. Attacks targeted isolated local origins.
 
@@ -201,6 +201,60 @@ Fixed in the classifier:
 Not fixed. A browser behind a proxy that reads HTTPS cannot be told apart, by its handshake, from a
 program that copies a browser's headers. [Bots](bots.md#disguised-programs) now says to keep
 `disguised` in `-bots-monitor` for such visitors.
+
+## Legitimate application traffic
+
+Measured on `e15fa899`, then again with the fix below. 64 requests were sent the way the named
+software sends them, with Chrome's headers and a session cookie: beacons and reports, API calls,
+CMS edits, search boxes, sign-in and single sign-on, webhooks, uploads and ordinary pages. They
+use realistic hosts in their URLs, not `localhost`, which the CRS's SSRF rules (934110, 934190)
+score. Each went through upstream Coraza v3.8.1 with CRS 4.30.0 at paranoia level 1, and
+through Carnical with `-mode block -formats-mode block`. With no WAF, all 64 reached the origin.
+
+| Configuration | Reached the origin |
+| --- | --- |
+| Upstream Coraza and the CRS | 41 of 64 |
+| Carnical | 41 of 64, the same 41 |
+| Carnical with `-allowed-methods GET,HEAD,POST,OPTIONS,PUT,PATCH,DELETE` | 45 of 64 |
+| Carnical before the fix | 39 of 64 |
+
+What was refused, in Carnical (the rules that matched are in brackets):
+
+- **The request's type, 12.** CRS rule 920420 or Carnical's content-type check (5002001,
+  5002002, 5002040) refused:
+  - `text/plain`: a `sendBeacon` string, a Google Analytics 4 hit, a Sentry envelope and a Next.js
+    server action;
+  - `application/csp-report`, gRPC-Web, NDJSON, CSV and protobuf bodies;
+  - an image, a tus chunk and a file sent as the body.
+
+  [Formats](formats.md#what-is-not-done-and-what-to-watch) lists these. No flag widens the CRS's
+  list.
+- **The method, 4.** PUT, PATCH and DELETE (911100), until `-allowed-methods` lists them.
+- **What the request said, 7.** These are the CRS's own rules, and upstream refused the same
+  requests:
+  - an OData `$filter` (942290);
+  - a GraphQL query with `__typename` and fragments (932235, 942290);
+  - a WordPress block post with an image and an embed (941160, 941180);
+  - a blog post with a shell snippet (930120, 932235);
+  - a comment with quotes, semicolons and `--` (942190);
+  - the searches `javascript: the good parts` (941210) and `cat /etc/hosts tutorial` (930120).
+
+  A site that needs these takes the paths out with [exclusions](config-and-policy.md#exclusions).
+
+Passed in both: JSON, JSON:API and PostgREST queries, a GraphQL persisted query, rich text in a
+GraphQL mutation, multipart photos, PDFs, Word documents, SAML and OIDC posts, Stripe and GitHub
+webhooks, a password with quotes and `--`, a CORS preflight, server-sent events, a range request,
+SOAP and long tracking parameters.
+
+Fixed. Carnical's rule 5006003 took a line break before `id`, `cat`, `sleep` and other command names
+as shell chaining. It refused a GraphQL query with a field on each line and a review whose lines
+began "Cat toys" and "ID check", which upstream let through. After a line break, the word must now
+stand alone or come with an option, a path, a URL, an address or a shell operator. The fix changed
+nothing else that was measured:
+
+- Carnical's attack and benign corpus: 3,355 of 3,414 attacks blocked and 387 of 410 benign
+  requests passed, before and after, with no case changed;
+- GoTestWAF: no request had a different outcome.
 
 ## Alerts and auto-block under sustained hostile traffic
 
