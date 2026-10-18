@@ -266,9 +266,12 @@ type Alert struct {
 	Status      int // the status sent; 0 when the request was forwarded
 	Score       int // CRS anomaly score, 0 when not a CRS verdict
 	Threshold   int
-	Client      Client     // the kind of client that sent the request (package bots); 0 when it was not read
-	Src         netip.Addr // the verified client, never a port and never an unverified forwarded address
-	ViaProxy    bool       // the address came through a trusted proxy
+	Client      Client // the kind of client that sent the request (package bots); 0 when it was not read
+	// Refusal marks the one alert of a refused request that the request totals (Totals.Refused) count; the request's
+	// other alerts leave it false, so that a request refused for several reasons is counted once.
+	Refusal  bool
+	Src      netip.Addr // the verified client, never a port and never an unverified forwarded address
+	ViaProxy bool       // the address came through a trusted proxy
 	// Net is the network a "suspected intrusion" names when the findings came from several /64s of one IPv6 /48; zero
 	// on every other record.
 	Net    netip.Prefix

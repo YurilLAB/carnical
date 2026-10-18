@@ -332,7 +332,7 @@ func (g *Aggregator) count(a *Alert) {
 	}
 	g.counts[l][ac][r].Add(1)
 	g.gen.Add(1)
-	if c := a.Client; a.Action.Refused() && c != 0 && int(c) < numClients {
+	if c := a.Client; a.Refusal && a.Action.Refused() && c != 0 && int(c) < numClients {
 		g.refusedBy[c].Add(1)
 		if a.Src.IsValid() {
 			if c.IsBot() {

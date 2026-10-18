@@ -521,9 +521,12 @@ func TestAggregator(t *testing.T) {
 		{"refused requests are counted by the kind of client, bots and people apart", Config{}, func(t *testing.T, g *Aggregator, c *clock, out *collect) {
 			by := func(src netip.Addr, client Client, action Action) Alert {
 				a := finding(src, 942100, CatSQLi, action, RiskHigh)
-				a.Client = client
+				a.Client, a.Refusal = client, true
 				return a
 			}
+			second := by(srcA, ClientAI, Blocked)
+			second.Refusal = false
+			g.Observe(second) // another alert of a request already counted
 			g.Observe(by(srcA, ClientAI, Blocked))
 			g.Observe(by(srcA, ClientAI, RateLimited))
 			g.Observe(by(srcB, ClientTool, SourceBlocked))

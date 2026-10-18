@@ -782,6 +782,12 @@ func TestMatchesAreReportedWithoutWhatTheVisitorSentUnlessAsked(t *testing.T) {
 			}},
 		{"an inspector's refusal is blocked with its status", func(c *Config) { c.Inspectors = []inspect.Inspector{inspector(5002103, 400)} },
 			get("/page"), 400, []string{"formats-5002103 blocked 400"}, nil},
+		{"two refusals of one request are one refused request", func(c *Config) {
+			c.Inspectors = []inspect.Inspector{fakeInspector{"formats", func(r *inspect.Request) inspect.Result {
+				return inspect.Result{Verdicts: []inspect.Verdict{{ID: 5002103, Severity: "medium", Block: true, Status: 400},
+					{ID: 5002104, Severity: "medium", Block: true, Status: 400}}}
+			}}}
+		}, get("/page"), 400, []string{"formats-5002103 blocked 400", "formats-5002104 blocked 400"}, nil},
 		{"the proxy's own refusal is blocked", nil, get("/a/./b"), 400, []string{"carnical-5000002 blocked 400"}, nil},
 		{"with no rule matches in the log the alert is still given", func(c *Config) { c.NoRuleMatches = true }, sqli, 403,
 			[]string{"crs-949110 blocked 403"}, nil},
@@ -846,6 +852,21 @@ func TestMatchesAreReportedWithoutWhatTheVisitorSentUnlessAsked(t *testing.T) {
 			slices.Sort(verdicts)
 			if !slices.Equal(verdicts, tt.want) {
 				t.Fatalf("alerts %q, want %q", verdicts, tt.want)
+			}
+			// The totals count requests: a refused one once, however many of its alerts say so.
+			agg, err := alert.NewAggregator(alert.Config{Sink: alert.SinkFunc(func(alert.Record) {})})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, a := range got {
+				agg.Observe(a)
+			}
+			refused := 0
+			if tt.status >= 400 {
+				refused = 1
+			}
+			if tot := agg.Totals(); tot.RefusedBots()+tot.RefusedPeople() != uint64(refused) {
+				t.Errorf("refused requests counted %d bots and %d people, want %d in all", tot.RefusedBots(), tot.RefusedPeople(), refused)
 			}
 			if tt.check != nil {
 				tt.check(t, got[0])

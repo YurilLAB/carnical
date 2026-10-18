@@ -259,7 +259,11 @@ func (rec *record) finish(e *Edge, r *http.Request, sent int) {
 	}
 	var out outcome
 	defer out.tell(e, rec.client)
+	counted := false // the request's refusal, which the totals count once
 	emit := func(a alert.Alert) {
+		if a.Action.Refused() && !counted {
+			a.Refusal, counted = true, true
+		}
 		out.add(&a)
 		if e.cfg.OnAlert != nil {
 			e.cfg.OnAlert(a)
