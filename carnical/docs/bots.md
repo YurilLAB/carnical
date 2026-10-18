@@ -31,7 +31,7 @@ how fast it can go. Only a search engine's claim can be checked, against its DNS
 
 | Kind | Examples | Can be refused |
 | --- | --- | --- |
-| `person` | Chrome, Safari, Firefox, Edge; apps on phones (okhttp, CFNetwork, Dalvik) | no |
+| `person` | Chrome, Safari, Firefox, Edge; apps on phones (okhttp, CFNetwork, Dalvik); Microsoft Office opening a link; Roku players | no |
 | `search` | Googlebot, Bingbot, Applebot, YandexBot, Baiduspider, DuckDuckBot, Qwant, Mojeek | no, when real |
 | `fake` | A search engine's user agent from an address its DNS does not confirm | `fake` |
 | `ai` | GPTBot, ChatGPT-User, OAI-SearchBot, ClaudeBot, Claude-User, CCBot, Bytespider, PerplexityBot, Amazonbot, meta-externalagent, GoogleOther, Google-CloudVertexBot, Diffbot, a `Signature-Agent` header (ChatGPT agent), ... | `ai` |
@@ -40,7 +40,7 @@ how fast it can go. Only a search engine's claim can be checked, against its DNS
 | `headless` | HeadlessChrome (also by its client hints), PhantomJS, Lightpanda, ... | `headless` |
 | `scanner` | sqlmap, Nikto, Nmap, Nuclei, WPScan, ffuf, Acunetix, Nessus, Ghauri, Dalfox; Hydra, Medusa, OpenBullet; zgrab, Censys, Shodan, Expanse; botnet and malformed user agents (ZmEu, Mozlila, libredtail, "Hello, world") | `scanner` |
 | `disguised` | A browser's user agent with headers, client hints or a TLS handshake that browser does not send | `disguised` |
-| `preview` | Slack, WhatsApp, Discord, Telegram, Facebook, X, LinkedIn link previews; feed readers | no |
+| `preview` | Slack, WhatsApp, Discord, Telegram, Facebook, X, LinkedIn link previews; feed readers; Gmail's and Yahoo Mail's image proxies; Google Read Aloud | no |
 | `monitor` | UptimeRobot, Pingdom, StatusCake, Datadog, Nagios, Gatus, kube-probe, load balancer health checks, Let's Encrypt domain validation | no |
 | `bot` | No user agent; a contact URL; a user agent too long for a browser; an unknown program; "compatible" with a crawler word | `bot` |
 
@@ -54,9 +54,10 @@ protection and the rate rules still limit how fast it can go.
 A request whose user agent names Chrome, Firefox, Safari, Edge or Internet Explorer is `disguised`
 when any of these holds:
 
-- it came over HTTP/1.0, or has no `Accept` or `Accept-Language` header (OPTIONS aside);
+- it came over HTTP/1.0, or has no `Accept` or `Accept-Language` header (OPTIONS aside, and a
+  WebSocket handshake needs no `Accept`);
 - it names a browser no one still runs: Internet Explorer before 11, Chrome before 70, Firefox
-  before 60;
+  before 60 (the old Edge, which named an old Chrome, is left alone);
 - it carries Chrome's client hints (`Sec-Ch-Ua`) while naming Firefox or Safari, or Chrome's hints
   do not name the version or the platform its user agent gives;
 - it names two user agents.
@@ -66,6 +67,9 @@ Over HTTPS, when Carnical holds the certificate (`-tls-cert`), it is also `disgu
 - Chrome 80 or later, Firefox 90 or later or Safari 17 or later sends no `Sec-Fetch-*` header;
 - Chrome 90 or later sends no client hints (Chrome's forks that do not send them, such as
   Samsung Internet, Yandex Browser, Android web views and Electron, are left alone);
+- Chrome opens a WebSocket with neither (it sends none on a handshake), so a handshake, with its
+  `Upgrade`, key, version and `Origin` headers, is excused from those two checks and from `Accept`,
+  never from the TLS one;
 - its TLS handshake is not that browser's: Chrome always offers GREASE values (RFC 8701), and
   Firefox always offers `record_size_limit` (RFC 8449). Python, Go, curl and most HTTP libraries
   offer neither.
@@ -115,14 +119,15 @@ the site's refusals, and a refused request earns its address no standing.
 
 ## Search engine checks
 
-For `fake`, a request that claims to be Googlebot (or GoogleOther, Google-CloudVertexBot), Bingbot,
-Applebot, YandexBot, Baiduspider, PetalBot, SeznamBot, Naver's Yeti, Amazonbot or AmazonAdBot is
-checked as each engine asks sites to. The address's DNS name
-must be in the engine's domains, and that name must resolve back to the address.
+For `fake`, a request that claims to be Googlebot (or GoogleOther, Google-CloudVertexBot), AdsBot,
+Mediapartners-Google, Bingbot, Applebot, YandexBot, Baiduspider, PetalBot, SeznamBot, Naver's Yeti,
+Amazonbot or AmazonAdBot is checked as each engine asks sites to. The address's DNS name must be in
+the engine's domains, and that name must resolve back to the address.
 
 | Engine | Domains |
 | --- | --- |
-| Google | `googlebot.com`, `google.com` |
+| Google's common crawlers (Googlebot, GoogleOther, Google-InspectionTool, Storebot, Google-CloudVertexBot) | `googlebot.com` |
+| Google's special-case crawlers (AdsBot, Mediapartners-Google, APIs-Google) | `rate-limited-proxy-*.google.com` |
 | Bing | `search.msn.com` |
 | Apple | `applebot.apple.com` |
 | Yandex | `yandex.ru`, `yandex.net`, `yandex.com` |
@@ -132,7 +137,11 @@ must be in the engine's domains, and that name must resolve back to the address.
 | Naver | `naver.com` |
 | Amazon | `crawl.amazonbot.amazon`, `amazonadbot.com` |
 
-Google's `googleusercontent.com` is not accepted: every Google Cloud machine has a name there.
+Google's user-triggered fetchers (`google-proxy-*.google.com`, `gae.googleusercontent.com`) are not
+accepted for any crawler: they fetch whatever a user asks Google to, so a request through one could
+otherwise claim to be Googlebot and pass. Nor is the rest of `googleusercontent.com`, where every
+Google Cloud machine has a name. Amazon now publishes only IP lists for its crawlers; a real
+Amazonbot from an address with no `crawl.amazonbot.amazon` name is read as `fake`.
 DuckDuckGo, Qwant, Mojeek, Sogou and the other engines that publish no DNS names stay `search`.
 
 How the check behaves:
@@ -164,7 +173,7 @@ however many of its alerts refused it:
 | --- | --- |
 | `blocked_bots` | Requests from bots refused, for any reason: a bot kind, an attack, a rate limit or a ban. |
 | `blocked_people` | Requests from people refused. Most are attacks sent with a browser's user agent; the rest may be false positives worth a look. |
-| `blocked_bot_sources`, `blocked_people_sources` | About how many different addresses (IPv6 /64s) those came from; close to exact below a few hundred, within about 2% above. |
+| `blocked_bot_sources`, `blocked_people_sources` | About how many different addresses (IPv6 /64s) those came from; close to exact below a few hundred, above that typically within 2% (a standard error of about 1.6%) and rarely more than 5%. |
 | `blocked_by_client` | The refused requests by kind, for example `{"ai": 120, "fake": 3, "person": 9, "tool": 41}`. |
 
 ```json

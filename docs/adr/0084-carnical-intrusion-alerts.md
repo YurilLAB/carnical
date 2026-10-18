@@ -168,7 +168,11 @@ every open window flushed at shutdown, cannot crowd out the lines that count the
 process waits at most two seconds for the queue and writes the final totals.
 
 `rule matched` lines stay for compatibility, gain `tx` on every layer, `category` and `risk`, are
-capped per request, and mark `disruptive` only for the rule that refused the request.
+capped per request, and mark `disruptive` only for the rule that refused the request. The command
+writes them from a queue of 8,192, as it writes alerts: under attack every matched rule is a line,
+and written in the request they made the proxy wait on a slow log (measured: 530 requests a second
+instead of 2,570 with the log drained at 64 KiB/s). What does not fit is dropped and counted in a
+`rule matched lines dropped` line, at most once a second.
 `proxy.Config.NoRuleMatches`, `-log-rule-matches false` on the command line, keeps alerts only.
 
 ## Technical Discussion

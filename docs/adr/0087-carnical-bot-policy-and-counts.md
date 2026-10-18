@@ -65,13 +65,14 @@ browser sends are present, and the protocol. The kinds are:
   Mozlila, libredtail, "Hello, world").
 - `bot`: no user agent, a contact URL, a user agent over 512 bytes, an unknown program, or a crawler
   word in a "compatible" agent.
-- `fake`: a claimed Googlebot, GoogleOther, Bingbot, Applebot, YandexBot, Baiduspider, PetalBot,
-  SeznamBot, Naver Yeti, Amazonbot or AmazonAdBot whose address fails the check.
+- `fake`: a claimed Googlebot, GoogleOther, AdsBot, Bingbot, Applebot, YandexBot, Baiduspider,
+  PetalBot, SeznamBot, Naver Yeti, Amazonbot or AmazonAdBot whose address fails the check.
 - `disguised`: a browser's user agent that the request contradicts. Without TLS: HTTP/1.0, no Accept
   or Accept-Language, IE before 11, Chrome before 70 or Firefox before 60, Chrome's client hints on
   Firefox or Safari, hints that do not name the agent's version or platform, or two user agents.
   When Carnical ends TLS: no `Sec-Fetch-*` from Chrome 80, Firefox 90 or Safari 17 and later, no
-  hints from Chrome 90 and later (forks that send none are left out), or a ClientHello without
+  hints from Chrome 90 and later (forks that send none are left out; a WebSocket handshake, where
+  Chrome sends neither, nor Accept, is excused from those checks), or a ClientHello without
   Chrome's GREASE or Firefox's `record_size_limit`. `Hellos` keeps each connection's ClientHello,
   read through `tls.Config.GetConfigForClient`, until `http.Server.ConnState` reports it closed.
 - A browser's agent that passes those checks is `ai` with a `Signature-Agent` header (Web Bot Auth,
@@ -97,8 +98,13 @@ body. Setup's answers are none, fake (`fake,scanner`), ai (adds `ai,seo`) and st
 in detect mode setup keeps `-bots scanner` and puts the answer's kinds in `-bots-monitor`.
 
 Verification follows the engines' own instructions. The address's PTR name must be in the engine's
-domains, on a label boundary, and resolve back to the address. Google's `googleusercontent.com` is
-left out, because every Google Cloud VM has a name there. Answers are cached: 24 h verified, 1 h
+domains, on a label boundary, and resolve back to the address. Google is checked by the class of
+the crawler claimed, as Google lists them: its common crawlers (Googlebot, GoogleOther, ...) under
+`googlebot.com`, its special-case crawlers (AdsBot, Mediapartners-Google, APIs-Google) as
+`rate-limited-proxy-*.google.com`. Its user-triggered fetchers (`google-proxy-*.google.com`,
+`gae.googleusercontent.com`) are accepted for neither: any user can have them fetch a URL, so taking
+all of `google.com` let a request through one claim to be Googlebot. The rest of
+`googleusercontent.com` is left out too, because every Google Cloud VM has a name there. Answers are cached: 24 h verified, 1 h
 refuted, and 1 min for a failed lookup, which still counts as not verified. The reverse zone
 belongs to the address's owner, so failing open would let an impostor bypass the check by breaking
 its own PTR. At most 8 checks run at once, each limited to 2 s. A request waits for its check, and
