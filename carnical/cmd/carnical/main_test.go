@@ -3408,7 +3408,7 @@ func TestCrawlerListsStayCurrent(t *testing.T) {
 				logs: []string{`"msg":"crawler ranges reloaded"`}, in: []netip.Addr{inB}, out: []netip.Addr{inA}}}},
 		{name: "a removed list leaves the list as it was", written: start, steps: []step{{
 			change: func(t *testing.T, _, path string) { os.Remove(path) }, after: 2 * time.Minute,
-			logs: []string{`"msg":"crawler ranges not reloaded","error":"google: lstat `}, in: []netip.Addr{inA}}}},
+			logs: []string{`"msg":"crawler ranges not reloaded","error":"google: `, `common-crawlers.json`}, in: []netip.Addr{inA}}}},
 		{name: "a symbolic link put in its place is refused", written: start, steps: []step{{
 			change: func(t *testing.T, dir, path string) {
 				target := filepath.Join(dir, "elsewhere.txt")
