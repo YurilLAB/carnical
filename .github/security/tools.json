@@ -7,9 +7,9 @@
   },
   "osv-scanner": {
     "repository": "google/osv-scanner",
-    "version": "v2.6.0",
-    "linux": {"asset": "osv-scanner_linux_amd64", "sha256": "ca69b3d3cd08f889a49dc0a383122f71cc528b83803671df5fd874d97485b108"},
-    "windows": {"asset": "osv-scanner_windows_amd64.exe", "sha256": "e0ed7644118b717b028c249ee9d3515024e55e8510747ca08906eb96765354d6"}
+    "version": "v2.7.0",
+    "linux": {"asset": "osv-scanner_linux_amd64", "sha256": "160c6253e2922e9e0a6a9771c5c4c40a4b3c6090b34a3cdd5e80c96cc2e4218b"},
+    "windows": {"asset": "osv-scanner_windows_amd64.exe", "sha256": "9964ed64ec9a387391eb4cc006ad5c531154821aef29b793e02c448de4686438"}
   },
   "gitleaks": {
     "repository": "gitleaks/gitleaks",

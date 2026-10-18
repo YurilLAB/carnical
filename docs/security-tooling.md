@@ -5,7 +5,7 @@ The [Carnical repository](https://github.com/YurilLAB/carnical) uses one tool pe
 | Category | Tool | Coverage |
 | --- | --- | --- |
 | Core source security, including Go-specific checks | [gosec](https://github.com/securego/gosec), v2.29.0 | Go AST/SSA and taint checks, targeting Linux and Windows |
-| Dependency vulnerabilities | [OSV-Scanner](https://google.github.io/osv-scanner/usage/), v2.6.0 | All five tracked Go manifests; Go call analysis and all advisory results |
+| Dependency vulnerabilities | [OSV-Scanner](https://google.github.io/osv-scanner/usage/), v2.7.0 | All five tracked Go manifests; Go call analysis and all advisory results |
 | Committed secrets | [Gitleaks CLI](https://github.com/gitleaks/gitleaks), v8.30.1 | Complete Git history, with redacted findings |
 | Workflow validation | [actionlint](https://github.com/rhysd/actionlint), v1.7.12 | Actions syntax, expressions, and shellcheck on the Linux runner |
 | Updating dependencies/actions | [Dependabot](https://docs.github.com/en/code-security/dependabot/working-with-dependabot/dependabot-options-reference) | Weekly reviewable PRs targeting `edge-crs`; no automatic merges |
