@@ -4,8 +4,9 @@ This recipe places edge, portal, control and signer services on one Linux host w
 systemd sandboxes, network policy and process confinement. Follow the installation order below and
 test on the target host. The [hardening guide](../docs/hardening.md) explains the layers.
 
-Tested on Linux 6.18 with systemd 259 (Ubuntu 26.04 under WSL2). Not yet on Ubuntu 22.04, Ubuntu
-24.04 or Debian 12; see "Differences between systems" below.
+Tested on Linux 6.18 with systemd 259 (Ubuntu 26.04 under WSL2). The confinement alone was also
+checked on Ubuntu 24.04 with Linux 6.18, in a container without these units ([hardening](../docs/hardening.md#what-was-verified-and-how)).
+Not yet installed on Ubuntu 22.04, Ubuntu 24.04 or Debian 12; see "Differences between systems" below.
 
 For the edge in front of one website, start with the [site configuration and client handover
 guide](../docs/website-onboarding.md). The service now validates its effective settings before
@@ -31,6 +32,8 @@ bind allowance described in that guide.
 | `modprobe/carnical.conf` | Kernel modules a web server does not need and attackers use. |
 | `auditd/carnical.rules` | What to record, chosen so that each record is an incident. |
 | `honeytokens.sh` | Files that look worth stealing and that nothing reads. |
+| `nginx/origin-mtls.conf` | An NGINX origin that serves only the edge's client certificate; see [origin authentication](../docs/website-onboarding.md#operator-authenticate-the-waf-to-the-origin). |
+| `container/` | The container image and a Compose example; see [availability and deployment](../docs/availability-and-deployment.md#linux-container). |
 
 ## Order
 
@@ -62,11 +65,12 @@ unless absolute.
 systemd-analyze security carnical-edge.service            # exposure 1.4 on the tested system; the host audit fails it above 2.0
 sudo carnical-audit -zones /etc/carnical/zones.json -host # every host check, as root; a check that could not run is a failure, not a pass
 sudo -u carnical-edge carnical-confine check              # the confinement, from inside: every forbidden action must be refused
-carnical-confine check -unconfined                        # the control: the same actions with no confinement must all go through
+carnical-confine check -unconfined                        # the control: with no confinement none may be ended (the host may refuse some)
 ausearch -m SECCOMP -i                                    # the record the kernel writes when the filter ends a process
 ```
 
-If `-unconfined` does not pass, the probe is broken and the confined run proves nothing.
+If `-unconfined` does not pass, the probe is broken and the confined run proves nothing. Both
+runs exit 0 when every action behaves as expected.
 
 For flood latency, check the origin as well as the edge: persistent responses, accept-queue capacity
 and upstream concurrency must fit the measured workload. The [controlled latency

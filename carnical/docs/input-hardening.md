@@ -191,5 +191,5 @@ arithmetic](https://www.thymeleaf.org/doc/tutorials/3.1/usingthymeleaf.html#arit
 Diagnostic paths and scanner names are indicators, not proof of an exploitable service.
 Restrict/authenticate real diagnostic/admin services and patch plugins. Enable `-wordpress` on a
 WordPress deployment for the existing upload/cache script, XML-RPC and login protections.
-Application/plugin-specific virtual patches still require integration of the existing virtual-patch
-package; this change does not install a universal plugin deny-list.
+Application/plugin-specific virtual patches run from a reviewed local pack with
+[`-vpatch-pack`](vpatch.md#run-a-pack-in-the-proxy); Carnical does not install a universal plugin deny-list.

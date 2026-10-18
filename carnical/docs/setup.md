@@ -19,7 +19,7 @@ or `go build -o carnical.exe ./cmd/carnical` on Windows.
 | `carnical setup` | Asks about the site, checks the answers and saves them. |
 | `carnical check [FILE]` | Checks the saved settings and connects to the origin (DNS, TCP and TLS; no HTTP request), without listening. |
 | `carnical start [FILE]` | Starts the WAF with the saved settings. |
-| `carnical help [TOPIC]` | A short guide; topics `setup`, `profiles`, `security`, and `flags` for every flag. |
+| `carnical help [TOPIC]` | A short guide; topics `setup`, `profiles`, `security`, `bots`, and `flags` for every flag. |
 | `carnical version` | The version of the embedded rules. |
 
 Without `FILE`, `check` and `start` use the site setup saved in its default place (below). Flags

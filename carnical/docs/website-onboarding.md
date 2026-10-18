@@ -36,7 +36,7 @@ before enabling both content-blocking layers:
 ```
 
 For a public site, copy [site-edge.json](examples/site-edge.json) and replace its names and file
-paths. Keep the origin DNS/address separate from the visitor hostname to avoid a proxy loop after
+paths; `tls-cert` and `tls-key` are the certificate and key visitors see. Keep the origin DNS/address separate from the visitor hostname to avoid a proxy loop after
 cutover. An HTTPS origin needs a certificate valid for its upstream name. `upstream-host` sets HTTP
 Host; it does not change the TLS certificate name.
 

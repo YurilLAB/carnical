@@ -291,11 +291,14 @@ check that enforces and is sure of what it found scores:
 | CRS anomaly block (949110, 959100) with two or more attack categories, or a scanner | 4 |
 | CRS anomaly block with one category | 3 |
 | Upload policy (5000010, 5000011), WordPress PHP block (5000020), virtual patch | 4 |
+| A [bot policy](bots.md) refusal of a scanner by name | 4 |
+| A bot policy refusal of a fake search engine | 3 |
 | High-risk format or API contract block | 2 |
 | CONNECT, an upgrade or a target that cannot be forwarded (5000070 to 5000072) | 1 |
 
-Rate limits, the shield's own refusals, CrowdSec bans, findings below medium risk and anything only
-detected or monitored score nothing. Four blocked SQL injections ban a source at the default 12
+Rate limits, the shield's own refusals, CrowdSec bans, the bot policy's other refusals (a declared
+crawler or tool is not attacking), findings below medium risk and anything only detected or monitored
+score nothing. Four blocked SQL injections ban a source at the default 12
 points; one false positive never does. Its command line sets `Config.AutoBlock` with these flags,
 and logs each event as `source blocked`, `source would be blocked`, `source block ended`,
 `auto-block table full; sources not blocked` or `auto-block events not reported`, showing the source

@@ -15,7 +15,10 @@ reaching an inert test origin is an admission result; exploitation still depends
 | Compressed-body ambiguity/exhaustion | Refuse encoding by default; optional bounded decoding followed by final body/upload checks | Independent proxy and decompression limits all apply. |
 | GraphQL method/envelope/cost abuse | Selected-operation, transport, fragment and syntax-budget checks in [formats](formats.md#verdicts) | No schema-weighted resolver cost or authorization. Persisted queries need origin method checks. |
 | Undeclared API input | Supported explicit [OpenAPI contracts](input-hardening.md#executable-api-contracts) | CLI enforcement rejects unsupported contracts; full discovery/learning is a library integration. |
-| API/login volume | Optional verified-client quotas and [API guard](apiguard.md) budgets | Local state; review saturation/outage behavior and replicas. |
+| API/login volume, password guessing | Per-client [rate rules](proxy-reference.md#rate-rules) (`-limit`), the `-wordpress` login limit, verified-client API quotas and [API guard](apiguard.md) budgets | Each client is an address or IPv6 /64; a source with many addresses needs the network budgets of `-ddos`. Local state; review saturation/outage behavior and replicas. |
+| Scanners, attack tools, fake search engines, AI crawlers and scrapers | [Bot policy](bots.md): user agent, header and TLS consistency, crawlers verified by DNS or published ranges | Scanners are refused by default; other kinds are opt-in. A tool that copies a browser's TLS handshake and headers reads as a person. |
+| Repeat attackers | [Auto-block](ddos.md#repeat-offenders) bans a source whose requests keep being refused | `monitor` by default; an address many people share can be banned too. |
+| Protocol upgrades and WebSockets | Refused by default; with `-allow-upgrade` a handshake answered without switching is refused (rule 5000079) | Allowed tunnels are not inspected after the switch. |
 | Script uploads | Filename and PHP/ASP/JSP marker checks | Not a malware/archive scanner; the origin must not execute untrusted uploads. |
 | WordPress upload/cache scripts and XML-RPC | `-wordpress` restrictions and login limits | Application/plugin patches and scoped virtual patches remain necessary. |
 | Cache deception/content sniffing | Response cache checks, `nosniff` and banner removal | Review the downstream cache and application headers. |
@@ -38,8 +41,9 @@ rules. Uploaded content must not become executable, and diagnostic/admin routes 
 authentication and access policy.
 
 Application-specific vulnerabilities require application patches or reviewed, scoped virtual
-patches. Carnical's [virtual-patch library](vpatch.md) needs a separately supplied rule pack and
-integration; the CLI does not install a universal plugin/CVE deny-list.
+patches. The proxy runs a reviewed local pack with [`-vpatch-pack`](vpatch.md#run-a-pack-in-the-proxy);
+packs are supplied by the operator, and the CLI neither fetches rules nor installs a universal
+plugin/CVE deny-list.
 
 ## Evidence
 

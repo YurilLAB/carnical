@@ -83,6 +83,17 @@ most once a second with how many refusals were not logged; the address is in the
 Responses get `nosniff`, lose software banners and prevent caching when they set cookies or serve
 HTML from a stylesheet address. Connection limits and a 100-stream HTTP/2 cap bound transport work.
 
+| Switch | Default | Effect |
+| --- | --- | --- |
+| `-tls-cert`, `-tls-key` | none: plain HTTP | Serve HTTPS with this visitor certificate and key, which then also enables the TLS checks of the [bot policy](bots.md#disguised-programs). The key may not be readable by everyone or writable by its group. |
+| `-systemd-socket` | off | Serve on the socket systemd passes in, so the proxy needs no privilege for port 443. |
+| `-allowed-methods` | `GET HEAD POST OPTIONS` | The methods the rule set lets through. |
+| `-allow-encoded-slash`, `-allow-path-params` | off | Let `%2f`/`%5c`, or a `;` (Java's `;jsessionid=`), through in paths. |
+| `-allow-xmlrpc` | off | With `-wordpress`, leave `xmlrpc.php` reachable. |
+| `-keep-banners`, `-keep-caching` | off | Keep the application's `X-Powered-By` and `Server` headers, or add no `Cache-Control: private, no-store` to the responses described above. |
+| `-detection-paranoia` | the `-paranoia` level | Log what a higher paranoia level would find, while blocking at `-paranoia`. |
+| `-confine`, `-confine-connect`, `-confine-read`, `-confine-best-effort` | off; `80,443,53` | Linux self-confinement, the TCP ports it may connect to and extra paths it may read; see [host hardening](hardening.md). |
+
 ## Rate rules
 
 `-limit` limits how often one client may make the requests a rule matches. Each client is an IPv4
@@ -224,6 +235,13 @@ logs changed snapshots; `0` disables reporting, and graceful shutdown flushes a 
 snapshot. See [format monitoring](formats.md#monitoring-and-logs). Login limits use 5000022, API quotas
 5000042, other rate rules 5000047 (5000048 for a monitor rule), a full rate-limit table 5000041 and
 inspector failures 5000040.
+
+The checks of the request itself refuse with ids of their own: a `Host` that is not one of `-hosts`
+5000001 (421), a path not in plain form 5000002 (400), an internal or framework header 5000003
+(400), a body encoding that cannot be inspected 5000004 (415), a method token not in canonical form
+5000043 (400), a method-override header 5000044 (400), an upload 5000010 or 5000011 (403), and,
+with `-wordpress`, a PHP script in an upload or cache directory 5000020 and `xmlrpc.php` 5000021
+(403).
 
 The proxy's own refusals before the flood protection sees a request are logged too: CONNECT 5000070
 (405), a protocol upgrade or h2c 5000071 (501), a target that cannot be forwarded unchanged (absolute

@@ -4,13 +4,13 @@ The segmentation model separates public edge/portal services from policy, tenant
 keys. It also defines boundaries between customers. `carnical-audit` checks a supplied zone map and
 tenant adapter; it does not create a hosted service or enforce every boundary itself.
 
-Start with [zones](#2-zones), [tenant rules](#3-customers-from-each-other), [audit
-checks](#4-the-checks-and-when-they-run) and [validation
-scope](#5-what-has-and-has-not-been-verified). Source: [audit package](../audit/), [audit
+Start with [zones](#1-zones), [tenant rules](#2-customers-from-each-other), [audit
+checks](#3-the-checks-and-when-they-run) and [validation
+scope](#4-what-has-and-has-not-been-verified). Source: [audit package](../audit/), [audit
 CLI](../cmd/carnical-audit/). The [historical background](segmentation-background-2026-10-05.md)
 explains the external-backend survey.
 
-## 2. Zones
+## 1. Zones
 
 | Zone | What runs there | What it holds | Faces |
 |---|---|---|---|
@@ -66,12 +66,12 @@ that is taken over finds a config fetch and an event pipe, and nothing else on t
 - **Edge to the rest.** The edge process runs as its own unprivileged user with a read-only file system apart from the spool, no shell, no access to any key but its own tenants' TLS keys, and a network policy that allows the two connections above. It never receives a credential for control, the signer or the owner; it authenticates to control with its own identity, and that identity can only fetch its own assignment and push events stamped with the edge's id.
 - **Edge to origins: the origin guard** (built, `carnical/proxy/origin.go`). A customer chooses where their origin is, so the choice is not trusted. Every outgoing connection is checked on the address it is really about to use, after the name has been resolved: loopback, private, link-local and cloud-metadata ranges (with Azure's platform address 168.63.129.16), the tunnelling prefixes that can carry an IPv4 address inside, and this machine's own addresses are refused. A name that answers with a public address first and a private one later gets nothing. The operator can allow a range for a named origin (`-origin-allow`); `carnical-audit` then checks that the allow list does not cover any internal zone.
 - **Portal to control.** The portal can say "tenant T proposes setting S = V". The tenant is taken from the login session, never from the request. Control validates the proposal against the settings schema (and the customer's locks and roles) and compiles it; the portal cannot write a store, a key or a configuration directly.
-- **Control to signer.** The signer takes a compiled configuration for one tenant, checks it against the allowed shape (section 3, T7), and signs it with tenant id, sequence number, expiry and the edge it is for inside the signed bytes. Control never holds the key.
+- **Control to signer.** The signer takes a compiled configuration for one tenant, checks it against the allowed shape (section 2, T7), and signs it with tenant id, sequence number, expiry and the edge it is for inside the signed bytes. Control never holds the key.
 - **Owner.** Nothing inbound. It reads the same feed v1 it reads today. A hosted Carnical looks to the owner console like one more feed per site; the owner PC never receives a connection from a hosted component, and holds no hosted key (`backend-compat.md`).
 
 ---
 
-## 3. Customers from each other
+## 2. Customers from each other
 
 | # | Rule | Why |
 |---|---|---|
@@ -88,7 +88,7 @@ that is taken over finds a config fetch and an event pipe, and nothing else on t
 
 ---
 
-## 4. The checks, and when they run
+## 3. The checks, and when they run
 
 `carnical-audit` runs a catalogue of checks from each place where they mean something. Four runs a
 day, each a random time (up to 45 minutes) after the hour, so a run cannot be dodged by timing. Not
@@ -101,7 +101,7 @@ The checker is built to be believed:
 - a check that **exercised zero cases fails**, it does not pass;
 - every tenant check begins with a **positive control** (a tenant can read its own planted record, a block-mode tenant blocks the canary attack aimed straight at it), because "could not read the other's" means nothing if it could not read its own either;
 - reports name the tenant, the kind of record and the way it was tried, never the content or the planted markers;
-- every check is tested against a deliberately broken setup that it has to catch (section 5).
+- every check is tested against a deliberately broken setup that it has to catch (section 4).
 
 | Check | Runs from | What it watches | State |
 |---|---|---|---|
@@ -126,7 +126,7 @@ on those machines, as their own unprivileged user.
 - Console, log and status output failures return exit 1. A failed console or log write also sets `ok` to false when the status file can be written. Check counts remain unchanged. Watch mode retries on the next run and can recover after the output path is repaired. New output files use mode 0600 on Unix; existing log permissions and Windows ACLs remain the operator's responsibility.
 - A run stopped by SIGINT or SIGTERM (`systemctl stop`, a shutdown, Ctrl-C) is not a result: it appends nothing to the log, leaves the status file as the last finished run wrote it, and exits with that run's status, or 0 when there was none. The exception is a check that finished before the stop and failed or broke: that run is reported as usual, with the checks the stop cut short marked as stopped, so the finding is not held back until the next run.
 - The status file is what the existing owner view can read: feed v1 has a `health.errors[]` list in which every entry is a red standing alert on the owner's Desk, so a failing check appears where the owner already looks, with no new channel. (The feed server that would carry it is part of the backend work in `backend-compat.md`.)
-- A failed `tenant-*` or `zone-reach` check should also stop the world it protects: an edge that finds its own wall open takes itself out of rotation. That reaction is not built; it is a decision for the owner (section 6).
+- A failed `tenant-*` or `zone-reach` check should also stop the world it protects: an edge that finds its own wall open takes itself out of rotation. That reaction is not built; it is a decision for the owner (section 5).
 
 ### Scheduling
 
@@ -136,7 +136,7 @@ a day, six hours apart, each with a random delay.
 
 ---
 
-## 5. What has and has not been verified
+## 4. What has and has not been verified
 
 **Verified.**
 - The origin guard: address table (including IPv4-mapped, NAT64, 6to4, metadata, carrier-grade NAT, zones), a name that resolves to loopback is refused at connect time and the same name is reached once the range is allowed, the allow list refuses `/0`. Mutation checks: removing the dial hook, or the range list, makes the tests fail. Passes on Windows and under Linux in WSL.
@@ -145,12 +145,12 @@ a day, six hours apart, each with a random delay.
 
 **Not verified, because it does not exist yet.**
 - The hosted edge, registry, portal, control plane and signer. The tenant checks have never run against a real multi-tenant deployment, only against stand-ins written to leak in the ways the checks look for. A stand-in that leaks differently from real code could pass them. The first job when the registry exists is to implement `audit.Tenancy` for it and run the checks against a deliberately broken copy.
-- The network policies and file permissions in section 2 are a design, not a configuration on any machine.
+- The network policies and file permissions in section 1 are a design, not a configuration on any machine.
 - Nothing here has been run against the owner PC.
 
 ---
 
-## 6. Decisions for the owner
+## 5. Decisions for the owner
 
 1. **How many machines.** Recommended: separate machines for **edge** (stateless, replaceable, may be several), **portal**, and **control + signer** (signer a separate user with no network except to control). The portal takes passwords and uploads from strangers; keeping it off the machine with every customer's data is the most valuable single wall. A cheaper start is edge on one VPS and portal + control on a second, split by user and network namespace, with the signer still its own user. The walls then rest on the operating system rather than on the network.
 2. **Where the root key lives.** The current default is the owner PC, typed into the networked console. Because no key exists yet, it can go to a hardware token or a laptop that is never online instead, with the owner PC holding only the online release key. Recommended.
