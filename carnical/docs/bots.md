@@ -84,7 +84,12 @@ signing its requests) is `ai`, and one whose client hints say HeadlessChrome is 
 program cannot use those headers to get past the checks: it is still `disguised`. A long user agent
 is searched whole, so padding cannot push a scanner's name out of sight.
 
-Behind a load balancer or CDN that ends TLS, only the header checks apply. Tools that copy a
+Behind a load balancer or CDN, only the header checks apply. That holds whether it ends TLS or
+opens a TLS connection of its own to Carnical. For a request from a `-trusted-proxies` peer,
+Carnical does not use the connection's HTTP version, its TLS handshake, or the HTTPS-only checks of
+`Sec-Fetch-*` and client hints. Those are the proxy's (nginx forwards over HTTP/1.0 by default),
+and the visitor may have reached the proxy without HTTPS, when a browser sends neither header.
+Tools that copy a
 browser's handshake as well as its headers (curl-impersonate, curl_cffi, a real browser driven by
 Playwright or Selenium with its user agent changed) pass as people. A browser behind antivirus or a
 company proxy that reads HTTPS shows the proxy's handshake, so it can be read as `disguised`: run

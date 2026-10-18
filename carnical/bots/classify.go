@@ -222,6 +222,10 @@ type Hello struct {
 	// RecordSizeLimit says the client offered the record_size_limit extension (RFC 8449): Firefox and the other
 	// browsers built on its TLS (NSS) do, and OpenSSL, Go, Java and Node do not.
 	RecordSizeLimit bool
+	// Forwarded says the request came from a trusted proxy (a load balancer or CDN): the connection, its protocol
+	// version and its TLS are the proxy's, so they say nothing of the client, and only the headers it passed on are
+	// read. Seen is then false.
+	Forwarded bool
 }
 
 // Classify reads what kind of client sent a request, and the operator it claims to be when that can be checked by DNS
@@ -287,9 +291,13 @@ func Classify(r *http.Request, hello Hello) (alert.Client, Engine) {
 //     current Chrome without client hints (forks and embedded browsers that may not send them are left out);
 //   - a Chromium-based browser whose TLS handshake offered no GREASE values, or a current Firefox whose handshake did not
 //     offer record_size_limit: the TLS of the program that sent it, not of the browser.
+//
+// A request a trusted proxy forwarded (hello.Forwarded) is held to the headers alone: the proxy chose the protocol
+// version (nginx forwards with HTTP/1.0 by default) and the TLS, and the client may have reached it without TLS, when
+// a browser sends no Sec-Fetch headers or client hints.
 func disguised(r *http.Request, ua string, hello Hello) bool {
 	h := r.Header
-	if r.ProtoMajor == 1 && r.ProtoMinor == 0 {
+	if r.ProtoMajor == 1 && r.ProtoMinor == 0 && !hello.Forwarded {
 		return true
 	}
 	// A browser opening a WebSocket sends no Accept, and Chrome no Sec-Fetch or client hints either, so a handshake is
@@ -319,7 +327,7 @@ func disguised(r *http.Request, ua string, hello Hello) bool {
 	if hints != "" && isChrome && (!hintsName(hints, chrome) || !samePlatform(ua, h.Get("Sec-Ch-Ua-Platform"))) {
 		return true
 	}
-	if r.TLS != nil {
+	if r.TLS != nil && !hello.Forwarded {
 		fetch := h.Get("Sec-Fetch-Mode") != "" || h.Get("Sec-Fetch-Site") != "" || h.Get("Sec-Fetch-Dest") != ""
 		if !fetch && (isChrome && chrome >= 80 && !socket || isFirefox && !isChrome && firefox >= 90 || isSafari && safari >= 17) {
 			return true

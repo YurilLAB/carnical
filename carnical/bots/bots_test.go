@@ -195,6 +195,12 @@ func TestClassifyOverTLS(t *testing.T) {
 		{"Safari", safari, fetch(nil), Hello{}, alert.ClientPerson},
 		{"Safari without Sec-Fetch", safari, http.Header{"Accept": {"*/*"}, "Accept-Language": {"en"}}, Hello{}, alert.ClientDisguised},
 		{"Safari before Sec-Fetch", oldSafari, http.Header{"Accept": {"*/*"}, "Accept-Language": {"en"}}, Hello{}, alert.ClientPerson},
+		{"Chrome forwarded by a trusted proxy, whose TLS is its own", chrome, fetch(hints), Hello{Forwarded: true}, alert.ClientPerson},
+		{"Chrome that reached the proxy without TLS sends no Sec-Fetch or client hints", chrome,
+			http.Header{"Accept": {"text/html"}, "Accept-Language": {"en"}}, Hello{Forwarded: true}, alert.ClientPerson},
+		{"Firefox forwarded by a trusted proxy", firefox, fetch(nil), Hello{Forwarded: true}, alert.ClientPerson},
+		{"a forwarded request is still held to a browser's headers", chrome, http.Header{"Accept": {"*/*"}}, Hello{Forwarded: true}, alert.ClientDisguised},
+		{"and to its client hints", chrome, fetch(withHints(`"Chromium";v="120", "Google Chrome";v="120"`, "")), Hello{Forwarded: true}, alert.ClientDisguised},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

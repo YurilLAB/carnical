@@ -320,12 +320,16 @@ func (e *Edge) checkBots(w http.ResponseWriter, r *http.Request, client netip.Ad
 	return true
 }
 
-// helloOf is what the TLS handshake of r's connection showed, when Config.Hellos keeps it.
+// helloOf is what the TLS handshake of r's connection showed, when Config.Hellos keeps it. A connection from a trusted
+// proxy is the proxy's: its handshake and protocol say nothing of the client.
 func (e *Edge) helloOf(r *http.Request) bots.Hello {
+	c, _ := r.Context().Value(connKey{}).(net.Conn)
+	if c != nil && len(e.cfg.TrustedProxies) > 0 && isTrusted(connAddr(c.RemoteAddr().String()), e.cfg.TrustedProxies) {
+		return bots.Hello{Forwarded: true} // r.RemoteAddr is the visitor's by now; the connection is the proxy's
+	}
 	if e.cfg.Hellos == nil || r.TLS == nil {
 		return bots.Hello{}
 	}
-	c, _ := r.Context().Value(connKey{}).(net.Conn)
 	return e.cfg.Hellos.Of(c)
 }
 

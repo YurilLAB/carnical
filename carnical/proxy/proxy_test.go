@@ -772,6 +772,8 @@ func TestMatchesAreReportedWithoutWhatTheVisitorSentUnlessAsked(t *testing.T) {
 	}
 	sqli := get("/search?q=" + url.QueryEscape("1' OR '"+secret+"'='"+secret+"' --"))
 	numericHost := strings.Replace(get("/page"), "Host: shop.example.test", "Host: 127.0.0.1", 1)
+	firefox10 := strings.Replace(strings.Replace(get("/page", "Accept-Language: en\r\n"), "HTTP/1.1", "HTTP/1.0", 1),
+		"Mozilla/5.0 Chrome/120", "Mozilla/5.0 (X11; Linux x86_64; rv:143.0) Gecko/20100101 Firefox/143.0", 1)
 	gptbot := strings.Replace(get("/page"), "Mozilla/5.0 Chrome/120", "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; GPTBot/1.3; +https://openai.com/gptbot)", 1)
 	for _, tt := range []struct {
 		name    string
@@ -846,6 +848,12 @@ func TestMatchesAreReportedWithoutWhatTheVisitorSentUnlessAsked(t *testing.T) {
 		{"in monitor mode it would have been", func(c *Config) { c.Bots = &bots.Policy{Watch: 1 << alert.ClientAI} }, gptbot, 200,
 			[]string{"bots-5005003 would_block 0"}, nil},
 		{"a kind it does not list passes", func(c *Config) { c.Bots = &bots.Policy{Refuse: 1 << alert.ClientTool} }, gptbot, 200, nil, nil},
+		{"a browser's request over HTTP/1.0 is disguised", func(c *Config) { c.Bots = &bots.Policy{Refuse: 1 << alert.ClientDisguised} },
+			firefox10, 403, []string{"bots-5005012 blocked 403"}, nil},
+		{"unless a trusted proxy chose HTTP/1.0, as nginx does", func(c *Config) {
+			c.Bots = &bots.Policy{Refuse: 1 << alert.ClientDisguised}
+			c.TrustedProxies = []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")}
+		}, strings.Replace(firefox10, "Connection: close", "X-Forwarded-For: 203.0.113.9\r\nConnection: close", 1), 200, nil, nil},
 		{"a clean request has none", nil, get("/page"), 200, nil, nil},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
