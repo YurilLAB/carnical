@@ -545,11 +545,11 @@ func TestAggregator(t *testing.T) {
 			if !reflect.DeepEqual(tot.Refused, want) {
 				t.Fatalf("refused by client %+v, want %+v", tot.Refused, want)
 			}
-			// Many sources are estimated, within a few percent.
+			// Many sources are estimated: the standard error is about 1.6%, so 6% is some four of it.
 			for i := range 5000 {
 				g.Observe(by(netip.AddrFrom4([4]byte{10, byte(i >> 16), byte(i >> 8), byte(i)}), ClientPerson, Blocked))
 			}
-			if n := g.Totals().PeopleSources; n < 4850 || n > 5150 {
+			if n := g.Totals().PeopleSources; n < 4700 || n > 5300 {
 				t.Fatalf("5001 people sources estimated as %d", n)
 			}
 		}},
