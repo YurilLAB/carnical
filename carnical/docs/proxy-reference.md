@@ -298,6 +298,42 @@ alerts are on, the auto-block mode and the bots blocked. Alerts also tell the fl
 to: a would-be refusal in detection or monitor mode counts toward its `would_reject` signal, and a
 refusal counts toward a [repeat offender's](ddos.md#repeat-offenders) ban.
 
+### Counts are not a forensic record
+
+Carnical writes three kinds of line. Each gives up something different when traffic is heavy, so
+they answer different questions:
+
+| Lines | Complete? | Use them for |
+| --- | --- | --- |
+| `intrusion totals` | Exact. Every request and finding is counted, by layer, action, risk, rule and kind of client, whatever else is held back. | How many: dashboards, trends, alert thresholds, whether an attack is happening. |
+| Alerts (`intrusion blocked`, `intrusion detected`, `alert repeated`, `suspected intrusion`) | No. One line per source, signature and action in `-alert-repeat-window`, with repeats counted. At most `-alert-rate` lines a second, high and medium risk first; what is held back is counted in `alerts dropped`. | Who and what: the sources and signatures behind the totals. |
+| `rule matched` | No. One line per rule a request matched, by `tx`, through a queue of 8,192. When the log falls behind, the lines that do not fit are dropped and counted in `rule matched lines dropped`. | Why a given request was refused, when its lines were written. |
+
+So under a heavy attack the totals stay right, but which requests did what is only partly written
+down. The drop counts say how much is missing; they do not say which requests' lines are gone.
+In the soak of [18 October 2026](validation-2026-10-18.md#alerts-and-auto-block-under-sustained-hostile-traffic),
+the alert limit held back 58,267 alert lines while the totals counted every request.
+
+None of these lines holds the query, the body or matched data, and Carnical writes no per-request
+access log or audit file (`SecAuditEngine Off`). Nor does it pass a request id to the origin. For a
+record of every request, which an investigation or a legal hold may need, keep the access log of
+the load balancer or reverse proxy in front of Carnical, or of the origin. Match its lines to
+Carnical's by time, source address, host and path.
+
+Carnical's lines also pass through whatever stores them, which may drop lines of its own:
+
+- systemd-journald limits each service to 10,000 lines in 30 seconds by default, and reports what it
+  suppressed as `Suppressed N messages`. A busy attack's `rule matched` lines can reach that limit.
+  When they do, journald also drops the alerts and totals written after them.
+- To keep every line Carnical writes, raise the limit in a drop-in for the unit
+  (`LogRateLimitIntervalSec=` and `LogRateLimitBurst=`) and size the journal's disk use to match.
+- Or set `-log-rule-matches=false`, which keeps the alerts and totals and leaves out the per-rule
+  lines that make up most of the volume.
+- Check with `journalctl -u carnical-edge | grep Suppressed`.
+
+When the process is killed rather than stopped, lines still in its queues are lost. A normal stop
+writes them and the final totals, waiting at most two seconds for the alerts and two for the `rule matched` lines.
+
 See [attack coverage](attacks.md) and [security findings](../../docs/security-findings.md) for
 application-dependent limits and verified fixes.
 
