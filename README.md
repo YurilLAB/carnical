@@ -21,6 +21,8 @@ monitoring, and deployment tools around the Coraza engine. Carnical is an indepe
 | Web requests | CRS rules, supplemental injection rules, strict body/query parsing and upload checks | [Request validation](carnical/docs/formats.md) |
 | APIs | Supported OpenAPI contracts, GraphQL checks and optional per-client quotas | [API contracts](carnical/docs/input-hardening.md) |
 | Floods and network abuse | Connection and request budgets, distributed-flood detection and bounded IDS alerts | [Flood protection and IDS](carnical/docs/ddos.md) |
+| Bots | Scanners and attack tools refused by default; fake search engines (checked by DNS or published address ranges), AI crawlers, scrapers and programs disguised as browsers refused by choice; blocked bots and people counted apart | [Bots](carnical/docs/bots.md) |
+| Attackers | One deduplicated alert per attacker and attack with exact totals, per-client rate rules, and optional bans of sources that keep attacking | [Intrusion alerts](carnical/docs/proxy-reference.md#intrusion-alerts), [repeat offenders](carnical/docs/ddos.md#repeat-offenders) |
 | IP bans | Optional CrowdSec Local API decisions, checked on every HTTP request | [CrowdSec](carnical/docs/crowdsec.md) |
 | Linux hosts | Optional nftables packet guards and Landlock/seccomp process restrictions | [Network protection](carnical/docs/network-protection.md), [host hardening](carnical/docs/hardening.md) |
 | Deployment | Setup wizard, encrypted site fields, origin mutual TLS, startup checks, private health probes and graceful shutdown | [Website setup](carnical/docs/website-onboarding.md), [availability](carnical/docs/availability-and-deployment.md) |
@@ -59,8 +61,9 @@ With the `carnical` binary installed on Windows or Linux, run:
 carnical setup
 ```
 
-The wizard asks for website names, origin IP/address, listening address, TLS files and
-protection mode. It checks the settings and asks before saving. Private origin details and
+The wizard asks for website names, origin IP/address, listening address and TLS files, a
+protection profile, and basic security settings (block or log, flood protection, auto-block, a login
+limit, bots and alerts). It checks the settings and asks before saving. Private origin details and
 credential file paths are encrypted; a separate protected key lets the WAF load them at startup.
 It prints the check and start commands. See [setup and key management](carnical/docs/setup.md).
 
@@ -78,7 +81,8 @@ The [website setup guide](carnical/docs/website-onboarding.md) covers both sides
 
 Tests cover varied attacks, legitimate traffic, Linux/Windows behavior and live deployments.
 The [security review](docs/security-findings.md) and [validation records](carnical/docs/README.md#review-the-evidence)
-describe the tested configurations and remaining limits.
+describe the tested configurations and remaining limits; the [latest](carnical/docs/validation-2026-10-18.md)
+measures the current build.
 
 The proxy cannot replace application authorization, patch application bugs, or recover a saturated
 network link. Upload checks are not a general malware scanner. WebSocket inspection and schema-aware

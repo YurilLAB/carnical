@@ -95,6 +95,7 @@ See the list of commands
 ```
 $ go run mage.go -l
 Targets:
+  adr          validates the Architecture Decision Records under docs/adr.
   check        runs lint and tests.
   coverage     runs tests with coverage and race detector enabled.
   doc          runs godoc, access at http://localhost:6060.
@@ -117,4 +118,9 @@ go run mage.go format
 - `go.work`: includes `./carnical` and pins Go 1.26.9, including the October 2026 HTTP/2 security fixes. Builds also use `golang.org/x/net` v0.60.0.
 - `internal/corazawaf/rulegroup.go`, `rule.go`, `transaction.go`: rule evaluation stops when the transaction's context is done, and a blocking engine refuses the transaction (503). Nothing in the engine looked at the context before, so a request that was expensive to inspect could not be cut short. The proxy gives each evaluation phase a budget through it (`proxy/deadline.go`). A test in `rulegroup_test.go` covers the three cases.
 - `internal/transformations/normalise_path.go`: `path.Clean` instead of `filepath.Clean`, so the transformation gives the same result on every OS.
+- `internal/corazawaf/rule.go`: logging-phase rules keep running after an evaluation timeout, and with multiphase evaluation the rules a cut-short phase did not reach read its variables in the next phase they run in.
+- `internal/corazawaf/rule.go`, `transaction.go`, `internal/actions/ctl.go`: ARGS keys, key regexes and exceptions fold case in the default build, as the `case_sensitive_args_keys` tag intends.
+- `internal/corazawaf/transaction.go`, `internal/seclang/directives.go`: response media types match without regard to case or parameters, and each `SecResponseBodyMimeType` adds to the list instead of replacing it.
+- `internal/bodyprocessors/`: urlencoded bodies keep every value of a repeated name in `ARGS_POST`; a multipart part keeps its quoted-printable `Content-Transfer-Encoding` header visible; an XML body that declares an entity, or ends before its document does (unless cut at the limit under `ProcessPartial`), is a body error.
+- `http/middleware.go`: a request body is detached from its transaction before the transaction closes, so a transport still reading it never reads a reset buffer.
 - Further engine hardening validates audit-log part names and file modes, restricts new debug-log permissions and reports cleanup failures. See the [security findings review](security-findings.md) for confirmed fixes and remaining work.

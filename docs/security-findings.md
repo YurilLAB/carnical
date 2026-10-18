@@ -4,7 +4,11 @@ This is a dated record of findings, fixes and validation from 6–9 October 2026
 counts and failing CI notes describe their recorded revisions, not the current build. A scanner
 match is a finding to verify; a clean scan is not a complete security assessment.
 
-## Latest validated checkpoint — 9 October 2026
+## Validated checkpoint — 9 October 2026
+
+A later revision, `deb80b41`, passed all 12 [security CI jobs](https://github.com/YurilLAB/carnical/actions/runs/39091203301)
+on 18 October 2026; its measurements are in the [validation record of that
+day](../carnical/docs/validation-2026-10-18.md).
 
 Revision `fc8f17a6` passed all 12 [security CI
 jobs](https://github.com/YurilLAB/carnical/actions/runs/37900620871). That includes Linux/Windows

@@ -99,8 +99,9 @@ build/security-tools/actionlint.exe -shellcheck= -pyflakes=
 
 ## Current checkpoint
 
-All 12 [security jobs](https://github.com/YurilLAB/carnical/actions/runs/37900620871) passed at
-revision `fc8f17a6` on 9 October 2026. The [findings history](security-findings.md) records fixes,
+All 12 [security jobs](https://github.com/YurilLAB/carnical/actions/runs/39091203301) passed at
+revision `deb80b41` on 18 October 2026 (the earlier checkpoint was [`fc8f17a6`](https://github.com/YurilLAB/carnical/actions/runs/37900620871)
+on 9 October). The [findings history](security-findings.md) records fixes,
 scope and the narrow OpenPGP test-harness exception/import guard.
 
 ## Initial validation: 2026-10-06
