@@ -1,8 +1,8 @@
 # Validation record: 18 October 2026
 
 This record measures revision `deb80b41` of `edge-crs`, after the bot policy, intrusion alerts
-and auto-block work. The local runs used a cloud container (Ubuntu 24.04.5, Linux 6.18.44,
-Go 1.26.9, running as root, no IPv6). The CI runs used GitHub's Ubuntu 24.04 runners. The counts
+and auto-block work; the section on varied agents, apps and proxies names its own. The local runs
+used a cloud container (Ubuntu 24.04.5, Linux 6.18.44, Go 1.26.9, running as root, no IPv6). The CI runs used GitHub's Ubuntu 24.04 runners. The counts
 belong to these runs. Attacks targeted isolated local origins.
 
 Use the [documentation index](README.md#review-the-evidence) for the current guides and older
@@ -128,6 +128,79 @@ The published crawler range files parsed as expected:
 | Bing | 28 |
 | Apple | 24 |
 | Amazon | 1,292 |
+
+## Bot policy: varied agents, apps and proxies
+
+Measured on `fcdf06a9`, then again with the fixes below. Each user agent was classified in four
+settings:
+
+- **HTTP:** a browser's `Accept`, `Accept-Language` and `Accept-Encoding`, no TLS.
+- **HTTPS:** also the `Sec-Fetch-*` headers and client hints the browser named sends, and its TLS
+  handshake: GREASE from Chrome 55 and later and from Safari, `record_size_limit` from Firefox 65
+  and later.
+- **Inspected:** the same headers, through a proxy that reads HTTPS and offers neither in its own
+  handshake.
+- **Forwarded:** the same headers from a `-trusted-proxies` load balancer, over HTTP/1.0.
+
+| Set | Agents | HTTP and HTTPS | Inspected |
+| --- | --- | --- | --- |
+| [intoli/user-agents](https://github.com/intoli/user-agents), weighted by use | 10,000 | 94.7% `person`, 5.3% `disguised` | 38.2% `person`, 61.8% `disguised` |
+| Apps, devices and enterprise clients, written by hand | 55 | 44 `person`, 1 `disguised` | 29 `person`, 16 `disguised` |
+| [uap-core](https://github.com/ua-parser/uap-core) test agents | 14,548 | see below | |
+| [crawler-user-agents](https://github.com/monperrus/crawler-user-agents) | 2,120 | 3.96% read as `person` | |
+
+Forwarded gave the same reads as HTTP. Nothing that a person uses was read as `scanner` in any
+set, so the default policy (`-bots scanner`) refused no person.
+
+intoli:
+
+- Every `disguised` read names Chrome 39 to 50 with a build number Chrome never had. These are
+  generated user agents, so they come from programs, not people.
+- The one `bot` read is a user agent marked `compatible;` with no browser in it.
+- Inspected, all 6,173 agents naming Chrome (Edge and other Chromium browsers included) or Firefox
+  90 and later read as `disguised`.
+
+Apps and devices, after the fixes:
+
+- 44 were read as `person`. They include okhttp, Dalvik, CFNetwork, AppleCoreMedia, ExoPlayer,
+  in-app browsers, Electron and Teams, Opera, Vivaldi, Samsung Internet, Firefox ESR, Tor Browser,
+  Internet Explorer 11, Edge in IE mode, a Chromebook, the PlayStation 5, the Switch, a Tesla, and
+  televisions from LG and Samsung.
+- `tool`: curl, python-requests, a Flutter app (`Dart/3.5 (dart:io)`) and a Unity game
+  (`UnityPlayer`, which names libcurl).
+- `bot`: no user agent, and Windows fetching a revocation list (`Microsoft-CryptoAPI/10.0`).
+- `monitor`: Zabbix and the Prometheus blackbox exporter. `preview`: Slack and WhatsApp.
+- `disguised`: an Android 4.4 web view, which names Chrome 30.
+
+uap-core's agents are mostly historical. Every `disguised` read among them comes from the version
+rule: Firefox before 60 (2,162), Chrome before 70 (95) and Internet Explorer before 11 (47). The
+only `scanner` reads were OpenVAS (3), WhatWeb and masscan.
+
+Live, through [mitmproxy](https://mitmproxy.org) 12.2.3 (OpenSSL 4.0.1) in front of Carnical with
+`-bots disguised`:
+
+| Browser | Direct | Through mitmproxy |
+| --- | --- | --- |
+| Chromium 141 | served | 403, `disguised` |
+| Firefox | served | 403, `disguised` |
+
+Fixed in the classifier:
+
+- **ExoPlayer and Media3** (`ExoPlayerLib/2.19.1`, `AndroidXMedia3/1.4.1`), the video players of
+  Android apps, were `bot`. They are now apps (`person`).
+- **Televisions** were `disguised`: LG's of 2016 to 2020 name Chrome 38 to 68, and the older ones
+  offer no GREASE. A television's user agent (`SmartTV`, `SMART-TV`, `Web0S`, `Tizen`, `HbbTV`) is
+  now excused from both checks, below Chrome 70 only. This opens no new way past the policy: a
+  program can already claim Safari 16, whose handshake is not checked and which sends no
+  `Sec-Fetch-*`.
+- **Apps built on Chromium**, such as WeChat on Windows (`XWEB`), CEF apps and in-app browsers,
+  were held to Chrome's client hints. Only Electron, Android web views and four named forks were
+  excused. Now only a user agent that is Chrome's, Edge's or Opera's and names nothing else is
+  held to them. In intoli, that leaves 0.08% of the weight no longer checked, all of it forks.
+
+Not fixed. A browser behind a proxy that reads HTTPS cannot be told apart, by its handshake, from a
+program that copies a browser's headers. [Bots](bots.md#disguised-programs) now says to keep
+`disguised` in `-bots-monitor` for such visitors.
 
 ## Alerts and auto-block under sustained hostile traffic
 
