@@ -3,8 +3,12 @@
 package main
 
 import (
+	"bytes"
+	"errors"
 	"flag"
 	"fmt"
+	"net/netip"
+	"strings"
 
 	"github.com/YurilLAB/coraza/carnical/alert"
 	"github.com/YurilLAB/coraza/carnical/bots"
@@ -12,8 +16,8 @@ import (
 
 // botFlags are the flags of the bot policy (ADR-0087).
 type botFlags struct {
-	kinds, watch, mode, exempt *string
-	trustNetworks              *bool
+	kinds, watch, mode, exempt, ranges *string
+	trustNetworks                      *bool
 }
 
 func declareBotFlags(flags *flag.FlagSet) botFlags {
@@ -25,6 +29,8 @@ func declareBotFlags(flags *flag.FlagSet) botFlags {
 		exempt: flags.String("bots-exempt", "", "comma-separated addresses or ranges never refused by -bots, such as your own scanners"),
 		trustNetworks: flags.Bool("bots-trust-networks", false, "when every DNS check of a crawler is busy, let an address pass unchecked if a crawler "+
 			"of the same engine was verified in its /24 or /48 (off: such an address is a fake until checked)"),
+		ranges: flags.String("bots-ranges", "", "ENGINE=FILE pairs separated by commas: the address ranges an engine publishes for its crawlers, "+
+			"as its JSON file or one range a line; an address in them is verified without DNS. Engines: "+bots.EngineNames()),
 	}
 }
 
@@ -47,6 +53,9 @@ func botPolicy(f botFlags) (*bots.Policy, error) {
 	default:
 		return nil, refuseFlag("bots-mode", fmt.Errorf("-bots-mode must be block or monitor, not %q", *f.mode))
 	}
+	if *f.ranges != "" && (set|watch)&(1<<alert.ClientFake) == 0 {
+		return nil, refuseFlag("bots-ranges", errors.New("-bots-ranges verifies crawlers, which only -bots or -bots-monitor with fake does"))
+	}
 	if set|watch == 0 {
 		return nil, nil
 	}
@@ -62,8 +71,36 @@ func botPolicy(f botFlags) (*bots.Policy, error) {
 	if (p.Refuse|p.Watch)&(1<<alert.ClientFake) != 0 {
 		p.Verifier = bots.NewVerifier(nil, 0, 0)
 		p.Verifier.TrustNetworks = *f.trustNetworks
+		if p.Verifier.Ranges, err = crawlerRanges(*f.ranges); err != nil {
+			return nil, refuseFlag("bots-ranges", fmt.Errorf("-bots-ranges: %w", err))
+		}
 	}
 	return p, nil
+}
+
+// crawlerRanges reads the files -bots-ranges names. An engine may be named more than once, to join lists it publishes apart.
+func crawlerRanges(spec string) (map[bots.Engine][]netip.Prefix, error) {
+	if spec == "" {
+		return nil, nil
+	}
+	ranges := map[bots.Engine][]netip.Prefix{}
+	for _, pair := range strings.Split(spec, ",") {
+		name, path, ok := strings.Cut(strings.TrimSpace(pair), "=")
+		engine, known := bots.EngineNamed(name)
+		if !ok || !known || path == "" {
+			return nil, fmt.Errorf("%q is not ENGINE=FILE with one of the engines %s", pair, bots.EngineNames())
+		}
+		data, err := readSiteFile(path, bots.MaxRangesFile, false)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", name, err)
+		}
+		list, err := bots.ParseRanges(bytes.NewReader(data))
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", name, err)
+		}
+		ranges[engine] = append(ranges[engine], list...)
+	}
+	return ranges, nil
 }
 
 // botsMode is the bot policy as the listening line gives it: the kinds refused, and those only logged after "monitor".

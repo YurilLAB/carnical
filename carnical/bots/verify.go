@@ -3,8 +3,13 @@
 package bots
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"strings"
@@ -31,6 +36,13 @@ const (
 	DefaultCache   = 65536
 )
 
+// MaxRangesFile is how large a file ParseRanges reads.
+const MaxRangesFile = 4 << 20
+
+// minRangeBitsIPv4 and minRangeBitsIPv6 are how wide a published range may be, the same floor as an address exempt from
+// auto-block has, so that a mistake cannot verify the whole Internet as an engine's.
+const minRangeBitsIPv4, minRangeBitsIPv6 = 16, 32
+
 // Resolver is the part of net.Resolver a Verifier uses.
 type Resolver interface {
 	LookupAddr(ctx context.Context, addr string) ([]string, error)
@@ -51,6 +63,10 @@ type Verifier struct {
 	// crawlers passing under a flood of impostors, but trusts every address of such a network as the engine's: leave
 	// it off where a network's addresses need not belong to one owner, as in a cloud's shared ranges.
 	TrustNetworks bool
+	// Ranges, set before the Verifier is used, are the address ranges engines publish for their crawlers (see ParseRanges).
+	// An address in its engine's ranges is verified without DNS; any other address is still checked by DNS. Amazon, for
+	// one, publishes ranges for its crawlers but no DNS names for some of them.
+	Ranges map[Engine][]netip.Prefix
 
 	res   Resolver
 	slots chan struct{}
@@ -114,6 +130,11 @@ func (v *Verifier) Verify(ctx context.Context, addr netip.Addr, engine Engine) b
 		return false
 	}
 	addr = addr.Unmap()
+	for _, p := range v.Ranges[engine] {
+		if p.Contains(addr) {
+			return true
+		}
+	}
 	k := verifyKey{addr, engine}
 	now := v.now()
 	v.mu.Lock()
@@ -289,4 +310,89 @@ func (v *Verifier) evict(now time.Time) {
 			}
 		}
 	}
+}
+
+// EngineNamed is the engine with the name Engine.String gives, such as "google" or "amazon".
+func EngineNamed(name string) (Engine, bool) {
+	for e := Engine(1); int(e) < numEngines; e++ {
+		if engines[e].name == name {
+			return e, true
+		}
+	}
+	return 0, false
+}
+
+// EngineNames is the names EngineNamed takes, separated by commas.
+func EngineNames() string {
+	names := make([]string, 0, numEngines-1)
+	for e := Engine(1); int(e) < numEngines; e++ {
+		names = append(names, engines[e].name)
+	}
+	return strings.Join(names, ", ")
+}
+
+// ParseRanges reads the ranges an engine publishes for its crawlers (see Verifier.Ranges): a JSON file in the form
+// Google, Bing and Apple publish ({"prefixes": [{"ipv4Prefix": "66.249.64.0/27"}, {"ipv6Prefix": ...}]}), or one range
+// or address a line, with # comments. A range may be no wider than a /16 (IPv4) or a /32 (IPv6).
+func ParseRanges(r io.Reader) ([]netip.Prefix, error) {
+	data, err := io.ReadAll(io.LimitReader(r, MaxRangesFile+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > MaxRangesFile {
+		return nil, fmt.Errorf("more than %d bytes", MaxRangesFile)
+	}
+	type entry struct{ where, text string }
+	var texts []entry
+	if t := bytes.TrimSpace(data); len(t) > 0 && t[0] == '{' {
+		var doc struct {
+			Prefixes []struct {
+				IPv4 string `json:"ipv4Prefix"`
+				IPv6 string `json:"ipv6Prefix"`
+			} `json:"prefixes"`
+		}
+		if err := json.Unmarshal(t, &doc); err != nil {
+			return nil, fmt.Errorf("not the JSON form engines publish: %w", err)
+		}
+		for i, p := range doc.Prefixes {
+			texts = append(texts, entry{fmt.Sprintf("prefix %d", i+1), p.IPv4 + p.IPv6})
+		}
+	} else {
+		lines := bufio.NewScanner(bytes.NewReader(data))
+		for n := 1; lines.Scan(); n++ {
+			line, _, _ := strings.Cut(lines.Text(), "#")
+			if line = strings.TrimSpace(line); line != "" {
+				texts = append(texts, entry{fmt.Sprintf("line %d", n), line})
+			}
+		}
+		if err := lines.Err(); err != nil {
+			return nil, err
+		}
+	}
+	ranges := make([]netip.Prefix, 0, len(texts))
+	for _, t := range texts {
+		p, err := netip.ParsePrefix(t.text)
+		if err != nil {
+			a, aerr := netip.ParseAddr(t.text)
+			if aerr != nil || a.Zone() != "" {
+				return nil, fmt.Errorf("%s: %q is not a range or an address", t.where, t.text)
+			}
+			p = netip.PrefixFrom(a, a.BitLen())
+		}
+		if p.Addr().Is4In6() {
+			p = netip.PrefixFrom(p.Addr().Unmap(), max(p.Bits()-96, 0))
+		}
+		floor := minRangeBitsIPv6
+		if p.Addr().Is4() {
+			floor = minRangeBitsIPv4
+		}
+		if p.Bits() < floor {
+			return nil, fmt.Errorf("%s: %s is wider than a /%d", t.where, t.text, floor)
+		}
+		ranges = append(ranges, p.Masked())
+	}
+	if len(ranges) == 0 {
+		return nil, errors.New("no ranges")
+	}
+	return ranges, nil
 }

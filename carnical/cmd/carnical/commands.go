@@ -182,7 +182,8 @@ Kinds -bots can refuse (-bots-monitor only logs them as would-be refusals):
             Refused by default, in every mode; their refusals count to auto-block.
   fake      claims to be Google, Bing, Apple, Yandex, Baidu, Petal, Seznam,
             Naver or Amazon, from an address that engine's DNS does not confirm
-            (-bots-trust-networks also trusts the networks of crawlers verified)
+            (-bots-trust-networks also trusts the networks of crawlers verified;
+            -bots-ranges amazon=FILE,... takes the address lists engines publish)
   ai        AI crawlers and fetchers: GPTBot, ClaudeBot, CCBot, Bytespider, ...
   seo       SEO, marketing, archive and data-mining crawlers, address harvesters
             and site copiers: AhrefsBot, SemrushBot, HTTrack, ...

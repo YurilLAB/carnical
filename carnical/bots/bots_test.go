@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -304,12 +305,19 @@ func TestVerify(t *testing.T) {
 		{"no reverse name", "198.51.100.1", EngineGoogle, false, false},
 		{"a reverse lookup that fails", "66.249.66.1", EngineGoogle, true, false},
 		{"no engine", "66.249.66.1", 0, false, false},
+		{"Amazonbot from a range Amazon publishes, with no DNS name", "198.18.0.7", EngineAmazon, false, true},
+		{"seen as a mapped IPv6 address", "::ffff:198.18.0.7", EngineAmazon, false, true},
+		{"even when DNS fails", "198.18.0.7", EngineAmazon, true, true},
+		{"Amazon's range does not make Googlebot", "198.18.0.7", EngineGoogle, false, false},
+		{"an address next to the range", "198.18.1.7", EngineAmazon, false, false},
 	}
+	ranges := map[Engine][]netip.Prefix{EngineAmazon: {netip.MustParsePrefix("198.18.0.0/24")}}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			r := dns()
 			r.failPTR = tt.fail
 			v := NewVerifier(r, 0, 0)
+			v.Ranges = ranges
 			addr := netip.MustParseAddr(tt.addr)
 			if got := v.Verify(context.Background(), addr, tt.engine); got != tt.want {
 				t.Fatalf("Verify = %v, want %v", got, tt.want)
@@ -432,6 +440,52 @@ func TestVerify(t *testing.T) {
 			t.Fatalf("%d answers kept, at most 16", n)
 		}
 	})
+}
+func TestParseRanges(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want []string // the ranges, or the error's text
+		fail bool
+	}{
+		{"the JSON form Google publishes", `{"creationTime": "2026-10-01T00:00:00", "prefixes": [{"ipv4Prefix": "66.249.64.0/27"},
+			{"ipv6Prefix": "2001:4860:4801:10::/64"}]}`, []string{"66.249.64.0/27", "2001:4860:4801:10::/64"}, false},
+		{"one range or address a line, with comments", "# Amazonbot\n52.70.240.171\n\n  3.224.220.0/24 # crawl\n2600:1f18::1\n",
+			[]string{"52.70.240.171/32", "3.224.220.0/24", "2600:1f18::1/128"}, false},
+		{"a range given with its host bits", "66.249.64.5/27", []string{"66.249.64.0/27"}, false},
+		{"a mapped IPv6 range is an IPv4 one", "::ffff:198.18.0.0/120", []string{"198.18.0.0/24"}, false},
+		{"a line that is no range", "66.249.64.0/27\ncrawl.amazonbot.amazon\n", []string{`line 2: "crawl.amazonbot.amazon"`}, true},
+		{"a prefix that is no range", `{"prefixes": [{"ipv4Prefix": "66.249.64.0/33"}]}`, []string{"prefix 1:"}, true},
+		{"an address with a zone", "fe80::1%eth0", []string{"line 1:"}, true},
+		{"a range wider than a /16", "10.0.0.0/8", []string{"wider than a /16"}, true},
+		{"the whole Internet as a mapped range", "::ffff:0.0.0.0/96", []string{"wider than a /16"}, true},
+		{"an IPv6 range wider than a /32", "2600::/16", []string{"wider than a /32"}, true},
+		{"broken JSON", `{"prefixes": [`, []string{"not the JSON form"}, true},
+		{"JSON with no prefixes", `{"creationTime": "2026-10-01T00:00:00"}`, []string{"no ranges"}, true},
+		{"only comments", "# nothing yet\n", []string{"no ranges"}, true},
+		{"a file over the limit", strings.Repeat("#", MaxRangesFile+1), []string{"more than"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseRanges(strings.NewReader(tt.in))
+			if tt.fail {
+				if err == nil || !strings.Contains(err.Error(), tt.want[0]) {
+					t.Fatalf("error %v, want one saying %q", err, tt.want[0])
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			var texts []string
+			for _, p := range got {
+				texts = append(texts, p.String())
+			}
+			if !slices.Equal(texts, tt.want) {
+				t.Fatalf("ranges %v, want %v", texts, tt.want)
+			}
+		})
+	}
 }
 
 func TestPolicy(t *testing.T) {
