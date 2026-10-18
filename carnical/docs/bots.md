@@ -88,6 +88,7 @@ company proxy that reads HTTPS shows the proxy's handshake, so it can be read as
 | `-bots` | `scanner` | Kinds to refuse, separated by commas: `fake`, `scanner`, `ai`, `seo`, `tool`, `headless`, `disguised`, `bot`; or `none`. |
 | `-bots-monitor` | none | Kinds only logged: `intrusion detected` with `would_block`. A kind in both lists is refused. |
 | `-bots-mode` | `block` | `monitor` only logs every kind `-bots` lists, as if they were in `-bots-monitor`. |
+| `-bots-trust-networks` | off | When every DNS check is busy, let a crawler claim pass if the engine was verified in the address's /24 or /48 (see [Search engine checks](#search-engine-checks)). |
 | `-bots-exempt` | none | Addresses or ranges never refused by `-bots`, such as your own scanners; a range is no wider than a /16 (IPv4) or a /32 (IPv6). |
 
 Setup asks "Bots to block" and writes these flags. In detect mode it keeps `-bots scanner` and puts
@@ -141,9 +142,14 @@ How the check behaves:
 - A failed lookup counts as not verified. The reverse zone belongs to the address's owner, so an
   impostor could otherwise fail it on purpose.
 - At most 8 checks run at once, each for at most 2 seconds, and at most 2 for one network (an IPv4
-  /24 or IPv6 /48). With none free, the answer is no, unless an address of the same network was
-  verified for the same engine in the last day: real crawlers come from addresses already cached
-  or from networks already seen.
+  /24 or IPv6 /48). With none free, the answer is no: real crawlers come from addresses already
+  cached. A real crawler from a new address can therefore be refused as `fake` while impostors keep
+  every check busy; it is let in once its own check runs.
+- `-bots-trust-networks` lets such an address pass unchecked when a crawler of the same engine was
+  verified in its /24 or /48 in the last day. That keeps crawlers passing under a flood, but trusts
+  every address of those networks as the engine's. It is off by default: leave it off where a
+  network's addresses need not belong to one owner, as in a cloud's shared ranges (Amazonbot crawls
+  from AWS).
 - An impostor sending from many addresses cannot push verified crawlers out of the cache: when it
   fills, expired answers go first, then impostors', and verified ones last.
 - Carnical needs outbound DNS for this. `-confine` allows port 53 by default.
@@ -151,7 +157,8 @@ How the check behaves:
 ## Counting
 
 Every alert has `client`, the kind of client that sent the request. The `intrusion totals` line
-counts requests that were refused (blocked, rate limited, or from a banned source):
+counts requests that were refused (blocked, rate limited, or from a banned source), each once,
+however many of its alerts refused it:
 
 | Field | Meaning |
 | --- | --- |

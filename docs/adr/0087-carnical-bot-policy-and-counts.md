@@ -104,15 +104,20 @@ belongs to the address's owner, so failing open would let an impostor bypass the
 its own PTR. At most 8 checks run at once, each limited to 2 s. A request waits for its check, and
 requests from the same address share one check. One network (IPv4 /24, IPv6 /48) holds at most 2
 of the slots, so an impostor in one range cannot take them all. With no free slot the answer is
-no, unless an address of the same network was verified for the same engine within the day: a
-flood of impostors cannot force lookups, and real crawlers come from cached addresses or known
-networks. When the cache fills, eviction drops expired answers first, then refuted ones, and
+no: a flood of impostors cannot force lookups, and real crawlers come from cached addresses. A
+real crawler from a new address may then be refused until its own check runs. `-bots-trust-networks`
+lets it pass when a crawler of the same engine was verified in its network within the day, trading
+per-address verification for availability. It is off by default, because the addresses of a /24 or
+/48 need not share an owner: Amazonbot crawls from AWS, whose customers share its ranges. When the
+cache fills, eviction drops expired answers first, then refuted ones, and
 verified ones last, so impostors from many addresses cannot push real crawlers out. Engines that
 publish no DNS names (DuckDuckGo, Qwant, Mojeek, Sogou, ...) stay `search`.
 
 Every alert of a request carries its kind (`client` in the alert line). It comes from the policy
 when it ran, otherwise from `Classify` when the request is finished, only for requests that have
-alerts. The aggregator counts refused requests (blocked, rate limited, source blocked) by kind. It
+alerts. The aggregator counts refused requests (blocked, rate limited, source blocked) by kind,
+from the one alert of each refused request that the proxy marks (`Alert.Refusal`): a request that
+several inspector verdicts or layers refused gives several refused alerts, and is counted once. It
 also estimates how many distinct sources the refused bots and people came from, with one 4096-
 register HyperLogLog each: 16 KiB, lock-free, near exact below a few hundred, and about 1.6% error
 above. "Intrusion totals" gains `blocked_bots`, `blocked_people`, `blocked_bot_sources`,
@@ -151,6 +156,8 @@ and no PR thread exists.
     are not counted by kind.
   - The word lists need updates as new crawlers appear.
   - Verification needs outbound DNS; `-confine` already allows port 53.
+  - Without `-bots-trust-networks`, a flood of impostors that keeps every check busy can get a real
+    crawler from an uncached address refused as fake until its check runs.
 
 ## References
 
