@@ -12,6 +12,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -63,15 +64,12 @@ type Verifier struct {
 	// crawlers passing under a flood of impostors, but trusts every address of such a network as the engine's: leave
 	// it off where a network's addresses need not belong to one owner, as in a cloud's shared ranges.
 	TrustNetworks bool
-	// Ranges, set before the Verifier is used, are the address ranges engines publish for their crawlers (see ParseRanges).
-	// An address in its engine's ranges is verified without DNS; any other address is still checked by DNS. Amazon, for
-	// one, publishes ranges for its crawlers but no DNS names for some of them.
-	Ranges map[Engine][]netip.Prefix
 
-	res   Resolver
-	slots chan struct{}
-	max   int
-	now   func() time.Time
+	ranges [numEngines]rangeSet // see SetRanges
+	res    Resolver
+	slots  chan struct{}
+	max    int
+	now    func() time.Time
 
 	mu    sync.Mutex
 	cache map[verifyKey]*verifyEntry
@@ -130,10 +128,8 @@ func (v *Verifier) Verify(ctx context.Context, addr netip.Addr, engine Engine) b
 		return false
 	}
 	addr = addr.Unmap()
-	for _, p := range v.Ranges[engine] {
-		if p.Contains(addr) {
-			return true
-		}
+	if v.ranges[engine].contains(addr) {
+		return true
 	}
 	k := verifyKey{addr, engine}
 	now := v.now()
@@ -209,6 +205,89 @@ func (v *Verifier) check(e *verifyEntry, addr netip.Addr, engine Engine) {
 		}
 		v.nets[netKey{nw, engine}] = e.until
 	}
+}
+
+// SetRanges gives, before the Verifier is used, the address ranges engines publish for their crawlers (see ParseRanges).
+// An address in its engine's ranges is verified without DNS; any other address is still checked by DNS. Amazon, for one,
+// publishes ranges for its crawlers but no DNS names for some of them. Finding an address takes a binary search, however
+// many ranges there are.
+func (v *Verifier) SetRanges(ranges map[Engine][]netip.Prefix) {
+	for engine, list := range ranges {
+		if int(engine) > 0 && int(engine) < numEngines {
+			v.ranges[engine] = newRangeSet(list)
+		}
+	}
+}
+
+// rangeSet is an engine's ranges as the sorted, disjoint spans of addresses they cover, IPv4 and IPv6 apart.
+type rangeSet struct{ v4, v6 []span }
+
+// span is the addresses from lo to hi, both included.
+type span struct{ lo, hi netip.Addr }
+
+func newRangeSet(prefixes []netip.Prefix) rangeSet {
+	var rs rangeSet
+	for _, p := range prefixes {
+		if !p.IsValid() {
+			continue
+		}
+		if p.Addr().Is4In6() {
+			p = netip.PrefixFrom(p.Addr().Unmap(), max(p.Bits()-96, 0))
+		}
+		p = p.Masked()
+		if p.Addr().Is4() {
+			rs.v4 = append(rs.v4, span{p.Addr(), lastAddr(p)})
+		} else {
+			rs.v6 = append(rs.v6, span{p.Addr(), lastAddr(p)})
+		}
+	}
+	rs.v4, rs.v6 = joinSpans(rs.v4), joinSpans(rs.v6)
+	return rs
+}
+
+// lastAddr is the last address of a masked prefix.
+func lastAddr(p netip.Prefix) netip.Addr {
+	b := p.Addr().As16()
+	bits := p.Bits()
+	if p.Addr().Is4() {
+		bits += 96
+	}
+	for i := bits; i < 128; i++ {
+		b[i/8] |= 0x80 >> (i % 8)
+	}
+	if p.Addr().Is4() {
+		return netip.AddrFrom16(b).Unmap()
+	}
+	return netip.AddrFrom16(b)
+}
+
+// joinSpans sorts spans and joins those that overlap or touch.
+func joinSpans(spans []span) []span {
+	slices.SortFunc(spans, func(a, b span) int { return a.lo.Compare(b.lo) })
+	joined := spans[:0]
+	for _, s := range spans {
+		if n := len(joined); n > 0 && (s.lo.Compare(joined[n-1].hi) <= 0 || joined[n-1].hi.Next() == s.lo) {
+			if s.hi.Compare(joined[n-1].hi) > 0 {
+				joined[n-1].hi = s.hi
+			}
+			continue
+		}
+		joined = append(joined, s)
+	}
+	return slices.Clip(joined)
+}
+
+// contains reports whether one of the spans holds addr, an unmapped address.
+func (rs *rangeSet) contains(addr netip.Addr) bool {
+	spans := rs.v6
+	if addr.Is4() {
+		spans = rs.v4
+	}
+	i, _ := slices.BinarySearchFunc(spans, addr, func(s span, a netip.Addr) int { return s.lo.Compare(a) })
+	if i < len(spans) && spans[i].lo == addr {
+		return true
+	}
+	return i > 0 && addr.Compare(spans[i-1].hi) <= 0
 }
 
 // knownNetwork reports whether a crawler of engine was verified in nw and the answer still holds. v.mu is held.
@@ -331,7 +410,7 @@ func EngineNames() string {
 	return strings.Join(names, ", ")
 }
 
-// ParseRanges reads the ranges an engine publishes for its crawlers (see Verifier.Ranges): a JSON file in the form
+// ParseRanges reads the ranges an engine publishes for its crawlers (see Verifier.SetRanges): a JSON file in the form
 // Google, Bing and Apple publish ({"prefixes": [{"ipv4Prefix": "66.249.64.0/27"}, {"ipv6Prefix": ...}]}), or one range
 // or address a line, with # comments. A range may be no wider than a /16 (IPv4) or a /32 (IPv6).
 func ParseRanges(r io.Reader) ([]netip.Prefix, error) {

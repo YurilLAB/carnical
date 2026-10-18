@@ -71,9 +71,11 @@ func botPolicy(f botFlags) (*bots.Policy, error) {
 	if (p.Refuse|p.Watch)&(1<<alert.ClientFake) != 0 {
 		p.Verifier = bots.NewVerifier(nil, 0, 0)
 		p.Verifier.TrustNetworks = *f.trustNetworks
-		if p.Verifier.Ranges, err = crawlerRanges(*f.ranges); err != nil {
+		ranges, err := crawlerRanges(*f.ranges)
+		if err != nil {
 			return nil, refuseFlag("bots-ranges", fmt.Errorf("-bots-ranges: %w", err))
 		}
+		p.Verifier.SetRanges(ranges)
 	}
 	return p, nil
 }

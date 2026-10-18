@@ -310,14 +310,29 @@ func TestVerify(t *testing.T) {
 		{"even when DNS fails", "198.18.0.7", EngineAmazon, true, true},
 		{"Amazon's range does not make Googlebot", "198.18.0.7", EngineGoogle, false, false},
 		{"an address next to the range", "198.18.1.7", EngineAmazon, false, false},
+		{"the first address of a range", "198.18.0.0", EngineAmazon, false, true},
+		{"the last address of a range", "198.18.0.255", EngineAmazon, false, true},
+		{"two ranges that touch, at the end of the first", "192.0.2.127", EngineAmazon, false, true},
+		{"and at the start of the second", "192.0.2.128", EngineAmazon, false, true},
+		{"past both", "192.0.3.0", EngineAmazon, false, false},
+		{"a range inside a wider one", "198.19.4.9", EngineAmazon, false, true},
+		{"the wider one past it", "198.19.200.1", EngineAmazon, false, true},
+		{"one address given alone", "203.0.113.9", EngineAmazon, false, true},
+		{"the address before it", "203.0.113.8", EngineAmazon, false, false},
+		{"and after it", "203.0.113.10", EngineAmazon, false, false},
+		{"an IPv6 range", "2001:db8:a:ffff:ffff:ffff:ffff:ffff", EngineAmazon, false, true},
+		{"the IPv6 range after it", "2001:db8:b::", EngineAmazon, false, false},
+		{"an IPv4 address is not in an IPv6 range of the same bits", "32.1.13.184", EngineAmazon, false, false},
 	}
-	ranges := map[Engine][]netip.Prefix{EngineAmazon: {netip.MustParsePrefix("198.18.0.0/24")}}
+	ranges := map[Engine][]netip.Prefix{EngineAmazon: {netip.MustParsePrefix("198.18.0.0/24"),
+		netip.MustParsePrefix("203.0.113.9/32"), netip.MustParsePrefix("192.0.2.128/25"), netip.MustParsePrefix("192.0.2.0/25"),
+		netip.MustParsePrefix("198.19.4.0/24"), netip.MustParsePrefix("198.19.0.0/16"), netip.MustParsePrefix("2001:db8:a::/48")}}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			r := dns()
 			r.failPTR = tt.fail
 			v := NewVerifier(r, 0, 0)
-			v.Ranges = ranges
+			v.SetRanges(ranges)
 			addr := netip.MustParseAddr(tt.addr)
 			if got := v.Verify(context.Background(), addr, tt.engine); got != tt.want {
 				t.Fatalf("Verify = %v, want %v", got, tt.want)
@@ -616,4 +631,40 @@ func TestHellos(t *testing.T) {
 			t.Fatalf("after Forget: %+v and %+v", h.Of(chrome), h.Of(other))
 		}
 	})
+}
+
+// BenchmarkVerifyRanges is a flood of impostors claiming Amazonbot from addresses already checked, and Amazon's crawlers
+// from its own ranges, against lists the size engines publish and the largest a ranges file can hold.
+func BenchmarkVerifyRanges(b *testing.B) {
+	for _, n := range []int{1_300, 20_000, 250_000} {
+		ranges := make([]netip.Prefix, n)
+		for i := range ranges { // /32s over 100.0.0.0/8 that do not touch, so none are joined
+			ranges[i] = netip.PrefixFrom(netip.AddrFrom4([4]byte{100, byte(i >> 15), byte(i >> 7), byte(i << 1)}), 32)
+		}
+		for _, inside := range []bool{false, true} {
+			name := fmt.Sprintf("%d ranges, impostors", n)
+			if inside {
+				name = fmt.Sprintf("%d ranges, crawlers", n)
+			}
+			b.Run(name, func(b *testing.B) {
+				v := NewVerifier(&resolver{}, 0, 0)
+				v.SetRanges(map[Engine][]netip.Prefix{EngineAmazon: ranges})
+				addrs := make([]netip.Addr, 1024)
+				for i := range addrs {
+					addrs[i] = netip.AddrFrom4([4]byte{198, 18, byte(i >> 8), byte(i)})
+					if inside {
+						addrs[i] = ranges[len(ranges)-1-i%len(ranges)].Addr()
+					}
+					v.Verify(context.Background(), addrs[i], EngineAmazon) // the impostors' refusals are cached
+				}
+				b.ReportAllocs()
+				b.ResetTimer()
+				for i := 0; b.Loop(); i++ {
+					if v.Verify(context.Background(), addrs[i%len(addrs)], EngineAmazon) != inside {
+						b.Fatal("wrong answer")
+					}
+				}
+			})
+		}
+	}
 }
