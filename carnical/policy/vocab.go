@@ -58,7 +58,7 @@ var (
 	methodRe   = regexp.MustCompile(`\A[A-Z][A-Z-]{0,19}\z`)
 	hostLabel  = regexp.MustCompile(`\A[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\z`)
 	headerRe   = regexp.MustCompile(`\A[a-z0-9][a-z0-9-]{0,63}\z`)
-	argKeyRe   = regexp.MustCompile(`\A[a-z0-9][a-z0-9_.\[\]-]{0,63}\z`)
+	argKeyRe   = regexp.MustCompile(`\A[a-z0-9_][a-z0-9_.\[\]-]{0,63}\z`) // _ga, _abck, _token, __cf_bm
 	softwareRe = regexp.MustCompile(`\A[a-z0-9][a-z0-9._+-]{0,63}(?:@[a-z0-9][a-z0-9._+-]{0,31})?\z`)
 	// pathRe is the characters a path prefix may use. None of them means anything to SecLang, so a path can never end the
 	// operator it is written into or start a macro: no space, quote, backslash, percent sign, brace or control character.

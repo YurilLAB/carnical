@@ -416,6 +416,7 @@ func TestExclusionsKeepRulesAwayOnlyWhereTheyAreAimed(t *testing.T) {
 			{Path: "/wide/", Categories: []string{"sqli"}, Targets: []string{"args"}},
 			{Path: "/cookie/", Categories: []string{"xss"}, Targets: []string{"cookie:note"}},
 			{Path: "/hdr/", Categories: []string{"xss"}, Targets: []string{"header:x-note"}},
+			{Path: "/", Categories: []string{"rce"}, Targets: []string{"cookie:_abck"}},
 		}
 	})
 	e := newEdge(t, p)
@@ -442,6 +443,8 @@ func TestExclusionsKeepRulesAwayOnlyWhereTheyAreAimed(t *testing.T) {
 		{"xss in another cookie", "GET", "/cookie/x", header("Cookie", "other=<script>alert(1)</script>"), "", 403},
 		{"xss in the excluded header", "GET", "/hdr/x", header("X-Note", "<script>alert(1)</script>"), "", 200},
 		{"xss in another header", "GET", "/hdr/x", header("X-Other", "<script>alert(1)</script>"), "", 403},
+		{"Akamai's _abck cookie, which reads as a shell expression", "GET", "/x", header("Cookie", "_abck=0A1B~-1~||0||~-1"), "", 200},
+		{"the same value in another cookie", "GET", "/x", header("Cookie", "bm=0A1B~-1~||0||~-1"), "", 403},
 		{"an ordinary request", "GET", "/editor/save", nil, "", 200},
 		{"xss in a page with no exclusion", "GET", "/?q=%3Cscript%3Ealert(1)%3C%2Fscript%3E", nil, "", 403},
 	}

@@ -412,8 +412,9 @@ SecRule REQUEST_FILENAME "@beginsWith /api/"    "id:1010004,phase:1,pass,nolog,t
 With no targets the whole category is removed for the request; with targets only those parts are
 taken out of what its rules look at, which is the Core Rule Set's own exclusion model. Targets:
 `args argnames cookies cookienames headers body query path uri method filenames`, or `arg:NAME`,
-`cookie:NAME`, `header:NAME` (names of letters, digits and `_ . - [ ]`, 64 at most; headers without
-`_ . [ ]`; lower case, because the engine compares in lower case). `body` here is the body as it was
+`cookie:NAME`, `header:NAME` (names of letters, digits and `_ . - [ ]` that start with a letter, a
+digit or `_`, 64 at most; headers without `_ . [ ]`; lower case, because the engine compares in
+lower case). `body` here is the body as it was
 sent (`REQUEST_BODY`, which the engine keeps for forms and text bodies only); the values the engine
 reads out of a form, JSON or multipart body are `args` and `arg:NAME`. An exclusion is never
 widened to what a custom rule on the same name reads (below).
@@ -422,6 +423,16 @@ widened to what a custom rule on the same name reads (below).
 the name under `argnames` is also excluded. Tested against the real rule set (17 requests): the
 excluded argument on the excluded page passes; another argument, another page, a page that only
 starts alike, the path in another case, and another group's attack are all still stopped.
+
+A site behind Akamai Bot Manager needs one. Akamai's `_abck` cookie holds values such as
+`~-1~||0||~-1`, which CRS rule 932270 reads as a shell expression, so every visitor that has the
+cookie is refused. In a sample of real browser traffic it caused 40% of the CRS's refusals (see the
+[validation record](validation-2026-10-18.md#independent-corpora)). This takes that one cookie out
+of the command-injection rules, and leaves every other cookie checked:
+
+```json
+{"exclusions":[{"path":"/","categories":["rce"],"targets":["cookie:_abck"],"note":"Akamai Bot Manager"}]}
+```
 
 ### Custom rules, and why no input can write anything else
 
