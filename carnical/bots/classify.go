@@ -159,8 +159,9 @@ var signatures = slices.Concat(
 		"zmeu", "morfeus", "jorgee", "libredtail", "muhstik", "terrabot", "wp2shell", "t0phackteam", "datacha0s",
 		"voideye", "probethenet", "check1.exe", "xpymep1.exe", "x09mozilla", "x22mozilla", "mozlila", "mozila/",
 		"hello, world", "hello world"),
-	// Link previews of chat and social sites, and feed readers: fetches made for people.
-	words(alert.ClientPreview, "facebookexternalhit", "facebookcatalog", "twitterbot", "slackbot", "slack-imgproxy",
+	// Link previews of chat and social sites, feed readers, mail services fetching a message's images, and a page read
+	// aloud: fetches made for people.
+	words(alert.ClientPreview, "googleimageproxy", "yahoomailproxy", "google-read-aloud", "google-speakr", "facebookexternalhit", "facebookcatalog", "twitterbot", "slackbot", "slack-imgproxy",
 		"discordbot", "telegrambot", "whatsapp/", "linkedinbot", "skypeuripreview", "microsoftpreview", "pinterestbot",
 		"redditbot", "embedly", "iframely", "mastodon/", "bluesky cardyb", "applenewsbot", "vkshare", "kakaotalk-scrap",
 		"feedly", "feedbin", "newsblur", "inoreader", "freshrss", "tiny tiny rss", "theoldreader",
@@ -181,8 +182,8 @@ var signatures = slices.Concat(
 		"probe-image-size", "scrapy", "colly", "nutch", "mechanize", "httpie", "postmanruntime", "insomnia/",
 		"windowspowershell", "winhttp", "indy library", "restsharp", "reqwest", "dart:io", "rest-client", "faraday v",
 		"typhoeus", "hackney", "http.rb", "aria2", "cpp-httplib", "cpprest", "lua-resty-http", "deno/", "bun/"),
-	// The networking libraries of phone apps, whose users are people.
-	words(alert.ClientPerson, "cfnetwork/", "dalvik/", "okhttp/"),
+	// The networking libraries of phone apps, and apps and devices that fetch for the person using them.
+	words(alert.ClientPerson, "cfnetwork/", "dalvik/", "okhttp/", "microsoft office", "roku/dvp-"),
 )
 
 // exactTools are whole user agents that name a runtime's default client: Node's fetch, Ruby's Net::HTTP and so on.
@@ -275,7 +276,8 @@ func Classify(r *http.Request, hello Hello) (alert.Client, Engine) {
 // disguised reports a browser's user agent on a request that browser would not send. Each sign is one every current
 // release of the browser named shows, so that only a program that copied the user agent (and perhaps some headers)
 // fails it:
-//   - HTTP/1.0, or no Accept or Accept-Language header (a CORS preflight sends no language);
+//   - HTTP/1.0, or no Accept or Accept-Language header (a CORS preflight sends no language, a WebSocket handshake no
+//     Accept);
 //   - a version long out of use: Internet Explorer before 11, Chrome before 70, Firefox before 60;
 //   - client hints (Sec-CH-UA) from Firefox or Safari, which send none, or from Chrome naming another version or platform;
 //   - over a TLS connection carnical holds, a current Chrome, Firefox or Safari without the Sec-Fetch headers, or a
@@ -287,13 +289,18 @@ func disguised(r *http.Request, ua string, hello Hello) bool {
 	if r.ProtoMajor == 1 && r.ProtoMinor == 0 {
 		return true
 	}
-	if r.Method != http.MethodOptions && (h.Get("Accept") == "" || h.Get("Accept-Language") == "") {
+	// A browser opening a WebSocket sends no Accept, and Chrome no Sec-Fetch or client hints either, so a handshake is
+	// held to the rest: what a program could copy to pass does not get it past the TLS checks.
+	socket := r.Method == http.MethodGet && strings.EqualFold(h.Get("Upgrade"), "websocket") &&
+		h.Get("Sec-Websocket-Key") != "" && h.Get("Sec-Websocket-Version") != "" && h.Get("Origin") != ""
+	if r.Method != http.MethodOptions && (h.Get("Accept") == "" && !socket || h.Get("Accept-Language") == "") {
 		return true
 	}
 	if v, ok := version(ua, "MSIE "); ok && v < 11 {
 		return true
 	}
 	chrome, isChrome := version(ua, "Chrome/")
+	isChrome = isChrome && !strings.Contains(ua, " Edge/") // the old Edge (EdgeHTML) named a Chrome it was not
 	firefox, isFirefox := version(ua, "Firefox/")
 	safari, isSafari := 0, false
 	if !isChrome && strings.Contains(ua, "Safari/") && !strings.Contains(ua, "Chromium/") {
@@ -311,10 +318,10 @@ func disguised(r *http.Request, ua string, hello Hello) bool {
 	}
 	if r.TLS != nil {
 		fetch := h.Get("Sec-Fetch-Mode") != "" || h.Get("Sec-Fetch-Site") != "" || h.Get("Sec-Fetch-Dest") != ""
-		if !fetch && (isChrome && chrome >= 80 || isFirefox && !isChrome && firefox >= 90 || isSafari && safari >= 17) {
+		if !fetch && (isChrome && chrome >= 80 && !socket || isFirefox && !isChrome && firefox >= 90 || isSafari && safari >= 17) {
 			return true
 		}
-		if hints == "" && isChrome && chrome >= 90 && plainChrome(ua) {
+		if hints == "" && isChrome && chrome >= 90 && !socket && plainChrome(ua) {
 			return true
 		}
 	}

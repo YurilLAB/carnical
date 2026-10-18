@@ -109,6 +109,12 @@ func TestClassify(t *testing.T) {
 		{"a Slack preview", "Slackbot-LinkExpanding 1.0 (+https://api.slack.com/robots)", http.Header{}, [2]int{}, "", alert.ClientPreview, 0},
 		{"a Facebook preview", "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)", http.Header{}, [2]int{}, "", alert.ClientPreview, 0},
 		{"an uptime check", "Mozilla/5.0+(compatible; UptimeRobot/2.0; http://www.uptimerobot.com/)", http.Header{}, [2]int{}, "", alert.ClientMonitor, 0},
+		{"Gmail fetching an email's images", "Mozilla/5.0 (Windows NT 5.1; rv:11.0) Gecko Firefox/11.0 (via ggpht.com GoogleImageProxy)", http.Header{}, [2]int{}, "", alert.ClientPreview, 0},
+		{"Yahoo Mail fetching an email's images", "YahooMailProxy; https://help.yahoo.com/kb/yahoo-mail-proxy-SLN28749.html", http.Header{}, [2]int{}, "", alert.ClientPreview, 0},
+		{"Google reading a page aloud for someone", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/65.0.3325.181 Safari/537.36 (compatible; Google-Read-Aloud; +https://support.google.com/webmasters/answer/1061943)", http.Header{}, [2]int{}, "", alert.ClientPreview, 0},
+		{"Microsoft Office opening a link", "Microsoft Office/16.0 (Windows NT 10.0; Microsoft Outlook 16.0.17628; Pro)", http.Header{}, [2]int{}, "", alert.ClientPerson, 0},
+		{"a Roku player", "Roku/DVP-13.0 (13.0.0.4152-AE)", http.Header{}, [2]int{}, "", alert.ClientPerson, 0},
+		{"the old Edge, which names an old Chrome", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; Xbox; Xbox One) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/48.0.2564.82 Safari/537.36 Edge/20.02", nil, [2]int{}, "", alert.ClientPerson, 0},
 		{"a certificate authority's domain check", "Mozilla/5.0 (compatible; Let's Encrypt validation server; +https://www.letsencrypt.org)", http.Header{}, [2]int{}, "", alert.ClientMonitor, 0},
 		{"the user agent is matched without regard to case", "CURL/8.0", http.Header{}, [2]int{}, "", alert.ClientTool, 0},
 	}
@@ -152,6 +158,10 @@ func TestClassifyOverTLS(t *testing.T) {
 	hints := http.Header{"Sec-Ch-Ua": {`"Chromium";v="141", "Google Chrome";v="141", "Not?A_Brand";v="8"`},
 		"Sec-Ch-Ua-Platform": {`"Windows"`}}
 	grease, plain := Hello{Seen: true, GREASE: true}, Hello{Seen: true}
+	// What Chromium sends to open a wss:// socket: no Accept, no Sec-Fetch and no client hints.
+	linuxChrome := "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+	websocket := http.Header{"Connection": {"Upgrade"}, "Upgrade": {"websocket"}, "Origin": {"https://shop.example"},
+		"Sec-Websocket-Version": {"13"}, "Sec-Websocket-Key": {"xSigGCz9DJMNplmLC15MhA=="}, "Accept-Language": {"en-US,en;q=0.9"}}
 	samsung := "Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/28.0 Chrome/130.0.0.0 Mobile Safari/537.36"
 	oldSafari := "Mozilla/5.0 (iPhone; CPU iPhone OS 15_8 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.6 Mobile/15E148 Safari/604.1"
 	tests := []struct {
@@ -173,6 +183,8 @@ func TestClassifyOverTLS(t *testing.T) {
 		{"Samsung Internet may send no client hints", samsung, fetch(nil), grease, alert.ClientPerson},
 		{"a program with Chrome's headers but not its TLS", chrome, fetch(hints), plain, alert.ClientDisguised},
 		{"a signing agent with Chrome's TLS", chrome, fetch(http.Header{"Sec-Ch-Ua": hints["Sec-Ch-Ua"], "Sec-Ch-Ua-Platform": hints["Sec-Ch-Ua-Platform"], "Signature-Agent": {`"https://chatgpt.com"`}}), grease, alert.ClientAI},
+		{"Chrome's WebSocket handshake", linuxChrome, websocket, grease, alert.ClientPerson},
+		{"a program dressing a request as a WebSocket handshake", linuxChrome, websocket, plain, alert.ClientDisguised},
 		{"a program that adds a signature header to pass", chrome, fetch(http.Header{"Sec-Ch-Ua": hints["Sec-Ch-Ua"], "Sec-Ch-Ua-Platform": hints["Sec-Ch-Ua-Platform"], "Signature-Agent": {`"https://chatgpt.com"`}}), plain, alert.ClientDisguised},
 		{"no handshake seen says nothing", chrome, fetch(hints), Hello{}, alert.ClientPerson},
 		{"Firefox", firefox, fetch(nil), Hello{Seen: true, RecordSizeLimit: true}, alert.ClientPerson},
