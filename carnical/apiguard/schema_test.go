@@ -224,13 +224,32 @@ func TestPatternMatchingIsChargedForItsRepeats(t *testing.T) {
 	} {
 		t.Run(tc.pattern, func(t *testing.T) {
 			s := schemaFrom(t, `{"type":"array","items":{"type":"string","pattern":"`+tc.pattern+`"}}`)
-			start := nowNano()
-			_, _, over := s.validateBody(mustParse(t, body), true)
+			// The fastest of three runs, so that a busy machine slows both measurements alike.
+			fastest := func(body any) (int64, bool) {
+				best, over := int64(-1), false
+				for range 3 {
+					start := nowNano()
+					_, _, over = s.validateBody(body, true)
+					if d := nowNano() - start; best < 0 || d < best {
+						best = d
+					}
+				}
+				return best, over
+			}
+			all, over := fastest(mustParse(t, body))
 			if over != tc.wantOver {
 				t.Fatalf("over the work limit: %v, want %v", over, tc.wantOver)
 			}
-			if elapsed := nowNano() - start; elapsed > 3e8 {
-				t.Fatalf("took %v ns", elapsed)
+			if !tc.wantOver {
+				if all > 3e8 {
+					t.Fatalf("took %v ns", all)
+				}
+				return
+			}
+			// The charge stops matching after five items of the 31; matching them all would take some 31 times one.
+			one, _ := fastest(mustParse(t, "["+item+"]"))
+			if all > 15*one {
+				t.Fatalf("31 items took %v ns, %.1f times one item's %v ns: matching went on past the work limit", all, float64(all)/float64(one), one)
 			}
 		})
 	}
