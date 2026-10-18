@@ -3036,7 +3036,13 @@ func testSiteProtectionCLI(t *testing.T, bin string) {
 				t.Fatalf("origin calls before=%d after=%d status=%d", before, after, tc.want)
 			}
 			if tc.name == "monitor reports" || tc.name == "pack blocks" {
-				data, _ := os.ReadFile(logPath)
+				// Rule matches are written through a queue: wait for the line.
+				var data []byte
+				for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+					if data, _ = os.ReadFile(logPath); bytes.Contains(data, []byte("TEST-PATH")) {
+						break
+					}
+				}
 				if !bytes.Contains(data, []byte("TEST-PATH")) || bytes.Contains(data, []byte("blocked-canary")) {
 					t.Fatalf("missing safe match log: %s", data)
 				}
