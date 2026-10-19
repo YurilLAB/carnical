@@ -160,5 +160,6 @@ Superseding does not delete the old record. Set its status and let the history s
 | [0089](0089-carnical-crawler-lists-kept-current.md) | — | — | unreleased (post-v3.8.1) | F | Crawler address lists kept current while the edge runs |
 | [0090](0090-carnical-widened-crs-request-policy.md) | — | — | unreleased (post-v3.8.1) | F | Content types and file extensions the site adds to the Core Rule Set's policy |
 | [0091](0091-carnical-wordpress-block-editor.md) | — | — | unreleased (post-v3.8.1) | F | The block editor's saves on a site marked as WordPress |
+| [0092](0092-rule-collection-filled-when-read.md) | — | — | unreleased (post-v3.8.1) | ⚡ | The RULE collection filled when it is read |
 
 Categories: **F**eature · **P**arity · **⚡** Perf · **R**efactor

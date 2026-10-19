@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/corazawaf/coraza/v3/collection"
 	"github.com/corazawaf/coraza/v3/debuglog"
 	"github.com/corazawaf/coraza/v3/experimental/plugins/macro"
 	"github.com/corazawaf/coraza/v3/experimental/plugins/plugintypes"
@@ -299,38 +300,53 @@ func TestSecActionMessagePropagationInMatchData(t *testing.T) {
 
 // TestRuleMsgExpandedInRuleCollection verifies that the rule.msg variable in the TX rule collection
 // contains the expanded message (not the raw macro string). This matches ModSecurity behavior,
-// ensuring that setvar actions using %{rule.msg} receive the expanded value.
+// ensuring that setvar actions using %{rule.msg} receive the expanded value. When no rule expands
+// %{rule.*}, the collection is filled when it is first read, with the same values.
 func TestRuleMsgExpandedInRuleCollection(t *testing.T) {
-	waf := NewWAF()
-	tx := waf.NewTransaction()
-	defer tx.Close()
+	for _, tt := range []struct {
+		name           string
+		collectionRead bool
+	}{
+		{"rules read the collection: filled as the rule starts", true},
+		{"no rule reads it: filled when it is read", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			waf := NewWAF()
+			waf.RuleCollectionRead = tt.collectionRead
+			tx := waf.NewTransaction()
+			defer tx.Close()
 
-	// Set a TX variable that will be referenced in the rule msg
-	if col, ok := tx.Collection(variables.TX).(interface {
-		Set(string, []string)
-	}); ok {
-		col.Set("score", []string{"42"})
-	}
+			// Set a TX variable that will be referenced in the rule msg
+			if col, ok := tx.Collection(variables.TX).(interface {
+				Set(string, []string)
+			}); ok {
+				col.Set("score", []string{"42"})
+			}
 
-	r := NewRule()
-	r.Msg, _ = macro.NewMacro("Score is %{tx.score}")
-	r.ID_ = 1
-	r.LogID_ = "1"
-	r.operator = nil // SecAction
+			r := NewRule()
+			r.Msg, _ = macro.NewMacro("Score is %{tx.score}")
+			r.ID_ = 1
+			r.LogID_ = "1"
+			r.operator = nil // SecAction
 
-	var matchedValues []types.MatchData
-	r.doEvaluate(debuglog.Noop(), types.PhaseRequestHeaders, tx, &matchedValues, 0, tx.transformationCache)
+			var matchedValues []types.MatchData
+			r.doEvaluate(debuglog.Noop(), types.PhaseRequestHeaders, tx, &matchedValues, 0, tx.transformationCache)
 
-	// rule.msg in the rule collection should be the expanded message
-	ruleCol := tx.variables.rule
-	msgValues := ruleCol.Get("msg")
-	if len(msgValues) == 0 {
-		t.Fatal("rule.msg not set in collection")
-	}
-	got := msgValues[0]
-	want := "Score is 42"
-	if got != want {
-		t.Errorf("rule.msg in collection: want %q (expanded), got %q (raw macro string means bug)", want, got)
+			// rule.msg in the rule collection should be the expanded message
+			ruleCol := tx.Collection(variables.Rule).(collection.Map)
+			msgValues := ruleCol.Get("msg")
+			if len(msgValues) == 0 {
+				t.Fatal("rule.msg not set in collection")
+			}
+			got := msgValues[0]
+			want := "Score is 42"
+			if got != want {
+				t.Errorf("rule.msg in collection: want %q (expanded), got %q (raw macro string means bug)", want, got)
+			}
+			if id := ruleCol.Get("id"); len(id) != 1 || id[0] != "1" {
+				t.Errorf("rule.id in collection: %v, want [1]", id)
+			}
+		})
 	}
 }
 

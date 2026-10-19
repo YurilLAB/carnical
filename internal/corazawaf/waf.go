@@ -166,6 +166,13 @@ type WAF struct {
 	// literal pre-filtering. Set by the SecRxPreFilter directive.
 	RxPreFilterEnabled bool
 
+	// RuleCollectionRead says that a rule may expand a %{rule.*} macro, which reads the RULE collection (the metadata of
+	// the rule being evaluated) when an action runs, after earlier actions may have changed what its message refers to.
+	// Only then is RULE filled at the start of every rule's evaluation, which costs each rule its message and log data
+	// expansion. Otherwise it is filled when it is first read, which for a RULE target is as the rule starts. It starts
+	// true, and coraza.NewWAF clears it before parsing the rules, which set it again for such a macro.
+	RuleCollectionRead bool
+
 	memoizerID uint64
 	memoizer   *memoize.Memoizer
 	closeOnce  gosync.Once
@@ -359,6 +366,7 @@ func NewWAF() *WAF {
 		Logger:             logger,
 		ArgumentLimit:      1000,
 		RxPreFilterEnabled: defaultRxPreFilterEnabled,
+		RuleCollectionRead: true,
 	}
 
 	if environment.HasAccessToFS {

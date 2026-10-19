@@ -187,18 +187,8 @@ func (r *Rule) Evaluate(phase types.RulePhase, tx plugintypes.TransactionState, 
 
 const noID = 0
 
-func (r *Rule) doEvaluate(logger debuglog.Logger, phase types.RulePhase, tx *Transaction, collectiveMatchedValues *[]types.MatchData, chainLevel int, cache map[transformationKey]transformationValue) []types.MatchData {
-	tx.Capture = r.Capture
-
-	if multiphaseEvaluation {
-		computeRuleChainMinPhase(r)
-	}
-
-	var matchedValues []types.MatchData
-	// we log if we are the parent rule
-	logger.Debug().Msg("Evaluating rule")
-	defer logger.Debug().Msg("Finished rule evaluation")
-
+// fillRuleCollection sets RULE to this rule's metadata, as it is at the start of the rule's evaluation.
+func (r *Rule) fillRuleCollection(tx *Transaction) {
 	ruleCol := tx.variables.rule
 	ruleCol.SetIndex("id", 0, r.LogID())
 	if r.Msg != nil {
@@ -212,6 +202,26 @@ func (r *Rule) doEvaluate(logger debuglog.Logger, phase types.RulePhase, tx *Tra
 		ruleCol.SetIndex("logdata", 0, r.LogData.Expand(tx))
 	}
 	ruleCol.SetIndex("severity", 0, r.Severity_.String())
+}
+
+func (r *Rule) doEvaluate(logger debuglog.Logger, phase types.RulePhase, tx *Transaction, collectiveMatchedValues *[]types.MatchData, chainLevel int, cache map[transformationKey]transformationValue) []types.MatchData {
+	tx.Capture = r.Capture
+
+	if multiphaseEvaluation {
+		computeRuleChainMinPhase(r)
+	}
+
+	var matchedValues []types.MatchData
+	// we log if we are the parent rule
+	logger.Debug().Msg("Evaluating rule")
+	defer logger.Debug().Msg("Finished rule evaluation")
+
+	if tx.WAF.RuleCollectionRead {
+		r.fillRuleCollection(tx)
+	} else {
+		// No macro reads RULE, so it is filled when it is first read (see TransactionVariables.ruleCollection).
+		tx.variables.ruleOf, tx.variables.ruleTx = r, tx
+	}
 	// SecMark and SecAction uses nil operator
 	if r.operator == nil {
 		logger.Debug().Msg("Forcing rule to match")

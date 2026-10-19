@@ -284,7 +284,7 @@ func (tx *Transaction) Collection(idx variables.RuleVariable) collection.Collect
 	case variables.TX:
 		return tx.variables.tx
 	case variables.Rule:
-		return tx.variables.rule
+		return tx.variables.ruleCollection()
 	case variables.JSON:
 		// TODO(anuraaga): This collection seems to be missing.
 		return nil
@@ -1924,29 +1924,33 @@ type TransactionVariables struct {
 	responseArgs                 *collections.Map
 	resBodyProcessor             *collections.Single
 	rule                         *collections.Map
-	serverAddr                   *collections.Single
-	serverName                   *collections.Single
-	serverPort                   *collections.Single
-	statusLine                   *collections.Single
-	tx                           *collections.Map
-	uniqueID                     *collections.Single
-	urlencodedError              *collections.Single
-	uriParseError                *collections.Single
-	argumentsLimitReached        *collections.Single
-	xml                          *collections.Map
-	resBodyError                 *collections.Single
-	resBodyErrorMsg              *collections.Single
-	resBodyProcessorError        *collections.Single
-	resBodyProcessorErrorMsg     *collections.Single
-	time                         *collections.Single
-	timeDay                      *collections.Single
-	timeEpoch                    *collections.Single
-	timeHour                     *collections.Single
-	timeMin                      *collections.Single
-	timeMon                      *collections.Single
-	timeSec                      *collections.Single
-	timeWday                     *collections.Single
-	timeYear                     *collections.Single
+	// ruleOf is the rule whose metadata RULE is yet to be filled with, when the rules never read RULE themselves (see
+	// WAF.RuleCollectionRead), and ruleTx its transaction; ruleCollection fills it when RULE is read.
+	ruleOf                   *Rule
+	ruleTx                   *Transaction
+	serverAddr               *collections.Single
+	serverName               *collections.Single
+	serverPort               *collections.Single
+	statusLine               *collections.Single
+	tx                       *collections.Map
+	uniqueID                 *collections.Single
+	urlencodedError          *collections.Single
+	uriParseError            *collections.Single
+	argumentsLimitReached    *collections.Single
+	xml                      *collections.Map
+	resBodyError             *collections.Single
+	resBodyErrorMsg          *collections.Single
+	resBodyProcessorError    *collections.Single
+	resBodyProcessorErrorMsg *collections.Single
+	time                     *collections.Single
+	timeDay                  *collections.Single
+	timeEpoch                *collections.Single
+	timeHour                 *collections.Single
+	timeMin                  *collections.Single
+	timeMon                  *collections.Single
+	timeSec                  *collections.Single
+	timeWday                 *collections.Single
+	timeYear                 *collections.Single
 }
 
 func NewTransactionVariables() *TransactionVariables {
@@ -2240,6 +2244,15 @@ func (v *TransactionVariables) TX() collection.Map {
 }
 
 func (v *TransactionVariables) Rule() collection.Map {
+	return v.ruleCollection()
+}
+
+// ruleCollection is RULE, first filled with the metadata of the rule being evaluated if that was left for when it is read.
+func (v *TransactionVariables) ruleCollection() *collections.Map {
+	if r := v.ruleOf; r != nil {
+		v.ruleOf = nil
+		r.fillRuleCollection(v.ruleTx)
+	}
 	return v.rule
 }
 
@@ -2601,7 +2614,7 @@ func (v *TransactionVariables) All(f func(v variables.RuleVariable, col collecti
 	if !f(variables.ResBodyProcessor, v.resBodyProcessor) {
 		return
 	}
-	if !f(variables.Rule, v.rule) {
+	if !f(variables.Rule, v.ruleCollection()) {
 		return
 	}
 	if !f(variables.ServerAddr, v.serverAddr) {
@@ -2683,6 +2696,7 @@ type resettable interface {
 }
 
 func (v *TransactionVariables) reset() {
+	v.ruleOf, v.ruleTx = nil, nil
 	v.All(func(_ variables.RuleVariable, col collection.Collection) bool {
 		if r, ok := col.(resettable); ok {
 			r.Reset()

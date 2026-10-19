@@ -11,6 +11,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/corazawaf/coraza/v3/internal/corazawaf"
@@ -165,6 +166,9 @@ func (p *Parser) parseString(data string) error {
 	return nil
 }
 
+// ruleMacro finds a macro that reads the RULE collection, such as %{rule.msg}, anywhere in a directive.
+var ruleMacro = regexp.MustCompile(`(?i)%\{rule[.}]`)
+
 func (p *Parser) evaluateLine(l string) error {
 	if l == "" || l[0] == '#' {
 		return errors.New("invalid line")
@@ -196,6 +200,9 @@ func (p *Parser) evaluateLine(l string) error {
 		return p.logAndReturnErr(fmt.Sprintf("unknown directive %q", directive))
 	}
 
+	if ruleMacro.MatchString(l) {
+		p.options.WAF.RuleCollectionRead = true // see corazawaf.WAF.RuleCollectionRead
+	}
 	p.options.Raw = l
 	p.options.Opts = opts
 	p.options.Parser.LastLine = p.currentLine

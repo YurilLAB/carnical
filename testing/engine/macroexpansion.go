@@ -16,6 +16,21 @@ var _ = profile.RegisterProfile(profile.Profile{
 	},
 	Tests: []profile.Test{
 		{
+			// %{rule.msg} is the message as the rule started: the setvar before it in the same rule does not change it.
+			Title: "rule.msg in an action",
+			Stages: []profile.Stage{
+				{
+					Stage: profile.SubStage{
+						Input: profile.StageInput{URI: "/rulemsg"},
+						Output: profile.ExpectedOutput{
+							TriggeredRules:    []int{300, 301},
+							NonTriggeredRules: []int{302},
+						},
+					},
+				},
+			},
+		},
+		{
 			Title: "macroexpansions",
 			Stages: []profile.Stage{
 				{
@@ -39,5 +54,13 @@ SecRule TX:inbound_anomaly_score_threshold "@eq %{tx.inbound_anomaly_ScorE_thres
 SecRule TX:blocking_paranoia_level "@eq 1" "id:200,log,pass"
 
 SecRule TX:executing_paranoia_level "@lt %{tx.blocking_paranoia_level}" "id:901500,phase:1,log"
+
+SecAction "id:299,phase:1,pass,nolog,setvar:'tx.level=1'"
+
+SecRule REQUEST_URI "@streq /rulemsg" "id:300,phase:1,log,pass,msg:'level %{tx.level}',setvar:'tx.level=2',setvar:'tx.seen=%{rule.msg}'"
+
+SecRule TX:seen "@streq level 1" "id:301,phase:1,log,pass"
+
+SecRule TX:seen "@streq level 2" "id:302,phase:1,log,pass"
 `,
 })

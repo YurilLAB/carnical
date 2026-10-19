@@ -32,6 +32,8 @@ func NewWAF(config WAFConfig) (WAF, error) {
 	c := config.(*wafConfig)
 
 	waf := corazawaf.NewWAF()
+	// The parser sets it again for a %{rule.*} macro; a rule given as a Go value may hold one, so it sets it too.
+	waf.RuleCollectionRead = false
 
 	if environment.HasAccessToFS {
 		if err := environment.IsDirWritable(waf.TmpDir); err != nil {
@@ -56,6 +58,7 @@ func NewWAF(config WAFConfig) (WAF, error) {
 	for _, r := range c.rules {
 		switch {
 		case r.rule != nil:
+			waf.RuleCollectionRead = true
 			if err := waf.Rules.Add(r.rule); err != nil {
 				return nil, fmt.Errorf("invalid WAF config from rule: %w", err)
 			}
