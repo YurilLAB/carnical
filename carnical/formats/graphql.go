@@ -3,6 +3,7 @@
 package formats
 
 import (
+	"math"
 	"unicode/utf8"
 )
 
@@ -23,7 +24,8 @@ const (
 	// they are counted.
 	gqlMaxDefs = 1000
 	// gqlSat stops counts growing past the point where they are over every limit; counting expanded fragments could otherwise overflow.
-	gqlSat = 1 << 40
+	// Two of them must add up without overflowing an int, also where an int is 32 bits.
+	gqlSat = min(1<<40, math.MaxInt/2)
 )
 
 type gtk uint8

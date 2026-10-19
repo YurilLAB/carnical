@@ -555,7 +555,7 @@ func TestPagingFollowsMoreWithoutLosingOrRepeating(t *testing.T) {
 	for i := 0; i < 8; i++ {
 		e := goodEvent(0)
 		e.Time = nowAt().Add(time.Duration(i-8) * time.Minute)
-		e.ID = strings.ToUpper(strconv.FormatInt(int64(0xA00000000000+i), 16))
+		e.ID = strings.ToUpper(strconv.FormatInt(int64(0xA00000000000)+int64(i), 16))
 		r.src.events = append(r.src.events, e)
 	}
 	var ids []string
@@ -587,7 +587,7 @@ func TestPagingFollowsMoreWithoutLosingOrRepeating(t *testing.T) {
 		t.Fatalf("got %d events, want 8: %v", len(ids), ids)
 	}
 	for i, id := range ids {
-		if want := strings.ToUpper(strconv.FormatInt(int64(0xA00000000000+i), 16)); id != want {
+		if want := strings.ToUpper(strconv.FormatInt(int64(0xA00000000000)+int64(i), 16)); id != want {
 			t.Fatalf("event %d is %s, want %s", i, id, want)
 		}
 	}

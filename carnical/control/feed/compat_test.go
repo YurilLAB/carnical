@@ -98,7 +98,7 @@ func richRig(t *testing.T, n int, mutate ...func(*Config, *Key)) *rig {
 		score, thr, status, errs, cnt := 12+i, 5, 403, 2, 7
 		ms := 0.25
 		until := int64(1791014400 + i)
-		e := Event{Time: nowAt().Add(-time.Duration(n-i) * time.Minute), Kind: k.kind, Sev: k.sev, Channel: "fw", ID: fmt.Sprintf("%012X", 0xABC000000000+i),
+		e := Event{Time: nowAt().Add(-time.Duration(n-i) * time.Minute), Kind: k.kind, Sev: k.sev, Channel: "fw", ID: fmt.Sprintf("%012X", int64(0xABC000000000)+int64(i)),
 			Mode: "block", IP: []string{"198.51.100.77", "2001:db8:abcd:1234::1", "203.0.113.9", ""}[i%4], Method: "POST", Path: "/wp-login.php?x=1",
 			Status: &status, Score: &score, Threshold: &thr, MS: &ms, UA: "Mozilla/5.0 (X11; Linux x86_64) é中", Code: "code" + strconv.Itoa(i),
 			Msg: "matched 942100", Detail: "from 203.0.113.9 via 2001:db8:1:2::3", Engine: "carnical-1", Host: "alpha.example", Why: "3 blocked from 198.51.100.77",

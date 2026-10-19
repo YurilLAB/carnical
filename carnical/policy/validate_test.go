@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 )
@@ -83,7 +84,7 @@ func TestValidateEnumsAndThreshold(t *testing.T) {
 		{"threshold 0", th(0), "threshold"},
 		{"threshold -1", th(-1), "threshold"},
 		{"threshold 1001", th(1001), "threshold"},
-		{"threshold maximum integer", th(1<<62 - 1), "threshold"},
+		{"threshold maximum integer", th(math.MaxInt), "threshold"},
 		{"api off", func(p *Policy) { p.APIMode = APIOff }, ""},
 		{"api learn", func(p *Policy) { p.APIMode = APILearn }, ""},
 		{"api monitor", func(p *Policy) { p.APIMode = APIMonitor }, ""},

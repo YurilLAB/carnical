@@ -325,7 +325,7 @@ jobs:
         run: |
           mkdir -p build/security-reports
           go -C carnical build -trimpath -o "$PWD/build/carnical-deployment-linux" ./cmd/carnical
-          for target in linux/arm64 darwin/amd64 darwin/arm64; do
+          for target in linux/arm64 linux/arm darwin/amd64 darwin/arm64; do
             GOOS="${target%/*}" GOARCH="${target#*/}" go -C carnical build -trimpath \
               -o "$PWD/build/carnical-${target//\//-}" ./cmd/carnical
           done

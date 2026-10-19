@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"reflect"
 	"slices"
@@ -174,7 +175,7 @@ func (im *importer) schemaInt(m map[string]any, keyword string) (int, bool) {
 	if !ok {
 		// A maximum larger than any request can reach loses nothing when it is held at 2^31.
 		if num, isNum := v.(Num); isNum && strings.HasPrefix(keyword, "max") && num != "" && strings.Trim(string(num), "0123456789") == "" {
-			return 1 << 31, true
+			return min(1<<31, math.MaxInt), true
 		}
 		im.warnOnce("int:"+keyword, "a "+keyword+" that is not a whole number from 0 to 2^31 was ignored")
 	}

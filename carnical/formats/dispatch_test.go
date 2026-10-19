@@ -190,7 +190,7 @@ func TestPolicyValidate(t *testing.T) {
 		{"request alias budget above ceiling", Policy{GraphQL: GraphQLLimits{MaxRequestAliases: 10_000_001}}, "graphql.max_request_aliases"},
 		{"negative request directive budget", Policy{GraphQL: GraphQLLimits{MaxRequestDirectives: -1}}, "graphql.max_request_directives is negative"},
 		{"a limit above the ceiling", Policy{JSON: JSONLimits{MaxDepth: 5000}}, "above the ceiling"},
-		{"a body limit above the ceiling", Policy{MaxBodyBytes: 1 << 40}, "max_body_bytes"},
+		{"a body limit above the ceiling", Policy{MaxBodyBytes: 1 << 30}, "max_body_bytes"},
 		{"a bad type entry", Policy{AllowedTypes: []string{"json"}}, "allowed_types"},
 		{"an upper case type entry", Policy{AllowedTypes: []string{"Application/JSON"}}, "allowed_types"},
 		{"a suffix entry with a slash", Policy{AllowedTypes: []string{"*+js/on"}}, "allowed_types"},

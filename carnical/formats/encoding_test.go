@@ -261,7 +261,7 @@ func BenchmarkGzip(b *testing.B) {
 			sb.WriteByte(',')
 		}
 		fmt.Fprintf(&sb, `{"id":%d,"name":"User %x","email":"u%x@mail%d.example.test","tags":["t%d","x%x"],"active":%v,"score":%d.%d}`,
-			12345+i*7919, i*2654435761, i*40503, i%97, i%13, i*31, i%3 == 0, i*17%1000, i%10)
+			12345+i*7919, uint64(i)*2654435761, i*40503, i%97, i%13, i*31, i%3 == 0, i*17%1000, i%10)
 	}
 	sb.WriteString(`]}`)
 	plain := sb.String()
