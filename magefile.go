@@ -166,27 +166,32 @@ func Coverage() error {
 	}
 	fmt.Println("Running tests with coverage")
 	fmt.Println("Tags:", tags)
-	tagsCmd := ""
-	if tags != "" {
-		tagsCmd = "-tags=" + tags
+	// test runs go test with the tags, if any: an empty argument would be read as the package list, and only the
+	// current directory tested.
+	test := func(tags string, args ...string) error {
+		if tags != "" {
+			args = append([]string{"-tags=" + tags}, args...)
+		}
+		return sh.RunV("go", append([]string{"test"}, args...)...)
 	}
-	if err := sh.RunV("go", "test", "-race", tagsCmd, "-coverprofile=build/coverage.txt", "-covermode=atomic", "-coverpkg=./...", "./..."); err != nil {
+	if err := test(tags, "-race", "-coverprofile=build/coverage.txt", "-covermode=atomic", "-coverpkg=./...", "./..."); err != nil {
 		return err
 	}
 	// Execute http-server example tests (smoke test, not a coverage source for the full codebase)
-	if err := sh.RunV("go", "test", "-race", tagsCmd, "-coverprofile=build/coverage-examples.txt", "-covermode=atomic", "./examples/http-server"); err != nil {
+	if err := test(tags, "-race", "-coverprofile=build/coverage-examples.txt", "-covermode=atomic", "./examples/http-server"); err != nil {
 		return err
 	}
 	// Execute FTW tests with coverage as well
-	if err := sh.RunV("go", "test", tagsCmd, "-coverprofile=build/coverage-ftw.txt", "-covermode=atomic", "-coverpkg=./...", "./testing/coreruleset"); err != nil {
+	if err := test(tags, "-coverprofile=build/coverage-ftw.txt", "-covermode=atomic", "-coverpkg=./...", "./testing/coreruleset"); err != nil {
 		return err
 	}
 	// we run tinygo tag only if coraza.no_memoize is not enabled
 	if !strings.Contains(tags, "coraza.no_memoize") {
-		if tagsCmd != "" {
-			tagsCmd += ",tinygo"
+		tinygoTags := "tinygo"
+		if tags != "" {
+			tinygoTags = tags + ",tinygo"
 		}
-		if err := sh.RunV("go", "test", "-race", tagsCmd, "-coverprofile=build/coverage-tinygo.txt", "-covermode=atomic", "-coverpkg=./...", "./..."); err != nil {
+		if err := test(tinygoTags, "-race", "-coverprofile=build/coverage-tinygo.txt", "-covermode=atomic", "-coverpkg=./...", "./..."); err != nil {
 			return err
 		}
 	}
