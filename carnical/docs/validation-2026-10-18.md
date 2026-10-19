@@ -214,7 +214,8 @@ Firefox 158 loaded a page from Carnical with `-bots scanner,disguised`, over eig
 - **Squid tunnel**: the same Squid, passing `CONNECT` through without reading it;
 - **nginx TLS** (nginx 1.29.8) and **HAProxy TLS** (HAProxy 3.2.26): end TLS, then open TLS of
   their own to Carnical;
-- **nginx HTTP**: ends TLS, then forwards plain HTTP to Carnical.
+- **nginx HTTP**: ends TLS, then forwards plain HTTP to Carnical, over HTTP/1.1, nginx's default since
+  1.29.7. An nginx before that forwards HTTP/1.0, and a browser behind it that is not listed is `disguised`.
 
 Each route was run four ways: as configured above (**none**), with nginx and HAProxy listed in
 `-trusted-proxies`, with Squid's outgoing address in `-bots-exempt`, and with `disguised` moved to

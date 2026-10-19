@@ -200,8 +200,8 @@ addresses never refused, such as your own scanners; -bots none refuses none.
 Setup's answers: none; fake = fake,scanner; ai = also ai,seo; strict = every kind.
 Use strict only for a site browsers alone use: apps and API clients are tools,
 and a browser behind antivirus or a company proxy that reads HTTPS, or behind a
-load balancer that opens its own TLS and is not in -trusted-proxies, can look
-disguised.
+load balancer that is not in -trusted-proxies and opens its own TLS or forwards
+HTTP/1.0 (nginx before 1.29.7), can look disguised.
 `,
 }
 

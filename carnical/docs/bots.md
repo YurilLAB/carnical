@@ -90,7 +90,7 @@ is searched whole, so padding cannot push a scanner's name out of sight.
 Behind a load balancer or CDN listed in `-trusted-proxies`, only the header checks apply. That
 holds whether it ends TLS or opens a TLS connection of its own to Carnical. For a request from a
 `-trusted-proxies` peer, Carnical does not use the connection's HTTP version, its TLS handshake, or the HTTPS-only checks of
-`Sec-Fetch-*` and client hints. Those are the proxy's (nginx forwards over HTTP/1.0 by default),
+`Sec-Fetch-*` and client hints. Those are the proxy's (nginx before 1.29.7 forwards over HTTP/1.0 by default),
 and the visitor may have reached the proxy without HTTPS, when a browser sends neither header.
 Tools that copy a
 browser's handshake as well as its headers (curl-impersonate, curl_cffi, a real browser driven by
@@ -107,8 +107,8 @@ read whether its alerts come from your visitors' networks.
 The same happens with a front you did not list. A load balancer or CDN that opens a TLS connection
 of its own to Carnical shows its own handshake, so without `-trusted-proxies` every Chrome and
 Firefox behind it is `disguised`. One that forwards plain HTTP/1.1 shows no handshake, and they
-pass; one that forwards HTTP/1.0, as nginx does unless set to `proxy_http_version 1.1`, makes every
-browser behind it `disguised` until it is listed.
+pass; one that forwards HTTP/1.0, as nginx before 1.29.7 does unless set to `proxy_http_version
+1.1`, makes every browser behind it `disguised` until it is listed.
 
 If you do refuse `disguised`:
 
