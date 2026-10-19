@@ -161,5 +161,6 @@ Superseding does not delete the old record. Set its status and let the history s
 | [0090](0090-carnical-widened-crs-request-policy.md) | — | — | unreleased (post-v3.8.1) | F | Content types and file extensions the site adds to the Core Rule Set's policy |
 | [0091](0091-carnical-wordpress-block-editor.md) | — | — | unreleased (post-v3.8.1) | F | The block editor's saves on a site marked as WordPress |
 | [0092](0092-rule-collection-filled-when-read.md) | — | — | unreleased (post-v3.8.1) | ⚡ | The RULE collection filled when it is read |
+| [0093](0093-bodies-copied-without-a-buffer-each.md) | — | — | unreleased (post-v3.8.1) | ⚡ | Request and response bodies copied without a buffer of their own |
 
 Categories: **F**eature · **P**arity · **⚡** Perf · **R**efactor

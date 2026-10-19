@@ -27,11 +27,15 @@ func TestBodyReaderMemory(t *testing.T) {
 	if err != nil {
 		t.Error(err)
 	}
+	// One byte read, then the rest copied: the copy goes on from where the read stopped.
+	if _, err := io.CopyN(buf, reader, 1); err != nil {
+		t.Error(err)
+	}
 	if _, err := io.Copy(buf, reader); err != nil {
 		t.Error(err)
 	}
 	if buf.String() != "test" {
-		t.Error("Failed to get BodyReader from memory")
+		t.Errorf("Failed to get BodyReader from memory, got %q", buf.String())
 	}
 	_ = br.Reset()
 }
@@ -55,11 +59,15 @@ func TestBodyReaderFile(t *testing.T) {
 	if err != nil {
 		t.Error(err)
 	}
+	// One byte read, then the rest copied: the copy goes on from where the read stopped.
+	if _, err := io.CopyN(buf, reader, 1); err != nil {
+		t.Error(err)
+	}
 	if _, err := io.Copy(buf, reader); err != nil {
 		t.Error(err)
 	}
 	if buf.String() != "test" {
-		t.Error("Failed to get BodyReader from file")
+		t.Errorf("Failed to get BodyReader from file, got %q", buf.String())
 	}
 	// Let's check if files are being deleted
 	f := br.writer

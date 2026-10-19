@@ -10,8 +10,23 @@ import (
 	"os"
 
 	"github.com/corazawaf/coraza/v3/internal/environment"
+	"github.com/corazawaf/coraza/v3/internal/sync"
 	"github.com/corazawaf/coraza/v3/types"
 )
+
+// copyBuffers holds the buffers a body is copied through into a BodyBuffer, which io.CopyN would otherwise allocate for
+// every body: neither the limited reader nor the BodyBuffer offers a way round the buffer.
+var copyBuffers = sync.NewPool(func() any {
+	b := make([]byte, 32*1024)
+	return &b
+})
+
+// copyN copies at most n bytes of r into br, as io.CopyN does.
+func (br *BodyBuffer) copyN(r io.Reader, n int64) (int64, error) {
+	buf := copyBuffers.Get().(*[]byte)
+	defer copyBuffers.Put(buf)
+	return io.CopyBuffer(br, io.LimitReader(r, n), *buf)
+}
 
 // BodyBuffer is used to read RequestBody and ResponseBody objects
 // It will handle memory usage for buffering and processing
@@ -99,6 +114,8 @@ type bodyBufferReader struct {
 	br  *BodyBuffer
 }
 
+var _ io.WriterTo = (*bodyBufferReader)(nil)
+
 func (b *bodyBufferReader) Read(p []byte) (n int, err error) {
 	if b.br == nil {
 		// reader has been closed and hence we don't attempt to do anymore read
@@ -124,6 +141,32 @@ func (b *bodyBufferReader) Read(p []byte) (n int, err error) {
 	n, err = b.br.writer.ReadAt(p, int64(b.pos))
 	b.pos += n
 	return
+}
+
+// WriteTo writes the rest of the body to w, in one write when it is in memory, so that io.Copy of the body into a
+// strings.Builder, as the body processors do, makes one allocation of the body's size rather than going through a
+// buffer of its own.
+func (b *bodyBufferReader) WriteTo(w io.Writer) (int64, error) {
+	if b.br == nil {
+		return 0, nil
+	}
+
+	if !environment.HasAccessToFS || b.br.writer == nil {
+		buf := b.br.buffer.Bytes()
+		if b.pos >= len(buf) {
+			return 0, nil
+		}
+		n, err := w.Write(buf[b.pos:])
+		b.pos += n
+		if err == nil && b.pos < len(buf) {
+			err = io.ErrShortWrite
+		}
+		return int64(n), err
+	}
+
+	n, err := io.Copy(w, io.NewSectionReader(b.br.writer, int64(b.pos), b.br.length-int64(b.pos)))
+	b.pos += int(n)
+	return n, err
 }
 
 // Close closes the reader
