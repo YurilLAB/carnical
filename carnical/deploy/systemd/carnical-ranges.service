@@ -1,8 +1,10 @@
 # Fetch the crawler address lists that -bots-ranges reads, check them with carnical, and move them into place. The edge
 # reads a replaced list within a minute, so nothing is restarted. Started by carnical-ranges.timer, once a day.
 #
-# It runs as root because the lists decide which addresses pass as a search engine, so no service user may write them.
-# Root here has no capabilities, and the whole machine is read-only to it except the lists' directory.
+# It runs as its own user, which owns the lists' directory and nothing else: the lists decide which addresses pass as a
+# search engine, so no service user may write them. It takes in content from the internet, so it is not root: root, even
+# with no capabilities, could still read root's files, ask systemd to start anything, and reach the cloud metadata
+# service. It has no capabilities, and the whole machine is read-only to it except the lists' directory.
 [Unit]
 Description=Refresh the crawler address lists Carnical verifies search engines with
 After=network-online.target nss-lookup.target
@@ -11,6 +13,8 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 ExecStart=/usr/local/lib/carnical/refresh-ranges.sh /var/lib/carnical/ranges
+User=carnical-ranges
+Group=carnical-ranges
 
 NoNewPrivileges=yes
 CapabilityBoundingSet=
@@ -36,5 +40,5 @@ SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged @mount @debug @raw-io @reboot @swap @module @obsolete
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-IPAddressDeny=link-local 168.63.129.16
+IPAddressDeny=link-local 168.63.129.16 fd00:ec2::254
 UMask=0022

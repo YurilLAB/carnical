@@ -79,12 +79,15 @@ Outside the edge, `deploy/ranges/refresh.sh` runs from `carnical-ranges.timer` o
   one that passes into place.
 - It keeps a list that fails to download or to check, and exits 1.
 
-The unit runs as root with no capabilities, and the machine is read-only to it except
-`/var/lib/carnical/ranges` (systemd's exposure score: 1.7). That directory belongs to root and is
-readable by all. `tmpfiles.d` creates it, and the host audit's ownership check requires it to be
-root's and no more than 0755. A dedicated user was considered instead. The nftables policy limits
-outbound traffic by Carnical user, so that user would need its own HTTPS egress rule and audit
-entries. Root without capabilities, confined to one directory, needs neither.
+The unit runs as its own user, `carnical-ranges`, with no capabilities, and the machine is
+read-only to it except `/var/lib/carnical/ranges`. That directory belongs to that user and is
+readable by all. `sysusers.d` makes the user and `tmpfiles.d` the directory, and the host audit's
+ownership check requires it to be that user's and no more than 0755. Root with no capabilities was
+tried first, but it does not contain a compromised download: root still reads root's files that
+are read-only to it, can ask systemd over its private socket to start any unit, can signal root's
+daemons, and passes the nftables rule that keeps every other user from the cloud metadata service.
+The nftables policy limits outbound traffic only for the edge and the internal services, so the
+updater's user needs no rule of its own.
 
 Verified:
 

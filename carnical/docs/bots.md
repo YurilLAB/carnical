@@ -261,7 +261,8 @@ that fails to download or to check is kept as it was, and the script exits 1.
 so copy them into `amazonbot.json` by hand.
 
 Whoever can write the lists decides which addresses pass as a search engine. Keep the directory
-writable by root only, as the recipe's `tmpfiles.d` line does; the host audit checks this.
+writable by the updater's own user only, as the recipe's `sysusers.d` and `tmpfiles.d` lines do;
+the host audit checks this.
 
 ## Counting
 
