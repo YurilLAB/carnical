@@ -191,7 +191,7 @@ type Record struct {
 // MaxPorts is the most ports a record names.
 const MaxPorts = 8
 
-// maxTracked bounds the ports followed during an attack: the sets hold at most 2,048 and 512.
+// maxTracked bounds the ports followed during an attack: the sets hold at most 2,048 and 64 (carnical.nft).
 const maxTracked = 4096
 
 // Detector turns readings into events. It is not safe for concurrent use.

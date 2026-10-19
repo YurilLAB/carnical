@@ -10,6 +10,7 @@ import json
 import math
 import os
 import pathlib
+import shutil
 import socket
 import ssl
 import struct
@@ -443,7 +444,7 @@ def egress():
     print(json.dumps({"connected": connected}), flush=True)
 
 
-def test(binary, investigate=False, egress_users=True):
+def test(binary, investigate=False, egress_users=True, netwatch=None):
     if os.geteuid() != 0:
         raise RuntimeError("network namespace test requires root")
     if os.stat("/proc/self/ns/net").st_ino == os.stat("/proc/1/ns/net").st_ino:
@@ -647,6 +648,23 @@ def test(binary, investigate=False, egress_users=True):
         equal({name: lab.count(name) for name in names}, before, "established replies must not be counted or dropped")
         print("PASS: unsolicited UDP sorted by kind and port and dropped in full (set bounded); broadcast and multicast "
               "counted apart; replies from DNS and NTP ports to the host's own queries arrive untouched", flush=True)
+
+        if netwatch:
+            # carnical-netwatch reads the same counters straight from the kernel over netlink, not through nft.
+            printed = ("udp_flood_drop", "edge_udp_drop", "udp_reflection_drop", "edge_bad_tcp", "edge_bad_source")
+            before = {name: lab.count(name) for name in printed}
+            listing = run(str(netwatch), "-once", "-nft", shutil.which("nft"))
+            after = {name: lab.count(name) for name in printed}
+            read = {}
+            for line in listing.splitlines():
+                parts = line.split()
+                if len(parts) == 5 and parts[2] == "packets,":
+                    read[parts[0]] = int(parts[1])
+            for name in printed:
+                if not before[name] <= read.get(name, -1) <= after[name]:
+                    raise AssertionError(f"carnical-netwatch read {name} as {read.get(name)}, nft as {before[name]}..{after[name]}")
+            equal(read["udp_flood_drop"] >= 2600 and read["udp_reflection_drop"] >= 300, True, "the flood and reflection read")
+            print("PASS: carnical-netwatch reads the guards' counters over netlink as nft lists them", flush=True)
 
         lab.load()
         for i, src in enumerate((PEER4, PEER6), 1):
@@ -940,6 +958,7 @@ def main():
     parser.add_argument("--peer", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--egress", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--binary", type=pathlib.Path)
+    parser.add_argument("--netwatch", type=pathlib.Path, help="carnical-netwatch, checked against nft's counters")
     parser.add_argument("--latency-investigation", action="store_true", help="compare origin queue, keep-alive and TCP flush controls")
     parser.add_argument("--no-egress-users", action="store_true",
                         help="leave out the checks that run as the service users (for a user namespace, where root cannot become them)")
@@ -956,10 +975,12 @@ def main():
     elif not args.inside:
         os.execvp("unshare", ["unshare", "--net", sys.executable, str(pathlib.Path(__file__).resolve()),
                               "--inside", "--binary", str(args.binary.resolve()),
+                              *(["--netwatch", str(args.netwatch.resolve())] if args.netwatch else []),
                               *(["--latency-investigation"] if args.latency_investigation else []),
                               *(["--no-egress-users"] if args.no_egress_users else [])])
     else:
-        test(args.binary.resolve(), investigate=args.latency_investigation, egress_users=not args.no_egress_users)
+        test(args.binary.resolve(), investigate=args.latency_investigation, egress_users=not args.no_egress_users,
+             netwatch=args.netwatch.resolve() if args.netwatch else None)
 
 
 if __name__ == "__main__":

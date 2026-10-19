@@ -478,15 +478,9 @@ func TestTheDetectorSurvivesWhatTheKernelDoes(t *testing.T) {
 }
 
 // Real output of nft 1.1.3 for the shipped policy, cut to a few entries.
-const counterListing = `{"nftables": [{"metainfo": {"version": "1.1.3", "release_name": "Commodore Bullmoose #4", "json_schema_version": 1}}, {"counter": {"family": "inet", "name": "edge_bad_source", "table": "carnical", "handle": 20, "packets": 3, "bytes": 180}}, {"counter": {"family": "inet", "name": "udp_flood_drop", "table": "carnical", "handle": 24, "packets": 400, "bytes": 36800}}, {"counter": {"family": "inet", "name": "other", "table": "other_table", "handle": 3, "packets": 9, "bytes": 9}}]}`
-
 const setListing = `{"nftables": [{"metainfo": {"version": "1.1.3", "release_name": "Commodore Bullmoose #4", "json_schema_version": 1}}, {"set": {"family": "inet", "name": "udp_ports", "table": "carnical", "type": "inet_service", "handle": 4, "size": 2048, "flags": ["timeout", "dynamic"], "timeout": 120, "elem": [{"elem": {"val": 40001, "expires": 59, "counter": {"packets": 10, "bytes": 1280}}}, {"elem": {"val": 53, "expires": 59, "counter": {"packets": 5, "bytes": 640}}}], "stmt": [{"counter": null}]}}]}`
 
 func TestNftListingsAreRead(t *testing.T) {
-	c, err := ParseCounters([]byte(counterListing), "carnical")
-	if err != nil || len(c) != 2 || c["udp_flood_drop"] != (Count{400, 36800}) || c["edge_bad_source"] != (Count{3, 180}) {
-		t.Fatalf("counters %v %v", c, err)
-	}
 	s, full, err := ParseSet([]byte(setListing), "carnical", "udp_ports")
 	if err != nil || full || len(s) != 2 || s[40001] != (Count{10, 1280}) || s[53] != (Count{5, 640}) {
 		t.Fatalf("set %v %v %v", s, full, err)
@@ -508,7 +502,6 @@ func TestNftListingsAreRead(t *testing.T) {
 		name, data string
 	}{
 		{"not JSON", "{"},
-		{"a duplicate counter", strings.Replace(counterListing, `"other", "table": "other_table"`, `"udp_flood_drop", "table": "carnical"`, 1)},
 		{"an element without a counter", strings.Replace(setListing, `, "counter": {"packets": 5, "bytes": 640}`, "", 1)},
 		{"an element that is not a port", strings.Replace(setListing, `"val": 53`, `"val": "x"`, 1)},
 		{"a port out of range", strings.Replace(setListing, `"val": 53`, `"val": 65536`, 1)},
@@ -517,9 +510,7 @@ func TestNftListingsAreRead(t *testing.T) {
 		{"too large", `{"nftables": [` + strings.Repeat(" ", MaxListing) + `]}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err1 := ParseCounters([]byte(tc.data), "carnical")
-			_, _, err2 := ParseSet([]byte(tc.data), "carnical", "udp_ports")
-			if err1 == nil && err2 == nil {
+			if _, _, err := ParseSet([]byte(tc.data), "carnical", "udp_ports"); err == nil {
 				t.Fatal("accepted")
 			}
 		})
@@ -604,13 +595,8 @@ func TestTheStateFile(t *testing.T) {
 
 // What nft prints is read strictly and boundedly, whatever it is.
 func FuzzParseListings(f *testing.F) {
-	f.Add([]byte(counterListing))
 	f.Add([]byte(setListing))
-	f.Add([]byte(`{"nftables": [{"counter": {"name": "x", "table": "carnical", "packets": -1}}]}`))
 	f.Fuzz(func(t *testing.T, data []byte) {
-		if c, err := ParseCounters(data, "carnical"); err == nil && len(c) > 256 {
-			t.Fatalf("%d counters", len(c))
-		}
 		if s, _, err := ParseSet(data, "carnical", "udp_ports"); err == nil && len(s) > maxElements {
 			t.Fatalf("%d elements", len(s))
 		}

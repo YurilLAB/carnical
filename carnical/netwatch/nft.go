@@ -8,8 +8,8 @@ import (
 	"fmt"
 )
 
-// MaxListing is the most bytes of nft's JSON that are read: the counters are a few kilobytes and the sets hold at most
-// 2,560 elements.
+// MaxListing is the most bytes of nft's JSON that are read: a set listing, of at most 2,048 elements (udp_ports) as
+// carnical.nft sizes them.
 const MaxListing = 4 << 20
 
 // maxElements bounds the elements read from one set listing.
@@ -24,36 +24,6 @@ type nftCounter struct {
 	Table   string `json:"table"`
 	Packets uint64 `json:"packets"`
 	Bytes   uint64 `json:"bytes"`
-}
-
-// ParseCounters reads the output of `nft -j list counters table inet carnical`: each named counter of the table.
-func ParseCounters(data []byte, table string) (map[string]Count, error) {
-	doc, err := parse(data)
-	if err != nil {
-		return nil, err
-	}
-	out := map[string]Count{}
-	for _, item := range doc.Nftables {
-		raw, ok := item["counter"]
-		if !ok {
-			continue
-		}
-		var c nftCounter
-		if err := json.Unmarshal(raw, &c); err != nil {
-			return nil, errors.New("netwatch: a counter cannot be read")
-		}
-		if c.Table != table || c.Name == "" || len(c.Name) > 64 {
-			continue
-		}
-		if _, dup := out[c.Name]; dup {
-			return nil, fmt.Errorf("netwatch: counter %q listed twice", c.Name)
-		}
-		out[c.Name] = Count{Packets: c.Packets, Bytes: c.Bytes}
-		if len(out) > 256 {
-			return nil, errors.New("netwatch: too many counters")
-		}
-	}
-	return out, nil
 }
 
 type nftSet struct {

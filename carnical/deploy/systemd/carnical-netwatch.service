@@ -3,8 +3,8 @@
 # flood), with the ports. It writes the latest event to /run/carnical/netwatch/state.json, which the edge reads with
 # -netwatch-state and sends to its alert endpoint.
 #
-# Listing the rules needs CAP_NET_ADMIN, so this runs as root with that capability alone. It opens no IP socket: nft
-# talks to the kernel over netlink, and the state file is the only thing it writes.
+# Listing the rules needs CAP_NET_ADMIN, so this runs as root with that capability alone. It opens no IP socket: it
+# and nft talk to the kernel over netlink, and the state file is the only thing it writes.
 [Unit]
 Description=Carnical network watch (volumetric floods on the packet guards)
 After=nftables.service

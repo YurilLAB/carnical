@@ -301,24 +301,29 @@ func TestTheWatchResumesTheUsualAfterARestart(t *testing.T) {
 	}
 }
 
-// The reading itself, against a stand-in for nft: the counters are read; a set that fails leaves the other read and
-// the counters counting; port 0 and a full set are reported; an nft that hangs or prints too much is cut off.
+// The reading itself, against stand-ins for the kernel's counters and for nft: the counters are read; a set that fails
+// leaves the other read and the counters counting; port 0 and a full set are reported; counters that cannot be read
+// fail the reading; an nft that fails, hangs or prints too much costs only the sets, and is cut off.
 func TestReadingTheGuards(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("nft runs on Linux")
 	}
 	dir := t.TempDir()
+	counters := func(_ context.Context, table string) (map[string]netwatch.Count, error) {
+		if table != "carnical" {
+			return nil, errors.New("another table")
+		}
+		return map[string]netwatch.Count{"udp_flood_drop": {Packets: 7, Bytes: 700}}, nil
+	}
 	script := func(name, body string) guards {
 		path := filepath.Join(dir, name)
 		if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		return guards{nft: path, table: "carnical"}
+		return guards{nft: path, table: "carnical", counters: counters}
 	}
-	const counters = `{"nftables": [{"counter": {"family": "inet", "name": "udp_flood_drop", "table": "carnical", "packets": 7, "bytes": 700}}]}`
 	const ports = `{"nftables": [{"set": {"family": "inet", "name": "udp_ports", "table": "carnical", "type": "inet_service", "size": 2, "elem": [{"elem": {"val": 0, "counter": {"packets": 1, "bytes": 60}}}, {"elem": {"val": 53, "counter": {"packets": 6, "bytes": 640}}}]}}]}`
 	g := script("nft", `case "$*" in
-*counters*) echo '`+counters+`' ;;
 *udp_ports*) echo '`+ports+`' ;;
 *) echo 'Error: No such file or directory' >&2; exit 1 ;;
 esac
@@ -338,13 +343,18 @@ esac
 	// The other way round: the ports fail, the reflectors are still read.
 	const refl = `{"nftables": [{"set": {"family": "inet", "name": "udp_reflectors", "table": "carnical", "type": "inet_service", "size": 64, "elem": [{"elem": {"val": 123, "counter": {"packets": 3, "bytes": 1404}}}]}}]}`
 	g = script("nft-ports-fail", `case "$*" in
-*counters*) echo '`+counters+`' ;;
 *udp_reflectors*) echo '`+refl+`' ;;
 *) exit 1 ;;
 esac
 `)
 	if r, err := g.read(context.Background(), true); !errors.Is(err, errSets) || r.Ports != nil || r.Reflectors[123].Packets != 3 {
 		t.Fatalf("the ports' failure alone: %+v %v", r, err)
+	}
+	g.counters = func(context.Context, string) (map[string]netwatch.Count, error) {
+		return nil, errors.New("netwatch: listing the counters: operation not permitted")
+	}
+	if _, err := g.read(context.Background(), false); err == nil || errors.Is(err, errSets) {
+		t.Fatalf("counters that cannot be read: %v", err)
 	}
 	for _, tc := range []struct {
 		name, body, want string
@@ -355,9 +365,9 @@ esac
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			start := time.Now()
-			_, err := script(strings.ReplaceAll(tc.name, " ", "-"), tc.body+"\n").read(context.Background(), true)
-			if err == nil || !strings.Contains(err.Error(), tc.want) || errors.Is(err, errSets) {
-				t.Fatalf("%v, want %q", err, tc.want)
+			r, err := script(strings.ReplaceAll(tc.name, " ", "-"), tc.body+"\n").read(context.Background(), true)
+			if !errors.Is(err, errSets) || !strings.Contains(err.Error(), tc.want) || r.Counters["udp_flood_drop"].Packets != 7 {
+				t.Fatalf("%+v %v, want the counters and %q", r, err, tc.want)
 			}
 			if time.Since(start) > readTimeout+time.Second {
 				t.Fatalf("took %s", time.Since(start))

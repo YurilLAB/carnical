@@ -2,14 +2,14 @@
 
 // Command carnical-netwatch tells when the kernel's packet guards (deploy/nftables/carnical.nft) are under a volumetric
 // attack the proxy never sees: a UDP flood, UDP reflection, a SYN flood, malformed TCP or an echo flood. Once a second
-// it reads the guards' drop counters with nft, and while the drops are high also the sets that count them by port; it
-// logs each attack's start, updates and end as JSON lines, and writes the latest to a state file, which the edge reads
-// (-netwatch-state) and sends to its alert endpoint:
+// it reads the guards' drop counters from the kernel, and while the drops are high also, with nft, the sets that count
+// them by port; it logs each attack's start, updates and end as JSON lines, and writes the latest to a state file, which
+// the edge reads (-netwatch-state) and sends to its alert endpoint:
 //
 //	carnical-netwatch -state /run/carnical/netwatch/state.json
 //
-// It needs CAP_NET_ADMIN to list the rules (see deploy/systemd/carnical-netwatch.service) and opens no socket but the
-// netlink one nft uses. A record still open when it stops, or that a crash left open, is closed with Stopped set.
+// It needs CAP_NET_ADMIN to list the rules (see deploy/systemd/carnical-netwatch.service) and opens no socket but
+// netlink ones. A record still open when it stops, or that a crash left open, is closed with Stopped set.
 package main
 
 import (
@@ -77,7 +77,7 @@ func run(args []string, stderr io.Writer) int {
 	}
 	cfg.detector.EdgePort = uint16(*edgePort) // #nosec G115 -- checked above
 	log := slog.New(slog.NewJSONHandler(stderr, nil))
-	g := guards{nft: cfg.nft, table: cfg.table}
+	g := guards{nft: cfg.nft, table: cfg.table, counters: netwatch.ReadCounters}
 	if cfg.once {
 		return once(context.Background(), g, stderr)
 	}
@@ -108,13 +108,14 @@ func validTable(s string) bool {
 	return true
 }
 
-// guards reads the packet guards' counters and sets with nft.
+// guards reads the packet guards' counters, and their sets with nft.
 type guards struct {
 	nft, table string
+	counters   func(ctx context.Context, table string) (map[string]netwatch.Count, error)
 }
 
-// readTimeout bounds one nft run: under a flood the machine is slow, but a reading that takes longer than this is of
-// no use to a once-a-second watch.
+// readTimeout bounds one read of the counters and one nft run: under a flood the machine is slow, but a reading that
+// takes longer than this is of no use to a once-a-second watch.
 const readTimeout = 2 * time.Second
 
 // errSets says that the counters were read but the counting sets were not: the reading counts, without its ports.
@@ -124,22 +125,24 @@ var errSets = errors.New("the counting sets cannot be read")
 // reading is returned with an error that wraps errSets; the other set is still read.
 func (g guards) read(ctx context.Context, sets bool) (netwatch.Reading, error) {
 	var r netwatch.Reading
-	out, err := g.list(ctx, "list", "counters", "table", "inet", g.table)
+	cctx, cancel := context.WithTimeout(ctx, readTimeout)
+	counters, err := g.counters(cctx, g.table)
+	cancel()
 	if err != nil {
 		return r, err
 	}
-	// The time of the counters, not of the start of the read: a slow nft would otherwise put a second's drops in
+	// The time of the counters, not of the start of the read: a slow read would otherwise put a second's drops in
 	// another second.
-	r.At = time.Now()
-	if r.Counters, err = netwatch.ParseCounters(out, g.table); err != nil {
-		return r, err
-	}
+	r.At, r.Counters = time.Now(), counters
 	if !sets {
 		return r, nil
 	}
+	// Both sets within one read's time: an nft that hangs on the first does not cost two.
+	sctx, cancel := context.WithTimeout(ctx, readTimeout)
+	defer cancel()
 	var errPorts, errRefl error
-	r.Ports, r.PortsFull, errPorts = g.set(ctx, "udp_ports")
-	r.Reflectors, _, errRefl = g.set(ctx, "udp_reflectors")
+	r.Ports, r.PortsFull, errPorts = g.set(sctx, "udp_ports")
+	r.Reflectors, _, errRefl = g.set(sctx, "udp_reflectors")
 	return r, errors.Join(errPorts, errRefl)
 }
 

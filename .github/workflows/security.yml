@@ -281,6 +281,7 @@ jobs:
           go test -race ./proxy -run TestAFloodFromAThousandAddressesThroughTheProxy -count=1 -v \
             | tee ../build/security-reports/live-flood.log
           CGO_ENABLED=0 go build -o ../build/carnical-network-linux ./cmd/carnical
+          CGO_ENABLED=0 go build -o ../build/carnical-netwatch-linux ./cmd/carnical-netwatch
       - name: Validate origin authentication with real NGINX and WAF traffic
         shell: bash
         run: |
@@ -290,7 +291,7 @@ jobs:
         shell: bash
         run: |
           sudo python3 .github/security/test_network_policy.py --binary build/carnical-network-linux \
-            | tee build/security-reports/network-policy.log
+            --netwatch build/carnical-netwatch-linux | tee build/security-reports/network-policy.log
       - name: Measure flood latency with origin bottleneck controls
         shell: bash
         run: |

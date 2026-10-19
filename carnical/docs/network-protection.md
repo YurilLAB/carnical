@@ -122,7 +122,7 @@ server's measured capacity is insufficient; budgets are local to each node.
 The kernel drops a volumetric flood before the proxy sees anything of it, so the proxy's own
 [flood protection](ddos.md) cannot report it. `carnical-netwatch`
 ([unit](../deploy/systemd/carnical-netwatch.service)) reads the drop counters above once a second
-with `nft -j list counters`, learns the usual rate of drops, and reports an attack when the drops
+straight from the kernel, learns the usual rate of drops, and reports an attack when the drops
 reach at least 1,000 packets a second (`-min-rate`) and ten times the usual (`-factor`) for three
 seconds in a row, or 100,000 a second (`-ceiling`) whatever the usual; it ends after 30 seconds
 under half that, and lasts at least 30 seconds. While the drops are high it also reads the counting
@@ -163,9 +163,13 @@ open when the watch stops, or that a crash left open, is closed with `stopped`.
 
 The watch runs as root with `CAP_NET_ADMIN` alone, which listing the rules needs, opens no IP
 socket and writes only its state directory, which belongs to root. The edge refuses a state file
-that is not root's or that its group or everyone may write. Each `nft` run is cut off after two
-seconds (with half a second more for its output) and 4 MiB of output, and a set that cannot be read
-leaves the counters and the other set counting. `carnical-netwatch -once` reads
+that is not root's or that its group or everyone may write. The counters are one netlink dump of
+the table's counter objects, which reads no set: `nft list counters` before nft 1.1.1 (Debian 12,
+Ubuntu 24.04, RHEL 9) fetches every element of every set first, and under a SYN flood from spoofed
+sources, with the meters full, that took about a second of CPU and more memory than the unit
+allows. The sets are listed with `nft`, both within two seconds (with half a second more for
+output) and 4 MiB of output each, and a set that cannot be read leaves the counters and the other
+set counting. `carnical-netwatch -once` reads
 the guards once and lists the counters: a check that the policy loaded is the one it reads. In the
 end-to-end check below, a 98,000-packet-a-second UDP flood with NTP reflection was reported three
 seconds after it began, with its ports and reflector, while the watch used 0.5% of one core and
