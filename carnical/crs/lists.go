@@ -27,7 +27,7 @@ const (
 
 // contentTypeShape is a media type without parameters, as rule 920420 compares it (lower case). Nothing in it can end a
 // quoted SecLang string or start a macro, and neither a space nor a "|" can join two entries of the list.
-var contentTypeShape = regexp.MustCompile(`^[a-z0-9][a-z0-9!#$&^_.+-]{0,62}/[a-z0-9][a-z0-9!#$&^_.+-]{0,62}$`)
+var contentTypeShape = regexp.MustCompile(`^[a-z0-9][a-z0-9!#$&^_.+-]{0,63}/[a-z0-9][a-z0-9!#$&^_.+-]{0,63}$`)
 
 // IsContentType reports whether t can be one of Settings.AllowedContentTypes.
 func IsContentType(t string) bool { return contentTypeShape.MatchString(t) }

@@ -173,6 +173,8 @@ func TestValidateCRSLists(t *testing.T) {
 		{"two content types in one", types("a/b|c/d"), "allowed_content_types"},
 		{"a content type with a quote", types("a/b'"), "allowed_content_types"},
 		{"a content type with a macro", types("a/%{tx.0}"), "allowed_content_types"},
+		{"a subtype of 64 characters", types("application/" + strings.Repeat("a", 64)), ""},
+		{"a subtype of 65 characters", types("application/" + strings.Repeat("a", 65)), "allowed_content_types"},
 		{"shell and SQL files", exts(".sh", ".sql"), ""},
 		{"upper case is made lower case", exts(".SH"), ""},
 		{"an extension the rule set does not restrict", exts(".html"), "allowed_extensions"},
