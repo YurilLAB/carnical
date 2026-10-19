@@ -653,7 +653,9 @@ def test(binary, investigate=False, egress_users=True, netwatch=None):
             # carnical-netwatch reads the same counters straight from the kernel over netlink, not through nft.
             printed = ("udp_flood_drop", "edge_udp_drop", "udp_reflection_drop", "edge_bad_tcp", "edge_bad_source")
             before = {name: lab.count(name) for name in printed}
-            listing = run(str(netwatch), "-once", "-nft", shutil.which("nft"))
+            # -once prints its listing to standard error, as the watch logs.
+            listing = subprocess.run([str(netwatch), "-once", "-nft", shutil.which("nft")], check=True, text=True,
+                                     capture_output=True, timeout=15).stderr
             after = {name: lab.count(name) for name in printed}
             read = {}
             for line in listing.splitlines():
