@@ -90,7 +90,7 @@ Measured with it on:
 | `GODEBUG=fips140=on` and `fips140=only`, `./...` and the CRS suite | pass |
 | `go run mage.go lint`, `go run mage.go adr` | pass |
 | Carnical `./proxy ./shield ./crs ./policy ./cmd/carnical` | pass, except the two IPv6 tests this container cannot run |
-| CI: Regression Tests (18 jobs), Lint, ADR on `edge-crs` | pass, first run on this branch |
+| CI: Regression Tests (15 tag sets and 2 FIPS modes), Lint, ADR on `edge-crs` | pass, first run on this branch |
 
 Regression Tests, Lint and ADR ran only on `main` before `2e8f4df9`, so `edge-crs`, the default
 branch, had no engine regression matrix in CI. They now run on every push to it. The matrix moved
