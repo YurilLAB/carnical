@@ -3610,7 +3610,9 @@ func TestAlertEndpointSettings(t *testing.T) {
 // signed, to a real TLS receiver through the guarded dialer.
 // alertReceiver is a started endpoint for the site example.com, its log, and what its receiver was sent with a valid
 // signature, which is complete once the endpoint is closed.
-func alertReceiver(t *testing.T) (*endpoint, *slog.Logger, *bytes.Buffer, *[]notify.Message) {
+// alertReceiver starts an endpoint posting to a test receiver. received returns what the receiver has accepted, once
+// until says it is all there (or after ten seconds: the test then fails on what is missing); a nil until does not wait.
+func alertReceiver(t *testing.T) (ep *endpoint, log *slog.Logger, logs *bytes.Buffer, received func(until func([]notify.Message) bool) []notify.Message) {
 	t.Helper()
 	dir := t.TempDir()
 	secret := strings.Repeat("k", 48)
@@ -3636,8 +3638,8 @@ func alertReceiver(t *testing.T) (*endpoint, *slog.Logger, *bytes.Buffer, *[]not
 	if err := os.WriteFile(caPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw}), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	logs := new(bytes.Buffer)
-	log := slog.New(slog.NewJSONHandler(logs, nil))
+	logs = new(bytes.Buffer)
+	log = slog.New(slog.NewJSONHandler(logs, nil))
 	str := func(s string) *string { return &s }
 	ep, err := configureEndpoint(log, endpointFlags{url: str(srv.URL + "/hook"), secretFile: str(secretPath), allow: str("127.0.0.1/32"), caFile: str(caPath)}, "example.com")
 	if err != nil {
@@ -3646,11 +3648,21 @@ func alertReceiver(t *testing.T) (*endpoint, *slog.Logger, *bytes.Buffer, *[]not
 	if err := ep.start(log); err != nil {
 		t.Fatal(err)
 	}
-	return ep, log, logs, got
+	received = func(until func([]notify.Message) bool) []notify.Message {
+		for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+			mu.Lock()
+			msgs := slices.Clone(*got)
+			mu.Unlock()
+			if until == nil || until(msgs) || time.Now().After(deadline) {
+				return msgs
+			}
+		}
+	}
+	return ep, log, logs, received
 }
 
 func TestAlertEndpointSendsAttacks(t *testing.T) {
-	ep, log, logs, sent := alertReceiver(t)
+	ep, log, logs, received := alertReceiver(t)
 	start := time.Date(2026, 10, 19, 1, 0, 0, 0, time.UTC)
 	inc := shield.Incident{Start: start, Kinds: []string{"request_flood"}, Ports: []shield.PortCount{{Port: 443, Requests: 900}},
 		Sources: 700, Networks: 90, PeakRate: 3000, BaselineRate: 20, TLS: 900, HTTP2: 900, Requests: 900, Window: true,
@@ -3663,9 +3675,10 @@ func TestAlertEndpointSendsAttacks(t *testing.T) {
 	}
 	inc.End = start.Add(130 * time.Second)
 	ep.shieldEvent(shield.Event{Kind: "attack_end", Mode: "on", At: inc.End, Incident: inc})
+	received(func(m []notify.Message) bool { return len(m) > 0 && m[len(m)-1].Event == notify.AttackEnd })
 	ep.close(log)
 	ep.shieldEvent(shield.Event{Kind: "attack_start", Mode: "on", At: inc.End, Incident: inc}) // after close: dropped quietly
-	got := *sent
+	got := received(nil)
 
 	// The updates of 60s and 120s go; one still waiting when the next comes is replaced by it (the endpoint needs the
 	// latest), so the last update sent is always that of 120s.
@@ -3707,7 +3720,7 @@ func TestAlertEndpointSendsAttacks(t *testing.T) {
 // and end, one update a minute. A file that is not one the watch writes is refused, and an old event found at startup
 // is not told again.
 func TestNetwatchStateIsToldOnce(t *testing.T) {
-	ep, log, logs, sent := alertReceiver(t)
+	ep, log, logs, received := alertReceiver(t)
 	path := filepath.Join(t.TempDir(), "state.json")
 	start := time.Date(2026, 10, 19, 2, 0, 0, 0, time.UTC)
 	clock := start
@@ -3755,10 +3768,12 @@ func TestNetwatchStateIsToldOnce(t *testing.T) {
 	restarted.poll()
 	write(netwatch.Start, clock, rec)
 	restarted.poll()
+	// Sent one at a time, half a second apart: the restart's start is the last.
+	sent := received(func(m []notify.Message) bool { return len(m) >= 4 && m[len(m)-1].Event == notify.NetworkStart })
 	ep.close(log)
 
 	var events []notify.Event
-	for _, m := range *sent {
+	for _, m := range sent {
 		events = append(events, m.Event)
 		// A minute after the start, then a minute after that: the updates of 60 and 120 seconds.
 		if at := m.At.Sub(start); m.Event == notify.NetworkUpdate && at != time.Minute && at != 2*time.Minute {
@@ -3772,7 +3787,7 @@ func TestNetwatchStateIsToldOnce(t *testing.T) {
 	if !slices.Equal(events, want) && !slices.Equal(events, slices.Delete(slices.Clone(want), 1, 2)) {
 		t.Fatalf("sent %v, want %v (or one update: one waiting is replaced by the next)", events, want)
 	}
-	first := (*sent)[0]
+	first := sent[0]
 	if first.Severity != "critical" || !strings.Contains(first.Text, "reflected from udp/123") || !strings.Contains(first.Text, "on example.com") {
 		t.Fatalf("start %+v", first)
 	}
