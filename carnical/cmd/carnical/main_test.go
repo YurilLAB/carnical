@@ -47,6 +47,7 @@ import (
 	"github.com/YurilLAB/coraza/carnical/crs"
 	"github.com/YurilLAB/coraza/carnical/formats"
 	"github.com/YurilLAB/coraza/carnical/inspect"
+	"github.com/YurilLAB/coraza/carnical/netwatch"
 	"github.com/YurilLAB/coraza/carnical/notify"
 	"github.com/YurilLAB/coraza/carnical/policy"
 	"github.com/YurilLAB/coraza/carnical/proxy"
@@ -3607,7 +3608,10 @@ func TestAlertEndpointSettings(t *testing.T) {
 
 // The endpoint sends an attack's start, its end, and at most one update a minute of the shield's ten-second updates,
 // signed, to a real TLS receiver through the guarded dialer.
-func TestAlertEndpointSendsAttacks(t *testing.T) {
+// alertReceiver is a started endpoint for the site example.com, its log, and what its receiver was sent with a valid
+// signature, which is complete once the endpoint is closed.
+func alertReceiver(t *testing.T) (*endpoint, *slog.Logger, *bytes.Buffer, *[]notify.Message) {
+	t.Helper()
 	dir := t.TempDir()
 	secret := strings.Repeat("k", 48)
 	secretPath := filepath.Join(dir, "alert.secret")
@@ -3615,25 +3619,25 @@ func TestAlertEndpointSendsAttacks(t *testing.T) {
 		t.Fatal(err)
 	}
 	var mu sync.Mutex
-	var got []notify.Message
+	got := new([]notify.Message)
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(io.LimitReader(r.Body, notify.MaxBody))
 		var m notify.Message
 		if notify.Verify([]byte(secret), r.Header.Get("X-Carnical-Timestamp"), r.Header.Get("X-Carnical-Signature"), body, time.Now(), time.Minute) &&
 			json.Unmarshal(body, &m) == nil {
 			mu.Lock()
-			got = append(got, m)
+			*got = append(*got, m)
 			mu.Unlock()
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}))
-	defer srv.Close()
+	t.Cleanup(srv.Close)
 	caPath := filepath.Join(dir, "ca.pem")
 	if err := os.WriteFile(caPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw}), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	var logs bytes.Buffer
-	log := slog.New(slog.NewJSONHandler(&logs, nil))
+	logs := new(bytes.Buffer)
+	log := slog.New(slog.NewJSONHandler(logs, nil))
 	str := func(s string) *string { return &s }
 	ep, err := configureEndpoint(log, endpointFlags{url: str(srv.URL + "/hook"), secretFile: str(secretPath), allow: str("127.0.0.1/32"), caFile: str(caPath)}, "example.com")
 	if err != nil {
@@ -3642,6 +3646,11 @@ func TestAlertEndpointSendsAttacks(t *testing.T) {
 	if err := ep.start(log); err != nil {
 		t.Fatal(err)
 	}
+	return ep, log, logs, got
+}
+
+func TestAlertEndpointSendsAttacks(t *testing.T) {
+	ep, log, logs, sent := alertReceiver(t)
 	start := time.Date(2026, 10, 19, 1, 0, 0, 0, time.UTC)
 	inc := shield.Incident{Start: start, Kinds: []string{"request_flood"}, Ports: []shield.PortCount{{Port: 443, Requests: 900}},
 		Sources: 700, Networks: 90, PeakRate: 3000, BaselineRate: 20, TLS: 900, HTTP2: 900, Requests: 900, Window: true,
@@ -3656,6 +3665,7 @@ func TestAlertEndpointSendsAttacks(t *testing.T) {
 	ep.shieldEvent(shield.Event{Kind: "attack_end", Mode: "on", At: inc.End, Incident: inc})
 	ep.close(log)
 	ep.shieldEvent(shield.Event{Kind: "attack_start", Mode: "on", At: inc.End, Incident: inc}) // after close: dropped quietly
+	got := *sent
 
 	// The updates of 60s and 120s go; one still waiting when the next comes is replaced by it (the endpoint needs the
 	// latest), so the last update sent is always that of 120s.
@@ -3673,7 +3683,7 @@ func TestAlertEndpointSendsAttacks(t *testing.T) {
 		t.Fatalf("events %v (last update %+v), want the start, the updates of 60s and 120s or only the latest, the end", events, last)
 	}
 	if !strings.Contains(logs.String(), `"queued":4`) {
-		t.Fatalf("want the start, the updates of 60s and 120s and the end queued: %s", &logs)
+		t.Fatalf("want the start, the updates of 60s and 120s and the end queued: %s", logs)
 	}
 	got = append(got[:1], got[len(got)-1]) // the start and the end
 	first := got[0]
@@ -3688,8 +3698,155 @@ func TestAlertEndpointSendsAttacks(t *testing.T) {
 	if got[1].Attack.Ended == nil || got[1].Severity != "info" || strings.Contains(got[1].Text, "mitigation on") {
 		t.Fatalf("end %+v", got[1])
 	}
-	if strings.Contains(logs.String(), srv.URL) || strings.Contains(logs.String(), secret) || !strings.Contains(logs.String(), `"sent":`+strconv.Itoa(len(events))) {
-		t.Fatalf("log %s", &logs)
+	if strings.Contains(logs.String(), "/hook") || strings.Contains(logs.String(), strings.Repeat("k", 48)) || !strings.Contains(logs.String(), `"sent":`+strconv.Itoa(len(events))) {
+		t.Fatalf("the log names neither the URL nor the secret, and counts what was sent: %s", logs)
+	}
+}
+
+// The network watch's events are read from its state file once each, logged, and sent as the shield's are: every start
+// and end, one update a minute. A file that is not one the watch writes is refused, and an old event found at startup
+// is not told again.
+func TestNetwatchStateIsToldOnce(t *testing.T) {
+	ep, log, logs, sent := alertReceiver(t)
+	path := filepath.Join(t.TempDir(), "state.json")
+	start := time.Date(2026, 10, 19, 2, 0, 0, 0, time.UTC)
+	clock := start
+	n := newNetwatchReader(path, log, ep, "example.com")
+	n.now, n.owner = func() time.Time { return clock }, os.Getuid()
+	rec := netwatch.Record{Started: start, Kinds: []netwatch.KindCount{{Kind: netwatch.KindReflection, Packets: 90000, Bytes: 9e6}},
+		Ports: []netwatch.Port{}, SourcePorts: []netwatch.Port{{Protocol: "udp", Port: 123, Packets: 90000, Bytes: 9e6}},
+		PacketRate: 30000, PeakRate: 30000, Baseline: 4, Packets: 90000, Bytes: 9e6}
+	seq := uint64(0)
+	write := func(ev netwatch.Event, at time.Time, r netwatch.Record) {
+		t.Helper()
+		seq++
+		if err := netwatch.WriteState(path, netwatch.State{Version: 1, Seq: seq, Event: ev, At: at, Attack: &r}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n.poll() // no file yet: nothing reported, and what comes is new
+	write(netwatch.Start, start, rec)
+	n.poll()
+	n.poll() // the same file: not told again
+	seq--
+	write(netwatch.Start, start, rec) // the same event in a new file: not told again either
+	n.poll()
+	for s := 10; s <= 120; s += 10 {
+		clock = start.Add(time.Duration(s) * time.Second)
+		write(netwatch.Update, clock, rec)
+		n.poll()
+	}
+	if err := os.WriteFile(path, []byte(`{"version":1,"seq":99,"event":"network_attack_start","at":"2026-10-19T02:03:00Z","attack":{"kinds":[{"kind":"made_up"}]}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	n.poll()
+	n.poll() // refused once a minute in the log, never sent
+	end := start.Add(150 * time.Second)
+	clock = end
+	r := rec
+	r.Ended = &end
+	write(netwatch.End, end, r)
+	n.poll()
+
+	// A restart: an event 20 seconds old is not told; a newer one is.
+	clock = end.Add(20 * time.Second)
+	restarted := newNetwatchReader(path, log, ep, "example.com")
+	restarted.now, restarted.owner = func() time.Time { return clock }, os.Getuid()
+	restarted.poll()
+	write(netwatch.Start, clock, rec)
+	restarted.poll()
+	ep.close(log)
+
+	var events []notify.Event
+	for _, m := range *sent {
+		events = append(events, m.Event)
+		// A minute after the start, then a minute after that: the updates of 60 and 120 seconds.
+		if at := m.At.Sub(start); m.Event == notify.NetworkUpdate && at != time.Minute && at != 2*time.Minute {
+			t.Fatalf("an update of %s was sent", at)
+		}
+		if m.Network == nil || m.Attack != nil || m.Site != "example.com" || len(m.Network.SourcePorts) != 1 || m.Network.SourcePorts[0].Port != 123 {
+			t.Fatalf("message %+v", m)
+		}
+	}
+	want := []notify.Event{notify.NetworkStart, notify.NetworkUpdate, notify.NetworkUpdate, notify.NetworkEnd, notify.NetworkStart}
+	if !slices.Equal(events, want) && !slices.Equal(events, slices.Delete(slices.Clone(want), 1, 2)) {
+		t.Fatalf("sent %v, want %v (or one update: one waiting is replaced by the next)", events, want)
+	}
+	first := (*sent)[0]
+	if first.Severity != "critical" || !strings.Contains(first.Text, "reflected from udp/123") || !strings.Contains(first.Text, "on example.com") {
+		t.Fatalf("start %+v", first)
+	}
+	out := logs.String()
+	// The start, the updates of 60 and 120 seconds, the end, and the start after the restart.
+	if !strings.Contains(out, `"queued":5`) {
+		t.Fatalf("want five messages queued:\n%s", out)
+	}
+	if c := strings.Count(out, `"msg":"network flood detected"`); c != 2 {
+		t.Fatalf("%d start lines, want 2:\n%s", c, out)
+	}
+	if strings.Count(out, `"msg":"network flood continues"`) != 12 || strings.Count(out, `"msg":"network flood over"`) != 1 {
+		t.Fatalf("every update and the end are logged:\n%s", out)
+	}
+	if strings.Count(out, "the network watch's state cannot be read") != 1 || strings.Contains(out, "made_up") {
+		t.Fatalf("a forged file is refused once, without its content:\n%s", out)
+	}
+}
+
+// A state file that someone other than its owner could have written, or that belongs to another user, is refused.
+func TestNetwatchStateMustBeTheWatchs(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("carnical-netwatch runs on Linux")
+	}
+	path := filepath.Join(t.TempDir(), "state.json")
+	end := time.Now().UTC()
+	st := netwatch.State{Version: 1, Seq: 1, Event: netwatch.Start, At: end, Attack: &netwatch.Record{Started: end,
+		Kinds: []netwatch.KindCount{{Kind: netwatch.KindUDPFlood, Packets: 1}}, Ports: []netwatch.Port{}}}
+	for _, tc := range []struct {
+		name  string
+		mode  os.FileMode
+		owner int
+		want  string
+	}{
+		{"the watch's, readable by all", 0o644, os.Getuid(), ""},
+		{"writable by its group", 0o664, os.Getuid(), "can be written by others"},
+		{"writable by everyone", 0o646, os.Getuid(), "can be written by others"},
+		{"another user's", 0o644, os.Getuid() + 1, "belongs to uid"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := netwatch.WriteState(path, st); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(path, tc.mode); err != nil {
+				t.Fatal(err)
+			}
+			var logs bytes.Buffer
+			n := newNetwatchReader(path, slog.New(slog.NewJSONHandler(&logs, nil)), nil, "")
+			n.owner, n.started = tc.owner, true
+			n.poll()
+			told := strings.Contains(logs.String(), "network flood detected")
+			if tc.want == "" && !told || tc.want != "" && (told || !strings.Contains(logs.String(), tc.want)) {
+				t.Fatalf("log %s", &logs)
+			}
+		})
+	}
+}
+
+func TestNetwatchStateSetting(t *testing.T) {
+	dir := t.TempDir()
+	tests := []struct {
+		name, path, want string
+	}{
+		{"relative", "state.json", "must be an absolute path"},
+		{"no directory", filepath.Join(dir, "missing", "state.json"), "must exist"},
+		{"a directory that is there", filepath.Join(dir, "state.json"), ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := checkNetwatchState(tt.path)
+			if tt.want == "" && err != nil || tt.want != "" && (err == nil || !strings.Contains(err.Error(), tt.want)) {
+				t.Fatalf("%v, want %q", err, tt.want)
+			}
+		})
 	}
 }
 

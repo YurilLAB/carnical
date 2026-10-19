@@ -159,34 +159,40 @@ func (e *endpoint) shieldEvent(ev shield.Event) {
 		return
 	}
 	subject := ev.Incident.Start.UTC().Format(time.RFC3339Nano)
+	if e.admit(kind, subject, ev.At) {
+		e.sender.Send(notify.FromShield(kind, ev, e.site, subject))
+	}
+}
+
+// admit says whether a message of kind about subject (an attack), at at, is to be sent: every start and end, and an
+// update only a minute or more after the last one sent.
+func (e *endpoint) admit(kind notify.Event, subject string, at time.Time) bool {
 	e.mu.Lock()
+	defer e.mu.Unlock()
 	if e.finished {
-		e.mu.Unlock()
-		return
+		return false
 	}
 	switch kind {
-	case notify.AttackUpdate:
-		if last, ok := e.updated[subject]; ok && ev.At.Sub(last) < endpointUpdateGap {
-			e.mu.Unlock()
-			return
+	case notify.AttackUpdate, notify.NetworkUpdate:
+		if last, ok := e.updated[subject]; ok && at.Sub(last) < endpointUpdateGap {
+			return false
 		}
-		e.updated[subject] = ev.At
-	case notify.AttackStart:
-		e.updated[subject] = ev.At
-	case notify.AttackEnd:
+		e.updated[subject] = at
+	case notify.AttackStart, notify.NetworkStart:
+		e.updated[subject] = at
+	default:
 		delete(e.updated, subject)
 	}
 	// An attack whose end was never seen (the queue dropped it) must not be remembered for ever.
 	if len(e.updated) > 64 {
-		for k, at := range e.updated {
-			if ev.At.Sub(at) > time.Hour {
+		for k, last := range e.updated {
+			if at.Sub(last) > time.Hour {
 				delete(e.updated, k)
 			}
 		}
 	}
 	e.queued++
-	e.mu.Unlock()
-	e.sender.Send(notify.FromShield(kind, ev, e.site, subject))
+	return true
 }
 
 // endpointSite is the name messages give the site: its first host name, or nothing.

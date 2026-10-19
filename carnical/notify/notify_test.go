@@ -14,11 +14,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/YurilLAB/coraza/carnical/netwatch"
 )
 
 var testSecret = []byte("0123456789abcdef0123456789abcdef-test-secret")
@@ -380,6 +383,55 @@ func TestTheQueueKeepsWhatMatters(t *testing.T) {
 	}
 	if dropped != s.Stats().Dropped || last.msg.Event == "" {
 		t.Fatalf("the messages report %d drops, the sender counted %d", dropped, s.Stats().Dropped)
+	}
+}
+
+// A network flood's message carries its record, not an attack's; a newer update of the same flood replaces one still
+// waiting, as for the shield's attacks, and an update of another flood does not.
+func TestNetworkFloodsAreSentAsAttacksAre(t *testing.T) {
+	started := time.Unix(1_800_000_000, 0).UTC()
+	rec := &netwatch.Record{Started: started.In(time.FixedZone("AEDT", 11*3600)), Kinds: []netwatch.KindCount{{Kind: netwatch.KindUDPFlood, Packets: 9, Bytes: 900}},
+		Ports: []netwatch.Port{{Protocol: "udp", Port: 53, Packets: 9, Bytes: 900}}, PeakRate: 40000, Baseline: 3}
+	msg := func(ev netwatch.Event, at time.Duration, r *netwatch.Record) Message {
+		return FromNetwork(netwatch.State{Version: 1, Seq: 1, Event: ev, At: started.Add(at), Attack: r}, "example.com")
+	}
+	start := msg(netwatch.Start, 0, rec)
+	if start.Event != NetworkStart || start.Event.Severity() != "critical" || start.Attack != nil || start.Network.Ports[0].Port != 53 ||
+		!strings.Contains(start.Text, "on example.com (udp_flood): 40000 packets/s") || !strings.Contains(start.Text, "udp/53") ||
+		start.Network.Started.Location() != time.UTC {
+		t.Fatalf("start %+v", start)
+	}
+	other := *rec
+	other.Started = started.Add(time.Hour)
+
+	r := newReceiver(t)
+	release := make(chan struct{})
+	r.reply = func(n int, w http.ResponseWriter) {
+		if n == 0 {
+			<-release
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+	s := r.sender(t, nil, func(c *Config) { c.Timeout = 10 * time.Second })
+	s.Send(start) // taken by the sender, held by the endpoint
+	for r.hits.Load() == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	s.Send(msg(netwatch.Update, 10*time.Second, rec))
+	s.Send(msg(netwatch.Update, 10*time.Second, &other))
+	s.Send(msg(netwatch.Update, 20*time.Second, rec)) // replaces the first flood's waiting update
+	close(release)
+	s.Close(5 * time.Second)
+	var got []string
+	for _, m := range r.messages() {
+		if m.msg.Network == nil || bytes.Contains(m.body, []byte(`"attack"`)) {
+			t.Fatalf("body %s", m.body)
+		}
+		got = append(got, fmt.Sprintf("%s %s %s", m.msg.Event, m.msg.Network.Started.Format("15:04"), m.msg.At.Format("15:04:05")))
+	}
+	want := []string{"network_attack_start 08:00 08:00:00", "network_attack_update 08:00 08:00:20", "network_attack_update 09:00 08:00:10"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("delivered %q, want %q", got, want)
 	}
 }
 

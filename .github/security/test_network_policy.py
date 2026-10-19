@@ -73,9 +73,9 @@ def latency(samples):
             "max_ms": round(ordered[-1] * 1000, 2)}
 
 
-def frame(src, proto=6, flags=2, ident=1, hop=64, payload=None, port=443):
+def frame(src, proto=6, flags=2, ident=1, hop=64, payload=None, port=443, dst=None, mac=None):
     source = ipaddress.ip_address(src)
-    dst = ipaddress.ip_address(V4 if source.version == 4 else V6)
+    dst = ipaddress.ip_address(dst or (V4 if source.version == 4 else V6))
     if payload is None:
         if proto == 6:
             payload = struct.pack("!HHIIBBHHH", 40000 + ident % 20000, port, ident, 0, 80, flags, 65535, 0, 0)
@@ -88,14 +88,21 @@ def frame(src, proto=6, flags=2, ident=1, hop=64, payload=None, port=443):
         pseudo += struct.pack("!BBH", 0, proto, len(payload))
         header = struct.pack("!BBHHHBBH4s4s", 69, 0, 20 + len(payload), ident % 65536, 0, hop, proto, 0, source.packed, dst.packed)
         header = header[:10] + struct.pack("!H", checksum(header)) + header[12:]
-        ethernet = SERVER_MAC + CLIENT_MAC + b"\x08\x00"
+        ethernet = (mac or SERVER_MAC) + CLIENT_MAC + b"\x08\x00"
     else:
         pseudo += struct.pack("!I3xB", len(payload), proto)
         header = struct.pack("!IHBB16s16s", 6 << 28, len(payload), proto, hop, source.packed, dst.packed)
-        ethernet = SERVER_MAC + CLIENT_MAC + b"\x86\xdd"
+        ethernet = (mac or SERVER_MAC) + CLIENT_MAC + b"\x86\xdd"
     offset = {6: 16, 17: 6, 58: 2}[proto]
     payload = payload[:offset] + struct.pack("!H", checksum(pseudo + payload) or 65535) + payload[offset + 2:]
     return (ethernet + header + payload).hex()
+
+
+def udp(src, sport, dport, size=8, dst=None, mac=None):
+    """A UDP datagram from src:sport to the WAF's address (or dst, on the link address mac) at dport, with size bytes
+    of data."""
+    data = bytes(size)
+    return frame(src, proto=17, payload=struct.pack("!HHHH", sport, dport, 8 + len(data), 0) + data, dst=dst, mac=mac)
 
 
 def fragments(src, flags, ident):
@@ -167,6 +174,34 @@ def peer():
                 flood_thread = threading.Thread(target=flood_packets, daemon=True)
                 flood_thread.start()
                 result = {"started": True}
+            elif task["kind"] == "udp_reply_start":
+                # A resolver or clock the WAF's host asks: answer each datagram on the port with a larger one, as DNS
+                # and NTP do, so that the reply comes from a reflection port and is established.
+                reply_sockets = []
+                for family, address in ((socket.AF_INET, PEER4), (socket.AF_INET6, PEER6)):
+                    s = socket.socket(family, socket.SOCK_DGRAM)
+                    s.bind((address, task["port"]))
+                    s.settimeout(5)
+                    reply_sockets.append(s)
+                reply_result = {"replied": 0}
+                def answer(sockets=reply_sockets, want=task["count"], result=reply_result):
+                    try:
+                        for s in sockets:
+                            for _ in range(want):
+                                data, where = s.recvfrom(2048)
+                                s.sendto(data * 8, where)
+                                result["replied"] += 1
+                    except OSError as error:
+                        result["error"] = str(error)
+                    finally:
+                        for s in sockets:
+                            s.close()
+                reply_thread = threading.Thread(target=answer, daemon=True)
+                reply_thread.start()
+                result = {"listening": True}
+            elif task["kind"] == "udp_reply_wait":
+                reply_thread.join(timeout=10)
+                result = reply_result
             elif task["kind"] == "flood_wait":
                 flood_thread.join(timeout=30)
                 if flood_thread.is_alive():
@@ -329,6 +364,12 @@ class Lab:
     def count(self, name):
         data = json.loads(run("nft", "--json", "list", "counter", "inet", "carnical", name))
         return next(item["counter"]["packets"] for item in data["nftables"] if "counter" in item)
+
+    def set_counts(self, name):
+        """The packets each element of a counting set holds, by port."""
+        data = json.loads(run("nft", "--json", "list", "set", "inet", "carnical", name))
+        elems = next(item["set"] for item in data["nftables"] if "set" in item).get("elem", [])
+        return {item["elem"]["val"]: item["elem"]["counter"]["packets"] for item in elems}
 
     def expect(self, name, minimum):
         deadline = time.monotonic() + 2
@@ -545,6 +586,68 @@ def test(binary, investigate=False, egress_users=True):
         lab.expect("edge_udp_drop", 2)
         print("PASS: malformed TCP, impossible TCP sources and UDP/443 dropped; ECN SYN preserved", flush=True)
 
+        # Unsolicited UDP is sorted for carnical-netwatch: reflection replies from a service port by source port, the
+        # rest by destination port. Everything is dropped as before; replies to what the host asked still arrive.
+        lab.load()
+        names = ("udp_flood_drop", "udp_reflection_drop", "edge_udp_drop", "input_denied", "udp_broadcast_drop")
+        denied = lab.count("input_denied")
+        flood = [udp(PEER4 if i % 2 else PEER6, 40000 + i, 1024 + i % 40, 64) for i in range(400)]
+        lab.send(flood)
+        lab.expect("udp_flood_drop", 400)
+        ports = lab.set_counts("udp_ports")
+        equal(len(ports), 40, "destination ports counted")
+        equal(sum(ports.values()), 400, "packets counted by destination port")
+        reflected = [udp(f"10.201.0.{3 + i % 50}" if i % 2 else f"fd00:ca::{3 + i % 50:x}", sport, 33000 + i, 400)
+                     for i, sport in enumerate([53] * 150 + [123] * 100 + [11211] * 50)]
+        lab.send(reflected)
+        lab.expect("udp_reflection_drop", 300)
+        equal(lab.set_counts("udp_reflectors"), {53: 150, 123: 100, 11211: 50}, "reflection replies counted by source port")
+        equal(sorted(set(range(33000, 33300)) & set(lab.set_counts("udp_ports"))), [], "reflection replies kept out of the flood's ports")
+        equal(lab.count("udp_flood_drop"), 400, "reflection replies are not counted as the flood")
+        equal(lab.count("edge_udp_drop"), 0, "UDP/443 is the raw guard's, untouched by other UDP")
+        equal(lab.count("input_denied"), denied, "UDP no longer reaches the general input drop")
+        lab.send([frame(PEER4, proto=17), frame(PEER6, proto=17)])
+        lab.expect("edge_udp_drop", 2)
+        equal(lab.count("udp_flood_drop"), 400, "UDP/443 is dropped before it is sorted")
+        # The local network's chatter, broadcast and multicast from reflection ports (mDNS, SSDP, DHCP), is dropped as
+        # before but counted apart: it is not a flood aimed at this host, nor reflection.
+        chatter = ([udp(PEER4, 5353, 5353, 100, dst="255.255.255.255", mac=b"\xff" * 6) for _ in range(50)]
+                   + [udp(PEER4, 1900, 1900, 300, dst="224.0.0.1", mac=bytes.fromhex("01005e000001")) for _ in range(50)]
+                   + [udp(PEER4, 67, 68, 300, dst="255.255.255.255", mac=b"\xff" * 6) for _ in range(20)]
+                   + [udp(PEER6, 5353, 5353, 100, dst="ff02::1", mac=bytes.fromhex("333300000001")) for _ in range(50)])
+        lab.send(chatter)
+        lab.expect("udp_broadcast_drop", 170)
+        equal(lab.count("udp_reflection_drop"), 300, "broadcast and multicast are not reflection")
+        equal(lab.count("udp_flood_drop"), 400, "broadcast and multicast are not a flood")
+        # The sets' elements time out, so what is checked is that none of the chatter's ports is in them.
+        equal(sorted({5353, 1900, 68} & set(lab.set_counts("udp_ports"))), [], "broadcast and multicast not counted by port")
+        equal(sorted({5353, 1900, 67} & set(lab.set_counts("udp_reflectors"))), [], "nor as reflectors")
+        # A flood to more ports than the set holds is still dropped in full: only the counting by port stops.
+        many = [udp(PEER4, 41000, 2000 + i) for i in range(2200)]
+        for chunk in range(0, len(many), 500):
+            lab.send(many[chunk:chunk + 500])
+        lab.expect("udp_flood_drop", 2600)
+        if len(lab.set_counts("udp_ports")) > 2048:
+            raise AssertionError("the destination port set grew past its size")
+        # Negative control for false positives: the host asks a resolver (port 53) and a clock (port 123) in the
+        # other namespace, and every larger reply, from a reflection port, comes back and is counted nowhere.
+        before = {name: lab.count(name) for name in names}
+        for port in (53, 123):
+            equal(lab.ask({"kind": "udp_reply_start", "port": port, "count": 5}), {"listening": True}, "reply peer listening")
+            received = 0
+            for family, address in ((socket.AF_INET, PEER4), (socket.AF_INET6, PEER6)):
+                with socket.socket(family, socket.SOCK_DGRAM) as s:
+                    s.settimeout(2)
+                    for n in range(5):
+                        s.sendto(b"q%02d" % n, (address, port))
+                        data, _ = s.recvfrom(2048)
+                        received += data == (b"q%02d" % n) * 8
+            equal(received, 10, f"replies from port {port} to the host's own queries")
+            equal(lab.ask({"kind": "udp_reply_wait"}), {"replied": 10}, f"port {port} peer answered")
+        equal({name: lab.count(name) for name in names}, before, "established replies must not be counted or dropped")
+        print("PASS: unsolicited UDP sorted by kind and port and dropped in full (set bounded); broadcast and multicast "
+              "counted apart; replies from DNS and NTP ports to the host's own queries arrive untouched", flush=True)
+
         lab.load()
         for i, src in enumerate((PEER4, PEER6), 1):
             lab.send(fragments(src, 2, i * 10))
@@ -618,8 +721,9 @@ def test(binary, investigate=False, egress_users=True):
         lab.send([frame(PEER6, proto=58, payload=echo, ident=i) for i in range(256)])
         lab.expect("edge_echo_admitted", 40)
         lab.expect("edge_echo_drop", 100)
-        # Unexpected UDP ports exercise the separate bounded log path, without one message per early refusal.
-        lab.send([frame(PEER6, proto=17, port=4444, ident=i) for i in range(128)])
+        # Unexpected TCP ports exercise the separate bounded log path, without one message per early refusal. (Unsolicited
+        # UDP has counters of its own and is not logged: a UDP scan or flood would use up the log's budget.)
+        lab.send([frame(PEER6, proto=6, port=4444, ident=i) for i in range(128)])
         lab.expect("input_denied", 100)
         lab.expect("input_logged", 1)
         if lab.count("input_logged") > 5:

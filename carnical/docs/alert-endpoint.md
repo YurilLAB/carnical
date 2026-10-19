@@ -6,8 +6,9 @@ Carnical is doing about it. Nothing is sent unless an endpoint is set (`-alert-e
 "Attack alerts" step of `carnical setup`).
 
 Messages are few and small: one when an attack starts, at most one a minute while it goes on, and
-one when it ends. They are about the attacks flood protection finds, so with `-ddos off` none are
-sent (start-up warns of it). They are sent by one goroutine from a queue of 32, one at a time and at least half
+one when it ends. They are about the attacks flood protection finds and, with `-netwatch-state`,
+the [network floods](#network-floods) the kernel's packet guards drop; with `-ddos off` and no
+`-netwatch-state` none are sent (start-up warns of it). They are sent by one goroutine from a queue of 32, one at a time and at least half
 a second apart, over one kept-alive connection, so alerting costs next to nothing when the machine
 is short of resources, and a slow or dead endpoint costs one goroutine and a few kilobytes.
 
@@ -82,6 +83,55 @@ cookie, an address of a visitor or matched data.
 
 When the queue is full, an update waiting gives its place to a start or an end, and a newer update
 of the same attack replaces one still waiting: the endpoint gets the latest.
+
+## Network floods
+
+With `-netwatch-state /run/carnical/netwatch/state.json`, the edge also sends what
+[`carnical-netwatch`](network-protection.md#telling-of-a-flood) finds: floods the kernel drops
+before the proxy sees them. The events are `network_attack_start`, `network_attack_update` and
+`network_attack_end`, with the same severities, signing and limits as the others, and a `network`
+record in place of `attack`. This one is from the end-to-end check in
+[network protection](network-protection.md#telling-of-a-flood), a real flood dropped by the real
+policy (the counts by port and by kind are read a moment apart, so they differ a little):
+
+```json
+{
+  "version": 1,
+  "id": "52f06c0bf1505d74bc88d68819a6d721",
+  "event": "network_attack_start",
+  "severity": "critical",
+  "at": "2026-10-19T02:10:13.16894475Z",
+  "site": "example.com",
+  "text": "Network flood detected on example.com (udp_flood, udp_reflection): 97801 packets/s dropped at peak, usually 2, to udp/53 udp/27015, reflected from udp/123; the packet guards drop it",
+  "network": {
+    "started": "2026-10-19T02:10:13.155319188Z",
+    "kinds": [{"kind": "udp_flood", "packets": 77968, "bytes": 27684724},
+              {"kind": "udp_reflection", "packets": 19800, "bytes": 10206348}],
+    "ports": [{"protocol": "udp", "port": 53, "packets": 54600, "bytes": 12994800},
+              {"protocol": "udp", "port": 27015, "packets": 23400, "bytes": 14695200}],
+    "source_ports": [{"protocol": "udp", "port": 123, "packets": 19500, "bytes": 10062000}],
+    "packet_rate": 97801, "peak_packet_rate": 97801, "byte_rate": 37903710, "peak_byte_rate": 37903710,
+    "baseline_packet_rate": 2, "packets": 97768, "bytes": 37891072
+  }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `network.kinds` | `udp_flood`, `udp_reflection`, `syn_flood`, `malformed_tcp` or `icmp_flood`, each with at least a tenth of the packets, the most first |
+| `network.ports` | The destination ports, the most first, with at least a hundredth of the packets each |
+| `network.other_ports`, `network.random_ports` | The UDP flood's packets to any other port; `random_ports` when they were at least half of it, a flood with no port to name |
+| `network.ports_full` | More ports were hit than the watch counts (2,048 at a time), so the port a flood is aimed at may be missing |
+| `network.source_ports` | For reflection, the services the replies came from |
+| `network.packet_rate`, `byte_rate` | Dropped now, a second; `peak_` the highest, `baseline_packet_rate` the usual before it |
+| `network.packets`, `bytes` | Dropped during the attack |
+| `network.ended`, `network.stopped` | On `network_attack_end`; `stopped` when the watch stopped while it went on |
+
+The record holds counts, ports and kinds only. The edge refuses a state file with an unknown kind,
+event or field, more entries than the watch writes, or one over 64 KiB, one that is not root's or
+that others may write, and logs that it could not read it, at most once a minute, without its
+content. The file's directory belongs to root, which the host audit checks, so a process that has
+taken over the edge cannot make up a flood or hide one.
 
 ## Checking a message
 

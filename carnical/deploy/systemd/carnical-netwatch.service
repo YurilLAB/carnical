@@ -1,0 +1,64 @@
+# The network watch: reads the packet guards' drop counters (deploy/nftables/carnical.nft) once a second and tells when
+# they are under a volumetric attack the proxy never sees (UDP flood, UDP reflection, SYN flood, malformed TCP, echo
+# flood), with the ports. It writes the latest event to /run/carnical/netwatch/state.json, which the edge reads with
+# -netwatch-state and sends to its alert endpoint.
+#
+# Listing the rules needs CAP_NET_ADMIN, so this runs as root with that capability alone. It opens no IP socket: nft
+# talks to the kernel over netlink, and the state file is the only thing it writes.
+[Unit]
+Description=Carnical network watch (volumetric floods on the packet guards)
+After=nftables.service
+
+[Service]
+Type=exec
+ExecStart=/usr/local/bin/carnical-netwatch -state /run/carnical/netwatch/state.json
+Restart=always
+RestartSec=2
+# Under a flood the machine is busy: the watch is what tells of it, so it keeps its turn.
+Nice=-5
+
+# --- Privilege: CAP_NET_ADMIN only (listing nftables) ---------------------------------------------------------------
+CapabilityBoundingSet=CAP_NET_ADMIN
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+
+# --- Files: read-only, except its state directory (made by deploy/tmpfiles.d/carnical.conf, kept across restarts so
+# that the confined edge, which may read only what was there when it started, still reads it) ---------------------------
+ProtectSystem=strict
+ReadWritePaths=/run/carnical/netwatch
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+InaccessiblePaths=/var/lib/carnical /etc/carnical
+# The state file is made readable by all (0644) on purpose; anything else it might make is not.
+UMask=0077
+
+# --- The kernel ------------------------------------------------------------------------------------------------------
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @mount @debug @raw-io @reboot @swap @module @cpu-emulation @obsolete @clock @keyring
+SystemCallFilter=~io_uring_setup io_uring_enter io_uring_register userfaultfd memfd_create process_vm_readv process_vm_writev kcmp
+IPAddressDeny=any
+SocketBindDeny=any
+
+# --- Resources -------------------------------------------------------------------------------------------------------
+MemoryMax=128M
+TasksMax=32
+CPUQuota=25%
+LimitCORE=0
+
+[Install]
+WantedBy=multi-user.target

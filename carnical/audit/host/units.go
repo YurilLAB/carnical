@@ -240,6 +240,9 @@ var Files = []FileRule{
 	{"/var/lib/carnical/host-audit", "root", 0o700},
 	{"/var/log/carnical", "carnical-audit", 0o750},
 	{"/var/log/carnical-host", "root", 0o700},
+	// The network watch's state: an edge that could write it could make up attacks, or hide one.
+	{"/run/carnical", "root", 0o755},
+	{"/run/carnical/netwatch", "root", 0o755},
 }
 
 // unixMode is a mode as chmod writes it, with the setuid, setgid and sticky bits in their octal places.

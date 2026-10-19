@@ -65,9 +65,40 @@ table inet carnical {
 		timeout 60s
 		size 4096
 	}
+	# Unsolicited UDP by destination port, and the reflection replies by source port: what carnical-netwatch reports of a
+	# UDP flood. Bounded: a flood to random ports fills a set, and the ports it has no room for are counted in the totals
+	# below only. A port is forgotten five seconds after its last packet, so the internet's background of scans to random
+	# ports (a few hundred ports in five seconds) leaves room for the port a flood is aimed at. The kernel keeps each
+	# port's packets and bytes.
+	set udp_ports {
+		type inet_service
+		flags dynamic, timeout
+		timeout 5s
+		size 2048
+		counter
+	}
+	set udp_reflectors {
+		type inet_service
+		flags dynamic, timeout
+		timeout 30s
+		size 64
+		counter
+	}
+	# The source ports of services that answer a small request with a large reply, which an attacker sends to many
+	# servers with this host's address as the source (reflection and amplification): DNS, NTP, memcached, SSDP, CLDAP,
+	# SNMP, CharGEN, QOTD, NetBIOS, Portmap, TFTP, RIP, mDNS, WS-Discovery, ARD, CoAP, STUN, SLP, IPMI, MS-SQL, OpenVPN,
+	# SIP, NAT-PMP, Ubiquiti, DTLS, Jenkins, Plex, DVR and Lantronix discovery.
+	set reflection_ports {
+		type inet_service
+		elements = { 17, 19, 53, 69, 111, 123, 137, 161, 389, 427, 443, 520, 623, 1194, 1434, 1900, 3283, 3478, 3702,
+		             5060, 5351, 5353, 5683, 10001, 11211, 32414, 33848, 37810, 30718 }
+	}
 	counter edge_bad_source {}
 	counter edge_bad_tcp {}
 	counter edge_udp_drop {}
+	counter udp_reflection_drop {}
+	counter udp_flood_drop {}
+	counter udp_broadcast_drop {}
 	counter edge_syn_global_drop {}
 	counter edge_syn_source_drop {}
 	counter edge_syn_network_drop {}
@@ -167,7 +198,22 @@ table inet carnical {
 		# Administration: from named addresses only.
 		ip saddr $mgmt4 tcp dport 22 ct state new limit rate 6/minute accept
 		ip6 saddr $mgmt6 tcp dport 22 ct state new limit rate 6/minute accept
+		# Nothing here serves UDP, so UDP that is not a reply to what this host asked (its resolver, its clock: those are
+		# established and accepted above) is dropped, as everything else below is. It is sorted first, for
+		# carnical-netwatch: reflection replies nobody here asked for, and the rest.
+		meta l4proto udp jump udp_unsolicited
 		counter name input_denied jump input_drop
+	}
+	chain udp_unsolicited {
+		# Broadcast and multicast are the local network's own chatter (mDNS, SSDP, DHCP), not a flood aimed at this host:
+		# counted apart, so that carnical-netwatch does not take them for one.
+		meta pkttype { broadcast, multicast } counter name udp_broadcast_drop drop
+		# Each update is a rule of its own: on a full set it fails and the rule ends, and the drops below still run.
+		# Reflection first, so that its replies (to random ports of this host) do not fill the flood's set of ports.
+		udp sport @reflection_ports update @udp_reflectors { udp sport }
+		udp sport @reflection_ports counter name udp_reflection_drop drop
+		update @udp_ports { udp dport }
+		counter name udp_flood_drop drop
 	}
 	chain echo_guard {
 		limit rate 20/second burst 40 packets counter name edge_echo_admitted accept

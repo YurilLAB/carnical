@@ -23,6 +23,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strconv"
@@ -151,6 +152,7 @@ func runFlags(usage, logs io.Writer, args []string, private map[string]string) e
 	siteFlag := declareSiteFlags(flags)
 	alertFlag := declareAlertFlags(flags)
 	endpointFlag := declareEndpointFlags(flags)
+	netwatchState := flags.String("netwatch-state", "", "carnical-netwatch's state file (/run/carnical/netwatch/state.json): the network floods the kernel's packet guards drop are logged and sent to the alert endpoint (default: not read)")
 	autoBlockFlag := declareAutoBlockFlags(flags)
 	botFlag := declareBotFlags(flags)
 	if err := flags.Parse(args); err != nil {
@@ -296,12 +298,22 @@ func runFlags(usage, logs io.Writer, args []string, private map[string]string) e
 	if err != nil {
 		return fromSite(err, site, private)
 	}
+	if *netwatchState != "" {
+		if err := checkNetwatchState(*netwatchState); err != nil {
+			return fromSite(err, site, private)
+		}
+	}
 	if !*check {
 		// Started before the shield and closed after it, so that the end of an attack going on at shutdown is sent.
 		if err := alertEndpoint.start(log); err != nil {
 			return err
 		}
 		defer alertEndpoint.close(log)
+		if *netwatchState != "" {
+			nw := newNetwatchReader(*netwatchState, log, alertEndpoint, endpointSite(*hosts))
+			nw.start()
+			defer nw.close() // before the endpoint closes
+		}
 	}
 	matches := newMatchLog(log.Handler())
 	defer matches.close(2 * time.Second)
@@ -345,8 +357,8 @@ func runFlags(usage, logs io.Writer, args []string, private map[string]string) e
 	if err != nil {
 		return fromSite(err, site, private)
 	}
-	if alertEndpoint != nil && guard == nil {
-		log.Warn("the alert endpoint is told of the attacks flood protection finds; with -ddos off it is sent nothing")
+	if alertEndpoint != nil && guard == nil && *netwatchState == "" {
+		log.Warn("the alert endpoint is told of the attacks flood protection finds; with -ddos off and no -netwatch-state it is sent nothing")
 	}
 	if guard != nil {
 		defer guard.Close()
@@ -449,6 +461,10 @@ func runFlags(usage, logs io.Writer, args []string, private map[string]string) e
 			return fmt.Errorf("the alert endpoint's TCP port %d must be listed in -confine-connect", alertEndpoint.port)
 		}
 		confinement = sandbox.Policy{ReadOnly: splitList(*confineRead), ConnectTCP: ports, BindTCP: []uint16{}, Require: !*confineBestEffort}
+		if *netwatchState != "" {
+			// The directory, not the file: carnical-netwatch replaces the file with each event.
+			confinement.ReadOnly = append(confinement.ReadOnly, filepath.Dir(*netwatchState))
+		}
 		// The engine writes the file parts of an upload to disk, and the confined proxy may not write the system temporary
 		// directory: without a directory of its own, such uploads are refused.
 		if *uploadDir == "" {

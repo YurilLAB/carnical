@@ -2,7 +2,11 @@
 
 package notify
 
-import "time"
+import (
+	"time"
+
+	"github.com/YurilLAB/coraza/carnical/netwatch"
+)
 
 // Event is what a message reports.
 type Event string
@@ -12,16 +16,20 @@ const (
 	AttackStart  Event = "attack_start"  // the shield declared an HTTP-layer attack
 	AttackUpdate Event = "attack_update" // it goes on (at most one a minute per attack)
 	AttackEnd    Event = "attack_end"    // it is over
+	// A volumetric attack on the kernel's packet guards (UDP, SYN, malformed TCP, echo), told by carnical-netwatch.
+	NetworkStart  = Event(netwatch.Start)
+	NetworkUpdate = Event(netwatch.Update) // at most one a minute per attack
+	NetworkEnd    = Event(netwatch.End)
 )
 
-func (e Event) update() bool { return e == AttackUpdate }
+func (e Event) update() bool { return e == AttackUpdate || e == NetworkUpdate }
 
 // Severity is how urgent a message is.
 func (e Event) Severity() string {
 	switch e {
-	case AttackStart:
+	case AttackStart, NetworkStart:
 		return "critical"
-	case AttackUpdate:
+	case AttackUpdate, NetworkUpdate:
 		return "warning"
 	}
 	return "info"
@@ -41,6 +49,8 @@ type Message struct {
 	// waiting. It is not sent.
 	Subject string  `json:"-"`
 	Attack  *Attack `json:"attack,omitempty"`
+	// Network is the record of a network attack, as the packet guards counted it.
+	Network *netwatch.Record `json:"network,omitempty"`
 	// Dropped counts the messages before this one that were not sent: the queue was full.
 	Dropped uint64 `json:"dropped,omitempty"`
 }

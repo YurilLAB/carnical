@@ -16,6 +16,7 @@
 !carnical/inspect/**
 !carnical/alert/**
 !carnical/notify/**
+!carnical/netwatch/**
 !carnical/bots/**
 !carnical/control/feed/**
 !carnical/apiguard/**

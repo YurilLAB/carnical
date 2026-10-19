@@ -14,6 +14,18 @@ table inet carnical {
 		packets 0 bytes 0
 	}
 
+	counter udp_reflection_drop {
+		packets 0 bytes 0
+	}
+
+	counter udp_flood_drop {
+		packets 0 bytes 0
+	}
+
+	counter udp_broadcast_drop {
+		packets 0 bytes 0
+	}
+
 	counter edge_syn_global_drop {
 		packets 0 bytes 0
 	}
@@ -126,6 +138,32 @@ table inet carnical {
 		timeout 1m
 	}
 
+	set udp_ports {
+		type inet_service
+		size 2048
+		flags dynamic,timeout
+		counter
+		timeout 5s
+	}
+
+	set udp_reflectors {
+		type inet_service
+		size 64
+		flags dynamic,timeout
+		counter
+		timeout 30s
+	}
+
+	set reflection_ports {
+		type inet_service
+		elements = { 17, 19, 53, 69, 111,
+			     123, 137, 161, 389, 427,
+			     443, 520, 623, 1194, 1434,
+			     1900, 3283, 3478, 3702, 5060,
+			     5351, 5353, 5683, 10001, 11211,
+			     30718, 32414, 33848, 37810 }
+	}
+
 	set not_public4 {
 		type ipv4_addr
 		flags interval
@@ -212,7 +250,16 @@ table inet carnical {
 		tcp dport 443 accept
 		ip saddr 192.0.2.10 tcp dport 22 ct state new limit rate 6/minute burst 5 packets accept
 		ip6 saddr 2001:db8::10 tcp dport 22 ct state new limit rate 6/minute burst 5 packets accept
+		meta l4proto udp jump udp_unsolicited
 		counter name "input_denied" jump input_drop
+	}
+
+	chain udp_unsolicited {
+		meta pkttype { broadcast, multicast } counter name "udp_broadcast_drop" drop
+		udp sport @reflection_ports update @udp_reflectors { udp sport }
+		udp sport @reflection_ports counter name "udp_reflection_drop" drop
+		update @udp_ports { udp dport }
+		counter name "udp_flood_drop" drop
 	}
 
 	chain echo_guard {
