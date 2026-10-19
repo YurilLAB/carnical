@@ -106,7 +106,9 @@ read whether its alerts come from your visitors' networks.
 
 The same happens with a front you did not list. A load balancer or CDN that opens a TLS connection
 of its own to Carnical shows its own handshake, so without `-trusted-proxies` every Chrome and
-Firefox behind it is `disguised`. One that forwards plain HTTP shows no handshake, and they pass.
+Firefox behind it is `disguised`. One that forwards plain HTTP/1.1 shows no handshake, and they
+pass; one that forwards HTTP/1.0, as nginx does unless set to `proxy_http_version 1.1`, makes every
+browser behind it `disguised` until it is listed.
 
 If you do refuse `disguised`:
 
