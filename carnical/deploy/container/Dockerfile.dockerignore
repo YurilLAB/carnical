@@ -15,6 +15,7 @@
 !carnical/cmd/carnical/**
 !carnical/inspect/**
 !carnical/alert/**
+!carnical/notify/**
 !carnical/bots/**
 !carnical/control/feed/**
 !carnical/apiguard/**
