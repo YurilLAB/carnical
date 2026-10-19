@@ -30,6 +30,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -228,6 +229,18 @@ type Edge struct {
 }
 
 type contextKey struct{}
+
+// copyBuffers is the reverse proxy's httputil.BufferPool: without one it allocates a buffer for every response it copies.
+type copyBuffers struct{ pool sync.Pool }
+
+func (p *copyBuffers) Get() []byte {
+	if b, ok := p.pool.Get().(*[]byte); ok {
+		return *b
+	}
+	return make([]byte, 32<<10)
+}
+
+func (p *copyBuffers) Put(b []byte) { p.pool.Put(&b) }
 
 // OverBudget is what detection mode does with a request whose evaluation ran out of its budget (Config.EvalBudgetDetect).
 type OverBudget string
@@ -916,8 +929,9 @@ func (e *Edge) forward() http.Handler {
 	}
 	transport.MaxIdleConnsPerHost = 64
 	rp := &httputil.ReverseProxy{
-		Transport: transport,
-		ErrorLog:  e.cfg.ErrorLog,
+		Transport:  transport,
+		ErrorLog:   e.cfg.ErrorLog,
+		BufferPool: &copyBuffers{},
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			in, out := pr.In, pr.Out
 			out.URL.Scheme, out.URL.Host = target.Scheme, target.Host
