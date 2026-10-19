@@ -52,6 +52,7 @@ management endpoints. They are not services automatically started by `cmd/carnic
 | [Protection validation](enterprise-validation.md) | Dated regression/live results and the conditions used. |
 | [Network validation](network-validation.md) | Kernel, small/large deployment and flood-latency measurements. |
 | [Validation of 18 October 2026](validation-2026-10-18.md) | The current build: CI, detection against upstream Coraza, bot false positives, apps, real browsers behind TLS-inspecting proxies and CDN fronts, legitimate application traffic, independent corpora, WordPress, Keycloak, Gitea and Matomo in a browser with and without site tuning, git over HTTP and the WordPress block editor, the crawler list updater on five distributions and auto-block under sustained attack. |
+| [Performance of 19 October 2026](performance-2026-10-19.md) | Throughput, latency and CPU before and after the engine and proxy changes of that day, the rx prefilter's measured equivalence, and the regression suites run with them. |
 | [Flood validation](flood-validation.md) | Flood detector simulations, live floods through the proxy, and the faults they found. |
 | [Format validation](formats-validation.md) | Parser costs, regression tests and source-mutation results for the request format checks. |
 | [Attack coverage](attacks.md) | The responsible protection layer and application-dependent limits. |
