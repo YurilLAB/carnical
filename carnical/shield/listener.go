@@ -182,8 +182,9 @@ func (s *Shield) admitConn(c net.Conn) net.Conn {
 			w.connsIn++
 			w.connsRefused++
 			w.connSrcs.add(h)
+			w.via.addPort(port, 0, 1)
 			if inc != nil {
-				inc.addPort(port, 0, 1)
+				inc.via.addPort(port, 0, 1)
 			}
 		})
 		s.reset(c)
@@ -192,8 +193,9 @@ func (s *Shield) admitConn(c net.Conn) net.Conn {
 	s.det.note(ns, func(w *window, inc *incidentAcc) {
 		w.connsIn++
 		w.connSrcs.add(h)
+		w.via.addPort(port, 0, 1)
 		if inc != nil {
-			inc.addPort(port, 0, 1)
+			inc.via.addPort(port, 0, 1)
 		}
 	})
 	if s.cfg.UserTimeout > 0 {

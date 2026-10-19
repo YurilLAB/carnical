@@ -396,7 +396,14 @@ func TestSimulatedAttacks(t *testing.T) {
 	// The record names what was attacked and how: the ports, TLS or not, the HTTP version, and the kinds of evidence. The
 	// visitors' requests carry no local address, so the ports count the attack's requests only.
 	t.Run("the record of an attack names its ports, protocols and kinds", func(t *testing.T) {
-		m := newSim(t, nil)
+		var starts []Event
+		m := newSim(t, func(c *Config) {
+			c.OnEvent = func(ev Event) {
+				if ev.Kind == "attack_start" {
+					starts = append(starts, ev)
+				}
+			}
+		})
 		m.warm(10)
 		bots := botnet(20_000, m.r)
 		web := &simVia{local: &net.TCPAddr{IP: net.IPv4(192, 0, 2, 10), Port: 443}, tls: true, h2: true}
@@ -422,7 +429,7 @@ func TestSimulatedAttacks(t *testing.T) {
 		if share := float64(inc.Ports[1].Requests) / float64(attack); share < 0.3 || share > 0.37 {
 			t.Fatalf("port 80 has %.1f%% of the attack's requests, want about a third", 100*share)
 		}
-		if inc.TLS != inc.Ports[0].Requests || inc.HTTP2 != inc.TLS || inc.TLS+inc.Plain > inc.Requests || inc.TLS+inc.Plain < inc.Requests*9/10 || inc.HTTP1+inc.HTTP2 != inc.TLS+inc.Plain {
+		if inc.TLS != inc.Ports[0].Requests || inc.HTTP2 != inc.TLS || inc.TLS+inc.Plain != inc.Requests || inc.HTTP1+inc.HTTP2 != inc.Requests {
 			t.Fatal("the protocol counts do not add up to the requests")
 		}
 		for _, k := range []string{"request_flood", "many_new_addresses", "one_client_tool"} {
@@ -432,6 +439,32 @@ func TestSimulatedAttacks(t *testing.T) {
 		}
 		if slices.Contains(inc.Kinds, "connection_flood") {
 			t.Fatalf("kinds %q name a connection flood the attack did not make", inc.Kinds)
+		}
+		// The start, which comes before anything of the attack is counted, says what the ten seconds that showed it held.
+		if len(starts) != 1 {
+			t.Fatalf("%d attack_start events", len(starts))
+		}
+		st := starts[0].Incident
+		t.Logf("start: window %v, %d requests from about %d addresses in %d networks, ports %+v, TLS %d plain %d", st.Window,
+			st.Requests, st.Sources, st.Networks, st.Ports, st.TLS, st.Plain)
+		if !st.Window || len(st.Ports) != 2 || st.Ports[0].Port != 443 || st.Ports[1].Port != 80 || st.Sources < 5000 || st.Networks < 1000 ||
+			st.Requests < 9000 || st.TLS+st.Plain != st.Requests || st.HTTP1+st.HTTP2 != st.Requests || st.TLS != st.HTTP2 ||
+			st.Ports[0].Requests+st.Ports[1].Requests == 0 {
+			t.Fatalf("the start does not describe the attack: %+v", st)
+		}
+		if inc.Window {
+			t.Fatal("the record during the attack is marked as the starting window")
+		}
+		// Stopping while it goes on closes the record, as the end of the attack does, said to be a stop.
+		var ends []Event
+		m.s.det.mu.Lock()
+		m.s.det.onEvent = func(ev Event) { ends = append(ends, ev) }
+		m.s.det.mu.Unlock()
+		m.s.Close()
+		m.s.Close() // a second Close sends nothing more
+		if len(ends) != 1 || ends[0].Kind != "attack_end" || !ends[0].Incident.Stopped || ends[0].Incident.End.IsZero() ||
+			ends[0].Incident.Requests != inc.Requests || m.s.Snapshot().Current != nil {
+			t.Fatalf("on Close: %+v", ends)
 		}
 	})
 

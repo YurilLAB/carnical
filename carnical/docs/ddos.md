@@ -187,7 +187,12 @@ attack, without request content:
 | `clusters`, `top_origins` | The fingerprints and targets it was recognised by, and its most common countries or networks (with `-ddos-ranges`) |
 | `refused`, `challenged`, `solved`, `banned` | What the shield did |
 
-Every request and connection while the attack goes on is counted, the site's own included. The
+When the process stops while an attack goes on, its record is closed with an `attack_end` line,
+`denial-of-service attack record closed: stopping while it goes on`.
+
+Every request and connection while the attack goes on is counted, the site's own included. On
+`attack_start`, which comes before anything of the attack itself has been counted, the requests,
+addresses, networks, ports and protocols are those of the ten seconds that showed the attack. The
 ports cover the attack layer the Go listener sees, TCP only; UDP and SYN floods are counted by the
 [kernel packet guards](network-protection.md).
 

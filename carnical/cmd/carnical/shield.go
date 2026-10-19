@@ -392,6 +392,9 @@ func logShieldEvent(log *slog.Logger, ev shield.Event, monitor bool) {
 	if monitor && ev.Kind == "attack_start" {
 		msg = "denial-of-service attack detected; monitor mode, not mitigated"
 	}
+	if ev.Kind == "attack_end" && ev.Incident.Stopped {
+		msg = "denial-of-service attack record closed: stopping while it goes on"
+	}
 	switch ev.Kind {
 	case "elevated", "normal", "ids_clear":
 		log.Info(msg, attrs...)

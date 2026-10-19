@@ -182,6 +182,7 @@ type window struct {
 	connSrcs                                 hll // the addresses that opened connections, admitted or refused
 	banSrcs                                  hll // the banned addresses that were refused
 	fps, paths                               topK
+	via                                      viaCounts // the ports and protocols of what came
 }
 
 func (w *window) reset(sec int64) {
@@ -359,6 +360,7 @@ func (d *detector) observeAt(ns int64, key netip.Addr, fp uint64, fpLabel string
 	d.advance(ns)
 	w := &d.ring[d.cur]
 	w.reqs++
+	w.via.addRequest(m)
 	w.srcs.add(h)
 	w.nets.add(maphashPrefix(netOf(key)))
 	w.fps.add(fp, fpLabel, h, 1)
@@ -376,7 +378,7 @@ func (d *detector) observeAt(ns int64, key netip.Addr, fp uint64, fpLabel string
 	}
 	if inc := d.incident; inc != nil {
 		inc.requests++
-		inc.addRequest(m)
+		inc.via.addRequest(m)
 		inc.srcs.add(h)
 		inc.nets.add(maphashPrefix(netOf(key)))
 		if d.labeler != nil {
@@ -755,7 +757,7 @@ func (d *detector) evaluate(ns int64) {
 		d.widen(a, strongFP, pathConc && spread && lowEngage)
 		if time.Duration(ns-d.since) >= d.cfg.MinAttack && (time.Duration(d.quiet)*time.Second >= d.cfg.ExitQuiet ||
 			time.Duration(d.noEvidence)*time.Second >= d.cfg.EvidenceTimeout) {
-			d.endAttack(ns)
+			d.endAttack(ns, false)
 		} else if (ns/1e9-d.since/1e9)%10 == 0 {
 			ev := d.incidentEvent("attack_update", ns)
 			d.emit(ev)
@@ -1019,7 +1021,18 @@ func (d *detector) startAttack(ns int64, a aggregate, reasons []string, kinds ui
 		clusterRate: cluster, knownRate: known})
 	d.widen(a, fpAttack, pathAttack)
 	d.announced = Attack
-	d.emit(d.incidentEvent("attack_start", ns))
+	// Nothing of the attack has been counted yet: its start says what the ten seconds that showed it held.
+	ev := d.incidentEvent("attack_start", ns)
+	var via viaCounts
+	var reqs uint64
+	for i := 1; i <= aggSeconds; i++ { // the windows aggregate summed
+		w := &d.ring[(d.cur-i+ringSeconds)%ringSeconds]
+		via.add(&w.via)
+		reqs += uint64(w.reqs)
+	}
+	via.fill(&ev.Incident)
+	ev.Incident.Requests, ev.Incident.Sources, ev.Incident.Networks, ev.Incident.Window = reqs, int(a.srcs), int(a.nets), true
+	d.emit(ev)
 }
 
 // widen adds the fingerprints and targets that stand out to the attack's clusters. A cluster stays for the whole attack:
@@ -1060,8 +1073,10 @@ func (d *detector) widen(a aggregate, fpAttack, pathAttack bool) {
 	}
 }
 
-func (d *detector) endAttack(ns int64) {
+// endAttack ends the attack: it is over, or, when stopped is set, the shield is stopping while it goes on.
+func (d *detector) endAttack(ns int64, stopped bool) {
 	ev := d.incidentEvent("attack_end", ns)
+	ev.Incident.Stopped = stopped
 	d.history = append(d.history, ev.Incident)
 	if len(d.history) > 20 {
 		d.history = d.history[len(d.history)-20:]

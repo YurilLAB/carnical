@@ -489,6 +489,10 @@ func (s *Shield) Close() {
 	s.stopOnce.Do(func() { close(s.stop) })
 	s.wg.Wait()
 	s.det.mu.Lock()
+	// An attack still going on has its record closed, so that the log and the alert endpoint hear where it ends.
+	if s.det.incident != nil {
+		s.det.endAttack(s.now().UnixNano(), true)
+	}
 	s.det.closed = true
 	s.det.deliver()
 }
@@ -570,11 +574,8 @@ func (s *Shield) Admit(r *http.Request, client netip.Addr) Decision {
 	trusted := s.trusted(client)
 	fp, fpLabel := fingerprint(r)
 	pt, ptLabel := pathTemplate(r)
-	// How the request came is only recorded during an attack, so ordinary requests do not pay for reading it.
-	var via reqMeta
-	if s.det.info.Load() != nil {
-		via = reqMeta{port: localPort(r), known: true, tls: r.TLS != nil, h2: r.ProtoMajor == 2}
-	}
+	// How the request came (reading its port costs about 10 ns), so that an attack's record can say what it came to.
+	via := reqMeta{port: localPort(r), known: true, tls: r.TLS != nil, h2: r.ProtoMajor == 2}
 	isNew := s.det.observeAt(ns, key, fp, fpLabel, pt, ptLabel, via)
 	info := s.det.info.Load()
 

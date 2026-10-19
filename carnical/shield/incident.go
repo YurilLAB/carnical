@@ -75,11 +75,18 @@ type Incident struct {
 	// maxIncidentPorts of them; OtherPorts counts what came to any other port (Port is 0).
 	Ports      []PortCount
 	OtherPorts PortCount
-	// The requests by how they came: over TLS or plain HTTP, and as HTTP/1.x or HTTP/2. The first requests of an attack,
-	// those before it was declared, are not counted.
+	// The requests by how they came: over TLS or plain HTTP, and as HTTP/1.x or HTTP/2. A request the server did not say
+	// the port of is in neither port count.
 	TLS, Plain, HTTP1, HTTP2 uint64
+	// Window says that the counts are those of the ten seconds that showed the attack, as in an attack_start event, which
+	// comes before anything of the attack itself has been counted: Requests, Sources, Networks, Ports, OtherPorts and the
+	// protocols.
+	Window bool
 	// What the shield did during the attack.
 	Refused, Challenged, Solved, Banned uint64
+	// Stopped says, on an attack_end, that the shield stopped (the process is shutting down) while the attack went on:
+	// the record ends there, not the attack.
+	Stopped bool
 }
 
 // PortCount is one local TCP port and what an attack sent to it.
@@ -158,6 +165,12 @@ type incidentAcc struct {
 	solved         uint64
 	banned         uint64
 	kinds          uint8
+	via            viaCounts
+}
+
+// viaCounts counts requests and connections by the local port they came to and requests by protocol, for a second's
+// window and for an attack's record. It is a few words: nothing is allocated.
+type viaCounts struct {
 	// ports holds the first nports local ports seen, other what came to any further port.
 	ports              [maxIncidentPorts]PortCount
 	nports             int
@@ -166,7 +179,7 @@ type incidentAcc struct {
 }
 
 // addPort counts reqs requests and conns connections to a local port; port 0 (unknown) is not counted.
-func (i *incidentAcc) addPort(port uint16, reqs, conns uint64) {
+func (i *viaCounts) addPort(port uint16, reqs, conns uint64) {
 	if port == 0 {
 		return
 	}
@@ -186,8 +199,8 @@ func (i *incidentAcc) addPort(port uint16, reqs, conns uint64) {
 	i.other.Connections += conns
 }
 
-// addRequest counts one request of the attack by its port and protocol.
-func (i *incidentAcc) addRequest(m reqMeta) {
+// addRequest counts one request by its port and protocol.
+func (i *viaCounts) addRequest(m reqMeta) {
 	i.addPort(m.port, 1, 0)
 	if !m.known {
 		return
@@ -201,6 +214,28 @@ func (i *incidentAcc) addRequest(m reqMeta) {
 		i.h2++
 	} else {
 		i.h1++
+	}
+}
+
+// add counts what o counted.
+func (i *viaCounts) add(o *viaCounts) {
+	for k := 0; k < o.nports; k++ {
+		i.addPort(o.ports[k].Port, o.ports[k].Requests, o.ports[k].Connections)
+	}
+	i.other.Requests += o.other.Requests
+	i.other.Connections += o.other.Connections
+	i.tls, i.plain, i.h1, i.h2 = i.tls+o.tls, i.plain+o.plain, i.h1+o.h1, i.h2+o.h2
+}
+
+// fill puts the counts in an Incident.
+func (i *viaCounts) fill(out *Incident) {
+	out.OtherPorts, out.TLS, out.Plain, out.HTTP1, out.HTTP2 = i.other, i.tls, i.plain, i.h1, i.h2
+	out.Ports = nil
+	if i.nports > 0 {
+		out.Ports = slices.Clone(i.ports[:i.nports])
+		slices.SortStableFunc(out.Ports, func(a, b PortCount) int {
+			return cmp.Or(cmp.Compare(b.Requests, a.Requests), cmp.Compare(b.Connections, a.Connections))
+		})
 	}
 }
 
@@ -243,14 +278,9 @@ func (d *detector) incidentEvent(kind string, ns int64) Event {
 		Sources: int(inc.srcs.estimate()), Networks: int(inc.nets.estimate()),
 		Reasons: slices.Clone(inc.reasons), Clusters: slices.Clone(inc.clusters),
 		Refused: inc.refused, Challenged: inc.challenged, Solved: inc.solved, Banned: inc.banned,
-		Kinds: kindList(inc.kinds), OtherPorts: inc.other, TLS: inc.tls, Plain: inc.plain, HTTP1: inc.h1, HTTP2: inc.h2,
+		Kinds: kindList(inc.kinds),
 	}
-	if inc.nports > 0 {
-		out.Ports = slices.Clone(inc.ports[:inc.nports])
-		slices.SortStableFunc(out.Ports, func(a, b PortCount) int {
-			return cmp.Or(cmp.Compare(b.Requests, a.Requests), cmp.Compare(b.Connections, a.Connections))
-		})
-	}
+	inc.via.fill(&out)
 	if inc.requests == 0 {
 		out.Sources, out.Networks = 0, 0
 	}
