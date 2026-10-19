@@ -80,6 +80,11 @@ type PathPolicy struct {
 	AllowPathParams bool
 }
 
+// percentU reports whether s starts as what follows the percent sign of a %u escape: "u" and four hex digits.
+func percentU(s string) bool {
+	return len(s) >= 5 && s[0]|0x20 == 'u' && isHex(s[1]) && isHex(s[2]) && isHex(s[3]) && isHex(s[4])
+}
+
 func isHex(c byte) bool {
 	return c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F'
 }
@@ -120,10 +125,11 @@ func (p PathPolicy) check(path string) error {
 				}
 			case b == '?' || b == '#' || b == 0:
 				return errors.New("an encoded delimiter or NUL in the path")
-			case b == '%' && i+3 < len(path) && isHex(path[i+3]):
-				// "%252e" is "%2e" once decoded and "." to an application that decodes twice. A percent sign that
-				// starts no escape ("100%25-cotton") reads the same however often it is decoded; "%25%32e" is refused
-				// below for its needless "%32".
+			case b == '%' && (i+3 < len(path) && isHex(path[i+3]) || percentU(path[i+3:])):
+				// "%252e" is "%2e" once decoded and "." to an application that decodes twice, and "%25u002e" is
+				// "%u002e", which a decoder of %u escapes (ASP.NET, JavaScript's unescape) reads as ".". A percent sign
+				// that starts no escape ("100%25-cotton", "100%25usda") reads the same however often it is decoded;
+				// "%25%32e" is refused below for its needless "%32".
 				return errors.New("an encoded percent sign that starts another escape in the path")
 			case b < 0x20 || b == 0x7f:
 				return errors.New("an encoded control character in the path")
