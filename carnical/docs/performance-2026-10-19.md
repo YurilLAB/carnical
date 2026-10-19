@@ -96,8 +96,8 @@ Regression Tests, Lint and ADR ran only on `main` before `2e8f4df9`, so `edge-cr
 branch, had no engine regression matrix in CI. They now run on every push to it. The matrix moved
 to Go 1.26, which `go.mod` requires.
 
-The TinyGo workflow now runs on `edge-crs` too, with TinyGo 0.43.0, the first release that builds a
-module needing Go 1.26 (the pinned 0.40.1 could not).
+The TinyGo workflow now runs on `edge-crs` too, with TinyGo 0.43.0, the newest release. The pinned
+0.40.1 could not build a module needing Go 1.26; 0.41.0 is the first that can.
 
 ## JSON bodies under TinyGo
 
