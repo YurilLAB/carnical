@@ -76,6 +76,19 @@ func newUpstream(t testing.TB) *upstream {
 			w.Header().Set("Server", "Apache/2.4.58 (Ubuntu)")
 		case strings.HasSuffix(r.URL.Path, ".css"):
 			w.Header().Set("Content-Type", "text/html")
+		case r.URL.Path == "/early-hints":
+			w.Header().Set("X-Gate-Only-Early", "for the check")
+			w.WriteHeader(http.StatusEarlyHints)
+			w.Header().Del("X-Gate-Only-Early")
+		case r.URL.Path == "/trailers":
+			// Trailers after the body, one announced and one not, as gRPC and a few sites send them.
+			w.Header().Set("Trailer", "X-Gate-Only, Grpc-Status")
+			_, _ = w.Write([]byte("reached the application"))
+			w.(http.Flusher).Flush()
+			w.Header().Set("X-Gate-Only", "for the check")
+			w.Header().Set("Grpc-Status", "0")
+			w.Header().Set(http.TrailerPrefix+"x-gate-only-too", "for the check")
+			return
 		case r.URL.Path == "/cut":
 			// An application that dies part way through the body it announced.
 			w.Header().Set("Content-Length", "1000")
@@ -1171,6 +1184,18 @@ func (g *gate) Respond(r *http.Request, status int, h http.Header) {
 	}
 }
 
+// RespondTrailer takes the trailers meant for the check off each response, and marks the others it saw.
+func (g *gate) RespondTrailer(_ *http.Request, t http.Header) {
+	for k := range t {
+		if strings.HasPrefix(strings.ToLower(k), "x-gate-only") {
+			delete(t, k)
+		}
+	}
+	if t.Get("Grpc-Status") != "" {
+		t.Set("Grpc-Status", t.Get("Grpc-Status")+" seen")
+	}
+}
+
 func (g *gate) signals() []challenge.Signals {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -1229,6 +1254,17 @@ func TestThePersonCheckIsOfferedEachRequest(t *testing.T) {
 		// Nor does one it wrote an answer to and then let go on.
 		if status, reply := s.raw(t, get("/gate/sloppy")); status != 200 || !strings.Contains(reply, "from the gate") || len(s.up.requests()) != before {
 			t.Fatalf("written and let go on: %d %q; the application saw %d more", status, reply, len(s.up.requests())-before)
+		}
+	})
+	t.Run("it sees the trailers after the body, and what it takes off is not sent", func(t *testing.T) {
+		_, reply := s.raw(t, get("/trailers"))
+		if strings.Contains(strings.ToLower(reply), "x-gate-only") || !strings.Contains(reply, "Grpc-Status: 0 seen\r\n") ||
+			!strings.Contains(reply, "reached the application") {
+			t.Fatalf("%q", reply)
+		}
+		// An interim response, which Respond never sees, never reaches the visitor at all.
+		if _, reply := s.raw(t, get("/early-hints")); strings.Contains(reply, "103") || strings.Contains(reply, "X-Gate-Only") {
+			t.Fatalf("%q", reply)
 		}
 	})
 	t.Run("what it adds to a response is hardened like the rest", func(t *testing.T) {

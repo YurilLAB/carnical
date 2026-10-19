@@ -105,3 +105,14 @@ type Gate interface {
 type Responder interface {
 	Respond(r *http.Request, status int, h http.Header)
 }
+
+// TrailerResponder is a Responder that also sees the trailers of each response, which an application can send after
+// the body, past Respond: first the names the response announces (with no values yet), before its header is
+// forwarded, then every trailer it sent, once the body is over and before the proxy forwards them. t may be changed: a
+// name taken out of the first is not announced, and a trailer taken out of the second is not sent. Interim (1xx)
+// responses never reach the visitor, so a header in one needs no check. It runs on the request's goroutine and must be
+// quick.
+type TrailerResponder interface {
+	Responder
+	RespondTrailer(r *http.Request, t http.Header)
+}

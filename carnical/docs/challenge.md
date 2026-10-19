@@ -72,6 +72,11 @@ proxy forwards it and before the proxy's response hardening, with the request as
 site can tell the check that a visitor proved to be a person, for example by signing in with a second factor, so that
 the check can learn from it. The check should remove such a header, which is not meant for the visitor.
 
+An application can also send headers after the body, as trailers, which `Respond` has not seen. A check that is also a
+`challenge.TrailerResponder` sees them too: the names the response announces before its header is forwarded, then
+every trailer it sent once the body is over, before the proxy forwards them. A trailer it removes is not sent. Interim
+(1xx) responses from the application never reach the visitor, so their headers need no check.
+
 ## Writing a check
 
 ```go

@@ -1020,6 +1020,14 @@ func (e *Edge) forward() http.Handler {
 				}
 			}
 			e.cfg.Responses.harden(resp, path)
+			if rs, ok := e.cfg.Challenge.(challenge.TrailerResponder); ok {
+				if in, _ := resp.Request.Context().Value(inboundKey{}).(*http.Request); in != nil {
+					// The names announced now; what was sent once the body is closed, which is when the transport
+					// fills them in and before the reverse proxy copies them on.
+					rs.RespondTrailer(in, resp.Trailer)
+					resp.Body = &trailerCheck{ReadCloser: resp.Body, check: func() { rs.RespondTrailer(in, resp.Trailer) }}
+				}
+			}
 			if len(e.cfg.Observers) > 0 {
 				if ir, ok := resp.Request.Context().Value(observedKey{}).(*inspect.Request); ok {
 					for _, o := range e.cfg.Observers {
@@ -1104,6 +1112,23 @@ func encodedResponse(h http.Header) bool {
 		}
 	}
 	return false
+}
+
+// trailerCheck shows a response's trailers to the person check once its body is closed: the transport fills them in
+// then, and the reverse proxy copies them on after.
+type trailerCheck struct {
+	io.ReadCloser
+	check func()
+	done  bool
+}
+
+func (t *trailerCheck) Close() error {
+	err := t.ReadCloser.Close()
+	if !t.done {
+		t.done = true
+		t.check()
+	}
+	return err
 }
 
 // noInterim drops interim (1xx) responses from the application. The engine takes the first status it is given for the
