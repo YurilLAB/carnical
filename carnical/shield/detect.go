@@ -1006,7 +1006,7 @@ func (d *detector) startAttack(ns int64, a aggregate, reasons []string, kinds ui
 	d.epoch++
 	d.frozen = baseline{rate: d.base.rate, rateVar: d.base.rateVar, srcs: d.base.srcs, newShare: d.base.newShare, familiar: d.base.familiar, errRatio: d.base.errRatio, lat: d.base.lat,
 		connRate: d.base.connRate, connSrcs: d.base.connSrcs, fps: cloneMap(d.base.fps), paths: cloneMap(d.base.paths)}
-	d.incident = &incidentAcc{start: ns, peak: a.rate, baseRate: d.base.rate, srcs: newHLL(14), nets: newHLL(12),
+	d.incident = &incidentAcc{start: ns, startWall: d.wallTime(ns), peak: a.rate, baseRate: d.base.rate, srcs: newHLL(14), nets: newHLL(12),
 		labels: newTopK(32), labelSet: newHLL(10), kinds: kinds}
 	d.incident.addReasons(reasons)
 	unknown, known := d.cfg.MinAttackRate, d.cfg.MinAttackRate

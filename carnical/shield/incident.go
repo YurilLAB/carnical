@@ -153,6 +153,7 @@ type Labeler interface {
 
 type incidentAcc struct {
 	start          int64
+	startWall      time.Time // start as reported, fixed once: the wall clock read again would differ by nanoseconds
 	peak, baseRate float64
 	requests       uint64
 	srcs, nets     hll
@@ -274,7 +275,7 @@ func (i *incidentAcc) addCluster(kind string, s share) {
 func (d *detector) incidentEvent(kind string, ns int64) Event {
 	inc := d.incident
 	out := Incident{
-		Start: d.wallTime(inc.start), BaselineRate: inc.baseRate, PeakRate: inc.peak, Requests: inc.requests,
+		Start: inc.startWall, BaselineRate: inc.baseRate, PeakRate: inc.peak, Requests: inc.requests,
 		Sources: int(inc.srcs.estimate()), Networks: int(inc.nets.estimate()),
 		Reasons: slices.Clone(inc.reasons), Clusters: slices.Clone(inc.clusters),
 		Refused: inc.refused, Challenged: inc.challenged, Solved: inc.solved, Banned: inc.banned,

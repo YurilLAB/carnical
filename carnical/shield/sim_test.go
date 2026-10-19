@@ -404,6 +404,9 @@ func TestSimulatedAttacks(t *testing.T) {
 				}
 			}
 		})
+		// The real clock's conversion reads two clocks, so the same instant comes out a little different each time.
+		var reads int64
+		m.s.det.wall = func(ns int64) time.Time { reads++; return time.Unix(0, ns+reads) }
 		m.warm(10)
 		bots := botnet(20_000, m.r)
 		web := &simVia{local: &net.TCPAddr{IP: net.IPv4(192, 0, 2, 10), Port: 443}, tls: true, h2: true}
@@ -465,6 +468,10 @@ func TestSimulatedAttacks(t *testing.T) {
 		if len(ends) != 1 || ends[0].Kind != "attack_end" || !ends[0].Incident.Stopped || ends[0].Incident.End.IsZero() ||
 			ends[0].Incident.Requests != inc.Requests || m.s.Snapshot().Current != nil {
 			t.Fatalf("on Close: %+v", ends)
+		}
+		// One attack has one start, in each of its events and records: a receiver matches them up by it.
+		if !st.Start.Equal(inc.Start) || !st.Start.Equal(ends[0].Incident.Start) {
+			t.Fatalf("starts %v, %v and %v for one attack", st.Start, inc.Start, ends[0].Incident.Start)
 		}
 	})
 
