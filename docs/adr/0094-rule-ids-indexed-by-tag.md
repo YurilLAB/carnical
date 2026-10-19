@@ -34,8 +34,9 @@ all of it in that scan.
   `coraza.NewWAF`, the parser and tests that use `corazawaf.WAF` directly all add rules.
 - **Build the index on first use, and drop it on every change.** `RuleGroup.RuleIDsByTag` builds a
   map from each tag to the ids of its rules, in the group's order, the first time it is asked.
-  `Add`, the `Delete*` methods, `DiscardPendingChain`, and `FindByID` (whose rule may be changed in
-  place) drop it.
+  `Add`, the `Delete*` methods, `DiscardPendingChain`, `FindByID` (whose rule may be changed in
+  place) and `RulesChanged` drop it. `SecRuleUpdateActionById` over a range of ids changes the rules
+  `GetRules` returns in place, and calls `RulesChanged` after.
 
 ## Decision Outcome
 
@@ -67,11 +68,12 @@ and no PR thread exists.
   - Removal by tag costs a map lookup and the removals themselves.
 - **Negative / follow-up:**
   - The index holds one entry per tag of every rule for as long as the WAF lives.
-  - A change to a rule's tags that does not go through the rule group would leave the index stale.
-    Nothing in Coraza does that, and rules are immutable after compilation.
+  - A change to a rule's tags that does not go through the rule group would leave the index stale: a
+    new path that changes the rules `GetRules` returns must call `RulesChanged`. Rules are immutable
+    after compilation.
 
 ## References
 
 - Related ADRs: ADR-0092
-- Code: `internal/corazawaf/rulegroup.go` (`RuleIDsByTag`), `internal/actions/ctl.go`,
-  `testing/engine/ctl.go`
+- Code: `internal/corazawaf/rulegroup.go` (`RuleIDsByTag`, `RulesChanged`), `internal/actions/ctl.go`,
+  `internal/seclang/directives.go`, `testing/engine/ctl.go`

@@ -6,6 +6,7 @@ package seclang
 import (
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -182,6 +183,25 @@ func TestSecRuleUpdateActionByID(t *testing.T) {
 		t.Error(err)
 	}
 
+	// A tag added to a range of rules is found by ctl's removals by tag, also after a transaction has looked one up.
+	for _, id := range []string{"182", "183"} {
+		rule, err := ParseRule(RuleOptions{Data: "REQUEST_URI \"^/test\" \"id:" + id + ",log\"", WAF: waf, WithOperator: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := waf.Rules.Add(rule); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if ids := waf.Rules.RuleIDsByTag("added"); len(ids) != 0 {
+		t.Fatalf("tagged before the update: %v", ids)
+	}
+	if err := directiveSecRuleUpdateActionByID(&DirectiveOptions{WAF: waf, Opts: "182-183 \"tag:added\""}); err != nil {
+		t.Fatal(err)
+	}
+	if ids := waf.Rules.RuleIDsByTag("added"); !slices.Equal(ids, []int{182, 183}) {
+		t.Fatalf("tagged %v after the update, want [182 183]", ids)
+	}
 }
 
 func TestSecRuleUpdateTargetByID(t *testing.T) {

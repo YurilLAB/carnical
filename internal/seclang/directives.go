@@ -1617,6 +1617,7 @@ func directiveSecRuleUpdateActionByID(options *DirectiveOptions) error {
 					return err
 				}
 			}
+			options.WAF.Rules.RulesChanged() // a tag may have been added
 		}
 	}
 	return nil

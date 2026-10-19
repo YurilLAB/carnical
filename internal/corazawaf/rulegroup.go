@@ -22,9 +22,15 @@ type RuleGroup struct {
 	rules    []Rule
 	observer func(rule types.RuleMetadata)
 	// tagIndex holds the ids of the rules with each tag, in the group's order, for ctl's removals by tag, which run for
-	// many transactions. It is built on first use and dropped by every change to the group, and by FindByID, whose
-	// rule may be changed in place.
+	// many transactions. It is built on first use and dropped by every change to the group, by FindByID, whose rule may
+	// be changed in place, and by RulesChanged.
 	tagIndex atomic.Pointer[map[string][]int]
+}
+
+// RulesChanged drops what the group derives from its rules: a caller that changes rules it got from GetRules, such as
+// SecRuleUpdateActionById over a range of ids, calls it after.
+func (rg *RuleGroup) RulesChanged() {
+	rg.tagIndex.Store(nil)
 }
 
 // RuleIDsByTag returns the ids of the rules tagged tag, in the order of the group. The slice must not be changed.
