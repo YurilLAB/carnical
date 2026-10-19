@@ -1008,6 +1008,12 @@ func (d *detector) startAttack(ns int64, a aggregate, reasons []string, kinds ui
 		connRate: d.base.connRate, connSrcs: d.base.connSrcs, fps: cloneMap(d.base.fps), paths: cloneMap(d.base.paths)}
 	d.incident = &incidentAcc{start: ns, startWall: d.wallTime(ns), peak: a.rate, baseRate: d.base.rate, srcs: newHLL(14), nets: newHLL(12),
 		labels: newTopK(32), labelSet: newHLL(10), kinds: kinds}
+	// The second that has just closed is in neither the start's windows (aggregate sums those before it) nor anything
+	// counted from now on: its requests and connections begin the record. Its addresses are kept less precisely than the
+	// record's, so they are not added.
+	closing := &d.ring[d.cur]
+	d.incident.requests = uint64(closing.reqs)
+	d.incident.via.add(&closing.via)
 	d.incident.addReasons(reasons)
 	unknown, known := d.cfg.MinAttackRate, d.cfg.MinAttackRate
 	if d.unknownRate != nil {

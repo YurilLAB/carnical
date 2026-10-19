@@ -469,6 +469,17 @@ func TestSimulatedAttacks(t *testing.T) {
 			ends[0].Incident.Requests != inc.Requests || m.s.Snapshot().Current != nil {
 			t.Fatalf("on Close: %+v", ends)
 		}
+		// Every request from the second the attack was declared in, that second included, is in the record.
+		declared := starts[0].At.Unix() - 1 // declared as that second closed
+		var since uint64
+		for _, w := range m.s.det.ring {
+			if w.sec >= declared {
+				since += uint64(w.reqs)
+			}
+		}
+		if ends[0].Incident.Requests != since {
+			t.Fatalf("the record holds %d requests, the seconds since the attack was declared %d", ends[0].Incident.Requests, since)
+		}
 		// One attack has one start, in each of its events and records: a receiver matches them up by it.
 		if !st.Start.Equal(inc.Start) || !st.Start.Equal(ends[0].Incident.Start) {
 			t.Fatalf("starts %v, %v and %v for one attack", st.Start, inc.Start, ends[0].Incident.Start)
