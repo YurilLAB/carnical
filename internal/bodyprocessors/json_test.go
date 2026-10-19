@@ -5,6 +5,7 @@ package bodyprocessors
 
 import (
 	"errors"
+	"math"
 	"strconv"
 	"strings"
 	"testing"
@@ -735,4 +736,63 @@ func TestReadJSONLeavesOrdinaryPayloadsIntact(t *testing.T) {
 	if truncated {
 		t.Errorf("a %d byte API-shaped payload must not be truncated, got %d arguments", sb.Len(), len(res))
 	}
+}
+
+// FuzzJSONIterMatchesForEach checks that jsonIter, gjson's ForEach made
+// resumable, hands readItems every member of every container exactly as
+// gjson's own ForEach would, for malformed bodies as much as valid ones.
+func FuzzJSONIterMatchesForEach(f *testing.F) {
+	for _, tt := range jsonTests {
+		if len(tt.json) < 1024 {
+			f.Add(tt.json)
+		}
+	}
+	for _, s := range []string{
+		``, `   `, `123`, `"str"`, `nan`, `-Infinity`, `null`, `true`, `x`, `{`, `[`, `]`, `{"a"`, `{"a":`, `{"a":1`,
+		`[1,2`, `[1 2]`, `[[1]2]`, `[1,,2]`, `{"a" 1 "b":2}`, `{"a":1 garbage "b":2}`, `{"a":{"b":[1,{"c":"\u00e9\"x"}]},"d":3}`,
+		`{"\"k\\":"v\\\"","e":"\ud83d\ude00","f":"\uZZZZ"}`, `[true,false,null,nul,tru,1e5,-0.5,+1,NaN,Inf]`, `{"a":[}`, `[{]`,
+	} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, s string) {
+		if len(s) > 4096 {
+			return
+		}
+		var compare func(container gjson.Result, depth int)
+		compare = func(container gjson.Result, depth int) {
+			it := newJSONIter(container)
+			var nested []gjson.Result
+			n := 0
+			container.ForEach(func(wantKey, wantValue gjson.Result) bool {
+				key, value, ok := it.next()
+				if !ok {
+					t.Fatalf("%q: member %d: jsonIter ended, ForEach has key %q value %q", s, n, wantKey.Raw, wantValue.Raw)
+				}
+				// A key carries only the fields readItems reads.
+				wantKey = gjson.Result{Type: wantKey.Type, Str: wantKey.Str, Num: wantKey.Num}
+				for _, pair := range [][2]gjson.Result{{key, wantKey}, {value, wantValue}} {
+					have, want := pair[0], pair[1]
+					sameNum := have.Num == want.Num || math.IsNaN(have.Num) && math.IsNaN(want.Num)
+					if have.Type != want.Type || have.Raw != want.Raw || have.Str != want.Str || !sameNum {
+						t.Fatalf("%q: member %d: jsonIter has %+v, ForEach has %+v", s, n, have, want)
+					}
+				}
+				if wantValue.Type == gjson.JSON {
+					nested = append(nested, wantValue)
+				}
+				n++
+				return true
+			})
+			if key, value, ok := it.next(); ok {
+				t.Fatalf("%q: jsonIter has member %d (key %q value %q) after ForEach ended", s, n, key.Raw, value.Raw)
+			}
+			// Deep enough to reach every container the fuzzer builds, and shallow enough for TinyGo's stack.
+			if depth < 32 {
+				for _, c := range nested {
+					compare(c, depth+1)
+				}
+			}
+		}
+		compare(gjson.Parse(s), 0)
+	})
 }

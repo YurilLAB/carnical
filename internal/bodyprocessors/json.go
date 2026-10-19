@@ -14,6 +14,7 @@ import (
 
 	"github.com/corazawaf/coraza/v3/experimental/plugins/plugintypes"
 	"github.com/corazawaf/coraza/v3/internal/collections"
+	"github.com/corazawaf/coraza/v3/internal/sync"
 )
 
 type jsonBodyProcessor struct{}
@@ -218,8 +219,11 @@ func jsonNestingExceedsLimit(s string, limit int) bool {
 }
 
 // Transform JSON to a map[string][]string.
-// This function is recursive and will call itself for nested objects.
-// The limit in recursion is defined by maxItems.
+// Nested objects and arrays are walked depth first, one jsonFrame per open
+// container on a stack of readItems' own rather than one call per level, so
+// the depth a body may nest to is bounded by maxRecursion and not by the
+// goroutine's stack (see jsonIter). Each container counts against
+// maxRecursion as one level of recursion did.
 // Example input: {"data": {"name": "John", "age": 30}, "items": [1,2,3]}
 // Example output: map[string][]string{"json.data.name": {"John"}, "json.data.age": {"30"}, "json.items.0": {"1"}, "json.items.1": {"2"}, "json.items.2": {"3"}}
 // Example input: [{"data": {"name": "John", "age": 30}, "items": [1,2,3]}]
@@ -237,96 +241,139 @@ func jsonNestingExceedsLimit(s string, limit int) bool {
 // non-colliding case.
 func readItems(json gjson.Result, objKey []byte, maxRecursion int, argumentLimit int, byteBudget int, usedBytes *int, argCount *int, lenCount *int, res map[string][]string) (truncated bool, err error) {
 	if argumentLimit > 0 && *argCount >= argumentLimit {
-		// Already at the configured SecArgumentsLimit: every recursive call
-		// rechecks this up front, so once the limit is hit no further level
-		// does any more work, regardless of how deeply nested the remainder
-		// of the structure is.
+		// Already at the configured SecArgumentsLimit: every level rechecks
+		// this before reading a container, so once the limit is hit no further
+		// level does any more work, regardless of how deeply nested the
+		// remainder of the structure is.
 		return true, nil
 	}
-	arrayLen := 0
-	var iterationError error
-	iterationTruncated := false
 	if maxRecursion <= 0 {
 		// We reached the limit of nesting we want to handle. This protects against
 		// DoS attacks using deeply nested JSON structures (e.g., {"a":{"a":{"a":...}}}).
 		return false, errors.New("max recursion reached while reading json object")
 	}
-	json.ForEach(func(key, value gjson.Result) bool {
-		if argumentLimit > 0 && *argCount >= argumentLimit {
-			iterationTruncated = true
-			return false
-		}
-		// Avoid string concatenation to maintain a single buffer for key aggregation.
-		prevParentLength := len(objKey)
-		objKey = append(objKey, '.')
-		if key.Type == gjson.String {
-			objKey = append(objKey, key.Str...)
-		} else {
-			objKey = strconv.AppendInt(objKey, int64(key.Num), 10)
-			arrayLen++
-		}
-
-		var val string
-		switch value.Type {
-		case gjson.JSON:
-			// call recursively with one less item to avoid doing infinite recursion
-			var nestedTruncated bool
-			nestedTruncated, iterationError = readItems(value, objKey, maxRecursion-1, argumentLimit, byteBudget, usedBytes, argCount, lenCount, res)
-			iterationTruncated = iterationTruncated || nestedTruncated
-			if iterationError != nil {
-				return false
+	pooled := jsonStacks.Get().(*[]jsonFrame)
+	stack := (*pooled)[:0]
+	stack = append(stack, jsonFrame{members: newJSONIter(json), keyLen: len(objKey), depthLeft: maxRecursion})
+	deepest := 1
+	for {
+		f := &stack[len(stack)-1]
+		for err == nil {
+			key, value, ok := f.members.next()
+			if !ok {
+				break
 			}
-			objKey = objKey[:prevParentLength]
-			return true
-		case gjson.String:
-			val = value.Str
-		case gjson.Null:
-			val = ""
-		default:
-			// For all other types, raw JSON is what we need
-			val = value.Raw
-		}
-
-		// Checked per leaf, not only on entry to readItems: a wide object is
-		// walked entirely inside one ForEach, so a guard at the top of the
-		// function is never re-evaluated while these writes accumulate.
-		if byteBudget > 0 && *usedBytes+len(objKey)+len(val) > byteBudget {
-			// The flattened form has outgrown its budget; see flattenBytesFactor.
-			iterationError = errFlattenBudget
-			return false
-		}
-
-		k := string(objKey)
-		res[k] = append(res[k], val)
-		*usedBytes += len(objKey) + len(val)
-		*argCount++
-		objKey = objKey[:prevParentLength]
-
-		return true
-	})
-	// After an early stop arrayLen is short of the real length, so skip it.
-	if arrayLen > 0 && !iterationTruncated && iterationError == nil {
-		// This write happens after ForEach has returned, so neither guard
-		// inside the callback covers it. It needs both: argumentLimit, since
-		// every array level adds an entry, and byteBudget, since each of those
-		// entries repeats the full path. See GHSA-6r3q-mjv7-xr8m.
-		// Hitting the cap still sets truncated, so [{}] padding cannot hide
-		// a later array's length.
-		if argumentLimit > 0 && *lenCount >= argumentLimit {
-			iterationTruncated = true
-		} else {
-			lenStr := strconv.Itoa(arrayLen)
-			if byteBudget > 0 && *usedBytes+len(objKey)+len(lenStr) > byteBudget {
-				iterationError = errFlattenBudget
+			if argumentLimit > 0 && *argCount >= argumentLimit {
+				f.truncated = true
+				break
+			}
+			// Avoid string concatenation to maintain a single buffer for key aggregation.
+			objKey = append(objKey, '.')
+			if key.Type == gjson.String {
+				objKey = append(objKey, key.Str...)
 			} else {
-				k := string(objKey)
-				res[k] = append(res[k], lenStr)
-				*usedBytes += len(objKey) + len(lenStr)
-				*lenCount++
+				objKey = strconv.AppendInt(objKey, int64(key.Num), 10)
+				f.arrayLen++
+			}
+
+			var val string
+			switch value.Type {
+			case gjson.JSON:
+				// The checks above, for the nested container, with one level less so that nesting is bounded.
+				switch {
+				case argumentLimit > 0 && *argCount >= argumentLimit:
+					f.truncated = true
+					objKey = objKey[:f.keyLen]
+					continue
+				case f.depthLeft-1 <= 0:
+					err = errors.New("max recursion reached while reading json object")
+					continue
+				}
+				stack = append(stack, jsonFrame{members: newJSONIter(value), keyLen: len(objKey), depthLeft: f.depthLeft - 1})
+				deepest = max(deepest, len(stack))
+				f = &stack[len(stack)-1]
+				continue
+			case gjson.String:
+				val = value.Str
+			case gjson.Null:
+				val = ""
+			default:
+				// For all other types, raw JSON is what we need
+				val = value.Raw
+			}
+
+			// Checked per leaf, not only on entering a container: a wide object is
+			// read member by member within one frame, so a guard on entry is never
+			// re-evaluated while these writes accumulate.
+			if byteBudget > 0 && *usedBytes+len(objKey)+len(val) > byteBudget {
+				// The flattened form has outgrown its budget; see flattenBytesFactor.
+				err = errFlattenBudget
+				break
+			}
+
+			k := string(objKey)
+			res[k] = append(res[k], val)
+			*usedBytes += len(objKey) + len(val)
+			*argCount++
+			objKey = objKey[:f.keyLen]
+		}
+		// f is finished: its members ran out, it stopped early, or err is set.
+		objKey = objKey[:f.keyLen]
+		// After an early stop arrayLen is short of the real length, so skip it.
+		if f.arrayLen > 0 && !f.truncated && err == nil {
+			// This write happens after the container's last member, so neither
+			// guard on the members covers it. It needs both: argumentLimit, since
+			// every array level adds an entry, and byteBudget, since each of those
+			// entries repeats the full path. See GHSA-6r3q-mjv7-xr8m.
+			// Hitting the cap still sets truncated, so [{}] padding cannot hide
+			// a later array's length.
+			if argumentLimit > 0 && *lenCount >= argumentLimit {
+				f.truncated = true
+			} else {
+				lenStr := strconv.Itoa(f.arrayLen)
+				if byteBudget > 0 && *usedBytes+len(objKey)+len(lenStr) > byteBudget {
+					err = errFlattenBudget
+				} else {
+					k := string(objKey)
+					res[k] = append(res[k], lenStr)
+					*usedBytes += len(objKey) + len(lenStr)
+					*lenCount++
+				}
 			}
 		}
+		truncated := f.truncated
+		stack = stack[:len(stack)-1]
+		if len(stack) == 0 {
+			// The frames hold parts of the body, which the pool must not keep alive.
+			clear(stack[:deepest])
+			if cap(stack) <= maxPooledJSONFrames {
+				*pooled = stack
+				jsonStacks.Put(pooled)
+			}
+			return truncated, err
+		}
+		parent := &stack[len(stack)-1]
+		parent.truncated = parent.truncated || truncated
+		objKey = objKey[:parent.keyLen]
 	}
-	return iterationTruncated, iterationError
+}
+
+// jsonStacks holds the stacks readItems walks a body with, so that walking one costs no allocation. A stack that grew
+// past maxPooledJSONFrames, for a body nested that deep, is left to the garbage collector instead.
+var jsonStacks = sync.NewPool(func() any {
+	stack := make([]jsonFrame, 0, 16)
+	return &stack
+})
+
+const maxPooledJSONFrames = 64
+
+// jsonFrame is one open container of the walk in readItems.
+type jsonFrame struct {
+	members   jsonIter
+	keyLen    int // the length of objKey that is this container's own path
+	depthLeft int // maxRecursion as a recursive walk would have it at this level
+	arrayLen  int
+	truncated bool
 }
 
 func init() {
