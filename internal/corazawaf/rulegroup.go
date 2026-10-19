@@ -5,6 +5,7 @@ package corazawaf
 
 import (
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/corazawaf/coraza/v3/internal/corazatypes"
@@ -20,6 +21,31 @@ import (
 type RuleGroup struct {
 	rules    []Rule
 	observer func(rule types.RuleMetadata)
+	// tagIndex holds the ids of the rules with each tag, in the group's order, for ctl's removals by tag, which run for
+	// many transactions. It is built on first use and dropped by every change to the group, and by FindByID, whose
+	// rule may be changed in place.
+	tagIndex atomic.Pointer[map[string][]int]
+}
+
+// RuleIDsByTag returns the ids of the rules tagged tag, in the order of the group. The slice must not be changed.
+func (rg *RuleGroup) RuleIDsByTag(tag string) []int {
+	index := rg.tagIndex.Load()
+	if index == nil {
+		// Transactions that build it at once build the same index, so whichever is stored last is as good.
+		m := map[string][]int{}
+		for i := range rg.rules {
+			r := &rg.rules[i]
+			for _, t := range r.Tags_ {
+				// A tag given twice still names its rule once.
+				if ids := m[t]; len(ids) == 0 || ids[len(ids)-1] != r.ID_ {
+					m[t] = append(ids, r.ID_)
+				}
+			}
+		}
+		index = &m
+		rg.tagIndex.Store(index)
+	}
+	return (*index)[tag]
 }
 
 // Add a rule to the collection
@@ -62,6 +88,7 @@ func (rg *RuleGroup) Add(rule *Rule) error {
 	}
 
 	rg.rules = append(rg.rules, *rule)
+	rg.tagIndex.Store(nil)
 
 	if rg.observer != nil {
 		rg.observer(rule)
@@ -84,6 +111,7 @@ func (rg *RuleGroup) GetRules() []Rule {
 func (rg *RuleGroup) FindByID(id int) *Rule {
 	for i, r := range rg.rules {
 		if r.ID_ == id {
+			rg.tagIndex.Store(nil)
 			return &rg.rules[i]
 		}
 	}
@@ -97,6 +125,7 @@ func (rg *RuleGroup) DiscardPendingChain() {
 	last := len(rg.rules) - 1
 	if last >= 0 && rg.rules[last].HasChain {
 		rg.rules = rg.rules[:last]
+		rg.tagIndex.Store(nil)
 	}
 }
 
@@ -105,6 +134,7 @@ func (rg *RuleGroup) DeleteByID(id int) {
 	for i, r := range rg.rules {
 		if r.ID_ == id {
 			rg.rules = append(rg.rules[:i], rg.rules[i+1:]...)
+			rg.tagIndex.Store(nil)
 			return
 		}
 	}
@@ -119,6 +149,7 @@ func (rg *RuleGroup) DeleteByRange(start, end int) {
 		}
 	}
 	rg.rules = kept
+	rg.tagIndex.Store(nil)
 }
 
 // DeleteByMsg deletes rules with the given message.
@@ -130,6 +161,7 @@ func (rg *RuleGroup) DeleteByMsg(msg string) {
 		}
 	}
 	rg.rules = kept
+	rg.tagIndex.Store(nil)
 }
 
 // DeleteByTag deletes rules with the given tag.
@@ -141,6 +173,7 @@ func (rg *RuleGroup) DeleteByTag(tag string) {
 		}
 	}
 	rg.rules = kept
+	rg.tagIndex.Store(nil)
 }
 
 // Count returns the count of rules

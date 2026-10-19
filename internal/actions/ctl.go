@@ -165,11 +165,8 @@ func (a *ctlFn) Evaluate(_ plugintypes.RuleMetadata, txS plugintypes.Transaction
 			}
 		}
 	case ctlRuleRemoveTargetByTag:
-		rules := tx.WAF.Rules.GetRules()
-		for _, r := range rules {
-			if utils.InSlice(a.value, r.Tags_) {
-				tx.RemoveRuleTargetByID(r.ID(), a.collection, a.colKey, a.colKeyRx)
-			}
+		for _, id := range tx.WAF.Rules.RuleIDsByTag(a.value) {
+			tx.RemoveRuleTargetByID(id, a.collection, a.colKey, a.colKeyRx)
 		}
 	case ctlRuleRemoveTargetByMsg:
 		rules := tx.WAF.Rules.GetRules()
@@ -301,11 +298,8 @@ func (a *ctlFn) Evaluate(_ plugintypes.RuleMetadata, txS plugintypes.Transaction
 			}
 		}
 	case ctlRuleRemoveByTag:
-		rules := tx.WAF.Rules.GetRules()
-		for _, r := range rules {
-			if utils.InSlice(a.value, r.Tags_) {
-				tx.RemoveRuleByID(r.ID_)
-			}
+		for _, id := range tx.WAF.Rules.RuleIDsByTag(a.value) {
+			tx.RemoveRuleByID(id)
 		}
 
 	case ctlResponseBodyAccess:

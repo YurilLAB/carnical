@@ -290,7 +290,7 @@ SecAction "id:1, phase:1, ctl:ruleRemoveByTag=test, \
 	ctl:ruleRemoveTargetByMsg=sometest;ARGS_GET:id, \
 	ctl:forceRequestBodyVariable=On, \
 	log"
-SecAction "id: 2, phase: 1, log, tag:test"
+SecAction "id: 2, phase: 1, log, tag:other, tag:test"
 SecAction "id: 3, phase: 1, log, msg:'test'"
 
 # this rule should match
