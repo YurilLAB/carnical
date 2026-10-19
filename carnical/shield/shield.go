@@ -484,7 +484,8 @@ func New(cfg Config) (*Shield, error) {
 }
 
 // Close stops the shield's goroutines and gives Config.OnEvent the events still queued for it. Events found after Close
-// are counted in Snapshot.DroppedEvents.
+// are counted in Snapshot.DroppedEvents. An attack still going on is ended, with its record, so close the shield only
+// once the server it guards has stopped: a request admitted after Close is no longer held to the attack's limits.
 func (s *Shield) Close() {
 	s.stopOnce.Do(func() { close(s.stop) })
 	s.wg.Wait()
