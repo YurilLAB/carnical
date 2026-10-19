@@ -388,6 +388,12 @@ func TestConfinementHoldsOnThisKernel(t *testing.T) {
 			t.Errorf("control: %s was stopped with no confinement (%s)", r.Action, r.Got)
 		}
 	}
+	// As root the control's mount goes through, on this machine's own mount table.
+	if mounts, err := os.ReadFile("/proc/self/mounts"); err != nil {
+		t.Fatal(err)
+	} else if strings.Contains(string(mounts), "/carnical-confine-") {
+		t.Error("the control left a mount behind")
+	}
 }
 
 func TestTheCheckNoticesAWeakenedConfinement(t *testing.T) {

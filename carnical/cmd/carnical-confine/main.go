@@ -186,7 +186,12 @@ var actions = []action{
 	// The child that tries to exec is the one the filter ends; this process sees its command fail.
 	{"start a program from a child process", always(refused), allowed, func(e *env) error { return exec.Command("/bin/true").Run() }},
 	{"ptrace another process", always(killed), refusedOrErr, func(e *env) error { return rawErr(unix.SYS_PTRACE, unix.PTRACE_SEIZE, uintptr(e.parentPID), 0) }},
-	{"mount a file system", always(killed), refusedOrErr, func(e *env) error { return unix.Mount("none", e.rw, "tmpfs", 0, "") }},
+	{"mount a file system", always(killed), refusedOrErr, func(e *env) error {
+		if err := unix.Mount("none", e.rw, "tmpfs", 0, ""); err != nil {
+			return err
+		}
+		return unix.Unmount(e.rw, 0) // the control, run as root, mounts it on the host: it is not left there
+	}},
 	{"create a user namespace", always(killed), refusedOrErr, func(e *env) error { return unix.Unshare(unix.CLONE_NEWUSER) }},
 	{"load the BPF interface", always(killed), refusedOrErr, func(e *env) error { return rawErr(unix.SYS_BPF, 0, 0, 0) }},
 	{"open an io_uring", always(killed), refusedOrErr, func(e *env) error { return rawErr(unix.SYS_IO_URING_SETUP, 1, 0, 0) }},
