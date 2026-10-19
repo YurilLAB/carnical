@@ -1118,9 +1118,10 @@ func (noDNS) LookupNetIP(context.Context, string, string) ([]netip.Addr, error) 
 
 // gate is a person check for the tests: what it does is chosen by path, and it keeps what it was told.
 type gate struct {
-	mu   sync.Mutex
-	seen []challenge.Signals
-	late func(challenge.Outcome)
+	mu     sync.Mutex
+	seen   []challenge.Signals
+	late   func(challenge.Outcome)
+	inside chan struct{} // for /gate/racing: closed once its report is under way
 }
 
 func (g *gate) Serve(w http.ResponseWriter, r *http.Request, s challenge.Signals, report func(challenge.Outcome)) bool {
@@ -1150,6 +1151,10 @@ func (g *gate) Serve(w http.ResponseWriter, r *http.Request, s challenge.Signals
 		g.mu.Lock()
 		g.late = report
 		g.mu.Unlock()
+	case "/gate/racing": // reports on a goroutine of its own, and lets the request go on while the report is under way
+		go report(challenge.Outcome{Verdict: challenge.Refused})
+		<-g.inside
+		return false
 	default:
 		return false
 	}
@@ -1248,6 +1253,26 @@ func TestThePersonCheckIsOfferedEachRequest(t *testing.T) {
 		late(challenge.Outcome{Verdict: challenge.Refused})
 		if len(matched(idGateRefused)) != before {
 			t.Fatal("a late report was alerted")
+		}
+		// One under way when Serve returns is the request's, and ends before the request goes on.
+		g := &gate{inside: make(chan struct{})}
+		release := make(chan struct{})
+		var s *setup
+		var forwarded atomic.Int64
+		forwarded.Store(-1)
+		s = start(t, func(c *Config) {
+			c.Challenge = g
+			c.OnMatch = func(m Match) {
+				if m.RuleID == idGateRefused {
+					close(g.inside)
+					<-release
+					forwarded.Store(int64(len(s.up.requests())))
+				}
+			}
+		})
+		time.AfterFunc(50*time.Millisecond, func() { close(release) })
+		if status, _ := s.raw(t, get("/gate/racing")); status != 200 || forwarded.Load() != 0 {
+			t.Fatalf("%d; the application had %d requests when the report ended", status, forwarded.Load())
 		}
 	})
 	t.Run("without a bot policy it is told what the request says it is", func(t *testing.T) {

@@ -5,7 +5,7 @@ package proxy
 import (
 	"net/http"
 	"strconv"
-	"sync/atomic"
+	"sync"
 
 	"github.com/YurilLAB/coraza/carnical/bots"
 	"github.com/YurilLAB/coraza/carnical/challenge"
@@ -44,11 +44,16 @@ func (e *Edge) serveGate(w http.ResponseWriter, r *http.Request, rec *record, p 
 		gr = r.WithContext(r.Context())
 		gr.Body = http.MaxBytesReader(gw, r.Body, e.bodyLimit(r))
 	}
-	var done, reported atomic.Bool
+	// A report made on another goroutine while Serve returns ends before the request goes on, as it may set headers on w.
+	var mu sync.Mutex
+	done, reported := false, false
 	report := func(o challenge.Outcome) {
-		if done.Load() || !reported.CompareAndSwap(false, true) {
+		mu.Lock()
+		defer mu.Unlock()
+		if done || reported {
 			return
 		}
+		reported = true
 		switch o.Verdict {
 		case challenge.Passed:
 			if sh != nil {
@@ -70,7 +75,9 @@ func (e *Edge) serveGate(w http.ResponseWriter, r *http.Request, rec *record, p 
 		}
 	}
 	handled := e.cfg.Challenge.Serve(gw, gr, sig, report)
-	done.Store(true) // a report after Serve returned is not the request's
+	mu.Lock()
+	done = true // a report after Serve returned is not the request's
+	mu.Unlock()
 	return handled || gw.wrote
 }
 
