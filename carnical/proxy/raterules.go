@@ -71,12 +71,13 @@ func (r RateRule) String() string {
 	return b.String()
 }
 
-// matches reports whether the rule counts a request whose route path (see routePath) is route.
-func (r *RateRule) matches(req *http.Request, route string) bool {
+// matches reports whether the rule counts a request whose route path (see routePath) is route. tunnelled is the method the
+// application runs instead of a POST (WordPress's REST API, see wordPressOverride), or "": a rule on either method counts it.
+func (r *RateRule) matches(req *http.Request, tunnelled, route string) bool {
 	if len(r.Methods) > 0 {
 		found := false
 		for _, m := range r.Methods {
-			if m == req.Method || m == http.MethodGet && req.Method == http.MethodHead {
+			if m == req.Method || m == tunnelled || m == http.MethodGet && req.Method == http.MethodHead {
 				found = true
 				break
 			}

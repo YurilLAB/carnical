@@ -480,7 +480,7 @@ useragent`, or `arg:NAME`, `cookie:NAME`, `header:NAME`. The rule runs in phase 
 complete after the request headers (everything but `args`, `argnames`, `arg:`, `body`, `filenames`).
 `uri` and `query` are matched after one round of URL decoding.
 
-Three fields are more than one place in the engine, and a rule reads all of them:
+Four fields are more than one place in the engine, and a rule reads all of them:
 
 - `body` is `REQUEST_BODY|ARGS_POST|ARGS_POST_NAMES|XML:/*|XML://@*`. The engine keeps the body as
   sent only for a form or a body it has no parser for; a JSON or multipart body becomes names and
@@ -499,6 +499,11 @@ Three fields are more than one place in the engine, and a rule reads all of them
   PHP application as `$_GET['user_id']`.
   `arg:user_id` is `ARGS:/^\x20*user[_.\x20\[]id(?s:\[[^\]\x00]*\].*)?(?s:\x00.*)?$/` (the virtual
   patches fold the same spellings).
+- `method` is also the method a request asks the application to run instead, in
+  `X-HTTP-Method-Override` or a `_method` argument of the query, each read as above:
+  `REQUEST_METHOD|REQUEST_HEADERS:/^x[-_]http[-_]method[-_]override$/|ARGS:/^\x20*[_.\x20\[]method...$/`.
+  WordPress's REST API runs either. The proxy refuses the header except where `wordpress` lets the
+  REST API's use of it through (see the [proxy reference](proxy-reference.md)).
 
 The text of a value reaches the engine inside `"@rx ..."`, where the quote, the backslash, the
 percent sign (it opens a macro, `%{tx.score}`), white space and the backtick mean something to the

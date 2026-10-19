@@ -304,6 +304,18 @@ func (e *Edge) checkRequest(w http.ResponseWriter, r *http.Request, client netip
 			return false
 		}
 	}
+	tunnelled := override
+	if e.cfg.WordPress.Enabled {
+		// WordPress's REST API runs a _method argument of the query before the header, on any method.
+		m, ok := wordPressMethodArg(r)
+		if !ok || m != "" && override != "" && m != override {
+			e.refuse(w, r, http.StatusBadRequest, idMethodOverride, "an argument that overrides the HTTP method")
+			return false
+		}
+		if m != "" {
+			tunnelled = m
+		}
+	}
 	if override != "" {
 		// The rules and the application see one header in one spelling, with the method that was checked.
 		for name := range r.Header {
@@ -326,7 +338,7 @@ func (e *Edge) checkRequest(w http.ResponseWriter, r *http.Request, client netip
 	if e.cfg.WordPress.Enabled && !e.checkWordPress(w, r, route) {
 		return false
 	}
-	return e.checkLimits(w, r, client, route)
+	return e.checkLimits(w, r, client, route, tunnelled)
 }
 
 // checkBots refuses a kind of client the bot policy refuses (rules 5005003 to 5005012), or reports a kind it watches as
@@ -409,7 +421,7 @@ func routePath(decoded string) string {
 // logged. A client is an IPv4 address or an IPv6 /64, as the shield counts it, so a client cannot get a fresh budget by
 // changing the low bits of its IPv6 address.
 type compiledRule struct {
-	match   func(r *http.Request, route string) bool
+	match   func(r *http.Request, tunnelled, route string) bool
 	count   int           // requests a client may make in a window
 	window  time.Duration // the window's length
 	monitor bool          // only report what the rule would refuse
@@ -437,7 +449,7 @@ func compileLimits(cfg Config) []*compiledRule {
 		}
 		rules = append(rules, &compiledRule{count: perMinute, window: time.Minute, id: idRateLimited,
 			message: "too many login attempts from one address",
-			match: func(r *http.Request, route string) bool {
+			match: func(r *http.Request, _, route string) bool {
 				return r.Method == http.MethodPost && runsScript(route, "/wp-login.php")
 			}})
 	}
@@ -445,7 +457,7 @@ func compileLimits(cfg Config) []*compiledRule {
 		api := cfg.APIRate
 		rules = append(rules, &compiledRule{count: api.PerMinute, window: time.Minute, id: idAPIRateLimited,
 			message: "too many API requests from one address",
-			match:   func(_ *http.Request, route string) bool { return api.matches(route) }})
+			match:   func(_ *http.Request, _, route string) bool { return api.matches(route) }})
 	}
 	for i := range cfg.Limits {
 		limit := &cfg.Limits[i]
@@ -478,11 +490,11 @@ func (e *Edge) clock() int64 {
 // rule has room, and a refused request is counted by none of them, so a refusal by one rule never uses up another's
 // budget. The tables are locked in rule order, so two requests cannot each hold one the other waits for. A monitor rule
 // then counts the request as it would if it enforced, and reports what it would refuse.
-func (e *Edge) checkLimits(w http.ResponseWriter, r *http.Request, client netip.Addr, route string) bool {
+func (e *Edge) checkLimits(w http.ResponseWriter, r *http.Request, client netip.Addr, route, tunnelled string) bool {
 	var enforced, watched uint64 // there are far fewer rules than 64
 	for i, rule := range e.rules {
 		switch {
-		case !rule.match(r, route):
+		case !rule.match(r, tunnelled, route):
 		case rule.monitor:
 			watched |= 1 << i
 		default:
@@ -657,17 +669,84 @@ func wordPressOverride(r *http.Request) string {
 	if len(values) != 1 {
 		return ""
 	}
-	switch m := strings.ToUpper(strings.TrimSpace(values[0])); m {
-	case http.MethodPut, http.MethodPatch, http.MethodDelete:
-		route := routePath(r.URL.Path)
-		if strings.Contains(route+"/", "/wp-json/") {
-			return m
-		}
-		if (strings.HasSuffix(route, "/") || strings.HasSuffix(route, "/index.php")) && r.URL.Query().Has("rest_route") {
-			return m
-		}
+	if m := strings.ToUpper(strings.TrimSpace(values[0])); tunnels(m) && restAPI(r) {
+		return m
 	}
 	return ""
+}
+
+// wordPressMethodArg returns the method a request asks WordPress's REST API to run in a _method argument of its query,
+// which the API reads before X-HTTP-Method-Override and on any method, or "" when it has none. It is false when the
+// argument is not one the proxy lets through: the header's conditions (see wordPressOverride), with the method in upper
+// case as the rules compare it. Every name PHP files as $_GET['_method'] counts: PHP drops the spaces in front of a name,
+// turns "." and " " into "_", ends it at a NUL, and reads _method[...] as a list.
+func wordPressMethodArg(r *http.Request) (string, bool) {
+	var values []string
+	for pair := range strings.SplitSeq(r.URL.RawQuery, "&") {
+		key, value, _ := strings.Cut(pair, "=")
+		name := phpUnescape(key)
+		if i := strings.IndexByte(name, 0); i >= 0 {
+			name = name[:i]
+		}
+		name = strings.TrimLeft(name, " ")
+		list := false
+		if open := strings.IndexByte(name, '['); open > 0 && strings.IndexByte(name[open:], ']') > 0 {
+			name, list = name[:open], true
+		}
+		if strings.Map(func(c rune) rune {
+			if c == '.' || c == ' ' || c == '[' {
+				return '_'
+			}
+			return c
+		}, name) != "_method" {
+			continue
+		}
+		if list {
+			return "", false
+		}
+		values = append(values, phpUnescape(value))
+	}
+	if len(values) == 0 {
+		return "", true
+	}
+	if len(values) != 1 || r.Method != http.MethodPost || !tunnels(values[0]) || !restAPI(r) {
+		return "", false
+	}
+	return values[0], true
+}
+
+// tunnels reports a method WordPress's REST clients send as a POST.
+func tunnels(m string) bool {
+	return m == http.MethodPut || m == http.MethodPatch || m == http.MethodDelete
+}
+
+// restAPI reports a request to WordPress's REST API: to /wp-json/ (in any directory, for a site installed under one) or to
+// the site's root or index.php with rest_route, as WordPress addresses its API without pretty links.
+func restAPI(r *http.Request) bool {
+	route := routePath(r.URL.Path)
+	return strings.Contains(route+"/", "/wp-json/") ||
+		(strings.HasSuffix(route, "/") || strings.HasSuffix(route, "/index.php")) && r.URL.Query().Has("rest_route")
+}
+
+// phpUnescape decodes a query's name or value as PHP does: "+" is a space, and a "%" without two hex digits after it is kept.
+func phpUnescape(s string) string {
+	if !strings.ContainsAny(s, "%+") {
+		return s
+	}
+	b := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case c == '+':
+			b = append(b, ' ')
+		case c == '%' && i+2 < len(s) && isHex(s[i+1]) && isHex(s[i+2]):
+			v, _ := strconv.ParseUint(s[i+1:i+3], 16, 8)
+			b = append(b, byte(v))
+			i += 2
+		default:
+			b = append(b, c)
+		}
+	}
+	return string(b)
 }
 
 // checkWordPress refuses the scripts a WordPress site never runs. The route is the request's routePath: empty segments, a

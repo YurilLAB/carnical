@@ -59,6 +59,14 @@ The header is then forwarded once, as `X-HTTP-Method-Override` with the upper-ca
 checked. Every other spelling and repeat is dropped. Anywhere else, and for `X-Method-Override` and
 `X-HTTP-Method`, rule 5000044 still refuses it.
 
+WordPress's REST server reads a `_method` argument of the query before the header, on any method.
+With `-wordpress`, rule 5000044 refuses one unless it meets the header's conditions, is PUT, PATCH or
+DELETE in upper case, appears once (in any of the spellings PHP files as `$_GET['_method']`) and
+agrees with the header when both are sent. The method that is run, from either, is the one:
+
+- a rate rule on that method counts, as well as one on POST;
+- a policy's custom rule on `method` reads, with `REQUEST_METHOD`.
+
 The rule set gets `crs.Settings.WordPress`, which the proxy sets:
 
 - On such a POST, rule 920450 reads its list of restricted headers without
@@ -90,6 +98,7 @@ and no PR thread exists.
 ## References
 
 - Related ADRs: ADR-0090
-- Code: `carnical/proxy/policy.go` (`wordPressOverride`), `carnical/proxy/proxy.go`,
-  `carnical/crs/lists.go`, `carnical/crs/crs.go` (`Settings.WordPress`)
+- Code: `carnical/proxy/policy.go` (`wordPressOverride`, `wordPressMethodArg`), `carnical/proxy/proxy.go`,
+  `carnical/proxy/raterules.go`, `carnical/policy/vocab.go` (`ruleVariables`), `carnical/crs/lists.go`,
+  `carnical/crs/crs.go` (`Settings.WordPress`)
 - Guides: `carnical/docs/proxy-reference.md`, `carnical/docs/formats.md`

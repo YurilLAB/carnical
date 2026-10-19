@@ -757,6 +757,15 @@ func TestWordPressPolicy(t *testing.T) {
 			{"X-Method-Override", save("/wp-json/wp/v2/posts/1", "X-Method-Override: PUT\r\n"), on, 400, ""},
 			{"X-HTTP-Method", save("/wp-json/wp/v2/posts/1", "X-HTTP-Method: PUT\r\n"), on, 400, ""},
 			{"the allowed header with X-HTTP-Method", save("/wp-json/wp/v2/posts/1", "X-HTTP-Method-Override: PUT\r\n", "X-HTTP-Method: DELETE\r\n"), on, 400, ""},
+			// WordPress runs a _method argument of the query before the header, on any method.
+			{"_method on a POST to the API", save("/wp-json/wp/v2/posts/1?_method=DELETE"), on, 200, ""},
+			{"_method with the header", save("/wp-json/wp/v2/posts/1?_method=PUT", "X-HTTP-Method-Override: PUT\r\n"), on, 200, "PUT"},
+			{"_method naming another method than the header", save("/?rest_route=/wp/v2/posts/1&_method=DELETE", "X-HTTP-Method-Override: PUT\r\n"), on, 400, ""},
+			{"_method on a GET", get("/wp-json/wp/v2/posts/1?_method=DELETE"), on, 400, ""},
+			{"_method twice, once as PHP also spells it", save("/wp-json/wp/v2/posts/1?_method=PUT&.method=DELETE"), on, 400, ""},
+			{"_method as a list", save("/wp-json/wp/v2/posts/1?_method%5B%5D=DELETE"), on, 400, ""},
+			{"_method in lower case", save("/wp-json/wp/v2/posts/1?_method=delete"), on, 400, ""},
+			{"_method outside the REST API", save("/wp-admin/post.php?_method=PUT"), on, 400, ""},
 		}
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
@@ -782,6 +791,22 @@ func TestWordPressPolicy(t *testing.T) {
 				}
 			})
 		}
+		t.Run("a rate rule on the method counts it", func(t *testing.T) {
+			limits, err := ParseRateRules("DELETE /wp-json 2/m")
+			if err != nil {
+				t.Fatal(err)
+			}
+			s := start(t, func(c *Config) { on(c); c.Limits = limits })
+			var statuses []int
+			for _, request := range []string{save("/wp-json/wp/v2/posts/1", "X-HTTP-Method-Override: DELETE\r\n"),
+				save("/wp-json/wp/v2/posts/2?_method=DELETE"), save("/wp-json/wp/v2/posts/3", "X-HTTP-Method-Override: DELETE\r\n")} {
+				status, _ := s.raw(t, request)
+				statuses = append(statuses, status)
+			}
+			if want := []int{200, 200, 429}; !equalInts(statuses, want) {
+				t.Fatalf("statuses %v, want %v", statuses, want)
+			}
+		})
 	})
 }
 

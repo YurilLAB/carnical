@@ -75,7 +75,10 @@ guarantees.
 also lets the block editor save:
 
 - it accepts `X-HTTP-Method-Override` on WordPress's REST API only: a POST naming PUT, PATCH or
-  DELETE, to `/wp-json/` in any directory, or to the root or `index.php` with `rest_route`;
+  DELETE, to `/wp-json/` in any directory, or to the root or `index.php` with `rest_route`. A
+  `_method` argument of the query, which WordPress runs first and on any method, is held to the
+  same, in upper case, once, and must agree with the header (5000044 otherwise). A rate rule on the
+  method that is run counts the request, as does one on POST;
 - it keeps rule 941180 off the posts' content there (`json.content`), because block markup is
   written as HTML comments.
 
@@ -132,7 +135,8 @@ warns when `-login-per-minute` is given without `-wordpress`, or `-api-rate-path
 text by `proxy.ParseRateRules`; a signed or local policy cannot add or remove them.
 
 - METHODS is `*` or methods separated by commas, in any case. GET also counts HEAD; with no methods or
-  `*` every method counts. A method is letters only, at most 16 of them, so a hyphenated method such as
+  `*` every method counts. A POST that `-wordpress` lets tunnel PUT, PATCH or DELETE counts for
+  either method. A method is letters only, at most 16 of them, so a hyphenated method such as
   VERSION-CONTROL cannot be named (leave the methods out to count it). A method that is not GET, HEAD,
   POST, PUT, PATCH, DELETE or OPTIONS but is one or two edits from one of them is refused as a
   misspelling; other names, such as WebDAV's MKCOL, are accepted.

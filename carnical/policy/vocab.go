@@ -144,11 +144,18 @@ const bodyVariables = "REQUEST_BODY|ARGS_POST|ARGS_POST_NAMES|XML:/*|XML://@*"
 //     at a NUL, so user.id, user+id, user[id, user_id[] and user_id%00x all reach a PHP application as $_GET['user_id']. The name
 //     is a key pattern that takes each of those spellings, ARGS:/^\x20*user[_.\x20\[]id(?s:\[[^\]\x00]*\].*)?(?s:\x00.*)?$/
 //     (\x20, as a space would end the variable).
+//   - method: also the method a POST names for the application to run instead, in X-HTTP-Method-Override or a _method
+//     argument of the query (each read as above), as WordPress's REST API does. The proxy refuses the other override headers.
 //
 // An exclusion keeps targetVariable: what it takes out of inspection is never widened.
 func ruleVariables(field string) (string, bool) {
 	if field == "body" {
 		return bodyVariables, true
+	}
+	if field == "method" {
+		header, _ := ruleVariables("header:x-http-method-override")
+		arg, _ := ruleVariables("arg:_method")
+		return "REQUEST_METHOD|" + header + "|" + arg, true
 	}
 	v, ok := targetVariable(field, true)
 	if !ok {

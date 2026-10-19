@@ -548,6 +548,8 @@ func TestCustomRulesOfEveryFieldAndOperator(t *testing.T) {
 	_ = cleanBody
 	rows := []row{
 		{name: "method equals", rule: CustomRule{Field: "method", Operator: OpEquals, Value: "PATCH"}, method: "PATCH", target: "/x"},
+		{name: "method equals, the method tunnelled in a POST's header", rule: CustomRule{Field: "method", Operator: OpEquals, Value: "DELETE"}, method: "POST", target: "/wp-json/wp/v2/posts/1", mod: header("X-HTTP-Method-Override", "DELETE")},
+		{name: "method equals, the method tunnelled in a POST's _method", rule: CustomRule{Field: "method", Operator: OpEquals, Value: "PUT"}, method: "POST", target: "/wp-json/wp/v2/posts/1?_method=PUT", clean: "/wp-json/wp/v2/posts/1?_methods=PUT"},
 		{name: "path beginsWith", rule: CustomRule{Field: "path", Operator: OpBeginsWith, Value: "/old-admin/"}, target: "/old-admin/x", clean: "/new-admin/x"},
 		{name: "uri contains, after decoding", rule: CustomRule{Field: "uri", Operator: OpContains, Value: "debug=1"}, target: "/status?d%65bug=1", clean: "/status?d%65bug=2"},
 		{name: "query contains", rule: CustomRule{Field: "query", Operator: OpContains, Value: "evil"}, target: "/?x=evil", clean: "/?x=good"},
@@ -579,6 +581,7 @@ func TestCustomRulesOfEveryFieldAndOperator(t *testing.T) {
 		p.CustomRules = append(p.CustomRules, rows[i].rule)
 	}
 	p.AllowedMethods = append(p.AllowedMethods, "PATCH")
+	p.WordPress.Enabled = true // which lets the REST API's method override through
 	e := newEdge(t, p)
 	for _, r := range rows {
 		t.Run(r.name, func(t *testing.T) {
