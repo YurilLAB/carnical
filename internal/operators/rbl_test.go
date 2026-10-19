@@ -6,6 +6,8 @@
 package operators
 
 import (
+	"errors"
+	"net"
 	"testing"
 
 	"github.com/foxcpp/go-mockdns"
@@ -32,7 +34,7 @@ func TestRbl(t *testing.T) {
 
 	logger := &testLogger{t}
 
-	srv, err := mockdns.NewServerWithLogger(map[string]mockdns.Zone{
+	zones := map[string]mockdns.Zone{
 		"valid_no_txt.xbl.spamhaus.org.": {
 			A: []string{"1.2.3.4"},
 		},
@@ -44,7 +46,17 @@ func TestRbl(t *testing.T) {
 			A:   []string{"1.2.3.6"},
 			TXT: []string{"blocked"},
 		},
-	}, logger, false)
+	}
+	// mockdns takes a free TCP port and then binds UDP on the same number, which can be taken or reserved (Windows
+	// excludes UDP port ranges); each attempt gets a new TCP port.
+	var srv *mockdns.Server
+	for attempt := 0; attempt < 5; attempt++ {
+		srv, err = mockdns.NewServerWithLogger(zones, logger, false)
+		var bind *net.OpError
+		if err == nil || !errors.As(err, &bind) || bind.Op != "listen" {
+			break
+		}
+	}
 	if err != nil {
 		t.Fatalf("Cannot start mockdns server: %v", err)
 	}
