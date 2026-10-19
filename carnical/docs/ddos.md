@@ -181,7 +181,7 @@ attack, without request content:
 | Field | Meaning |
 |---|---|
 | `kinds` | What the attack is, from the evidence seen during it: `request_flood`, `connection_flood`, `one_client_tool`, `one_target`, `many_new_addresses`, `application_strain` |
-| `ports` | The local TCP ports the attack's requests and connections came to, the most requested first (at most four), then what came to any other port |
+| `ports` | The local TCP ports the attack's requests and connections came to: the first four seen, the most requested first, then what came to any other port |
 | `tls`, `plain`, `http1`, `http2` | The attack's requests over TLS or plain HTTP, and by HTTP version |
 | `requests`, `peak_rate`, `addresses`, `networks` | Requests during the attack, the highest ten-second rate, and estimates of the different addresses and networks |
 | `clusters`, `top_origins` | The fingerprints and targets it was recognised by, and its most common countries or networks (with `-ddos-ranges`) |

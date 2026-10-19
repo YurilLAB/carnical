@@ -71,8 +71,8 @@ type Incident struct {
 	// client fingerprint), "one_target" (one page or endpoint), "many_new_addresses" (addresses not seen before, or
 	// many more of them) and "application_strain" (the application failing or slow).
 	Kinds []string
-	// Ports are the local TCP ports the attack's requests and connections came to, the most requested first, at most
-	// maxIncidentPorts of them; OtherPorts counts what came to any other port (Port is 0).
+	// Ports are the local TCP ports the attack's requests and connections came to: the first maxIncidentPorts seen, the
+	// most requested first; OtherPorts counts what came to any other port (Port is 0).
 	Ports      []PortCount
 	OtherPorts PortCount
 	// The requests by how they came: over TLS or plain HTTP, and as HTTP/1.x or HTTP/2. A request the server did not say

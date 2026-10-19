@@ -69,7 +69,7 @@ A JSON object, at most 16 KiB:
 | `severity` | `critical` for a start, `warning` for an update, `info` for an end |
 | `text` | One line for a person, a chat or a pager |
 | `attack.kinds` | What the attack is: see [the attack record](ddos.md#what-the-attack-record-says) |
-| `attack.ports` | The local TCP ports attacked, the most requested first, with the requests and connections each received; `other_ports` counts any further ports |
+| `attack.ports` | The local TCP ports attacked (the first four seen), the most requested first, with the requests and connections each received; `other_ports` counts any further ports |
 | `attack.window` | `true` on a start: the counts are those of the ten seconds that showed the attack, as nothing of the attack itself has been counted yet |
 | `attack.ended` | On `attack_end` |
 | `attack.stopped` | On `attack_end`: Carnical stopped while the attack went on, so its record ends there and not the attack |
