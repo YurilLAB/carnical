@@ -478,5 +478,5 @@ func gjUnescape(json string) string {
 
 func gjRuneit(json string) rune {
 	n, _ := strconv.ParseUint(json[:4], 16, 64)
-	return rune(n)
+	return rune(n) // #nosec G115 -- four hex digits are at most 0xFFFF.
 }
