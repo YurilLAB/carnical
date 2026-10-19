@@ -2233,6 +2233,18 @@ func TestAPersonCheckStandsInForTheChallenge(t *testing.T) {
 	if s.Snapshot().Solved != 9 {
 		t.Fatalf("%d solved", s.Snapshot().Solved)
 	}
+	// A page load the check stood in for was a showing of the challenge, taken back with the check's own: people who
+	// pass the check at one address do not add up to its ban.
+	shown := func() (n int) {
+		s.sources.peek(SourceKey(me), func(src *source) { n = int(src.fromShown)*showsPerStrike + int(src.shown) })
+		return n
+	}
+	before := shown()
+	s.mark(now.UnixNano(), SourceKey(me), info, true) // the page load the check answered
+	s.Vouch(httptest.NewRecorder(), r, me, Decision{Action: Challenge, ID: idChallenge, key: SourceKey(me)})
+	if got := shown(); got != before-1 {
+		t.Fatalf("showings %d after a page load and its check, want %d", got, before-1)
+	}
 
 	// Standing is earned by what the application answered, never by the edge's own answers (a check's page): a bot shown
 	// the check over and over is still a stranger.

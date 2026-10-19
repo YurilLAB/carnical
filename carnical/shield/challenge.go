@@ -199,10 +199,10 @@ func (s *Shield) Standing(client netip.Addr) Standing {
 // Vouch admits the browser that sent r, from client, past an attack's budgets for ClearanceFor, as a right answer to the
 // shield's challenge does: it sets the shield's clearance cookie on w, so it must come before the answer's header is
 // written, and it counts a solved challenge. During an attack it takes back what the person's way through the check
-// cost the address: one showing of the challenge, as a right answer to the challenge does, and the refusal of this
-// request, when d (the shield's decision about it) refused a stranger over the attack's budget and the check stood in
-// for it. No other refusal is taken back. Call it only for a visitor a person check accepted, once for each answer;
-// d is the zero Decision for a request the shield admitted.
+// cost the address: one showing of the challenge, as a right answer to the challenge does, and what d (the shield's
+// decision about this request) cost when the check stood in for it: a refusal of a stranger over the attack's budget,
+// or the challenge shown for a page load. No other refusal is taken back. Call it only for a visitor a person check
+// accepted, once for each answer; d is the zero Decision for a request the shield admitted.
 func (s *Shield) Vouch(w http.ResponseWriter, r *http.Request, client netip.Addr, d Decision) {
 	client = client.Unmap()
 	if !client.IsValid() {
@@ -220,15 +220,22 @@ func (s *Shield) Vouch(w http.ResponseWriter, r *http.Request, client netip.Addr
 		if src.strikeEpoch != info.epoch {
 			return
 		}
-		if d.Action == Refuse && d.Wants() && d.key == key && src.strikes > src.fromShown { // the refusal the check stood in for
-			src.strikes--
+		unshow := func() {
+			switch {
+			case src.shown > 0:
+				src.shown--
+			case src.fromShown > 0:
+				src.fromShown, src.strikes, src.shown = src.fromShown-1, src.strikes-1, showsPerStrike-1
+			}
 		}
-		switch {
-		case src.shown > 0:
-			src.shown--
-		case src.fromShown > 0:
-			src.fromShown, src.strikes, src.shown = src.fromShown-1, src.strikes-1, showsPerStrike-1
+		if d.Wants() && d.key == key { // what the check stood in for
+			if d.Action == Challenge {
+				unshow()
+			} else if src.strikes > src.fromShown {
+				src.strikes--
+			}
 		}
+		unshow()
 	})
 }
 
