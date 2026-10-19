@@ -96,6 +96,39 @@ Regression Tests, Lint and ADR ran only on `main` before `2e8f4df9`, so `edge-cr
 branch, had no engine regression matrix in CI. They now run on every push to it. The matrix moved
 to Go 1.26, which `go.mod` requires.
 
-The TinyGo workflow still runs only on `main`. Its pinned TinyGo 0.40.1 cannot build a module that
-needs Go 1.26, and with TinyGo 0.43.0 one engine test fails, so turning it on would leave the branch
-red. That failure is being followed up separately.
+The TinyGo workflow now runs on `edge-crs` too, with TinyGo 0.43.0, the first release that builds a
+module needing Go 1.26 (the pinned 0.40.1 could not).
+
+## JSON bodies under TinyGo
+
+Turning on the TinyGo workflow showed that the JSON body processor walked nested objects and arrays
+by recursion, about 650 bytes of stack per level. A TinyGo WASI build, with its default 64 KiB
+stack, stopped with `fatal error: stack overflow` on a body nested about 100 deep, well inside the
+default `SecRequestBodyJsonDepthLimit` of 1024. Carnical itself is built with Go, whose stacks grow,
+and was not affected.
+
+The walk now keeps its place in each open container on a stack of its own (`json_iter.go`), using
+gjson's own member parsing so that every body, valid or not, is read as before. Measured on a
+TinyGo 0.43.0 WASI build run under Node 22, through `coraza.NewWAF` with the JSON processor:
+
+| Nesting depth | Before | After |
+| --- | --- | --- |
+| 50 | read | read |
+| 100 | stack overflow | read |
+| 1,024 | stack overflow | read |
+| 1,025 | stack overflow | refused at the depth limit |
+| 20,000 | stack overflow | refused at the depth limit |
+
+Checks of the new walk:
+
+- A fuzz target comparing the arguments, the truncation flag and the error of the new walk with the
+  recursive one, over random bodies and depth and argument limits, ran 6,496,736 inputs, and after
+  a later change another 5 minutes, with no difference.
+- `FuzzJSONIterMatchesForEach`, kept in the suite, compares every member the walk reads with what
+  gjson's `ForEach` gives. It ran 5,204,764 inputs with no difference, and it fails if the walk
+  skips a byte differently from `ForEach`.
+- `tinygo test -short ./internal/...`, with and without `coraza.no_memoize`, passes.
+- JSON parsing alone takes about 16% longer on `BenchmarkReadJSON` and `BenchmarkValidationOverhead`
+  (geometric mean), with the same memory. Through Carnical the load test gave 2,248 and 2,310
+  requests per second against 2,243 and 2,291 before, with the same requests refused, the same
+  attacks passed and no errors.
