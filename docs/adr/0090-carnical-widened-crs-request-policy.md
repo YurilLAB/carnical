@@ -53,9 +53,9 @@ Chosen: **two lists, as `crs-setup.conf` describes them.**
   release's defaults carry through.
 - A content type is a lower-case `type/subtype` with no parameters (64 characters on each side).
   An extension must be one the CRS restricts. Each list has at most 32 entries.
-- For an added type that no processor claims, the body is read whole into `REQUEST_BODY` (Coraza's
-  `RAW` processor), as ModSecurity reads it. Types the engine already parses as JSON or XML keep
-  their processor.
+- An added type that no processor claims is parsed as XML or JSON when its suffix is `+xml` or
+  `+json` (RFC 6839). Any other is read whole into `REQUEST_BODY` (Coraza's `RAW` processor), as
+  ModSecurity reads it. Types the engine already parses as JSON or XML keep their processor.
 - A flag replaces the policy's list, as `-allowed-methods` does.
 
 Measured on a real Gitea 1.24, in block mode:
@@ -76,8 +76,9 @@ and no PR thread exists.
     off the protocol rules.
   - A binary body of an allowed type is no longer refused as malformed arguments.
 - **Negative / follow-up:**
-  - A body of an added type is not split into arguments, so only the few rules that read
-    `REQUEST_BODY` see into it. The guides say to add only what the site needs.
+  - A body of an added type that is not `+xml` or `+json` is not split into arguments, so only
+    the few rules that read `REQUEST_BODY` see into it. The guides say to add only what the site
+    needs.
   - Rule 930130 still refuses a clone URL that ends in `.git` (`.git/` in the path is how an
     exposed repository is found). Gitea, GitLab and GitHub take the same URL without `.git`.
 

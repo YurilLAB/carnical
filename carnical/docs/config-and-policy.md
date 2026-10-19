@@ -307,7 +307,7 @@ name cannot appear together. Property names inside `api` and `body_formats` rema
 | `body.max_upload_bytes` | 1 KiB to 64 MiB | 1 MiB. Also the size of the largest upload (read whole into memory per request in flight, which is why 64 MiB is the ceiling) |
 | `body.max_form_bytes` | 1 KiB to 1 MiB, at most the upload limit | 128 KiB. The rules cost time in proportion to a body; the evaluation budget cuts a request off long before 1 MiB is useful |
 | `allowed_methods` | 1 to 20 of `[A-Z][A-Z-]{0,19}`, never `CONNECT` or `TRACE` | `GET HEAD OPTIONS POST` |
-| `allowed_content_types` | up to 32 lower-case `type/subtype`, no parameters | none: the Core Rule Set's list (rule 920420). Added to it. A body of an added type that is not JSON or XML is kept whole for the few rules that read the raw body, not split into arguments |
+| `allowed_content_types` | up to 32 lower-case `type/subtype`, no parameters | none: the Core Rule Set's list (rule 920420). Added to it. A body of an added type that is not JSON or XML (by its `+json` or `+xml` suffix) is kept whole for the few rules that read the raw body, not split into arguments |
 | `allowed_extensions` | up to 32 extensions the Core Rule Set restricts, such as `.sh` | none. Taken off its list (rule 920440) |
 | `allowed_hosts` | 0 to 100 DNS names; empty means any name | none. No wildcards (the proxy compares exactly), no ports, punycode for non-ASCII |
 | `rule_groups` | map from `sqli xss lfi rfi rce php ssrf java scanner protocol` to `on`, `log`, `off` | all on |

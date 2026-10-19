@@ -581,7 +581,7 @@ func TestAThresholdOfOneBlocksWhatTheDefaultTolerates(t *testing.T) {
 
 // The CRS's HTTP policy (rules 911100, 920420 and 920440) is the site's to widen, one list at a time.
 func TestTheSiteWidensTheHTTPPolicy(t *testing.T) {
-	git, jsonAPI := "application/x-git-upload-pack-request", "application/vnd.api+json"
+	git, jsonAPI, atom := "application/x-git-upload-pack-request", "application/vnd.api+json", "application/atom+xml"
 	allow := func(types ...string) func(*crs.Settings) {
 		return func(s *crs.Settings) { s.AllowedContentTypes = types }
 	}
@@ -611,6 +611,8 @@ func TestTheSiteWidensTheHTTPPolicy(t *testing.T) {
 		{"git's type allowed, another type still refused", allow(git), "POST", "/alice/notes/git-upload-pack", "application/x-git-upload", pkt, 403, nil},
 		{"a JSON type allowed is read as JSON", allow(jsonAPI), "POST", "/api", jsonAPI, `{"q":"1' OR '1'='1' --"}`, 403, nil},
 		{"a JSON type allowed, an ordinary body", allow(jsonAPI), "POST", "/api", jsonAPI, `{"q":"shoes"}`, 200, nil},
+		{"an XML type allowed is read as XML", allow(atom), "POST", "/feed", atom, `<entry><title>1' OR '1'='1' --</title></entry>`, 403, nil},
+		{"an XML type allowed, an ordinary body", allow(atom), "POST", "/feed", atom, `<entry><title>Shoes</title></entry>`, 200, nil},
 		{"a .sh page with the CRS extensions", nil, "GET", "/src/install.sh", "", "", 403, nil},
 		{"a .sh page with .sh allowed", sh, "GET", "/src/install.sh", "", "", 200, nil},
 		{".sh allowed, a .sql page still refused", sh, "GET", "/dump.sql", "", "", 403, nil},

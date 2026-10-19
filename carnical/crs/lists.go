@@ -19,7 +19,7 @@ const (
 	MaxExtensions   = 32
 
 	contentTypesRuleID = 900220 // the ids crs-setup.conf gives these settings
-	rawBodyRuleID      = 900221
+	bodyRuleID         = 900221 // to 900223
 	extensionsRuleID   = 900240
 	overrideRuleID     = 900250
 	blockMarkupRuleID  = 900251 // and 900252
@@ -101,18 +101,29 @@ func (s Settings) listDirectives() []string {
 			}
 		}
 		out = append(out, fmt.Sprintf(`SecAction "id:%d,phase:1,pass,t:none,nolog,setvar:'tx.allowed_request_content_type=%s'"`, contentTypesRuleID, list))
-		// A body that no processor claims (JSON and XML types are claimed by base/coraza.conf, forms by the engine) is read
-		// whole into REQUEST_BODY, as ModSecurity reads it. Coraza would otherwise parse it as a form, and a binary body
-		// such as a git pack would be refused as malformed arguments.
-		var added []string
+		// A body that no processor claims (the usual JSON and XML types are claimed by base/coraza.conf, forms by the
+		// engine) is parsed as its +xml or +json suffix says (RFC 6839), or else read whole into REQUEST_BODY, as
+		// ModSecurity reads it. Coraza would otherwise parse it as a form, and a binary body such as a git pack would be
+		// refused as malformed arguments.
+		processors := []string{"RAW", "XML", "JSON"}
+		added := make([][]string, len(processors))
 		for _, t := range s.AllowedContentTypes {
 			if !strings.Contains(d.contentTypes, "|"+t+"|") {
-				added = append(added, regexp.QuoteMeta(t))
+				i := 0
+				if strings.HasSuffix(t, "+xml") {
+					i = 1
+				} else if strings.HasSuffix(t, "+json") {
+					i = 2
+				}
+				added[i] = append(added[i], regexp.QuoteMeta(t))
 			}
 		}
-		if len(added) > 0 {
-			out = append(out, fmt.Sprintf(`SecRule REQBODY_PROCESSOR "@rx ^$" "id:%d,phase:1,pass,t:none,nolog,chain"`, rawBodyRuleID),
-				fmt.Sprintf(`SecRule REQUEST_HEADERS:Content-Type "@rx ^(?:%s)\s*(?:;|$)" "t:none,t:lowercase,ctl:requestBodyProcessor=RAW"`, strings.Join(added, "|")))
+		for i, types := range added {
+			if len(types) > 0 {
+				out = append(out, fmt.Sprintf(`SecRule REQBODY_PROCESSOR "@rx ^$" "id:%d,phase:1,pass,t:none,nolog,chain"`, bodyRuleID+i),
+					fmt.Sprintf(`SecRule REQUEST_HEADERS:Content-Type "@rx ^(?:%s)\s*(?:;|$)" "t:none,t:lowercase,ctl:requestBodyProcessor=%s"`,
+						strings.Join(types, "|"), processors[i]))
+			}
 		}
 	}
 	if len(s.AllowedExtensions) > 0 {
