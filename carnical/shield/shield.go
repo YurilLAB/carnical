@@ -963,7 +963,9 @@ func (s *Shield) Done(d Decision, status int, fromOrigin bool) {
 			n.earned.n++
 		})
 	}
-	learning := s.det.learning.Load() // standing is earned only while traffic is ordinary
+	// Standing is earned only while traffic is ordinary, and only by what the application answered: an answer of the
+	// edge's own (a person check's page, say) says nothing of the client.
+	learning := s.det.learning.Load() && fromOrigin
 	if earn == nil && !learning {
 		return
 	}

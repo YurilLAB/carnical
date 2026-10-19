@@ -35,6 +35,8 @@ const (
 	botsLast      = 5005999 //
 	localFirst    = 5006000 // carnical's local CRS rules
 	localLast     = 5006999 //
+	gateFirst     = 5007000 // a person check (package challenge)
+	gateLast      = 5007999 //
 	vpatchFirst   = 5100000 // virtual patches: the engine's own below 5101000, signatures above
 	vpatchSigBase = 5101000 //
 	vpatchLast    = 5199999 //
@@ -201,6 +203,11 @@ var botRules = map[int]Entry{
 	5005012: {"Program disguised as a browser", Of(CatBot), RiskLow},
 }
 
+// gateRules are the person check's ids (proxy/challenge.go): what a check plugged in through package challenge decided.
+var gateRules = map[int]Entry{
+	5007001: {"Person check refused the visitor", Of(CatBot), RiskLow},
+}
+
 // apiRules are the API guard's ids (apiguard/verdict.go). The guard's own severity sets the risk of a finding.
 var apiRules = map[int]Entry{
 	5003001: {"API method not allowed", Of(CatAPIContract), RiskMedium},
@@ -317,6 +324,11 @@ func Lookup(id int) (Entry, bool) {
 			return e, true
 		}
 		return Entry{Name: "Carnical local rule", Risk: RiskInfo}, true
+	case id >= gateFirst && id <= gateLast:
+		if e, ok := gateRules[id]; ok {
+			return e, true
+		}
+		return Entry{Name: "Person check", Categories: Of(CatBot), Risk: RiskLow}, true
 	case id >= vpatchFirst && id <= vpatchLast:
 		if e, ok := vpatchEngine[id]; ok {
 			return e, true
@@ -391,8 +403,9 @@ func InspectorRisk(severity string, refused bool) Risk {
 }
 
 // Signature returns the stable signature of a numeric rule id: crs- (the CRS, carnical's local rules and Coraza's base
-// rules, which run in the same engine), policy-, carnical-, formats-, apiguard-, shield-, bots- or vpatch- followed by the
-// id, or "" for an id in no known range. A virtual-patch signature has a name of its own; see VPatchSignature.
+// rules, which run in the same engine), policy-, carnical-, formats-, apiguard-, shield-, bots-, challenge- or vpatch-
+// followed by the id, or "" for an id in no known range. A virtual-patch signature has a name of its own; see
+// VPatchSignature.
 func Signature(id int) string {
 	p := sigPrefix(id)
 	if p == "" {
@@ -418,6 +431,8 @@ func sigPrefix(id int) string {
 		return "shield-"
 	case id >= botsFirst && id <= botsLast:
 		return "bots-"
+	case id >= gateFirst && id <= gateLast:
+		return "challenge-"
 	case id >= vpatchFirst && id <= vpatchLast:
 		return "vpatch-"
 	}

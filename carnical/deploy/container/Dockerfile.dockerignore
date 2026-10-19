@@ -18,6 +18,7 @@
 !carnical/notify/**
 !carnical/netwatch/**
 !carnical/bots/**
+!carnical/challenge/**
 !carnical/control/feed/**
 !carnical/apiguard/**
 !carnical/crowdsec/**

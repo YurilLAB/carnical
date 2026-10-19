@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/YurilLAB/coraza/carnical/bots"
+	"github.com/YurilLAB/coraza/carnical/challenge"
 	"github.com/YurilLAB/coraza/carnical/shield"
 )
 
@@ -338,7 +339,13 @@ func (e *Edge) checkRequest(w http.ResponseWriter, r *http.Request, client netip
 	if e.cfg.WordPress.Enabled && !e.checkWordPress(w, r, route) {
 		return false
 	}
-	return e.checkLimits(w, r, client, route, tunnelled)
+	if !e.checkLimits(w, r, client, route, tunnelled) {
+		return false
+	}
+	if rec := recordOf(r.Context()); e.cfg.Challenge != nil && rec != nil {
+		return !e.serveGate(w, r, rec, challenge.Request, shield.Decision{})
+	}
+	return true
 }
 
 // checkBots refuses a kind of client the bot policy refuses (rules 5005003 to 5005012), or reports a kind it watches as
@@ -346,7 +353,7 @@ func (e *Edge) checkRequest(w http.ResponseWriter, r *http.Request, client netip
 func (e *Edge) checkBots(w http.ResponseWriter, r *http.Request, client netip.Addr) bool {
 	kind, action := e.cfg.Bots.Judge(r.Context(), r, client, e.helloOf(r))
 	if rec := recordOf(r.Context()); rec != nil {
-		rec.kind = kind
+		rec.kind, rec.watched = kind, action == bots.Watch
 	}
 	msg := "a kind of client this site refuses: " + kind.String()
 	switch action {

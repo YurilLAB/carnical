@@ -141,6 +141,12 @@ func (s *Shield) verify(r *http.Request, key netip.Addr, now time.Time) Decision
 		return Decision{Action: Respond, ID: idChallengeFailed, Status: http.StatusForbidden,
 			resp: &response{body: "The check could not be confirmed. Go back and try again.\n", contentType: "text/plain; charset=utf-8"}}
 	}
+	s.countSolved(now)
+	return Decision{Action: Respond, ID: idChallengeSolved, Status: http.StatusSeeOther,
+		resp: &response{cookie: s.clearanceCookie(r, key, now), location: to, contentType: "text/plain; charset=utf-8", body: "Thank you.\n"}}
+}
+
+func (s *Shield) countSolved(now time.Time) {
 	s.counters.solved.Add(1)
 	s.det.note(now.UnixNano(), func(w *window, inc *incidentAcc) {
 		w.solved++
@@ -148,11 +154,82 @@ func (s *Shield) verify(r *http.Request, key netip.Addr, now time.Time) Decision
 			inc.solved++
 		}
 	})
+}
+
+// clearanceCookie is the cookie that admits the browser that sent r, from this source, for ClearanceFor.
+func (s *Shield) clearanceCookie(r *http.Request, key netip.Addr, now time.Time) *http.Cookie {
 	// #nosec G124 -- Plain HTTP deployments intentionally support this authenticated, source-bound flood clearance cookie; direct TLS always marks it Secure.
-	cookie := &http.Cookie{Name: cookieName, Value: s.clearance(key, r.Header.Get("User-Agent"), now.Add(s.cfg.ClearanceFor)),
+	return &http.Cookie{Name: cookieName, Value: s.clearance(key, r.Header.Get("User-Agent"), now.Add(s.cfg.ClearanceFor)),
 		Path: "/", MaxAge: int(s.cfg.ClearanceFor / time.Second), HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: r.TLS != nil}
-	return Decision{Action: Respond, ID: idChallengeSolved, Status: http.StatusSeeOther,
-		resp: &response{cookie: cookie, location: to, contentType: "text/plain; charset=utf-8", body: "Thank you.\n"}}
+}
+
+// A person check of the integrator's (package challenge) can stand in for the shield's challenge: the proxy offers it
+// the requests for which Decision.Wants is true, tells it what the shield holds about the visitor (Standing), and,
+// when the check accepts the visitor, has the shield admit them as a right answer to its own challenge would (Vouch).
+
+// Wants reports whether a person check may stand in for the decision: the shield's challenge, or a stranger refused
+// over an attack's budget, which a person behind a busy address can be. A ban, an address or network over its own
+// rate, and the shield's own answers are never offered.
+func (d Decision) Wants() bool {
+	return d.Action == Challenge || d.Action == Refuse && (d.ID == idUnknown || d.ID == idCluster)
+}
+
+// Standing is what the shield holds about an address: whether an attack is on, whether it knows the address from
+// ordinary use before the attack, and how many refusals the address has had in the attack.
+type Standing struct {
+	Attack  bool
+	Known   bool
+	Strikes int
+}
+
+// Standing says what the shield holds about client. It is cheap (one map lookup) and changes nothing.
+func (s *Shield) Standing(client netip.Addr) Standing {
+	info := s.det.info.Load()
+	st := Standing{Attack: info != nil && !s.cfg.MonitorOnly}
+	ns := s.now().UnixNano()
+	s.sources.peek(SourceKey(client.Unmap()), func(src *source) {
+		st.Known = s.isKnown(src, ns, info)
+		if info != nil && src.strikeEpoch == info.epoch {
+			st.Strikes = int(src.strikes)
+		}
+	})
+	return st
+}
+
+// Vouch admits the browser that sent r, from client, past an attack's budgets for ClearanceFor, as a right answer to the
+// shield's challenge does: it sets the shield's clearance cookie on w, so it must come before the answer's header is
+// written, and it counts a solved challenge. During an attack it takes back what the person's way through the check
+// cost the address: one showing of the challenge, as a right answer to the challenge does, and the refusal of this
+// request, when d (the shield's decision about it) refused a stranger over the attack's budget and the check stood in
+// for it. No other refusal is taken back. Call it only for a visitor a person check accepted, once for each answer;
+// d is the zero Decision for a request the shield admitted.
+func (s *Shield) Vouch(w http.ResponseWriter, r *http.Request, client netip.Addr, d Decision) {
+	client = client.Unmap()
+	if !client.IsValid() {
+		return
+	}
+	now := s.now()
+	key := SourceKey(client)
+	http.SetCookie(w, s.clearanceCookie(r, key, now))
+	s.countSolved(now)
+	info := s.det.info.Load()
+	if info == nil || s.cfg.MonitorOnly || s.trusted(client) {
+		return
+	}
+	s.sources.peek(key, func(src *source) {
+		if src.strikeEpoch != info.epoch {
+			return
+		}
+		if d.Action == Refuse && d.Wants() && d.key == key && src.strikes > src.fromShown { // the refusal the check stood in for
+			src.strikes--
+		}
+		switch {
+		case src.shown > 0:
+			src.shown--
+		case src.fromShown > 0:
+			src.fromShown, src.strikes, src.shown = src.fromShown-1, src.strikes-1, showsPerStrike-1
+		}
+	})
 }
 
 // challengePage is the page a browser gets instead of the site during an attack. It names an empty icon, so that a

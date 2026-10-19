@@ -42,6 +42,7 @@ import (
 
 	"github.com/YurilLAB/coraza/carnical/alert"
 	"github.com/YurilLAB/coraza/carnical/bots"
+	"github.com/YurilLAB/coraza/carnical/challenge"
 	"github.com/YurilLAB/coraza/carnical/crowdsec"
 	"github.com/YurilLAB/coraza/carnical/crs"
 	"github.com/YurilLAB/coraza/carnical/inspect"
@@ -160,6 +161,13 @@ type Config struct {
 	// agent without that browser's TLS is read as disguised (see bots.Classify). Set Hellos.Observe as the server's
 	// tls.Config.GetConfigForClient; Server forgets each connection when it closes.
 	Hellos *bots.Hellos
+	// Challenge, if set, is a check that a visitor is a person (package challenge), which Carnical does not ship. It is
+	// offered the requests the shield would challenge, or refuse as strangers over an attack's budget, in place of the
+	// shield's own challenge; and every request that passed the shield, the bot policy and the request policy, before its
+	// body is read. A request it answers goes no further. A visitor it accepts is admitted past the shield as a right
+	// answer to the shield's challenge would be; one it refuses has an alert (rule 5007001). If it is also a
+	// challenge.Responder, it sees the header of each response the application gives before it is forwarded.
+	Challenge challenge.Gate
 	// CrowdSec checks LAPI bans against the verified visitor before reading a body.
 	// Its owner must Sync before serving, run its refresh loop and close it on shutdown.
 	CrowdSec *crowdsec.Client
@@ -660,6 +668,13 @@ func (e *Edge) guard(next http.Handler) http.Handler {
 			// Flood admission costs a few map lookups: a request it refuses is never read further.
 			d := sh.Admit(r, addr)
 			if d.Action != shield.Allow {
+				if e.cfg.Challenge != nil && d.Wants() {
+					// The bot policy has not run yet: what the request says it is. A kind it refuses is not offered.
+					rec.kind, _ = bots.Classify(r, e.helloOf(r))
+					if !e.cfg.Bots.Refuses(rec.kind) && e.serveGate(w, r, rec, challenge.Admission, d) {
+						return
+					}
+				}
 				// A refusal has its alert, deduplicated per source: no line per request, which a flood would multiply. The
 				// challenge, shown or solved, is not a finding about the visitor.
 				if d.Action == shield.Refuse || d.Action == shield.Respond && d.Status >= http.StatusBadRequest {
@@ -960,6 +975,10 @@ func (e *Edge) forward() http.Handler {
 			}
 			// The proxy has the whole body before it forwards anything, so the application has nothing to wait for.
 			out.Header.Del("Expect")
+			if _, ok := e.cfg.Challenge.(challenge.Responder); ok {
+				pr.Out = out.WithContext(context.WithValue(out.Context(), inboundKey{}, in)) // for Respond, after the answer
+				out = pr.Out
+			}
 			out.Trailer = nil
 			// A request with a body does not share its connection to the application with the next request. If the
 			// application stops reading a body early (it ignores it, or answers before it is all there), what is
@@ -993,6 +1012,11 @@ func (e *Edge) forward() http.Handler {
 				return errors.New("the application compressed a response that is to be inspected")
 			}
 			path, _, _ := strings.Cut(resp.Request.URL.Opaque, "?")
+			if rs, ok := e.cfg.Challenge.(challenge.Responder); ok { // before the hardening, which sees what it added
+				if in, _ := resp.Request.Context().Value(inboundKey{}).(*http.Request); in != nil {
+					rs.Respond(in, resp.StatusCode, resp.Header)
+				}
+			}
 			e.cfg.Responses.harden(resp, path)
 			if len(e.cfg.Observers) > 0 {
 				if ir, ok := resp.Request.Context().Value(observedKey{}).(*inspect.Request); ok {

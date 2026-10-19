@@ -2140,3 +2140,112 @@ func TestALimitIsEarnedSlowlyAndStopsAtTheCeiling(t *testing.T) {
 		})
 	}
 }
+
+// A person check may stand in for the challenge and for a stranger's refusal over an attack's budget, never for a ban
+// or a rate; what the shield tells it changes nothing, and a person it accepts is cleared and forgiven what the way
+// through cost.
+func TestAPersonCheckStandsInForTheChallenge(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		d    Decision
+		want bool
+	}{
+		{"the challenge", Decision{Action: Challenge, ID: idChallenge}, true},
+		{"a stranger over the budget", Decision{Action: Refuse, ID: idUnknown}, true},
+		{"a request like the attack over its budget", Decision{Action: Refuse, ID: idCluster}, true},
+		{"a ban", Decision{Action: Refuse, ID: idBanned}, false},
+		{"an address over its rate", Decision{Action: Refuse, ID: idRate}, false},
+		{"a network over its rate", Decision{Action: Refuse, ID: idSubnetRate}, false},
+		{"the challenge's answer", Decision{Action: Respond, ID: idChallengeSolved}, false},
+		{"allowed", Decision{}, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.d.Wants(); got != tt.want {
+				t.Fatalf("Wants() = %v", got)
+			}
+		})
+	}
+
+	now := time.Date(2026, 10, 19, 9, 0, 0, 0, time.UTC)
+	s := newTestShield(t, &now, func(c *Config) { c.BanAfter = 30 })
+	me, stranger := netip.MustParseAddr("198.51.100.7"), netip.MustParseAddr("198.51.100.99")
+	if st := s.Standing(me); st != (Standing{}) || s.sources.len() != 0 {
+		t.Fatalf("outside an attack: %+v; %d sources made", st, s.sources.len())
+	}
+	s.Admit(req("GET", "/"), me)
+	outside := httptest.NewRecorder()
+	s.Vouch(outside, req("GET", "/gate"), me, Decision{})
+	if len(outside.Result().Cookies()) != 1 { // a clearance for later
+		t.Fatal("no clearance outside an attack")
+	}
+	info := &attackInfo{epoch: 1, since: now.UnixNano(), fps: map[uint64]bool{}, paths: map[uint64]bool{}}
+	s.det.info.Store(info)
+	for range 2 {
+		s.strike(now.UnixNano(), SourceKey(me), info)
+	}
+	for range showsPerStrike + 3 {
+		s.mark(now.UnixNano(), SourceKey(me), info, true)
+	}
+	if st := s.Standing(me); !st.Attack || st.Known || st.Strikes != 3 {
+		t.Fatalf("during an attack: %+v", st)
+	}
+	if st := s.Standing(stranger); !st.Attack || st.Strikes != 0 || s.sources.len() != 1 {
+		t.Fatalf("an address the shield never saw: %+v, %d sources", st, s.sources.len())
+	}
+
+	r := req("GET", "/gate", "User-Agent", "UA")
+	w := httptest.NewRecorder()
+	s.Vouch(w, r, me, Decision{Action: Refuse, ID: idUnknown, key: SourceKey(me)}) // the check stood in for this refusal
+	var clr *http.Cookie
+	for _, c := range w.Result().Cookies() {
+		if c.Name == cookieName {
+			clr = c
+		}
+	}
+	if clr == nil || !clr.HttpOnly {
+		t.Fatalf("no clearance: %v", w.Result().Cookies())
+	}
+	withCookie := req("GET", "/", "User-Agent", "UA")
+	withCookie.AddCookie(clr)
+	if !s.cleared(withCookie, SourceKey(me), now) || s.cleared(withCookie, SourceKey(stranger), now) {
+		t.Fatal("the clearance does not admit the browser it was given to, or admits another address")
+	}
+	// One refusal and one showing are taken back: three strikes and three showings became two strikes and two.
+	if st := s.Standing(me); st.Strikes != 2 || s.Snapshot().Solved != 2 {
+		t.Fatalf("after the person was accepted: %+v, %d solved", st, s.Snapshot().Solved)
+	}
+	s.sources.peek(SourceKey(me), func(src *source) {
+		if src.shown != 2 || src.fromShown != 1 {
+			t.Fatalf("shown %d, strikes from shown %d", src.shown, src.fromShown)
+		}
+	})
+	// No refusal the check did not stand in for is taken back: another address's, a ban, or none at all (a request the
+	// shield admitted). Each takes back a showing, as a right answer to the challenge does.
+	s.Vouch(httptest.NewRecorder(), r, me, Decision{Action: Refuse, ID: idUnknown, key: SourceKey(stranger)})
+	s.Vouch(httptest.NewRecorder(), r, me, Decision{Action: Refuse, ID: idBanned, key: SourceKey(me)})
+	for range 5 {
+		s.Vouch(httptest.NewRecorder(), r, me, Decision{})
+	}
+	if st := s.Standing(me); st.Strikes != 1 { // the refusal before any check: an address passing every check is still banned for it
+		t.Fatalf("after many answers: %+v", st)
+	}
+	s.Vouch(httptest.NewRecorder(), r, netip.Addr{}, Decision{}) // no address: nothing to clear
+	if s.Snapshot().Solved != 9 {
+		t.Fatalf("%d solved", s.Snapshot().Solved)
+	}
+
+	// Standing is earned by what the application answered, never by the edge's own answers (a check's page): a bot shown
+	// the check over and over is still a stranger.
+	for _, fromOrigin := range []bool{false, true} {
+		now := now
+		s := newTestShield(t, &now, nil)
+		s.det.learning.Store(true)
+		for range 10 {
+			now = now.Add(20 * time.Second)
+			s.Done(s.Admit(req("GET", "/"), me), http.StatusOK, fromOrigin)
+		}
+		if got := s.Standing(me).Known; got != fromOrigin {
+			t.Fatalf("answered by the application %v: known %v", fromOrigin, got)
+		}
+	}
+}

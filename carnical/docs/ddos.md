@@ -271,7 +271,9 @@ at its limit.
   known clients share a budget of twice the site's usual rate (at least 50 requests/second), and beyond
   it are treated like any other client.
 - **Browser challenges** let an unknown browser outside the budget solve a JavaScript SHA-256
-  puzzle (17 leading zero bits) for a cookie tied to its address/browser for 30 minutes.
+  puzzle (17 leading zero bits) for a cookie tied to its address/browser for 30 minutes. A
+  [person check](challenge.md) plugged into the proxy can stand in for this challenge; a visitor it
+  accepts gets the same cookie.
 - **Other clients** share a budget equal to the site's usual rate. API clients receive 503 and
   `Retry-After` rather than a challenge page.
 

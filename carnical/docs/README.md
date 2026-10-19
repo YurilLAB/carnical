@@ -26,6 +26,7 @@ recorded build and configuration.
 | Tune floods and inspect IDS alerts | [Flood protection and IDS](ddos.md) |
 | Be told of attacks as they happen | [Alert endpoint](alert-endpoint.md) |
 | Block AI crawlers, scrapers and fake search engines; count bots and people blocked | [Bots](bots.md) |
+| Plug in a check that a visitor is a person, told what the bot policy and the flood shield found | [Person check](challenge.md) |
 | Add Linux packet filtering | [Network protection](network-protection.md) |
 | Connect CrowdSec IP bans | [CrowdSec](crowdsec.md) |
 | Review host confinement and zone boundaries | [Host hardening](hardening.md), [segmentation](segmentation.md) |

@@ -24,6 +24,7 @@ import (
 
 	"github.com/YurilLAB/coraza/carnical/alert"
 	"github.com/YurilLAB/coraza/carnical/bots"
+	"github.com/YurilLAB/coraza/carnical/challenge"
 	"github.com/YurilLAB/coraza/carnical/crs"
 	"github.com/YurilLAB/coraza/carnical/inspect"
 	"github.com/YurilLAB/coraza/carnical/shield"
@@ -1102,5 +1103,305 @@ func TestRefusalsAndWouldBeRefusalsReachTheShield(t *testing.T) {
 				t.Errorf("rejections %d, would-be rejections %d; want %d and %d", snap.SecurityRejections, snap.WouldRejections, tt.rejected, tt.wouldBeen)
 			}
 		})
+	}
+}
+
+// gate is a person check for the tests: what it does is chosen by path, and it keeps what it was told.
+type gate struct {
+	mu   sync.Mutex
+	seen []challenge.Signals
+	late func(challenge.Outcome)
+}
+
+func (g *gate) Serve(w http.ResponseWriter, r *http.Request, s challenge.Signals, report func(challenge.Outcome)) bool {
+	g.mu.Lock()
+	g.seen = append(g.seen, s)
+	g.mu.Unlock()
+	status := http.StatusOK
+	switch r.URL.Path {
+	case "/gate/pass":
+		report(challenge.Outcome{Verdict: challenge.Passed, Score: 5})
+	case "/gate/refuse":
+		report(challenge.Outcome{Verdict: challenge.Refused, Score: 140, Reason: "straight-line+20, <script>\n" + strings.Repeat("x", 100)})
+		report(challenge.Outcome{Verdict: challenge.Refused, Score: 1, Reason: "a second report"}) // ignored
+		status = http.StatusForbidden
+	case "/gate/show", "/page":
+		if s.Point == challenge.Request && r.URL.Path == "/page" {
+			return false // the check is only for some pages
+		}
+		report(challenge.Outcome{Verdict: challenge.Shown})
+	case "/gate/sloppy": // writes an answer and says it did not: it answered all the same
+		_, _ = io.WriteString(w, "from the gate")
+		return false
+	case "/gate/read": // reads the whole body, as a check reading its answer might
+		n, err := io.Copy(io.Discard, r.Body)
+		w.Header().Set("X-Read", strconv.FormatInt(n, 10)+" "+strconv.FormatBool(err != nil))
+	case "/gate/late": // keeps report to call it after Serve has returned
+		g.mu.Lock()
+		g.late = report
+		g.mu.Unlock()
+	default:
+		return false
+	}
+	w.WriteHeader(status)
+	_, _ = io.WriteString(w, "from the gate")
+	return true
+}
+
+// Respond marks each response it is shown, so that a test can tell it saw it and that what it changed was forwarded.
+func (g *gate) Respond(r *http.Request, status int, h http.Header) {
+	h.Set("X-Gate-Saw", strconv.Itoa(status)+" "+r.Host+r.URL.Path+" "+r.Header.Get("User-Agent"))
+	if r.URL.Path == "/learned" {
+		h.Add("Set-Cookie", "learned=1") // a cookie for one visitor: the response must not be cached
+	}
+}
+
+func (g *gate) signals() []challenge.Signals {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return append([]challenge.Signals(nil), g.seen...)
+}
+
+// The person check is offered every request that passed the shield, the bot policy and the request policy, and is told
+// what they found; what it answers goes no further, and what it decides is alerted on and admits a person past the
+// shield.
+func TestThePersonCheckIsOfferedEachRequest(t *testing.T) {
+	var mu sync.Mutex
+	var matches []Match
+	g := &gate{}
+	sh, err := shield.New(shield.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(sh.Close)
+	s := start(t, func(c *Config) {
+		c.Challenge, c.Shield = g, sh
+		c.UpstreamHost = "origin.example.internal" // the check still sees the host the visitor asked for
+		c.Bots = &bots.Policy{Refuse: 1 << alert.ClientScanner, Watch: 1 << alert.ClientTool}
+		c.OnMatch = func(m Match) { mu.Lock(); matches = append(matches, m); mu.Unlock() }
+	})
+	matched := func(id int) (out []Match) {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, m := range matches {
+			if m.RuleID == id {
+				out = append(out, m)
+			}
+		}
+		return out
+	}
+
+	t.Run("a request it lets go on reaches the application, with what was found", func(t *testing.T) {
+		status, reply := s.raw(t, "GET /page HTTP/1.1\r\nHost: shop.example.test\r\nUser-Agent: curl/8.5.0\r\nAccept: */*\r\nConnection: close\r\n\r\n")
+		sig := g.signals()
+		if status != 200 || strings.Contains(reply, "from the gate") || len(sig) != 1 || !strings.Contains(reply, "X-Gate-Saw: 200 shop.example.test/page curl/8.5.0\r\n") {
+			t.Fatalf("%d %q, %d offers", status, reply, len(sig))
+		}
+		if got := sig[0]; got.Point != challenge.Request || got.Kind != alert.ClientTool || !got.Watched || got.Client != netip.MustParseAddr("127.0.0.1") || got.Attack {
+			t.Fatalf("signals %+v", got)
+		}
+	})
+	t.Run("a request it answers goes no further", func(t *testing.T) {
+		before := len(s.up.requests())
+		status, reply := s.raw(t, get("/gate/show"))
+		if status != 200 || !strings.Contains(reply, "from the gate") || len(s.up.requests()) != before || strings.Contains(reply, "X-Gate-Saw") ||
+			!strings.Contains(reply, "Cache-Control: no-store\r\n") || !strings.Contains(reply, "X-Content-Type-Options: nosniff\r\n") {
+			t.Fatalf("%d %q; the application saw %d more", status, reply, len(s.up.requests())-before)
+		}
+		if g.signals()[1].Kind == alert.ClientTool || g.signals()[1].Watched {
+			t.Fatalf("signals %+v", g.signals()[1])
+		}
+		// Nor does one it wrote an answer to and then let go on.
+		if status, reply := s.raw(t, get("/gate/sloppy")); status != 200 || !strings.Contains(reply, "from the gate") || len(s.up.requests()) != before {
+			t.Fatalf("written and let go on: %d %q; the application saw %d more", status, reply, len(s.up.requests())-before)
+		}
+	})
+	t.Run("what it adds to a response is hardened like the rest", func(t *testing.T) {
+		if _, reply := s.raw(t, get("/learned")); !strings.Contains(reply, "Set-Cookie: learned=1\r\n") || !strings.Contains(reply, "Cache-Control: private, no-store\r\n") {
+			t.Fatalf("%q", reply)
+		}
+	})
+	t.Run("it reads no more of a body than the site takes", func(t *testing.T) {
+		body := strings.Repeat("a", 200<<10) // over the 128 KiB form limit
+		_, reply := s.raw(t, "POST /gate/read HTTP/1.1\r\nHost: shop.example.test\r\nUser-Agent: Mozilla/5.0 Chrome/120\r\nContent-Type: application/json\r\n"+
+			"Content-Length: "+strconv.Itoa(len(body))+"\r\nConnection: close\r\n\r\n"+body)
+		if !strings.Contains(reply, "X-Read: 131072 true\r\n") {
+			t.Fatalf("%q", reply[:min(len(reply), 300)])
+		}
+	})
+	t.Run("a report after it answered is not the request's", func(t *testing.T) {
+		s.raw(t, get("/gate/late"))
+		before := len(matched(idGateRefused))
+		g.mu.Lock()
+		late := g.late
+		g.mu.Unlock()
+		late(challenge.Outcome{Verdict: challenge.Refused})
+		if len(matched(idGateRefused)) != before {
+			t.Fatal("a late report was alerted")
+		}
+	})
+	t.Run("a refusal is alerted once, with a plain reason", func(t *testing.T) {
+		if status, _ := s.raw(t, get("/gate/refuse")); status != 403 {
+			t.Fatalf("%d", status)
+		}
+		got := matched(idGateRefused)
+		want := "the person check refused the visitor, score 100: straight-line+20, script" + strings.Repeat("x", 64-len("straight-line+20, script"))
+		if len(got) != 1 || got[0].Message != want || !got[0].Disruptive {
+			t.Fatalf("matches %+v", got)
+		}
+		if sig := alert.Signature(got[0].RuleID); sig != "challenge-5007001" {
+			t.Fatalf("signature %q", sig)
+		}
+	})
+	t.Run("a person it accepts is admitted past the shield", func(t *testing.T) {
+		_, reply := s.raw(t, get("/gate/pass"))
+		if !strings.Contains(reply, "Set-Cookie: carnical_clr=") || len(matched(idGateRefused)) != 1 {
+			t.Fatalf("%q", reply)
+		}
+		if _, reply := s.raw(t, get("/gate/show")); strings.Contains(reply, "carnical_clr") {
+			t.Fatal("a check only shown admitted the visitor")
+		}
+	})
+	t.Run("what the bot policy refuses never reaches it", func(t *testing.T) {
+		before := len(g.signals())
+		status, _ := s.raw(t, "GET /gate/pass HTTP/1.1\r\nHost: shop.example.test\r\nUser-Agent: sqlmap/1.8\r\nConnection: close\r\n\r\n")
+		if status != 403 || len(g.signals()) != before {
+			t.Fatalf("%d; %d offers", status, len(g.signals())-before)
+		}
+	})
+	t.Run("nor does what the request policy refuses", func(t *testing.T) {
+		before := len(g.signals())
+		if status, _ := s.raw(t, "GET /gate/pass HTTP/1.1\r\nHost: shop.example.test\r\nUser-Agent: Mozilla/5.0 Chrome/120\r\nX-HTTP-Method-Override: DELETE\r\nConnection: close\r\n\r\n"); status != 400 || len(g.signals()) != before {
+			t.Fatalf("%d; %d offers", status, len(g.signals())-before)
+		}
+	})
+}
+
+// During an attack the person check stands in for the shield's challenge and for its refusal of strangers over the
+// attack's budget, and a person it accepts is admitted through the rest of the attack; a ban is never offered to it.
+func TestThePersonCheckStandsInForTheShieldsChallenge(t *testing.T) {
+	now := time.Date(2026, 10, 19, 9, 0, 0, 0, time.UTC)
+	var clock atomic.Int64
+	clock.Store(now.UnixNano())
+	sh, err := shield.New(shield.Config{Now: func() time.Time { return time.Unix(0, clock.Load()) },
+		KnownAfter: 3, KnownMinAge: 3 * time.Second, MinUnknownRate: 1, ClusterRate: 1, SubnetRate: 1e6, SubnetBurst: 1e6,
+		BanAfter: 3, ChallengeBits: 8,
+		Detector: shield.DetectorConfig{Warmup: 4 * time.Second, MinHistory: 3 * time.Second, Tau: time.Minute, MinAttackRate: 50,
+			Confirm: 2, MinAttack: time.Hour, ExitQuiet: time.Hour}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(sh.Close)
+	g := &gate{}
+	up := newUpstream(t)
+	cfg := Config{Upstream: mustURL(up.URL), CRS: crs.DefaultSettings(), Origin: loopback, Shield: sh, Challenge: g, MaxConnsPerIP: -1,
+		Bots: &bots.Policy{Refuse: 1 << alert.ClientScanner}}
+	cfg.CRS.Mode = crs.ModeOff
+	e, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { e.Close() })
+	agent := "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/141.0"
+	send := func(from, target string, nav bool, cookies ...*http.Cookie) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodGet, target, nil)
+		r.RemoteAddr = from + ":40000"
+		r.Header.Set("User-Agent", agent)
+		if nav {
+			r.Header.Set("Accept", "text/html,application/xhtml+xml")
+			r.Header.Set("Sec-Fetch-Mode", "navigate")
+			r.Header.Set("Sec-Fetch-Dest", "document")
+		} else {
+			r.Header.Set("Accept", "application/json")
+		}
+		for _, c := range cookies {
+			r.AddCookie(c)
+		}
+		w := httptest.NewRecorder()
+		e.ServeHTTP(w, r)
+		return w
+	}
+	second := func() { clock.Add(int64(time.Second)); sh.Tick() }
+	// A quiet baseline, then a flood from a thousand addresses.
+	for i := range 12 {
+		for j := range 5 {
+			send(fmt.Sprintf("192.0.2.%d", j+1), fmt.Sprintf("/static/%d.css", i), false)
+		}
+		second()
+	}
+	for i := 0; i < 8 && sh.State() != shield.Attack; i++ {
+		for j := range 400 {
+			send(fmt.Sprintf("10.%d.%d.1", i, j%250), "/api/items", false)
+		}
+		second()
+	}
+	if sh.State() != shield.Attack {
+		t.Fatalf("no attack: %v", sh.State())
+	}
+	// Strangers loading pages spend their budget; then a page load gets the shield's challenge.
+	for i := 0; send(fmt.Sprintf("10.201.%d.%d", i/250, i%250+1), "/other", true).Code != http.StatusServiceUnavailable; i++ {
+		if i > 5000 {
+			t.Fatal("strangers are never challenged")
+		}
+	}
+	before := len(g.signals())
+
+	visitor := "198.51.100.20"
+	w := send(visitor, "/gate/show", true)
+	sig := g.signals()
+	if w.Body.String() != "from the gate" || len(sig) != before+1 {
+		t.Fatalf("a page load was not given to the check: %d %q", w.Code, w.Body)
+	}
+	if got := sig[len(sig)-1]; got.Point != challenge.Admission || !got.Attack || got.Known || got.Kind == 0 { // the bot policy has not run: what the request says
+		t.Fatalf("signals %+v", got)
+	}
+	if w := send(visitor, "/other", true); !strings.Contains(w.Body.String(), "One moment") {
+		t.Fatalf("a page the check lets go on did not get the shield's own challenge: %d %q", w.Code, w.Body)
+	}
+	// Its answer is not a page load, and looks like the attack: over the attack's budget it is refused, and the check
+	// takes it all the same.
+	for i := 0; send("10.250.0.1", "/api/items", false).Code != http.StatusServiceUnavailable; i++ {
+		if i > 100 {
+			t.Fatal("the attack's budget is never spent")
+		}
+	}
+	w = send(visitor, "/gate/pass", false)
+	var clr *http.Cookie
+	for _, c := range w.Result().Cookies() {
+		if c.Name == "carnical_clr" {
+			clr = c
+		}
+	}
+	if last := g.signals()[len(g.signals())-1]; w.Body.String() != "from the gate" || clr == nil || w.Header().Get("Connection") != "close" || last.Point != challenge.Admission {
+		t.Fatalf("the answer, in place of a refusal: %d %q %v %+v", w.Code, w.Body, w.Header(), last)
+	}
+	seenBefore := len(up.requests())
+	if w := send(visitor, "/basket", false, clr); w.Code != 200 || len(up.requests()) != seenBefore+1 {
+		t.Fatalf("a person the check accepted was not admitted: %d %q", w.Code, w.Body)
+	}
+	if w := send(visitor, "/basket", false); w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("control: without the clearance: %d", w.Code)
+	}
+	// A kind of client the bot policy refuses is not offered: the shield's answer stands.
+	before = len(g.signals())
+	agent = "sqlmap/1.8"
+	if w := send("198.51.100.30", "/gate/show", true); w.Body.String() == "from the gate" || len(g.signals()) != before {
+		t.Fatalf("a scanner was offered to the check: %d %q", w.Code, w.Body)
+	}
+	agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/141.0"
+	// The refusal the check stood in for counts toward the address's ban as the shield's own did, and once: the check's
+	// refusal adds nothing. The ban is never offered to the check.
+	bot := "198.51.100.66"
+	rejected := sh.Snapshot().SecurityRejections
+	before = len(g.signals())
+	for range 3 {
+		send(bot, "/gate/refuse", false)
+	}
+	if got := g.signals()[before]; got.Strikes != 1 || sh.Snapshot().SecurityRejections != rejected {
+		t.Fatalf("the refusals: first offer %+v; %d rejections counted", got, sh.Snapshot().SecurityRejections-rejected)
+	}
+	before = len(g.signals())
+	if w := send(bot, "/gate/show", true); w.Code != http.StatusForbidden || len(g.signals()) != before {
+		t.Fatalf("a banned address: %d %q, %d offers", w.Code, w.Body, len(g.signals())-before)
 	}
 }

@@ -50,8 +50,9 @@ type record struct {
 	// engine is how the rule engine's evaluation of the request ended (see budgetTx.Close).
 	engine engineEnd
 	// kind is the kind of client the bot policy read the request as (see checkBots); 0 when it did not run. The
-	// request's own goroutine writes and reads it.
-	kind alert.Client
+	// request's own goroutine writes and reads it, and watched, which says the policy reports that kind.
+	kind    alert.Client
+	watched bool
 	// override is the method WordPress's REST API is asked to run instead of POST, when checkRequest allowed it (see
 	// wordPressOverride); the forwarded request carries it as the only override header. Written and read like kind.
 	override string

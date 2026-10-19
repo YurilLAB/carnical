@@ -207,6 +207,8 @@ func TestCatalog(t *testing.T) {
 		{"above the base range", 201000, false, "", 0, 0},
 		{"bot policy fake search engine", 5005011, true, "bots-5005011", CatBot, RiskMedium},
 		{"bot policy AI crawler", 5005003, true, "bots-5005003", CatBot, RiskLow},
+		{"person check refusal", 5007001, true, "challenge-5007001", CatBot, RiskLow},
+		{"person check range", 5007999, true, "challenge-5007999", CatBot, RiskLow},
 		{"unused carnical range", 5001000, false, "", 0, 0},
 		{"below every range", 42, false, "", 0, 0},
 	}
@@ -237,6 +239,8 @@ func TestCatalog(t *testing.T) {
 		{"shield-5004001", true},
 		{"bots-5005003", true},
 		{"bots-5004001", false}, // a shield id under the bots prefix
+		{"challenge-5007001", true},
+		{"challenge-5005003", false}, // a bot id under the person check's prefix
 		{"policy-1050007", true},
 		{"crs-200009", true},
 		{"crs-199999", false},
