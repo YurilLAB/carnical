@@ -25,7 +25,8 @@ import (
 func privateSiteFlag(name string) bool {
 	switch name {
 	case "upstream", "upstream-host", "origin-allow", "trusted-proxies", "tls-cert", "tls-key",
-		"origin-client-cert", "origin-client-key", "origin-ca-file", "api-spec":
+		"origin-client-cert", "origin-client-key", "origin-ca-file", "api-spec",
+		"alert-endpoint", "alert-endpoint-secret-file", "alert-endpoint-allow", "alert-endpoint-ca-file":
 		return true
 	default:
 		return false

@@ -194,7 +194,8 @@ Every request and connection while the attack goes on is counted, the site's own
 `attack_start`, which comes before anything of the attack itself has been counted, the requests,
 addresses, networks, ports and protocols are those of the ten seconds that showed the attack. The
 ports cover the attack layer the Go listener sees, TCP only; UDP and SYN floods are counted by the
-[kernel packet guards](network-protection.md).
+[kernel packet guards](network-protection.md). With `-alert-endpoint`, the record is also sent to
+your own endpoint as it happens: see [alert endpoint](alert-endpoint.md).
 
 ## Limits that follow your traffic
 

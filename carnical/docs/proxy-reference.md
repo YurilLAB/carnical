@@ -298,6 +298,7 @@ describes the record.
 | `-alert-totals-interval` | `1m` | How often changed totals are written; `0` writes them only at shutdown. |
 | `-alert-summary-interval` | `5m` | How often the busiest sources are listed; `0` never. |
 | `-log-rule-matches` | `true` | `false` keeps the alerts and leaves out the `rule matched` lines of the rule set, the inspectors, the proxy's refusals and the rate rules (`proxy.Config.NoRuleMatches`). The lines go through a queue of 8,192, so a request never waits on a log that has fallen behind; what does not fit is dropped and reported, at most once a second, as `rule matched lines dropped` with a `count`. |
+| `-alert-endpoint`, `-alert-endpoint-secret-file`, `-alert-endpoint-allow`, `-alert-endpoint-ca-file` | none | Send signed messages about attacks to an HTTPS endpoint; see [alert endpoint](alert-endpoint.md). |
 | `-eval-budget-detect` | `forward` | In `-mode detect`, a request whose rule evaluation runs past `-eval-budget` is forwarded and reported as not inspected; `refuse` answers 503 instead. |
 
 Suppressions and exclusions only silence alerts: blocking, rate limits and points toward a ban are

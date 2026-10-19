@@ -35,6 +35,7 @@ import (
 	"github.com/YurilLAB/coraza/carnical/crs"
 	"github.com/YurilLAB/coraza/carnical/proxy"
 	"github.com/YurilLAB/coraza/carnical/sandbox"
+	"github.com/YurilLAB/coraza/carnical/shield"
 )
 
 func main() {
@@ -149,6 +150,7 @@ func runFlags(usage, logs io.Writer, args []string, private map[string]string) e
 	showVersion := flags.Bool("version", false, "print the CRS version that is embedded and exit")
 	siteFlag := declareSiteFlags(flags)
 	alertFlag := declareAlertFlags(flags)
+	endpointFlag := declareEndpointFlags(flags)
 	autoBlockFlag := declareAutoBlockFlags(flags)
 	botFlag := declareBotFlags(flags)
 	if err := flags.Parse(args); err != nil {
@@ -290,6 +292,17 @@ func runFlags(usage, logs io.Writer, args []string, private map[string]string) e
 		return fromSite(err, site, private)
 	}
 	defer alerts.close() // after the server has stopped: the last requests' alerts and the final totals
+	alertEndpoint, err := configureEndpoint(log, endpointFlag, endpointSite(*hosts))
+	if err != nil {
+		return fromSite(err, site, private)
+	}
+	if !*check {
+		// Started before the shield and closed after it, so that the end of an attack going on at shutdown is sent.
+		if err := alertEndpoint.start(log); err != nil {
+			return err
+		}
+		defer alertEndpoint.close(log)
+	}
 	matches := newMatchLog(log.Handler())
 	defer matches.close(2 * time.Second)
 	matchLogger := slog.New(matches)
@@ -324,9 +337,16 @@ func runFlags(usage, logs io.Writer, args []string, private map[string]string) e
 	if crawlerLists != nil {
 		crawlerLists.logRead(log, "crawler ranges", time.Now())
 	}
-	guard, err := configureShieldWith(log, *ddos, explicit, trusted, autoBlock, alerts.source)
+	var onAttack func(shield.Event)
+	if alertEndpoint != nil {
+		onAttack = alertEndpoint.shieldEvent
+	}
+	guard, err := configureShieldWith(log, *ddos, explicit, trusted, autoBlock, alerts.source, onAttack)
 	if err != nil {
 		return fromSite(err, site, private)
+	}
+	if alertEndpoint != nil && guard == nil {
+		log.Warn("the alert endpoint is told of the attacks flood protection finds; with -ddos off it is sent nothing")
 	}
 	if guard != nil {
 		defer guard.Close()
@@ -424,6 +444,9 @@ func runFlags(usage, logs io.Writer, args []string, private map[string]string) e
 		}
 		if cs != nil && cs.ConnectPort() != 0 && !listed(cs.ConnectPort()) {
 			return errors.New("CrowdSec API TCP port must be listed in -confine-connect")
+		}
+		if alertEndpoint != nil && !listed(alertEndpoint.port) {
+			return fmt.Errorf("the alert endpoint's TCP port %d must be listed in -confine-connect", alertEndpoint.port)
 		}
 		confinement = sandbox.Policy{ReadOnly: splitList(*confineRead), ConnectTCP: ports, BindTCP: []uint16{}, Require: !*confineBestEffort}
 		// The engine writes the file parts of an upload to disk, and the confined proxy may not write the system temporary

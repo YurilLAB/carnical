@@ -24,6 +24,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/YurilLAB/coraza/carnical/notify"
 	"github.com/YurilLAB/coraza/carnical/proxy"
 )
 
@@ -286,6 +287,95 @@ func askProtection(p setupPrompt) (setupProtection, error) {
 	return s, err
 }
 
+// setupEndpoint is setup's answers about the alert endpoint. The settings it stands for are private: they say where
+// alerts go and may hold a token.
+type setupEndpoint struct {
+	url, allow, secretFile string
+	newSecret              bool // a new secret file is made when the settings are saved
+}
+
+func (e setupEndpoint) flags() map[string]any {
+	values := map[string]any{}
+	if e.url == "" {
+		return values
+	}
+	values["alert-endpoint"] = e.url
+	if e.allow != "" {
+		values["alert-endpoint-allow"] = e.allow
+	}
+	if e.secretFile != "" {
+		values["alert-endpoint-secret-file"] = e.secretFile
+	}
+	return values
+}
+
+// askEndpoint asks where attack alerts are sent, if anywhere, and with which signing secret.
+func askEndpoint(p setupPrompt) (setupEndpoint, error) {
+	var e setupEndpoint
+	if err := p.section("5. Attack alerts"); err != nil {
+		return e, err
+	}
+	raw, err := p.ask("Alert endpoint, an HTTPS URL told when an attack starts and ends (blank for none)", "", "Carnical posts a small signed JSON message to it while an attack goes on: what is attacked\n(its ports and protocols), how hard and from how many addresses, and what Carnical did.\nNothing of any request is sent. Blank: no alerts are sent. It is stored encrypted.", func(value string) error {
+		if value == "" {
+			return nil
+		}
+		_, err := notify.ParseURL(value)
+		return err
+	})
+	if err != nil || raw == "" {
+		return e, err
+	}
+	u, err := notify.ParseURL(raw)
+	if err != nil {
+		return e, err
+	}
+	e.url = raw
+	if ip, err := netip.ParseAddr(u.Hostname()); err == nil {
+		ip = ip.Unmap()
+		if (proxy.OriginPolicy{}).Check(ip) != nil {
+			allowed, err := p.yes("The alert endpoint is a private address. Allow Carnical to connect to it", "", "Carnical connects only to public addresses unless told otherwise. Answer y if this is your\nown receiver, such as a relay on this machine.")
+			if err != nil {
+				return e, err
+			}
+			if !allowed {
+				return e, errors.New("the alert endpoint is refused without an explicit allowance; setup cancelled")
+			}
+			e.allow = netip.PrefixFrom(ip, ip.BitLen()).String()
+		}
+	} else {
+		e.allow, err = p.ask("Private IPs or ranges the alert endpoint's name resolves to (blank if public)", "", "Only needed when the endpoint's name points at a private address.", func(value string) error {
+			if _, err := proxy.ParseOriginAllow(value); err != nil {
+				return errors.New("use specific IPs/CIDRs; an allow-all range is refused")
+			}
+			return nil
+		})
+		if err != nil {
+			return e, err
+		}
+	}
+	secret, err := p.ask("Signing secret file (blank to make a new one when the settings are saved)", "", "A file whose first line is the secret both ends share: the receiver checks each message's\nX-Carnical-Signature with it. Give the path of a file; never paste the secret itself.", func(value string) error {
+		if value == "" {
+			return nil
+		}
+		data, err := readCrowdSecFile(value, 4096, true)
+		if err != nil {
+			return errors.New("cannot read that file (a regular file of at most 4096 bytes, not accessible to everyone or writable by its group)")
+		}
+		defer clear(data)
+		_, err = notify.ParseSecret(data)
+		return err
+	})
+	if err != nil {
+		return e, err
+	}
+	if secret == "" {
+		e.newSecret = true
+		return e, nil
+	}
+	e.secretFile, err = filepath.Abs(secret)
+	return e, err
+}
+
 // Validation runs the real startup checks in-process with a fresh FlagSet. No
 // temporary plaintext configuration, child process arguments or listener is used.
 func runSetup(input io.Reader, output io.Writer, validate func([]string) error) error {
@@ -448,14 +538,27 @@ func runSetup(input io.Reader, output io.Writer, validate func([]string) error) 
 		return err
 	}
 	maps.Copy(values, protection.flags())
-	if err := p.section("5. Check and save"); err != nil {
+	alertEndpoint, err := askEndpoint(p)
+	if err != nil {
+		return err
+	}
+	maps.Copy(values, alertEndpoint.flags())
+	if err := p.section("6. Check and save"); err != nil {
 		return err
 	}
 	probe, err := p.yes("Check the connection to the origin now", "y", "Looks up the origin and connects to it (TLS included); sends no HTTP request.")
 	if err != nil {
 		return err
 	}
-	args := setupValidationArgs(values)
+	checked := values
+	if alertEndpoint.newSecret {
+		// The secret is made only when the settings are saved, and an endpoint is refused without one: the endpoint's
+		// answers were checked as they were given.
+		checked = maps.Clone(values)
+		delete(checked, "alert-endpoint")
+		delete(checked, "alert-endpoint-allow")
+	}
+	args := setupValidationArgs(checked)
 	if probe {
 		args = append(args, "-check-origin")
 	}
@@ -470,8 +573,13 @@ func runSetup(input io.Reader, output io.Writer, validate func([]string) error) 
 	} else if protection.site == "wordpress" {
 		login = "wp-login.php 10/min"
 	}
-	if _, err := fmt.Fprintf(output, "Settings checked:\n  site       %s on %s (%s)\n  profile    %s, %s detection, %s mode\n  security   flood %s, auto-block %s, login limit %s, alerts %s\nDNS and access to the origin still need to be arranged before visitors use Carnical.\n",
-		values["hosts"], listen, visitorTLS, protection.site, protection.level, protection.mode, protection.flood, protection.autoBlock, login, protection.alerts); err != nil {
+	endpointState := "none"
+	if alertEndpoint.url != "" {
+		u, _ := notify.ParseURL(alertEndpoint.url)
+		endpointState = "on, port " + strconv.Itoa(int(notify.URLPort(u)))
+	}
+	if _, err := fmt.Fprintf(output, "Settings checked:\n  site       %s on %s (%s)\n  profile    %s, %s detection, %s mode\n  security   flood %s, auto-block %s, login limit %s, alerts %s\n  endpoint   %s\nDNS and access to the origin still need to be arranged before visitors use Carnical.\n",
+		values["hosts"], listen, visitorTLS, protection.site, protection.level, protection.mode, protection.flood, protection.autoBlock, login, protection.alerts, endpointState); err != nil {
 		return err
 	}
 	save, err := p.yes("Save these settings", "y", "")
@@ -482,11 +590,12 @@ func runSetup(input io.Reader, output io.Writer, validate func([]string) error) 
 		_, err := fmt.Fprintln(output, "Nothing saved.")
 		return err
 	}
-	return saveSetup(p, values)
+	return saveSetup(p, values, alertEndpoint.newSecret)
 }
 
 // saveSetup saves the settings: the clear ones readable, the private ones encrypted with a new key in a separate file.
-func saveSetup(p setupPrompt, values map[string]any) error {
+// newSecret makes a new signing secret for the alert endpoint, in a protected file of its own.
+func saveSetup(p setupPrompt, values map[string]any, newSecret bool) error {
 	output := p.output
 	savedPath, err := defaultSitePath()
 	configDefault := savedPath
@@ -531,6 +640,24 @@ func saveSetup(p setupPrompt, values map[string]any) error {
 	if keyPath == configPath || runtime.GOOS == "windows" && strings.EqualFold(keyPath, configPath) {
 		return errors.New("configuration and encryption key need separate files")
 	}
+	secretPath := ""
+	if newSecret {
+		secretPath, err = p.ask("Alert signing secret file", filepath.Join(filepath.Dir(keyPath), "alert-"+id+".secret"), "A new file that holds the secret the alert endpoint's messages are signed with.\nGive a copy to the receiving end; the account that runs Carnical must read it.", requiredSetupValue)
+		if err != nil {
+			return err
+		}
+		if secretPath, err = filepath.Abs(secretPath); err != nil {
+			return err
+		}
+		if secretPath == keyPath || secretPath == configPath || runtime.GOOS == "windows" && (strings.EqualFold(secretPath, keyPath) || strings.EqualFold(secretPath, configPath)) {
+			return errors.New("the alert signing secret needs a file of its own")
+		}
+		// Checked before anything is written, as the site file is: an existing file is never replaced.
+		if _, err := os.Lstat(secretPath); !errors.Is(err, os.ErrNotExist) {
+			return errors.New("the alert signing secret's file exists or cannot be checked; choose a new file")
+		}
+		values["alert-endpoint-secret-file"] = secretPath
+	}
 	for _, made := range []struct{ path, saved string }{{keyPath, defaultKeyPath}, {configPath, savedPath}} {
 		if made.path == made.saved {
 			if err := os.MkdirAll(filepath.Dir(made.path), 0700); err != nil {
@@ -562,7 +689,21 @@ func saveSetup(p setupPrompt, values map[string]any) error {
 	if err := writeNewSiteFile(keyPath, key); err != nil {
 		return fmt.Errorf("cannot save protected encryption key: %w", err)
 	}
+	if secretPath != "" {
+		secret, err := notify.NewSecret()
+		if err != nil {
+			return err
+		}
+		err = writeNewSiteFile(secretPath, secret)
+		clear(secret)
+		if err != nil {
+			return fmt.Errorf("cannot save the alert signing secret (key retained at %s): %w", keyPath, err)
+		}
+	}
 	if err := writeNewSiteFile(configPath, append(data, '\n')); err != nil {
+		if secretPath != "" {
+			return fmt.Errorf("cannot save configuration (key retained at %s, alert signing secret at %s): %w", keyPath, secretPath, err)
+		}
 		return fmt.Errorf("cannot save configuration (key retained at %s): %w", keyPath, err)
 	}
 	site := ""
@@ -572,7 +713,15 @@ func saveSetup(p setupPrompt, values map[string]any) error {
 	if keyPath != defaultKeyPath {
 		site += " -config-key-file " + setupQuote(keyPath)
 	}
-	_, err = fmt.Fprintf(output, "Saved. The origin details are encrypted; keep the key apart from backups of the site file.\nNext:\n  carnical check%s\n  carnical start%s\n", site, site)
+	if _, err := fmt.Fprintf(output, "Saved. The origin details are encrypted; keep the key apart from backups of the site file.\n"); err != nil {
+		return err
+	}
+	if secretPath != "" {
+		if _, err := fmt.Fprintf(output, "The alert signing secret is in %s: give it to the receiving end, which checks X-Carnical-Signature.\n", secretPath); err != nil {
+			return err
+		}
+	}
+	_, err = fmt.Fprintf(output, "Next:\n  carnical check%s\n  carnical start%s\n", site, site)
 	return err
 }
 

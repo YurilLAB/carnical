@@ -47,6 +47,7 @@ import (
 	"github.com/YurilLAB/coraza/carnical/crs"
 	"github.com/YurilLAB/coraza/carnical/formats"
 	"github.com/YurilLAB/coraza/carnical/inspect"
+	"github.com/YurilLAB/coraza/carnical/notify"
 	"github.com/YurilLAB/coraza/carnical/policy"
 	"github.com/YurilLAB/coraza/carnical/proxy"
 	"github.com/YurilLAB/coraza/carnical/shield"
@@ -207,6 +208,9 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 		for _, tc := range []struct {
 			name, prefix                                                                            string
 			save, bad, exists, defaultKey, defaultSite, sameKey, noProfile, missingKey, outputError bool
+			endpoint                                                                                []string // answers to the alert endpoint's questions; none is no endpoint
+			secretAnswer                                                                            string   // the answer to where a new signing secret goes
+			newSecret                                                                               bool     // a new secret file is expected next to the key
 		}{
 			{name: "declined save"},
 			{name: "encrypted saved site", save: true},
@@ -222,6 +226,15 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 			{name: "public plaintext listener refused", prefix: "example.test\n" + origin.URL + "\ny\n\nlocal\n0.0.0.0:8080\n", bad: true},
 			{name: "existing config preserved", save: true, exists: true, bad: true},
 			{name: "key and config need separate files", save: true, sameKey: true, bad: true},
+			// A public http URL is refused and asked again; a private address must be allowed; blank makes a new secret.
+			{name: "alert endpoint with a new signing secret", save: true, newSecret: true,
+				endpoint: []string{"http://alerts.example.com/hook", "https://127.0.0.1:9443/hook", "y", ""}},
+			{name: "alert endpoint refused without an allowance", save: true, bad: true,
+				endpoint: []string{"https://127.0.0.1:9443/hook", "n"}},
+			{name: "alert signing secret needs a file of its own", save: true, bad: true,
+				endpoint: []string{"https://127.0.0.1:9443/hook", "y", ""}, secretAnswer: "SAMEKEY"},
+			{name: "an existing file is never replaced by a new signing secret", save: true, bad: true,
+				endpoint: []string{"https://127.0.0.1:9443/hook", "y", ""}, secretAnswer: "EXISTING"},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				dir := t.TempDir()
@@ -229,6 +242,15 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 				keyAnswer := keyPath
 				if tc.sameKey {
 					keyAnswer = configPath
+				}
+				switch tc.secretAnswer {
+				case "SAMEKEY":
+					tc.secretAnswer = keyPath
+				case "EXISTING":
+					tc.secretAnswer = filepath.Join(dir, "taken.secret")
+					if err := os.WriteFile(tc.secretAnswer, []byte("not to be replaced"), 0o600); err != nil {
+						t.Fatal(err)
+					}
 				}
 				if tc.defaultKey {
 					t.Setenv("APPDATA", filepath.Join(dir, "appdata"))
@@ -262,7 +284,12 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 				}
 				input := tc.prefix
 				if input == "" {
-					input = strings.Join([]string{"example.test", origin.URL, "y", "", "local", listen, siteType, "", "block", "", "", "", "", "", "n", answer, configAnswer, keyAnswer, ""}, "\n")
+					endpoint := tc.endpoint
+					if len(endpoint) == 0 {
+						endpoint = []string{""} // no endpoint
+					}
+					answers := append([]string{"example.test", origin.URL, "y", "", "local", listen, siteType, "", "block", "", "", "", "", ""}, endpoint...)
+					input = strings.Join(append(answers, "n", answer, configAnswer, keyAnswer, tc.secretAnswer, ""), "\n")
 				}
 				var output bytes.Buffer
 				var err error
@@ -288,6 +315,14 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 					if _, err := os.Stat(keyPath); !os.IsNotExist(err) {
 						t.Fatal("key written without successful save")
 					}
+					if matches, _ := filepath.Glob(filepath.Join(dir, "alert-*.secret")); len(matches) != 0 {
+						t.Fatalf("a secret file was left by a failed setup: %v", matches)
+					}
+					if tc.secretAnswer != "" && tc.secretAnswer != keyPath {
+						if data, err := os.ReadFile(tc.secretAnswer); err != nil || string(data) != "not to be replaced" {
+							t.Fatalf("an existing file was changed: %q %v", data, err)
+						}
+					}
 					data, err := os.ReadFile(configPath)
 					if tc.exists {
 						if err != nil || string(data) != "original" {
@@ -302,8 +337,9 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if bytes.Contains(data, []byte(origin.URL)) || bytes.Contains(data, []byte("127.0.0.1/32")) || bytes.Contains(data, []byte(keyPath)) {
-					t.Fatal("private origin details or key path stored in clear")
+				if bytes.Contains(data, []byte(origin.URL)) || bytes.Contains(data, []byte("127.0.0.1/32")) || bytes.Contains(data, []byte(keyPath)) ||
+					bytes.Contains(data, []byte("9443")) || bytes.Contains(data, []byte(".secret")) {
+					t.Fatal("private origin or alert endpoint details, or a key path, stored in clear")
 				}
 				var document siteDocument
 				if err := json.Unmarshal(data, &document); err != nil {
@@ -311,6 +347,24 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 				}
 				if document.Private == nil || document.Flags["mode"] != "block" {
 					t.Fatal("missing ciphertext or reviewable policy")
+				}
+				if tc.newSecret {
+					secretPath := filepath.Join(filepath.Dir(keyPath), "alert-"+document.Private.KeyID+".secret")
+					secret, err := readCrowdSecFile(secretPath, 4096, true)
+					if err != nil {
+						t.Fatalf("the new signing secret is not a protected file: %v", err)
+					}
+					if _, err := notify.ParseSecret(secret); err != nil {
+						t.Fatal(err)
+					}
+					if !strings.Contains(output.String(), "The alert signing secret is in "+secretPath) || strings.Contains(output.String(), strings.TrimSpace(string(secret))) {
+						t.Fatalf("setup did not say where the secret is, or showed it:\n%s", &output)
+					}
+					if !strings.Contains(output.String(), "endpoint   on, port 9443") {
+						t.Errorf("the summary does not show the endpoint:\n%s", &output)
+					}
+				} else if matches, _ := filepath.Glob(filepath.Join(dir, "*.secret")); len(matches) != 0 {
+					t.Fatalf("a secret file was made without an endpoint: %v", matches)
 				}
 				if tc.defaultKey {
 					keyPath, err = siteKeyPath(document.Private.KeyID)
@@ -345,7 +399,8 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 					t.Errorf("setup did not say %q:\n%s", next, &output)
 				}
 				flags := flag.NewFlagSet("encrypted override", flag.ContinueOnError)
-				for _, name := range []string{"hosts", "listen", "mode", "formats-mode", "ddos", "auto-block", "bots", "bots-monitor", "alerts", "upstream", "upstream-host", "origin-allow", "config-key-file"} {
+				for _, name := range []string{"hosts", "listen", "mode", "formats-mode", "ddos", "auto-block", "bots", "bots-monitor", "alerts", "upstream", "upstream-host", "origin-allow", "config-key-file",
+					"alert-endpoint", "alert-endpoint-allow", "alert-endpoint-secret-file"} {
 					flags.String(name, "", "")
 				}
 				flags.Bool("wordpress", false, "")
@@ -731,7 +786,7 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 		} {
 			t.Run(flow.name, func(t *testing.T) {
 				answers := append([]string{"localhost", app.URL, "yes", ""}, flow.extra...)
-				answers = append(answers, "", "", "detect", "", "", "", "", "", "no", "no")
+				answers = append(answers, "", "", "detect", "", "", "", "", "", "", "no", "no")
 				var transcript bytes.Buffer
 				if err := runSetup(strings.NewReader(strings.Join(answers, "\n")), &transcript, runArgs); err != nil {
 					t.Fatalf("setup=%v %s", err, &transcript)
@@ -3484,6 +3539,219 @@ func TestCrawlerListsStayCurrent(t *testing.T) {
 						t.Fatalf("step %d: %v is verified", i+1, a)
 					}
 				}
+			}
+		})
+	}
+}
+
+// The alert endpoint's settings are checked at start-up as the proxy's own are, and a refusal names the setting, never
+// the endpoint's URL, its token or the secret.
+func TestAlertEndpointSettings(t *testing.T) {
+	dir := t.TempDir()
+	secretPath, shortPath, openPath := filepath.Join(dir, "alert.secret"), filepath.Join(dir, "short.secret"), filepath.Join(dir, "open.secret")
+	secret := strings.Repeat("s", 40)
+	for _, f := range []struct{ path, data string }{{secretPath, secret + "\n"}, {shortPath, "too-short\n"}} {
+		if err := writeNewSiteFile(f.path, []byte(f.data)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(openPath, []byte(secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	keyMode(t, openPath, 0o644)
+	const url = "-alert-endpoint=https://alerts.example.com/hook?token=zz9tok"
+	withSecret := "-alert-endpoint-secret-file=" + secretPath
+	for _, tc := range []struct {
+		name string
+		args []string
+		says string // empty: accepted
+	}{
+		{"no endpoint", nil, ""},
+		{"a public https endpoint", []string{url, withSecret}, ""},
+		{"a private endpoint that is allowed", []string{"-alert-endpoint=https://10.0.0.7/hook", "-alert-endpoint-allow=10.0.0.7/32", withSecret}, ""},
+		{"a relay on this machine over http", []string{"-alert-endpoint=http://127.0.0.1:9000/hook", "-alert-endpoint-allow=127.0.0.1/32", withSecret}, ""},
+		{"a private endpoint that is not allowed", []string{"-alert-endpoint=https://10.0.0.7/hook", withSecret}, "not public"},
+		{"the metadata address", []string{"-alert-endpoint=https://169.254.169.254/latest", withSecret}, "not public"},
+		{"plain http to a public endpoint", []string{"-alert-endpoint=http://alerts.example.com/hook", withSecret}, "must use https"},
+		{"credentials in the URL", []string{"-alert-endpoint=https://user:pw@alerts.example.com/hook", withSecret}, "user name or password"},
+		{"no secret", []string{url}, "needs -alert-endpoint-secret-file"},
+		{"a short secret", []string{url, "-alert-endpoint-secret-file=" + shortPath}, "32 to 1024"},
+		{"a secret everyone can read", []string{url, "-alert-endpoint-secret-file=" + openPath}, "cannot read the alert endpoint's secret file"},
+		{"a missing secret file", []string{url, "-alert-endpoint-secret-file=" + filepath.Join(dir, "none")}, "cannot read the alert endpoint's secret file"},
+		{"a secret without an endpoint", []string{withSecret}, "-alert-endpoint-secret-file needs -alert-endpoint"},
+		{"an allowance without an endpoint", []string{"-alert-endpoint-allow=10.0.0.7/32"}, "-alert-endpoint-allow needs -alert-endpoint"},
+		{"an allow-all range", []string{url, withSecret, "-alert-endpoint-allow=0.0.0.0/0"}, "-alert-endpoint-allow"},
+		{"a CA file with no certificate", []string{url, withSecret, "-alert-endpoint-ca-file=" + shortPath}, "contains no certificates"},
+		{"confined with the endpoint's port", []string{"-confine", "-confine-connect=80,443,53", url, withSecret}, ""},
+		{"confined without the endpoint's port", []string{"-confine", "-confine-connect=80,443,53", "-alert-endpoint=https://alerts.example.com:8443/hook", withSecret}, "port 8443 must be listed in -confine-connect"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			args := append([]string{"-check", "-upstream=http://192.0.2.1", "-origin-allow=192.0.2.1/32"}, tc.args...)
+			err := runArgsTo(io.Discard, &logs, args)
+			if tc.says == "" {
+				if err != nil {
+					t.Fatalf("refused: %v", err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), tc.says) {
+				t.Fatalf("error %v, want one that says %q", err, tc.says)
+			}
+			for _, leak := range []string{"zz9tok", "alerts.example.com", secret, "user:pw"} {
+				if err != nil && strings.Contains(err.Error(), leak) || strings.Contains(logs.String(), leak) {
+					t.Fatalf("%q leaked: error %v, log %s", leak, err, &logs)
+				}
+			}
+		})
+	}
+}
+
+// The endpoint sends an attack's start, its end, and at most one update a minute of the shield's ten-second updates,
+// signed, to a real TLS receiver through the guarded dialer.
+func TestAlertEndpointSendsAttacks(t *testing.T) {
+	dir := t.TempDir()
+	secret := strings.Repeat("k", 48)
+	secretPath := filepath.Join(dir, "alert.secret")
+	if err := writeNewSiteFile(secretPath, []byte(secret+"\n")); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var got []notify.Message
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(io.LimitReader(r.Body, notify.MaxBody))
+		var m notify.Message
+		if notify.Verify([]byte(secret), r.Header.Get("X-Carnical-Timestamp"), r.Header.Get("X-Carnical-Signature"), body, time.Now(), time.Minute) &&
+			json.Unmarshal(body, &m) == nil {
+			mu.Lock()
+			got = append(got, m)
+			mu.Unlock()
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	caPath := filepath.Join(dir, "ca.pem")
+	if err := os.WriteFile(caPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	log := slog.New(slog.NewJSONHandler(&logs, nil))
+	str := func(s string) *string { return &s }
+	ep, err := configureEndpoint(log, endpointFlags{url: str(srv.URL + "/hook"), secretFile: str(secretPath), allow: str("127.0.0.1/32"), caFile: str(caPath)}, "example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ep.start(log); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2026, 10, 19, 1, 0, 0, 0, time.UTC)
+	inc := shield.Incident{Start: start, Kinds: []string{"request_flood"}, Ports: []shield.PortCount{{Port: 443, Requests: 900}},
+		Sources: 700, Networks: 90, PeakRate: 3000, BaselineRate: 20, TLS: 900, HTTP2: 900, Requests: 900, Window: true,
+		Clusters: []shield.Cluster{{Kind: "target", Label: "/search?\x1b[31m<script>" + strings.Repeat("x", 300), Share: 0.9, Sources: 600}}}
+	ep.shieldEvent(shield.Event{Kind: "elevated", At: start}) // not an attack: not sent
+	ep.shieldEvent(shield.Event{Kind: "attack_start", Mode: "on", At: start, Rate: 3000, Incident: inc})
+	for s := 10; s <= 120; s += 10 { // the shield's ten-second updates: one a minute goes
+		inc.Window = false
+		ep.shieldEvent(shield.Event{Kind: "attack_update", Mode: "on", At: start.Add(time.Duration(s) * time.Second), Rate: 2000, Incident: inc})
+	}
+	inc.End = start.Add(130 * time.Second)
+	ep.shieldEvent(shield.Event{Kind: "attack_end", Mode: "on", At: inc.End, Incident: inc})
+	ep.close(log)
+	ep.shieldEvent(shield.Event{Kind: "attack_start", Mode: "on", At: inc.End, Incident: inc}) // after close: dropped quietly
+
+	// The updates of 60s and 120s go; one still waiting when the next comes is replaced by it (the endpoint needs the
+	// latest), so the last update sent is always that of 120s.
+	var events []notify.Event
+	var last *notify.Message
+	for i, m := range got {
+		events = append(events, m.Event)
+		if m.Event == notify.AttackUpdate {
+			last = &got[i]
+		}
+	}
+	updates := len(events) - 2
+	if len(events) < 3 || events[0] != notify.AttackStart || events[len(events)-1] != notify.AttackEnd || updates < 1 || updates > 2 ||
+		last == nil || !last.At.Equal(start.Add(120*time.Second)) || last.Attack.Window {
+		t.Fatalf("events %v (last update %+v), want the start, the updates of 60s and 120s or only the latest, the end", events, last)
+	}
+	if !strings.Contains(logs.String(), `"queued":4`) {
+		t.Fatalf("want the start, the updates of 60s and 120s and the end queued: %s", &logs)
+	}
+	got = append(got[:1], got[len(got)-1]) // the start and the end
+	first := got[0]
+	if first.Site != "example.com" || first.Attack.Ports[0].Port != 443 || !first.Attack.Window || first.Attack.Addresses != 700 ||
+		!strings.Contains(first.Text, "tcp/443") || !strings.Contains(first.Text, "mitigation on") {
+		t.Fatalf("start %+v", first)
+	}
+	label := first.Attack.Clusters[0].Label
+	if len(label) > 96 || strings.ContainsAny(label, "\x1b<>") {
+		t.Fatalf("a client-made label went out unbounded or uncleaned: %q", label)
+	}
+	if got[1].Attack.Ended == nil || got[1].Severity != "info" || strings.Contains(got[1].Text, "mitigation on") {
+		t.Fatalf("end %+v", got[1])
+	}
+	if strings.Contains(logs.String(), srv.URL) || strings.Contains(logs.String(), secret) || !strings.Contains(logs.String(), `"sent":`+strconv.Itoa(len(events))) {
+		t.Fatalf("log %s", &logs)
+	}
+}
+
+// The guard is applied where it cannot be fooled, at each connection: a name that passes start-up (it is not an
+// address) but resolves to a private one gets nothing, and the endpoint there is never reached.
+func TestAlertEndpointNamesAreCheckedWhenConnecting(t *testing.T) {
+	dir := t.TempDir()
+	secretPath := filepath.Join(dir, "alert.secret")
+	if err := writeNewSiteFile(secretPath, []byte(strings.Repeat("k", 48)+"\n")); err != nil {
+		t.Fatal(err)
+	}
+	var reached atomic.Int32
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	// A certificate for the name localhost, which httptest's does not cover.
+	pub, key, err := ed25519.GenerateKey(cryptorand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(9), NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		DNSNames: []string{"localhost"}, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+	der, err := x509.CreateCertificate(cryptorand.Reader, tmpl, tmpl, pub, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, _ := x509.ParseCertificate(der)
+	srv.TLS = &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}}}
+	srv.StartTLS()
+	defer srv.Close()
+	_, port, _ := net.SplitHostPort(srv.Listener.Addr().String())
+	var logs bytes.Buffer
+	log := slog.New(slog.NewJSONHandler(&logs, nil))
+	str := func(s string) *string { return &s }
+	for _, tc := range []struct {
+		name, allow string
+		reaches     bool
+	}{
+		{"not allowed", "", false},
+		{"allowed (control: the endpoint is reachable, so the refusal is the guard's)", "127.0.0.1/32,::1/128", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := reached.Load()
+			ep, err := configureEndpoint(log, endpointFlags{url: str("https://localhost:" + port + "/hook"), secretFile: str(secretPath),
+				allow: str(tc.allow), caFile: str("")}, "example.com")
+			if err != nil {
+				t.Fatal(err)
+			}
+			pool := x509.NewCertPool()
+			pool.AddCert(cert)
+			ep.cfg.RootCAs = pool
+			if err := ep.start(log); err != nil {
+				t.Fatal(err)
+			}
+			ep.shieldEvent(shield.Event{Kind: "attack_start", At: time.Now(), Incident: shield.Incident{Start: time.Now()}})
+			ep.close(log)
+			if got := reached.Load() > before; got != tc.reaches {
+				t.Fatalf("endpoint reached %v, want %v; log %s", got, tc.reaches, &logs)
+			}
+			if !tc.reaches && !strings.Contains(logs.String(), "the address is not allowed") {
+				t.Fatalf("the refusal was not logged: %s", &logs)
 			}
 		})
 	}

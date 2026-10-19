@@ -42,7 +42,11 @@ question. A question with no brackets has no safe default and must be answered.
 3. **Protection profile**: the site type and the attack detection level.
 4. **Security settings**: whether attacks are blocked or only logged, flood protection, auto-block,
    a login limit, which bots to block and intrusion alerts.
-5. **Check and save**: the settings are checked as start-up checks them, a summary is shown, and
+5. **Attack alerts**: an HTTPS endpoint told when an attack starts, goes on and ends, with the
+   attacked ports and protocols (blank for none), the private addresses it may be at, and a signing
+   secret file; leave the secret blank and setup makes one when it saves, next to the key. See
+   [alert endpoint](alert-endpoint.md).
+6. **Check and save**: the settings are checked as start-up checks them, a summary is shown, and
    setup asks before saving.
 
 | Site type | Flags it sets |
@@ -100,7 +104,8 @@ To limit how fast one client may call an API, add rate rules to the `flags` obje
 
 The site file keeps website names, listener, profile and security settings in its readable
 `flags` object. The `private` object contains a random key ID and AES-256-GCM ciphertext for
-the origin URL, origin HTTP Host, private allowances, trusted peers and certificate/key paths.
+the origin URL, origin HTTP Host, private allowances, trusted peers, certificate/key paths and the
+alert endpoint's URL, allowance, CA file and secret file path.
 Each save creates an independent random 32-byte key and random nonce. Authentication failure,
 unknown fields, duplicate flags across sections and unsafe key files fail startup.
 

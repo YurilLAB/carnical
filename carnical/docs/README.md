@@ -24,6 +24,7 @@ recorded build and configuration.
 | Run a reviewed virtual-patch pack | [Virtual patches](vpatch.md#run-a-pack-in-the-proxy) |
 | Enforce an OpenAPI contract | [Input hardening](input-hardening.md) |
 | Tune floods and inspect IDS alerts | [Flood protection and IDS](ddos.md) |
+| Be told of attacks as they happen | [Alert endpoint](alert-endpoint.md) |
 | Block AI crawlers, scrapers and fake search engines; count bots and people blocked | [Bots](bots.md) |
 | Add Linux packet filtering | [Network protection](network-protection.md) |
 | Connect CrowdSec IP bans | [CrowdSec](crowdsec.md) |

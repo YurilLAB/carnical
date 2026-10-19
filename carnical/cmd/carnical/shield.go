@@ -175,13 +175,13 @@ func ddosLogAttrs(f shieldFlags, set map[string]bool) []any {
 // configuration. It returns nil for -ddos off. The address-range table, if any, is read here, before the process
 // confines itself.
 func configureShield(log *slog.Logger, f shieldFlags, set map[string]bool, trusted []netip.Prefix) (*shield.Shield, error) {
-	return configureShieldWith(log, f, set, trusted, shield.AutoBlock{}, alert.SourceFull)
+	return configureShieldWith(log, f, set, trusted, shield.AutoBlock{}, alert.SourceFull, nil)
 }
 
 // configureShieldWith is configureShield with repeat-offender blocking (see autoBlockSettings), whose events show their
-// source as -alert-source asks.
+// source as -alert-source asks; each event is also given to also, when it is set (the alert endpoint).
 func configureShieldWith(log *slog.Logger, f shieldFlags, set map[string]bool, trusted []netip.Prefix, ab shield.AutoBlock,
-	source alert.SourceMode) (*shield.Shield, error) {
+	source alert.SourceMode, also func(shield.Event)) (*shield.Shield, error) {
 	mode, _, err := parseDDoS(f.mode)
 	if err != nil {
 		return nil, refuseFlag("ddos", err)
@@ -205,6 +205,13 @@ func configureShieldWith(log *slog.Logger, f shieldFlags, set map[string]bool, t
 	}
 	cfg.AutoBlock = ab
 	cfg.OnEvent = shieldEventLogger(log, cfg.MonitorOnly, source)
+	if also != nil {
+		logEvent := cfg.OnEvent
+		cfg.OnEvent = func(ev shield.Event) {
+			logEvent(ev)
+			also(ev)
+		}
+	}
 	if f.ranges != "" {
 		// Opened without blocking, so a FIFO cannot hold start-up.
 		file, err := os.OpenFile(f.ranges, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOCTTY, 0)
