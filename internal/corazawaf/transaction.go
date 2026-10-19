@@ -693,6 +693,25 @@ func (tx *Transaction) GetField(rv ruleVariableParams) []types.MatchData {
 		matches = col.FindAll()
 	}
 
+	if len(rv.Exceptions) > 0 {
+		matches = filterExceptions(matches, rv)
+	}
+
+	if rv.Count {
+		count := len(matches)
+		matches = []types.MatchData{
+			&corazarules.MatchData{
+				Variable_: rv.Variable,
+				Key_:      rv.KeyStr,
+				Value_:    strconv.Itoa(count),
+			},
+		}
+	}
+	return matches
+}
+
+// filterExceptions drops the matches whose key is one of the variable's exceptions.
+func filterExceptions(matches []types.MatchData, rv ruleVariableParams) []types.MatchData {
 	// Exceptions compare keys the way the collection does: exactly when its
 	// keys are case sensitive, lowercased otherwise.
 	caseSensitive := caseSensitiveVariable(rv.Variable)
@@ -730,19 +749,7 @@ func (tx *Transaction) GetField(rv ruleVariableParams) []types.MatchData {
 			filteredCount++
 		}
 	}
-	matches = matches[:filteredCount]
-
-	if rv.Count {
-		count := len(matches)
-		matches = []types.MatchData{
-			&corazarules.MatchData{
-				Variable_: rv.Variable,
-				Key_:      rv.KeyStr,
-				Value_:    strconv.Itoa(count),
-			},
-		}
-	}
-	return matches
+	return matches[:filteredCount]
 }
 
 // RemoveRuleTargetByID removes the VARIABLE:KEY from the rule ID.
