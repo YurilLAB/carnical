@@ -167,10 +167,11 @@ type WAF struct {
 	RxPreFilterEnabled bool
 
 	// RuleCollectionRead says that a rule may expand a %{rule.*} macro, which reads the RULE collection (the metadata of
-	// the rule being evaluated) when an action runs, after earlier actions may have changed what its message refers to.
-	// Only then is RULE filled at the start of every rule's evaluation, which costs each rule its message and log data
-	// expansion. Otherwise it is filled when it is first read, which for a RULE target is as the rule starts. It starts
-	// true, and coraza.NewWAF clears it before parsing the rules, which set it again for such a macro.
+	// the rule being evaluated) when an action runs, after earlier actions may have changed what its message refers to,
+	// or may read RULE as a target, where a chained rule sees what its parent filled in and a later target what the rule
+	// held as it started. Only then is RULE filled at the start of every rule's evaluation, which costs each rule its
+	// message and log data expansion. Otherwise it is filled when it is first read. It starts true, and coraza.NewWAF
+	// clears it before parsing the rules, which set it again for such a macro or target.
 	RuleCollectionRead bool
 
 	memoizerID uint64

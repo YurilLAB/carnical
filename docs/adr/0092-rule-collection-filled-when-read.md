@@ -31,21 +31,25 @@ macro and no `RULE` target.
   thrown away in nearly every case.
 - **Always fill `RULE` when it is first read.** The transaction remembers the rule being
   evaluated, and `RULE` is filled from it on its first read during that rule. For a `RULE` target
-  this is the same moment as before. For a `%{rule.msg}` macro in an action, it is not: the message
-  would be expanded after earlier actions of the same rule ran, and a `setvar` the message refers
-  to could already have changed it.
-- **Fill it when it is read, unless a rule may expand a `%{rule.*}` macro.** The WAF records whether
-  any directive holds such a macro, and only then fills `RULE` at the start of every rule as before.
+  read first by a rule with no chain this is the same moment as before. For a `%{rule.msg}` macro in
+  an action, it is not: the message would be expanded after earlier actions of the same rule ran,
+  and a `setvar` the message refers to could already have changed it. Nor for a chained rule that
+  reads `RULE`: it saw what its parent's evaluation put there (a chained rule has no `msg` of its
+  own), and would see only its own. Nor for a `RULE` target after another target, whose log data
+  would be expanded after that target matched.
+- **Fill it when it is read, unless a rule may expand a `%{rule.*}` macro or read `RULE`.** The WAF
+  records whether any directive holds such a macro or target, and only then fills `RULE` at the
+  start of every rule as before.
 
 ## Decision Outcome
 
-Chosen: **fill it when it is read, unless a rule may expand a `%{rule.*}` macro**.
+Chosen: **fill it when it is read, unless a rule may expand a `%{rule.*}` macro or read `RULE`**.
 
 - `corazawaf.WAF.RuleCollectionRead` starts true, so a WAF built directly behaves as before.
   `coraza.NewWAF` clears it before the rules are parsed.
 - The parser sets it again for any directive that contains `%{rule.` or `%{rule}`, matched case
-  insensitively. A rule given to `WithRule` as a Go value sets it too, since its actions cannot be
-  read.
+  insensitively, and for any `RULE` target, in a rule, a chained rule or `SecRuleUpdateTarget*`. A
+  rule given to `WithRule` as a Go value sets it too, since its actions cannot be read.
 - When it is false, `doEvaluate` records the rule, and the first read of `RULE` through
   `Transaction.Collection`, `TransactionVariables.Rule` or `TransactionVariables.All` fills it.
   The record is cleared when the transaction is reset.
@@ -74,12 +78,14 @@ and no PR thread exists.
 - **Negative / follow-up:**
   - A plugin that reads `RULE` from an action, in a rule set with no `%{rule.*}` macro, gets the
     message expanded when it reads it rather than when the rule started.
-  - `testing/engine/macroexpansion.go` holds the case that tells the two timings apart, so a change
-    to the parser hook that loses it fails there.
+  - `testing/engine/macroexpansion.go` holds the case that tells the two timings apart, and
+    `testing/engine/rulemetadata.go` a chained rule reading its parent's `RULE:msg`, so a change to
+    the parser hooks that loses either fails there.
 
 ## References
 
 - Related ADRs: ADR-0049, ADR-0050
 - Code: `internal/corazawaf/rule.go` (`fillRuleCollection`), `internal/corazawaf/transaction.go`
   (`TransactionVariables.ruleCollection`), `internal/corazawaf/waf.go` (`RuleCollectionRead`),
-  `internal/seclang/parser.go` (`ruleMacro`), `waf.go`
+  `internal/seclang/parser.go` (`ruleMacro`), `internal/seclang/rule_parser.go` (`ParseVariables`),
+  `waf.go`

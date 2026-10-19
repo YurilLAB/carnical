@@ -71,6 +71,11 @@ func (rp *RuleParser) ParseVariables(vars string) error {
 			if err != nil {
 				return err
 			}
+			if v == variables.Rule && rp.options.WAF != nil {
+				// A RULE target reads what the rule's chain parent or an earlier target left: see
+				// corazawaf.WAF.RuleCollectionRead.
+				rp.options.WAF.RuleCollectionRead = true
+			}
 			if curr == 1 && !v.CanBeSelected() {
 				return fmt.Errorf("attempting to select a value inside a non-selectable collection: %s", string(curVar))
 			}

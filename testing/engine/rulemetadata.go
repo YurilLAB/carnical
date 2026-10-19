@@ -186,3 +186,36 @@ SecRule REQUEST_URI "@streq /chain-no-starter" "id:1, phase:1, log, chain"
 SecRule HIGHEST_SEVERITY "@eq 255" "id:2, phase:1, log"
 `,
 })
+
+// RULE read as a target, in a rule set with no %{rule.*} macro: a chained rule reads what its parent's evaluation put
+// in RULE, as it did when RULE was filled for every rule.
+var _ = profile.RegisterProfile(profile.Profile{
+	Meta: profile.Meta{
+		Author:      "stoney88",
+		Description: "Test that a chained rule reads its parent's RULE collection",
+		Enabled:     true,
+		Name:        "rulemetadata_rule_target.yaml",
+	},
+	Tests: []profile.Test{
+		{
+			Title: "rule_msg_in_a_chain",
+			Stages: []profile.Stage{
+				{
+					Stage: profile.SubStage{
+						Input: profile.StageInput{URI: "/admin/users"},
+						Output: profile.ExpectedOutput{
+							TriggeredRules:    []int{10},
+							NonTriggeredRules: []int{11},
+						},
+					},
+				},
+			},
+		},
+	},
+	Rules: `
+SecRule REQUEST_URI "@beginsWith /admin" "id:10,phase:1,log,pass,msg:'admin area',chain"
+	SecRule RULE:msg "@streq admin area" ""
+SecRule REQUEST_URI "@beginsWith /admin" "id:11,phase:1,log,pass,msg:'admin area',chain"
+	SecRule RULE:msg "@streq something else" ""
+`,
+})
