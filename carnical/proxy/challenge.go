@@ -67,7 +67,7 @@ func (e *Edge) serveGate(w http.ResponseWriter, r *http.Request, rec *record, p 
 			m := Match{RuleID: idGateRefused, Severity: "WARNING", Message: msg, Disruptive: true, status: http.StatusForbidden}
 			if p == challenge.Admission {
 				// What reaches the check at admission is held only to the address's and the network's rates, so a flood
-				// of refusals has its alert but no line each. The shield has counted the request it would have refused.
+				// of refusals has its alert but no line each. The shield has counted what it would have done.
 				e.note(m, rec)
 			} else {
 				e.finding(m, rec, r)

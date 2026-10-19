@@ -19,9 +19,12 @@ has answered, even if it says it did not.
 These are never offered to the check, and are refused as before:
 
 - an address the shield has banned, or an address or network over its own rate;
-- a kind of client the bot policy refuses (at both points);
-- at the request point, anything the request policy refuses. At admission the request policy has not run yet: a
-  request the check lets go on still faces it, and the check's answer is all such a request gets.
+- a kind of client the bot policy refuses (at both points). At admission the policy's check of a search engine's
+  address has not run, so a claim to be a search engine's crawler is not offered either where the policy refuses
+  fakes;
+- at the request point, anything the request policy refuses. At admission the request policy has not run yet, so the
+  check can be offered requests it would refuse: one the check lets go on gets the shield's answer, and one it answers
+  gets the check's answer and nothing more.
 
 ## What the check is told
 
@@ -31,8 +34,8 @@ These are never offered to the check, and are refused as before:
 | --- | --- |
 | `Point` | `Admission` or `Request` |
 | `Client` | The visitor's address, through [trusted proxies](proxy-reference.md) |
-| `Kind` | What kind of client the request says it is, as the bot policy reads it (`person`, `tool`, `disguised`, ...). At admission the bot policy has not run yet, so it is what the request's headers say, without the search engine check |
-| `Watched` | The bot policy reports this kind as one it would refuse (`-bots-monitor`) |
+| `Kind` | What kind of client the request says it is, as the bot policy reads it (`person`, `tool`, `disguised`, ...), with or without a bot policy. At admission the bot policy has not run yet, so it is what the request's headers say, without the search engine check |
+| `Watched` | The bot policy reports this kind as one it would refuse (`-bots-monitor`), from an address it does not exempt |
 | `Attack` | The shield is defending against an attack now |
 | `Known` | The shield knows the address from ordinary use before the attack: requests the application answered well. The check's own answers earn no standing |
 | `Strikes` | Refusals the address has had in the current attack |
@@ -41,15 +44,16 @@ These are never offered to the check, and are refused as before:
 ## What the check reports
 
 Before it writes an answer that carries a decision, the check calls `report` once with a `challenge.Outcome`. A
-second report, or one after `Serve` has returned, is ignored.
+second report, or one after `Serve` has returned, is ignored. A report made on another goroutine while `Serve`
+returns ends before the request goes on.
 
 | Verdict | What the proxy does |
 | --- | --- |
 | `Shown` | Nothing: showing the check is not a finding about the visitor |
-| `Passed` | With a shield, sets the shield's clearance cookie (`carnical_clr`), so that this browser, from this address, is admitted through an attack as one that answered the shield's challenge. During an attack, the address is forgiven one showing of the shield's challenge, and at admission the refusal of the answer itself, which the check stood in for. No other refusal is forgiven |
-| `Refused` | An alert, rule 5007001 (`challenge-5007001`), with the score and the check's reason. At the request point it is also a log line. At admission it has no line of its own, since a flood can bring many: the shield has already counted the refusal it would have made |
+| `Passed` | With a shield, sets the shield's clearance cookie (`carnical_clr`), so that this browser, from this address, is admitted through an attack as one that answered the shield's challenge. During an attack, the address is forgiven one showing of the shield's challenge, and at admission what the shield charged for the request the check stood in for: the refusal of a stranger, or the challenge shown to a page load. No other refusal is forgiven |
+| `Refused` | An alert, rule 5007001 (`challenge-5007001`). At the request point it is also a log line, with the score and the check's reason. At admission it has no line of its own, since a flood can bring many, and the score and reason are not kept: the shield has already counted what it would have done, the refusal of a stranger, or for a page load its challenge shown (a tenth of a refusal toward a ban) |
 
-The reason is the check's own short text. The alert keeps up to 64 bytes of it: letters, digits, spaces and
+The reason is the check's own short text. The log line keeps up to 64 bytes of it: letters, digits, spaces and
 `-+:,.`. Answer a refusal with a 4xx status, so that the shield counts it at the request point as it counts the
 proxy's other refusals.
 

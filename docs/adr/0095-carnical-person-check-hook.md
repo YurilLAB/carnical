@@ -48,19 +48,21 @@ is heard by them, while every existing refusal stands.
   trusted proxy relayed it), `Outcome` and `Verdict` (shown, passed, refused).
 - At admission, the proxy offers the check a decision for which `shield.Decision.Wants` is true: the shield's
   challenge, or a stranger refused over an attack's budget, which a person behind a busy address can be, unless the
-  bot policy refuses the kind of client the request says it is. If the check does not answer, the shield's own answer
-  stands. An answer there in place of a refusal closes the connection, as the refusal would have.
+  bot policy refuses the kind of client the request says it is (or, where it refuses fakes, the request claims to be
+  a search engine's crawler, which only its DNS check could confirm). If the check does not answer, the shield's own
+  answer stands. An answer there in place of a refusal closes the connection, as the refusal would have.
 - After the request policy, before the body is read, every request is offered. A request the check answers goes no
   further; it is never forwarded, and a check that wrote anything has answered. Its answers are never cached, and it
   reads the body through the site's own body limit.
-- A refusal is alerted as rule 5007001 (signature `challenge-5007001`, in a new range 5007000 to 5007999), with the
-  score and the check's reason kept to 64 bytes of a plain alphabet. At admission it has no log line of its own, as
-  the shield's refusals have none, and adds nothing to the shield's counts: the shield counted the refusal it would
-  have made.
+- A refusal is alerted as rule 5007001 (signature `challenge-5007001`, in a new range 5007000 to 5007999). At the
+  request point its log line carries the score and the check's reason, kept to 64 bytes of a plain alphabet. At
+  admission it has no log line of its own, as the shield's refusals have none, and adds nothing to the shield's
+  counts: the shield counted what it would have done, the refusal of a stranger or, for a page load, the challenge
+  shown.
 - A person the check accepts gets the shield's clearance cookie, as a right answer to the shield's challenge does
-  (`Shield.Vouch`). During an attack the address is forgiven one showing of the challenge, and the refusal of that
-  very request when the check stood in for it, and nothing else: an address that passes the check while it floods is
-  still banned for the rest.
+  (`Shield.Vouch`). During an attack the address is forgiven one showing of the challenge, and what the shield charged
+  for that very request when the check stood in for it (its refusal, or the challenge shown to a page load), and
+  nothing else: an address that passes the check while it floods is still banned for the rest.
 - The shield's standing is earned only by what the application answered, so the check's own answers earn none.
 - `Shield.Standing` reads what the shield holds about an address without adding to its tables.
 - A check that is also a `challenge.Responder` sees the header of each response the application gives before it is

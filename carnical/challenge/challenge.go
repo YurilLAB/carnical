@@ -68,18 +68,19 @@ const (
 	// Passed: the visitor answered as a person. With a shield, the proxy admits the visitor's browser, from that
 	// address, past an attack's budgets for a while, as the shield's own challenge does.
 	Passed
-	// Refused: the gate refused the visitor. The proxy alerts on it. At Admission the shield has already counted the
-	// refusal it would have made, and nothing more is counted.
+	// Refused: the gate refused the visitor. The proxy alerts on it. At Admission the shield has already counted what it
+	// would have done (the refusal of a stranger, or for a page load its challenge shown), and nothing more is counted.
 	Refused
 )
 
 // Outcome is a decision and why.
 type Outcome struct {
 	Verdict Verdict
-	// Score is the gate's risk score, 0 to 100, for the alert.
+	// Score is the gate's risk score, 0 to 100, for the log line of a refusal at Request (the alert has no room for it,
+	// and at Admission there is no line).
 	Score int
-	// Reason is why, for the alert's message: a short fixed text of the gate's, never request data. The proxy keeps up
-	// to 64 bytes of letters, digits, spaces and "-+:,." and drops the rest.
+	// Reason is why, for the same line: a short fixed text of the gate's, never request data. The proxy keeps up to 64
+	// bytes of letters, digits, spaces and "-+:,." and drops the rest.
 	Reason string
 }
 
@@ -89,7 +90,8 @@ type Gate interface {
 	// (the check's page, its answer), which then goes no further; false lets the request go on, and at Admission leaves
 	// the shield's own answer to stand; a gate that wrote anything has answered, whatever it returns. Before it writes
 	// an answer that carries a decision, it calls report with it, once: the proxy may set headers on w from it, and
-	// ignores a second report or one made after Serve returned. The body of r is held to the site's body limit; read it
+	// ignores a second report or one made after Serve returned; one made on another goroutine while Serve returns ends
+	// before the request goes on. The body of r is held to the site's body limit; read it
 	// only for a request the gate answers. Serve runs on the request's goroutine, for every request that reaches its
 	// point, so it must be quick for the requests it lets go on.
 	Serve(w http.ResponseWriter, r *http.Request, s Signals, report func(Outcome)) bool
