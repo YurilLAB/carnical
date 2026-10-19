@@ -314,7 +314,7 @@ func TestProtocolUpgradesAreRefused(t *testing.T) {
 	if n := len(s.up.requests()); n != 0 {
 		t.Fatalf("%d upgrade requests reached the application", n)
 	}
-	t.Run("an allowed upgrade is tunnelled and its connection counted", func(t *testing.T) {
+	t.Run("an allowed upgrade is tunnelled, past a person check that reads trailers, and its connection counted", func(t *testing.T) {
 		app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Header.Get("Upgrade") == "" {
 				return // an ordinary request: 200
@@ -332,7 +332,9 @@ func TestProtocolUpgradesAreRefused(t *testing.T) {
 			brw.ReadString('\n') // hold the tunnel open until the client closes it
 		}))
 		defer app.Close()
-		s := start(t, func(c *Config) { c.AllowUpgrade = true; c.MaxConnsPerIP = 1; c.Upstream = mustURL(app.URL) })
+		s := start(t, func(c *Config) {
+			c.AllowUpgrade, c.MaxConnsPerIP, c.Upstream, c.Challenge = true, 1, mustURL(app.URL), &gate{}
+		})
 		conn, err := net.DialTimeout("tcp", s.addr, 3*time.Second)
 		if err != nil {
 			t.Fatal(err)

@@ -1020,7 +1020,8 @@ func (e *Edge) forward() http.Handler {
 				}
 			}
 			e.cfg.Responses.harden(resp, path)
-			if rs, ok := e.cfg.Challenge.(challenge.TrailerResponder); ok {
+			// A switched connection has no trailers, and its body must stay writable for the tunnel.
+			if rs, ok := e.cfg.Challenge.(challenge.TrailerResponder); ok && resp.StatusCode != http.StatusSwitchingProtocols {
 				if in, _ := resp.Request.Context().Value(inboundKey{}).(*http.Request); in != nil {
 					// The names announced now; what was sent once the body is closed, which is when the transport
 					// fills them in and before the reverse proxy copies them on.
