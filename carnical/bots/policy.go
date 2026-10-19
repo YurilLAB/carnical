@@ -124,11 +124,43 @@ func (p *Policy) Judge(ctx context.Context, r *http.Request, addr netip.Addr, he
 	default:
 		return c, Pass
 	}
+	if p.Exempts(addr) {
+		return c, Pass
+	}
+	return c, action
+}
+
+// Claim judges a request as Judge does from what it says alone, with no DNS check, for where a check must stay cheap (the
+// shield's admission): a claim to be a search engine's crawler, which Judge would check, is refused or reported when a
+// fake one would be.
+func (p *Policy) Claim(r *http.Request, addr netip.Addr, hello Hello) (alert.Client, Action) {
+	c, engine := Classify(r, hello)
+	checked := engine != 0 && p != nil && p.Verifier != nil
+	var action Action
+	switch {
+	case p.Refuses(c) || checked && p.Refuses(alert.ClientFake):
+		action = Refuse
+	case p.Watches(c) || checked && p.Watches(alert.ClientFake):
+		action = Watch
+	default:
+		return c, Pass
+	}
+	if p.Exempts(addr) {
+		return c, Pass
+	}
+	return c, action
+}
+
+// Exempts reports whether addr is one the policy never refuses for its kind.
+func (p *Policy) Exempts(addr netip.Addr) bool {
+	if p == nil {
+		return false
+	}
 	a := addr.Unmap()
 	for _, e := range p.Exempt {
 		if e.Contains(a) {
-			return c, Pass
+			return true
 		}
 	}
-	return c, action
+	return false
 }

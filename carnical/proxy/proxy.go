@@ -670,8 +670,10 @@ func (e *Edge) guard(next http.Handler) http.Handler {
 			if d.Action != shield.Allow {
 				if e.cfg.Challenge != nil && d.Wants() {
 					// The bot policy has not run yet: what the request says it is. A kind it refuses is not offered.
-					rec.kind, _ = bots.Classify(r, e.helloOf(r))
-					if !e.cfg.Bots.Refuses(rec.kind) && e.serveGate(w, r, rec, challenge.Admission, d) {
+					var action bots.Action
+					rec.kind, action = e.cfg.Bots.Claim(r, addr, e.helloOf(r))
+					rec.watched = action == bots.Watch
+					if action != bots.Refuse && e.serveGate(w, r, rec, challenge.Admission, d) {
 						return
 					}
 				}

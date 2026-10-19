@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"sync/atomic"
 
+	"github.com/YurilLAB/coraza/carnical/bots"
 	"github.com/YurilLAB/coraza/carnical/challenge"
 	"github.com/YurilLAB/coraza/carnical/shield"
 )
@@ -27,12 +28,10 @@ type inboundKey struct{}
 // answer in place of a refusal closes the connection as the shield's would have. A check that writes anything has
 // answered, whatever it returns.
 func (e *Edge) serveGate(w http.ResponseWriter, r *http.Request, rec *record, p challenge.Point, d shield.Decision) bool {
-	sig := challenge.Signals{Point: p, Client: rec.client, Kind: rec.kind, Relayed: rec.via}
-	if p == challenge.Request {
-		sig.Watched = rec.watched
-	} else {
-		sig.Watched = e.cfg.Bots.Watches(rec.kind)
+	if rec.kind == 0 { // no bot policy ran: what the request says it is, as its alerts name it
+		rec.kind, _ = bots.Classify(r, e.helloOf(r))
 	}
+	sig := challenge.Signals{Point: p, Client: rec.client, Kind: rec.kind, Watched: rec.watched, Relayed: rec.via}
 	sh := e.cfg.Shield
 	if sh != nil {
 		st := sh.Standing(rec.client)

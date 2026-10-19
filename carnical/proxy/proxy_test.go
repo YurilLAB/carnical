@@ -5,6 +5,8 @@ package proxy
 import (
 	"bufio"
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -1106,6 +1108,14 @@ func TestRefusalsAndWouldBeRefusalsReachTheShield(t *testing.T) {
 	}
 }
 
+// noDNS is a resolver that answers nothing.
+type noDNS struct{}
+
+func (noDNS) LookupAddr(context.Context, string) ([]string, error) { return nil, errors.New("no DNS") }
+func (noDNS) LookupNetIP(context.Context, string, string) ([]netip.Addr, error) {
+	return nil, errors.New("no DNS")
+}
+
 // gate is a person check for the tests: what it does is chosen by path, and it keeps what it was told.
 type gate struct {
 	mu   sync.Mutex
@@ -1240,6 +1250,14 @@ func TestThePersonCheckIsOfferedEachRequest(t *testing.T) {
 			t.Fatal("a late report was alerted")
 		}
 	})
+	t.Run("without a bot policy it is told what the request says it is", func(t *testing.T) {
+		g := &gate{}
+		s := start(t, func(c *Config) { c.Challenge = g })
+		s.raw(t, "GET /page HTTP/1.1\r\nHost: shop.example.test\r\nUser-Agent: curl/8.5.0\r\nAccept: */*\r\nConnection: close\r\n\r\n")
+		if sig := g.signals(); len(sig) != 1 || sig[0].Kind != alert.ClientTool || sig[0].Watched {
+			t.Fatalf("signals %+v", sig)
+		}
+	})
 	t.Run("a refusal is alerted once, with a plain reason", func(t *testing.T) {
 		if status, _ := s.raw(t, get("/gate/refuse")); status != 403 {
 			t.Fatalf("%d", status)
@@ -1295,7 +1313,8 @@ func TestThePersonCheckStandsInForTheShieldsChallenge(t *testing.T) {
 	g := &gate{}
 	up := newUpstream(t)
 	cfg := Config{Upstream: mustURL(up.URL), CRS: crs.DefaultSettings(), Origin: loopback, Shield: sh, Challenge: g, MaxConnsPerIP: -1,
-		Bots: &bots.Policy{Refuse: 1 << alert.ClientScanner}}
+		Bots: &bots.Policy{Refuse: 1<<alert.ClientScanner | 1<<alert.ClientFake, Watch: 1 << alert.ClientTool,
+			Verifier: bots.NewVerifier(noDNS{}, 0, 0), Exempt: []netip.Prefix{netip.MustParsePrefix("198.51.100.32/32")}}}
 	cfg.CRS.Mode = crs.ModeOff
 	e, err := New(cfg)
 	if err != nil {
@@ -1387,6 +1406,24 @@ func TestThePersonCheckStandsInForTheShieldsChallenge(t *testing.T) {
 	agent = "sqlmap/1.8"
 	if w := send("198.51.100.30", "/gate/show", true); w.Body.String() == "from the gate" || len(g.signals()) != before {
 		t.Fatalf("a scanner was offered to the check: %d %q", w.Code, w.Body)
+	}
+	// Nor is a claim to be a search engine's crawler, which only the bot policy's check of its address can confirm, where
+	// the policy refuses fakes.
+	agent = "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
+	if w := send("198.51.100.31", "/gate/show", true); w.Body.String() == "from the gate" || len(g.signals()) != before {
+		t.Fatalf("a search engine's claim was offered to the check: %d %q", w.Code, w.Body)
+	}
+	// A kind the policy watches is told as watched, but not from an address it exempts.
+	agent = "curl/8.5.0"
+	for _, tc := range []struct {
+		from    string
+		watched bool
+	}{{"198.51.100.33", true}, {"198.51.100.32", false}} {
+		send(tc.from, "/gate/show", true)
+		if sig := g.signals(); len(sig) == before || sig[len(sig)-1].Watched != tc.watched {
+			t.Fatalf("a tool from %s: %+v", tc.from, sig[len(sig)-1])
+		}
+		before = len(g.signals())
 	}
 	agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/141.0"
 	// The refusal the check stood in for counts toward the address's ban as the shield's own did, and once: the check's
