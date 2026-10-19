@@ -92,6 +92,11 @@ Measured with it on:
 | Carnical `./proxy ./shield ./crs ./policy ./cmd/carnical` | pass, except the two IPv6 tests this container cannot run |
 | CI: Regression Tests (15 tag sets and 2 FIPS modes), Lint, ADR on `edge-crs` | pass, first run on this branch |
 
+Later the same day it turned out that `go run mage.go coverage` with no tags passed an empty
+argument to `go test`, which read it as the package list: that run, and the matrix's job with no
+tags, tested the root package alone. With the magefile fixed, the run with no tags tests every
+package under the race detector, and the TinyGo tag as well, and passes.
+
 Regression Tests, Lint and ADR ran only on `main` before `2e8f4df9`, so `edge-crs`, the default
 branch, had no engine regression matrix in CI. They now run on every push to it. The matrix moved
 to Go 1.26, which `go.mod` requires.
