@@ -333,7 +333,7 @@ func askEndpoint(p setupPrompt) (setupEndpoint, error) {
 	if ip, err := netip.ParseAddr(u.Hostname()); err == nil {
 		ip = ip.Unmap()
 		if (proxy.OriginPolicy{}).Check(ip) != nil {
-			allowed, err := p.yes("The alert endpoint is a private address. Allow Carnical to connect to it", "", "Carnical connects only to public addresses unless told otherwise. Answer y if this is your\nown receiver, such as a relay on this machine.")
+			allowed, err := p.yes("The alert endpoint is a private address. Allow Carnical to connect to it", "", "Carnical connects only to public addresses unless told otherwise. Answer y if this is your\nown receiver. The shipped nftables policy keeps the edge from private addresses all the same.")
 			if err != nil {
 				return e, err
 			}

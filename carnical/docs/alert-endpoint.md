@@ -31,7 +31,12 @@ On the command line:
 
 With `-confine`, the endpoint's port must be in `-confine-connect` (443 is there by default). The
 shipped [nftables policy](../deploy/nftables/carnical.nft) lets the edge user open TCP 80 and 443
-only: use port 443, or add the endpoint's port to `edge_out`.
+to public addresses only: use port 443, or add the endpoint's port to `edge_out`. It drops every
+connection the edge opens to this machine or a private address before it looks at the port, so on
+that deployment a relay on the same machine, or an endpoint `-alert-endpoint-allow` allows, is
+never reached. Letting the edge reach one takes an accept ahead of those drops, which the host
+audit reports as a rule that lets traffic past them: send the alerts to a public HTTPS endpoint
+instead.
 
 ## What a message holds
 

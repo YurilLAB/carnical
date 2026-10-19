@@ -273,8 +273,9 @@ What was refused, in Carnical (the rules that matched are in brackets):
   - `application/csp-report`, gRPC-Web, NDJSON, CSV and protobuf bodies;
   - an image, a tus chunk and a file sent as the body.
 
-  [Formats](formats.md#what-is-not-done-and-what-to-watch) lists these. No flag widens the CRS's
-  list.
+  [Formats](formats.md#what-is-not-done-and-what-to-watch) lists these. No flag widened the CRS's
+  list when this was measured; since `848b4c01`, `-allowed-content-types` adds a type to it (see
+  [Code hosts](#code-hosts-and-the-wordpress-editor)).
 - **The method, 4.** PUT, PATCH and DELETE (911100), until `-allowed-methods` lists them.
 - **What the request said, 7.** These are the CRS's own rules, and upstream refused the same
   requests:
