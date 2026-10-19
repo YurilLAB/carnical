@@ -36,7 +36,7 @@ func (e Event) Severity() string {
 }
 
 // Message is one alert. Every string in it is carnical's own text, a number, or a label carnical made and bounded
-// (a client fingerprint, a path template, a country or network); nothing of a request's content.
+// (a client fingerprint, a path template, a country or network); no query, body, cookie or visitor's address.
 type Message struct {
 	Version  int       `json:"version"`  // 1
 	ID       string    `json:"id"`       // the delivery id, also in X-Carnical-Delivery; filled when sent

@@ -7,13 +7,14 @@
 //
 // It is also made so that it cannot be turned against the endpoint or the network: it posts only to the one URL it was
 // configured with, over a dialer the caller guards (the origin guard: no private, local or metadata address unless
-// allowed), follows no redirect, sends one message at a time and never more often than MinGap. A message says nothing
-// of any request's content. The URL and the secret never appear in a log line or an error.
+// allowed), follows no redirect, sends one message at a time and never more often than MinGap. A message holds no
+// query, body, cookie or visitor's address: only the bounded labels of FromShield's clusters hold what clients sent (a
+// User-Agent's first bytes, a path template). The URL and the secret never appear in a log line or an error.
 //
 // Each message is signed: X-Carnical-Signature is "v1=" and the hex HMAC-SHA256, keyed with the shared secret, of the
 // X-Carnical-Timestamp header, a full stop and the body. A receiver checks the signature with a constant-time compare,
-// refuses a timestamp more than five minutes from its own clock, and drops an X-Carnical-Delivery it has seen (a retry
-// carries the same one).
+// refuses a timestamp more than five minutes from its own clock, and drops a message whose signed id it has seen (a
+// retry carries the same one). X-Carnical-Delivery is an unsigned copy of the id, for logs.
 package notify
 
 import (

@@ -76,10 +76,13 @@ A JSON object, at most 16 KiB:
 | `dropped` | Messages before this one that the queue had no room for |
 
 Every string is Carnical's own text, a number, or a label Carnical made and bounded: a client
-fingerprint, a path template, a country or network. Labels made from what clients sent have
-control characters escaped and `<` and `>` replaced by `‹` and `›`, so a chat that reads markup
-cannot be made to ping a channel. No message holds a query string, a body, a header value, a
-cookie, an address of a visitor or matched data.
+fingerprint, a path template, a country or network. Two of them hold what clients sent: a client
+fingerprint is the method, the protocol and the first 72 bytes of the `User-Agent`, and a path
+template is the path with its identifiers taken out (numbers, and segments over 40 characters or
+of 16 and more that hold a digit), at most six segments in 96 bytes, so a word or a name in a path
+is kept. Labels made from what clients sent have control characters escaped and `<` and `>`
+replaced by `‹` and `›`, so a chat that reads markup cannot be made to ping a channel. No message
+holds a query string, a body, another header, a cookie, an address of a visitor or matched data.
 
 When the queue is full, an update waiting gives its place to a start or an end, and a newer update
 of the same attack replaces one still waiting: the endpoint gets the latest.
