@@ -196,6 +196,11 @@ func TestClassifyOverTLS(t *testing.T) {
 		{"a signing agent with Chrome's TLS", chrome, fetch(http.Header{"Sec-Ch-Ua": hints["Sec-Ch-Ua"], "Sec-Ch-Ua-Platform": hints["Sec-Ch-Ua-Platform"], "Signature-Agent": {`"https://chatgpt.com"`}}), grease, alert.ClientAI},
 		{"Chrome's WebSocket handshake", linuxChrome, websocket, grease, alert.ClientPerson},
 		{"a program dressing a request as a WebSocket handshake", linuxChrome, websocket, plain, alert.ClientDisguised},
+		{"a handshake without Connection: Upgrade, which is not one", linuxChrome, func() http.Header {
+			h := websocket.Clone()
+			h.Del("Connection")
+			return h
+		}(), grease, alert.ClientDisguised},
 		{"a program that adds a signature header to pass", chrome, fetch(http.Header{"Sec-Ch-Ua": hints["Sec-Ch-Ua"], "Sec-Ch-Ua-Platform": hints["Sec-Ch-Ua-Platform"], "Signature-Agent": {`"https://chatgpt.com"`}}), plain, alert.ClientDisguised},
 		{"no handshake seen says nothing", chrome, fetch(hints), Hello{}, alert.ClientPerson},
 		{"Firefox", firefox, fetch(nil), Hello{Seen: true, RecordSizeLimit: true}, alert.ClientPerson},

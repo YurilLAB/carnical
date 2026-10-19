@@ -71,8 +71,8 @@ Over HTTPS, when Carnical holds the certificate (`-tls-cert`), it is also `disgu
   hints, so they are left alone: Samsung Internet, Yandex Browser, Android web views, Electron,
   apps built on Chromium (WeChat, CEF), in-app browsers and televisions;
 - Chrome opens a WebSocket with neither (it sends none on a handshake), so a handshake, with its
-  `Upgrade`, key, version and `Origin` headers, is excused from those two checks and from `Accept`,
-  never from the TLS one;
+  `Connection: Upgrade`, `Upgrade`, key, version and `Origin` headers, is excused from those two
+  checks and from `Accept`, never from the TLS one;
 - its TLS handshake is not that browser's: Chrome always offers GREASE values (RFC 8701), and
   Firefox always offers `record_size_limit` (RFC 8449). Python, Go, curl and most HTTP libraries
   offer neither.

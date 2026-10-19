@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	ahocorasick "github.com/petar-dambovaliev/aho-corasick"
+	"golang.org/x/net/http/httpguts"
 
 	"github.com/YurilLAB/coraza/carnical/alert"
 )
@@ -302,8 +303,10 @@ func disguised(r *http.Request, ua string, hello Hello) bool {
 		return true
 	}
 	// A browser opening a WebSocket sends no Accept, and Chrome no Sec-Fetch or client hints either, so a handshake is
-	// held to the rest: what a program could copy to pass does not get it past the TLS checks.
+	// held to the rest: what a program could copy to pass does not get it past the TLS checks. Without Connection: Upgrade
+	// it is not one (the proxy forwards it as a page request), so it is held to everything.
 	socket := r.Method == http.MethodGet && strings.EqualFold(h.Get("Upgrade"), "websocket") &&
+		httpguts.HeaderValuesContainsToken(h["Connection"], "upgrade") &&
 		h.Get("Sec-Websocket-Key") != "" && h.Get("Sec-Websocket-Version") != "" && h.Get("Origin") != ""
 	if r.Method != http.MethodOptions && (h.Get("Accept") == "" && !socket || h.Get("Accept-Language") == "") {
 		return true
