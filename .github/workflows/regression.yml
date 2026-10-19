@@ -4,12 +4,14 @@ on:
   push:
     branches:
       - main
+      - edge-crs
     paths-ignore:
       - "**/*.md"
       - "LICENSE"
   pull_request:
     branches:
       - main
+      - edge-crs
     paths-ignore:
       - "**/*.md"
       - "LICENSE"
@@ -25,7 +27,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        go-version: [1.25.x]
+        # go.mod needs Go 1.26.9, so 1.26 is the oldest release that builds the module.
+        go-version: [1.26.x]
         os: [ubuntu-latest]
         build-flag:
           - ""
@@ -45,15 +48,12 @@ jobs:
         include:
           - go-version: 1.26.x
             os: ubuntu-latest
-            build-flag: ""
-          - go-version: 1.26.x
-            os: ubuntu-latest
             build-flag: "coraza.rule.multiphase_evaluation,coraza.rule.mandatory_rule_id_check,coraza.rule.case_sensitive_args_keys,coraza.rule.no_regex_multiline,coraza.no_memoize,no_fs_access"
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
     env:
-      GOLANG_BASE_VERSION: "1.25.x"
+      GOLANG_BASE_VERSION: "1.26.x"
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -104,9 +104,9 @@ jobs:
         # "only" additionally makes the standard library's non-approved algorithms error or
         # panic, which is what catches an unguarded md5.Sum/sha1.Sum at package-init time.
         godebug: ["fips140=on", "fips140=only"]
-        # 1.26 changed FIPS-relevant behavior in crypto/tls (non-approved curves are filtered out
-        # of the defaults), so both the oldest supported and the current release are exercised.
-        go-version: [1.25.x, 1.26.x]
+        # go.mod needs Go 1.26.9, the release whose crypto/tls filters non-approved curves out of
+        # the defaults.
+        go-version: [1.26.x]
     runs-on: ubuntu-latest
     permissions:
       contents: read

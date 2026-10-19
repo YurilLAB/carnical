@@ -4,12 +4,14 @@ on:
   push:
     branches:
       - main
+      - edge-crs
     paths-ignore:
       - "**/*.md"
       - "LICENSE"
   pull_request:
     branches:
       - main
+      - edge-crs
     paths-ignore:
       - "**/*.md"
       - "LICENSE"

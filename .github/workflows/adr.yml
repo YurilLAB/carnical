@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - edge-crs
     paths:
       - "docs/adr/**"
       - "magefile_adr.go"
