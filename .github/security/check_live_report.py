@@ -17,12 +17,15 @@ def main():
         raise SystemExit("missing required attack categories")
     for name in sorted(supported):
         row = categories[name]
+        if any(row[field] <= 0 for field in ("AttackCases", "AttackRequests", "UniqueAttackTemplates")):
+            raise SystemExit("required attack category not exercised: " + name)
         if row["Errors"] or row["Unavailable"] or row["AttackOrigin"] or row["AdmittedAttackCases"]:
             raise SystemExit("supported injection reached the origin: " + name)
-    controls = [row for row in report["Results"] if not row["Attack"]
-                and row["Name"].split("/")[0] in {"search", "json"}]
-    if not controls or any(row["Requests"] <= 0 or row["OriginReached"] != row["Requests"] for row in controls):
-        raise SystemExit("ordinary search/JSON controls refused or not exercised")
+    for name in ("search", "json"):
+        controls = [row for row in report["Results"] if not row["Attack"]
+                    and row["Name"].split("/")[0] == name]
+        if not controls or any(row["Requests"] <= 0 or row["OriginReached"] != row["Requests"] for row in controls):
+            raise SystemExit("ordinary search/JSON controls refused or not exercised")
     print("Supported injection regressions blocked; ordinary search/JSON controls passed")
     print("Context-dependent admissions and other benign refusals remain in the artifact")
 

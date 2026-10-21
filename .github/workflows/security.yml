@@ -165,6 +165,8 @@ jobs:
           for tag in coraza.no_memoize coraza.rule.multiphase_evaluation coraza.rule.no_regex_multiline; do
             go test -tags="$tag" ./internal/seclang ./internal/corazawaf ./types
           done
+      - name: Verify live WAF report acceptance and rejection controls
+        run: python3 .github/security/test_live_report.py
       - name: Run varied attacks and benign traffic through the running WAF
         working-directory: carnical
         run: |
