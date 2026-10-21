@@ -51,7 +51,7 @@ jobs:
           exit "$status"
       - name: Preserve findings even when the scan fails
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: gosec-${{ matrix.target }}
           path: build/security-reports/*.sarif
@@ -90,7 +90,7 @@ jobs:
             --format=json --output-file=build/security-reports/osv.json
       - name: Preserve dependency inventory
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: osv-dependencies
           path: build/security-reports/*
@@ -115,7 +115,7 @@ jobs:
             --report-format=sarif --report-path=build/security-reports/gitleaks.sarif
       - name: Preserve redacted findings
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: gitleaks-secrets
           path: build/security-reports/gitleaks.sarif
@@ -194,7 +194,7 @@ jobs:
           exit "$status"
       - name: Preserve the live test report
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: live-waf-regressions
           path: build/security-reports/*
@@ -267,7 +267,7 @@ jobs:
             | tee build/security-reports/crowdsec-live.log
       - name: Preserve CrowdSec integration evidence
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: crowdsec-integration-regressions
           path: build/security-reports/crowdsec-*.log
@@ -317,7 +317,7 @@ jobs:
             | tee build/security-reports/flood-latency.log
       - name: Preserve network protection evidence
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: network-protection-regressions
           path: build/security-reports/*.log
@@ -372,7 +372,7 @@ jobs:
             > build/security-reports/deployment-images.json
       - name: Preserve deployment validation
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: deployment-integration-regressions
           path: build/security-reports/deployment-*
