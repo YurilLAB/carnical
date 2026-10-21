@@ -399,6 +399,7 @@ func TestValidatePathsHeadersAndOptions(t *testing.T) {
 	rate := func(n int) func(*Policy) { return func(p *Policy) { p.WordPress.LoginPerMinute = n } }
 	tiers := func(s ...string) func(*Policy) { return func(p *Policy) { p.VPatch.Tiers = s } }
 	software := func(s ...string) func(*Policy) { return func(p *Policy) { p.VPatch.Software = s } }
+	sessions := func(s ...string) func(*Policy) { return func(p *Policy) { p.Responses.SessionCookies = s } }
 	genPaths := func(n int) []string {
 		out := make([]string, n)
 		for i := range out {
@@ -466,6 +467,13 @@ func TestValidatePathsHeadersAndOptions(t *testing.T) {
 		{"a note with a non-breaking space", func(p *Policy) { p.Note = "a\u00a0b" }, "note"},
 		{"a note with letters of another script, an emoji and a line break", func(p *Policy) { p.Note = "日本語 café 😀\nok" }, ""},
 		{"a note that is not UTF-8", func(p *Policy) { p.Note = "a\xffb" }, "note"},
+		{"session cookies", sessions("SHOPSESS", "__Host-SESS"), ""},
+		{"sixteen session cookies", sessions(strings.Split(strings.Repeat("S,", 15)+"S", ",")...), ""},
+		{"more than sixteen session cookies", sessions(genHeaders(17)...), "responses.session_cookies"},
+		{"a session cookie with a space", sessions("shop sess"), "responses.session_cookies"},
+		{"a session cookie with an equals sign", sessions("a=b"), "responses.session_cookies"},
+		{"an empty session cookie", sessions(""), "responses.session_cookies"},
+		{"a session cookie of 65 characters", sessions(strings.Repeat("s", 65)), "responses.session_cookies"},
 	}
 	runRows(t, 15, rows)
 }

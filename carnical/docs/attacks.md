@@ -20,6 +20,7 @@ reaching an inert test origin is an admission result; exploitation still depends
 | Repeat attackers | [Auto-block](ddos.md#repeat-offenders) bans a source whose requests keep being refused | `monitor` by default; an address many people share can be banned too. |
 | Protocol upgrades and WebSockets | Refused by default; with `-allow-upgrade` a handshake answered without switching is refused (rule 5000079) | Allowed tunnels are not inspected after the switch. |
 | Script uploads | Filename and PHP/ASP/JSP marker checks | Not a malware/archive scanner; the origin must not execute untrusted uploads. |
+| [PHP2Shell](proxy-reference.md#php2shell) (CVE-2026-109618, CVE-2026-109619) | The request and the response: PHP's session upload progress field is refused (5000013) and a response whose PHP session cookie is not a session id is withheld (5000080) | A stopgap: only a fixed PHP removes the bugs. A session id carried in URLs, or a site whose upload progress field has another name, is not checked. |
 | WordPress upload/cache scripts and XML-RPC | `-wordpress` restrictions and login limits | Application/plugin patches and scoped virtual patches remain necessary. |
 | Cache deception/content sniffing | Response cache checks, `nosniff` and banner removal | Review the downstream cache and application headers. |
 | Origin-address abuse | Dial-time address restrictions | Does not constrain the application's own outbound requests. |

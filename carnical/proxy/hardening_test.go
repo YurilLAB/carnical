@@ -38,11 +38,16 @@ import (
 func ruleSetOff(c *Config) { c.CRS.Mode = crs.ModeOff }
 
 type refusals struct {
-	mu  sync.Mutex
-	ids []int
+	mu      sync.Mutex
+	ids     []int
+	message string // the last one's
 }
 
-func (r *refusals) record(m Match) { r.mu.Lock(); r.ids = append(r.ids, m.RuleID); r.mu.Unlock() }
+func (r *refusals) record(m Match) {
+	r.mu.Lock()
+	r.ids, r.message = append(r.ids, m.RuleID), m.Message
+	r.mu.Unlock()
+}
 func (r *refusals) last() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -51,6 +56,7 @@ func (r *refusals) last() int {
 	}
 	return r.ids[len(r.ids)-1]
 }
+func (r *refusals) lastMessage() string { r.mu.Lock(); defer r.mu.Unlock(); return r.message }
 
 func TestPathPolicy(t *testing.T) {
 	strict := PathPolicy{}
@@ -553,6 +559,58 @@ func TestResponsePolicy(t *testing.T) {
 			tt.check(t, resp.Header)
 		})
 	}
+
+	// PHP2Shell's leak: memory read back in the session cookie.
+	t.Run("a PHP session cookie that is not a session id", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			cookies  []string // the Set-Cookie lines the application sends
+			policy   ResponsePolicy
+			withheld bool
+		}{
+			{"a session id PHP made", []string{"PHPSESSID=0123456789abcdefghijklmnopqrstuv; path=/; HttpOnly"}, ResponsePolicy{}, false},
+			{"a session id with commas, which PHP escapes", []string{"PHPSESSID=ab%2Ccd-EF%2c9; path=/"}, ResponsePolicy{}, false},
+			{"the cookie that ends a session", []string{"PHPSESSID=deleted; expires=Thu, 01 Jan 1970 00:00:01 GMT; Max-Age=0; path=/"}, ResponsePolicy{}, false},
+			{"an empty session cookie", []string{"PHPSESSID=; path=/"}, ResponsePolicy{}, false},
+			{"the longest session id", []string{"PHPSESSID=" + strings.Repeat("a", 256)}, ResponsePolicy{}, false},
+			{"another cookie with any value", []string{"prefs=%00%FF%2F.x; path=/"}, ResponsePolicy{}, false},
+			{"a session name the site did not give", []string{"SHOPSESS=%00%01"}, ResponsePolicy{}, false},
+			{"memory in a session id", []string{"PHPSESSID=abc%00%01%7F%E8%A0; path=/"}, ResponsePolicy{}, true},
+			{"a session id longer than PHP makes", []string{"PHPSESSID=" + strings.Repeat("a", 257)}, ResponsePolicy{}, true},
+			{"a session id with a character PHP never uses", []string{"PHPSESSID=abc+def"}, ResponsePolicy{}, true},
+			{"a bad session cookie after another cookie", []string{"prefs=1", "PHPSESSID=%41%00"}, ResponsePolicy{}, true},
+			{"the session cookie in other capitals", []string{"phpsessid=%00"}, ResponsePolicy{}, true},
+			{"a site's own session name", []string{"SHOPSESS=%00%01"}, ResponsePolicy{SessionCookies: []string{"SHOPSESS"}}, true},
+			{"forwarded when asked", []string{"PHPSESSID=%00%01"}, ResponsePolicy{AllowBadSessionIDs: true}, false},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				var seen refusals
+				s := start(t, func(c *Config) { ruleSetOff(c); c.OnMatch = seen.record; c.Responses = tt.policy })
+				var headers []string
+				for _, c := range tt.cookies {
+					headers = append(headers, "X-Set-Cookie: "+c+"\r\n")
+				}
+				_, reply := s.raw(t, get("/php-session", headers...))
+				resp, err := http.ReadResponse(bufio.NewReader(strings.NewReader(reply)), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				body, _ := io.ReadAll(resp.Body)
+				if !tt.withheld {
+					if resp.StatusCode != 200 || len(resp.Header.Values("Set-Cookie")) != len(tt.cookies) || seen.last() != 0 {
+						t.Fatalf("status %d, cookies %q, id %d: the application's answer was not forwarded", resp.StatusCode, resp.Header.Values("Set-Cookie"), seen.last())
+					}
+					return
+				}
+				if resp.StatusCode != 403 || resp.Header.Get("Set-Cookie") != "" || strings.Contains(string(body), "reached the application") ||
+					seen.last() != idPHP2ShellSession || !strings.HasPrefix(seen.lastMessage(), "PHP2Shell: ") {
+					t.Fatalf("status %d, cookies %q, body %q, id %d, message %q; want it withheld as PHP2Shell",
+						resp.StatusCode, resp.Header.Values("Set-Cookie"), body, seen.last(), seen.lastMessage())
+				}
+			})
+		}
+	})
 }
 
 func multipartBody(parts ...string) string {
@@ -579,6 +637,7 @@ func TestUploadPolicy(t *testing.T) {
 	disposition := func(params, content string) string {
 		return "Content-Disposition: form-data; name=\"f\"; " + params + "\r\n\r\n" + content
 	}
+	progress := func(name string) string { return "Content-Disposition: form-data; name=" + name + "\r\n\r\nupload-1" }
 	tests := []struct {
 		name    string
 		body    string
@@ -631,6 +690,18 @@ func TestUploadPolicy(t *testing.T) {
 		{"a script after a boundary in the middle of a line", multipartBody(filePart("photo.jpg", "GIF89a--XX\r\n\r\n<?php system($_GET['c']); ?>")), UploadPolicy{}, idUploadScript},
 		{"script names allowed", multipartBody(filePart("shell.php", "x")), UploadPolicy{AllowExecutableNames: true}, 0},
 		{"script content allowed", multipartBody(filePart("photo.jpg", shell)), UploadPolicy{AllowScriptContent: true}, 0},
+		// PHP2Shell goes through the session upload progress field, which PHP reads before the files.
+		{"the session upload progress field", multipartBody(progress(`"PHP_SESSION_UPLOAD_PROGRESS"`), filePart("photo.jpg", jpeg)), UploadPolicy{}, idPHP2ShellUpload},
+		{"the progress field unquoted", multipartBody(progress("PHP_SESSION_UPLOAD_PROGRESS"), filePart("photo.jpg", jpeg)), UploadPolicy{}, idPHP2ShellUpload},
+		{"the progress field in single quotes", multipartBody(progress("'PHP_SESSION_UPLOAD_PROGRESS'"), filePart("photo.jpg", jpeg)), UploadPolicy{}, idPHP2ShellUpload},
+		{"the progress field continued on the next line", multipartBody(progress("\"PHP_SESSION_UPLOAD\r\n_PROGRESS\""), filePart("photo.jpg", jpeg)), UploadPolicy{}, idPHP2ShellUpload},
+		{"the progress field split by a NUL, with the upload checks off", multipartBody(progress("\"PHP_SESSION_UPLOAD\x00x: y\r\n_PROGRESS\""), filePart("photo.jpg", jpeg)),
+			UploadPolicy{AllowExecutableNames: true, AllowScriptContent: true}, idPHP2ShellUpload},
+		{"a name that ends in the progress field's after a false start", multipartBody(progress(`"PHP_SESSION_UPLOAD_PHP_SESSION_UPLOAD_PROGRESS"`)), UploadPolicy{}, idPHP2ShellUpload},
+		{"the progress field after a file", multipartBody(filePart("photo.jpg", jpeg), progress(`"PHP_SESSION_UPLOAD_PROGRESS"`)), UploadPolicy{}, idPHP2ShellUpload},
+		{"the progress field allowed", multipartBody(progress(`"PHP_SESSION_UPLOAD_PROGRESS"`), filePart("photo.jpg", jpeg)), UploadPolicy{AllowUploadProgress: true}, 0},
+		{"a field whose text names the progress field", multipartBody("Content-Disposition: form-data; name=\"comment\"\r\n\r\nset PHP_SESSION_UPLOAD_PROGRESS in the form"), UploadPolicy{}, 0},
+		{"a file whose text names the progress field", multipartBody(filePart("notes.txt", "name=\"PHP_SESSION_UPLOAD_PROGRESS\"\r\n")), UploadPolicy{}, 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -650,6 +721,9 @@ func TestUploadPolicy(t *testing.T) {
 			}
 			if status != 403 || len(s.up.requests()) != 0 || seen.last() != tt.refused {
 				t.Fatalf("status %d, %d requests, id %d; want 403, none, %d", status, len(s.up.requests()), seen.last(), tt.refused)
+			}
+			if (tt.refused == idPHP2ShellUpload) != strings.HasPrefix(seen.lastMessage(), "PHP2Shell: ") {
+				t.Fatalf("logged as %q: only PHP2Shell's refusal is named so", seen.lastMessage())
 			}
 		})
 	}

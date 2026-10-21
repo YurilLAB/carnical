@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/YurilLAB/coraza/carnical/crs"
+	"github.com/YurilLAB/coraza/carnical/proxy"
 )
 
 // Validate checks every field of the policy, on its normalised form (see Normalize), and returns an *Error that lists what is
@@ -51,6 +52,14 @@ func (p Policy) validate() (rendered, error) {
 	validateBody(&c, q.Body)
 	validateMethods(&c, q.AllowedMethods)
 	validateCRSLists(&c, q.AllowedContentTypes, q.AllowedExtensions)
+	if len(q.Responses.SessionCookies) > proxy.MaxSessionCookies {
+		c.add("responses.session_cookies", "at most %d names", proxy.MaxSessionCookies)
+	}
+	for i, name := range q.Responses.SessionCookies {
+		if !proxy.SessionCookieName(name) {
+			c.add(fmt.Sprintf("responses.session_cookies[%d]", i), "%q is not a cookie name, as in PHPSESSID", safeName(name))
+		}
+	}
 	if len(q.AllowedHosts) > MaxHosts {
 		c.add("allowed_hosts", "at most %d names", MaxHosts)
 	}

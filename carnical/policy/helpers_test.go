@@ -151,6 +151,8 @@ func newEdge(t testing.TB, p Policy, opts ...func(*proxy.Config)) *edge {
 			return
 		case "/sets-cookie":
 			http.SetCookie(w, &http.Cookie{Name: "session", Value: "abc"})
+		case "/sets-shop-session":
+			w.Header().Add("Set-Cookie", "SHOPSESS=%00%01; path=/") // memory read back, as PHP2Shell's leak shows it
 		case "/style.css":
 			w.Header().Set("Content-Type", "text/html")
 		}

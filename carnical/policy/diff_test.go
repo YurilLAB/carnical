@@ -29,7 +29,7 @@ func richBase() Policy {
 	p.BlockIPs = []string{"192.0.2.0/24", "10.0.0.0/8"}
 	p.AllowPaths = []string{"/webhook/stripe", "/hooks/"}
 	p.WordPress = WordPressOptions{Enabled: true, LoginPerMinute: 10}
-	p.Responses = ResponseOptions{Inspect: true}
+	p.Responses = ResponseOptions{Inspect: true, SessionCookies: []string{"SHOPSESS"}}
 	p.DenyHeaders = []string{"x-original-url"}
 	p.Framework.DenyNextAction = true
 	p.VPatch = VPatchOptions{Tiers: []string{"verified", "community"}, Software: []string{"wordpress", "woocommerce"}}
@@ -98,6 +98,9 @@ func TestWeakensReportsEachKindOfWeakeningAndOnlyThose(t *testing.T) {
 		{"a host added", func(p *Policy) { p.AllowedHosts = append(p.AllowedHosts, "shop.example.test") }, []string{"host.added"}, nil},
 		{"the host list emptied", func(p *Policy) { p.AllowedHosts = nil }, []string{"hosts.opened"}, nil},
 		{"script names in uploads allowed", func(p *Policy) { p.Uploads.AllowScriptNames = true }, []string{"uploads.script_names_allowed"}, nil},
+		{"PHP's upload progress field allowed", func(p *Policy) { p.Uploads.AllowUploadProgress = true }, []string{"uploads.upload_progress_allowed"}, nil},
+		{"bad session ids forwarded", func(p *Policy) { p.Responses.AllowBadSessionIDs = true }, []string{"responses.bad_session_ids_allowed"}, nil},
+		{"a session cookie no longer checked", func(p *Policy) { p.Responses.SessionCookies = nil }, []string{"responses.session_cookie_removed"}, nil},
 		{"script content in uploads allowed", func(p *Policy) { p.Uploads.AllowScriptContent = true }, []string{"uploads.script_content_allowed"}, nil},
 		{"encoded slashes allowed", func(p *Policy) { p.Paths.AllowEncodedSlash = true }, []string{"paths.encoded_slash_allowed"}, nil},
 		{"path parameters allowed", func(p *Policy) { p.Paths.AllowPathParams = true }, []string{"paths.path_params_allowed"}, nil},
@@ -160,6 +163,7 @@ func TestWeakensReportsEachKindOfWeakeningAndOnlyThose(t *testing.T) {
 		{"a host removed", func(p *Policy) { p.AllowedHosts = []string{"example.test"} }, nil, []string{"host.removed"}},
 		{"WordPress protections switched on", func(p *Policy) { p.WordPress.Enabled = true }, nil, nil},
 		{"xmlrpc.php refused", func(p *Policy) { p.WordPress.AllowXMLRPC = false }, nil, nil},
+		{"a session cookie checked", func(p *Policy) { p.Responses.SessionCookies = append(p.Responses.SessionCookies, "SSESS") }, nil, []string{"responses.session_cookie_added"}},
 		{"the login rate lowered", func(p *Policy) { p.WordPress.LoginPerMinute = 3 }, nil, []string{"wordpress.login_rate_lowered"}},
 		{"banners hidden", func(p *Policy) { p.Responses.KeepBanners = false }, nil, nil},
 		{"response inspection kept on", func(p *Policy) { p.Responses.Inspect = true }, nil, nil},
@@ -386,8 +390,9 @@ func TestEveryCodeThatWeakensIsStable(t *testing.T) {
 		"allow_ip.added", "allow_path.added", "api.config_changed", "api.mode_lowered", "block_ip.removed", "body.form_limit_raised", "body.upload_limit_raised",
 		"body_formats.config_changed", "content_type.added", "custom_rule.changed", "custom_rule.relaxed", "custom_rule.removed", "deny_header.removed", "exclusion.added", "extension.allowed",
 		"framework.next_action_allowed", "host.added", "hosts.opened", "method.added", "mode.lowered", "outbound_threshold.raised", "paranoia.lowered", "paths.encoded_slash_allowed",
-		"paths.path_params_allowed", "responses.banners_kept", "responses.caching_kept", "responses.inspection_disabled", "rule_group.log", "rule_group.off",
-		"threshold.raised", "uploads.script_content_allowed", "uploads.script_names_allowed", "vpatch.software_removed", "vpatch.tier_removed",
+		"paths.path_params_allowed", "responses.bad_session_ids_allowed", "responses.banners_kept", "responses.caching_kept", "responses.inspection_disabled",
+		"responses.session_cookie_removed", "rule_group.log", "rule_group.off", "threshold.raised", "uploads.script_content_allowed", "uploads.script_names_allowed",
+		"uploads.upload_progress_allowed", "vpatch.software_removed", "vpatch.tier_removed",
 		"wordpress.disabled", "wordpress.login_rate_raised", "wordpress.xmlrpc_allowed",
 	}
 	// Collect the codes the table above can produce by running a policy through every weakening it knows.
@@ -404,11 +409,14 @@ func TestEveryCodeThatWeakensIsStable(t *testing.T) {
 		func(p *Policy) { p.AllowedContentTypes = append(p.AllowedContentTypes, "application/x-new") },
 		func(p *Policy) { p.AllowedExtensions = append(p.AllowedExtensions, ".sql") },
 		func(p *Policy) { p.AllowedHosts = append(p.AllowedHosts, "n.test") }, func(p *Policy) { p.AllowedHosts = nil },
-		func(p *Policy) { p.Uploads.AllowScriptNames, p.Uploads.AllowScriptContent = true, true },
+		func(p *Policy) {
+			p.Uploads.AllowScriptNames, p.Uploads.AllowScriptContent, p.Uploads.AllowUploadProgress = true, true, true
+		},
 		func(p *Policy) { p.Paths.AllowEncodedSlash, p.Paths.AllowPathParams = true, true },
 		func(p *Policy) { p.WordPress.Enabled = false }, func(p *Policy) { p.WordPress.AllowXMLRPC = true }, func(p *Policy) { p.WordPress.LoginPerMinute = 99 },
 		func(p *Policy) {
 			p.Responses.KeepBanners, p.Responses.KeepCaching, p.Responses.Inspect = true, true, false
+			p.Responses.SessionCookies, p.Responses.AllowBadSessionIDs = nil, true
 		},
 		func(p *Policy) { p.DenyHeaders = nil }, func(p *Policy) { p.Framework.DenyNextAction = false },
 		func(p *Policy) { p.VPatch.Tiers = nil }, func(p *Policy) { p.VPatch.Software = nil }, func(p *Policy) { p.APIMode = APIOff },

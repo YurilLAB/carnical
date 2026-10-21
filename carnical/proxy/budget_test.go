@@ -301,6 +301,9 @@ func TestNegativeLimitsAreRefused(t *testing.T) {
 		// The write deadline starts at the end of the headers: an upload that arrives inside the read timeout but past
 		// it would be acted on by the application and its client never answered.
 		{"a write timeout shorter than the read timeout", Config{ReadTimeout: 5 * time.Second, WriteTimeout: time.Second}},
+		{"a session cookie name with a space", Config{Responses: ResponsePolicy{SessionCookies: []string{"my session"}}}},
+		{"an empty session cookie name", Config{Responses: ResponsePolicy{SessionCookies: []string{""}}}},
+		{"more session cookie names than are kept", Config{Responses: ResponsePolicy{SessionCookies: strings.Split(strings.Repeat("S,", MaxSessionCookies)+"S", ",")}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -317,6 +320,7 @@ func TestNegativeLimitsAreRefused(t *testing.T) {
 		{"the defaults", Config{}},
 		{"a read timeout raised past the default write timeout", Config{ReadTimeout: 10 * time.Minute}},
 		{"the longest read timeout, with the longest write timeout", Config{ReadTimeout: 23 * time.Hour, WriteTimeout: 24 * time.Hour}},
+		{"a site's own session cookie names", Config{Responses: ResponsePolicy{SessionCookies: []string{"SHOPSESS", "__Host-SESS"}}}},
 	}
 	for _, tt := range accepted {
 		t.Run(tt.name, func(t *testing.T) {

@@ -36,6 +36,7 @@ const (
 	idUploadName          = 5000010
 	idUploadScript        = 5000011
 	idMultipartFields     = 5000012
+	idPHP2ShellUpload     = 5000013
 	idWordPressPHP        = 5000020
 	idXMLRPC              = 5000021
 	idRateLimited         = 5000022
@@ -64,8 +65,10 @@ const (
 	idEngineUnanswered = 5000077
 	idLinesHeld        = 5000078 // how many of a request's lines went over the cap (see maxRequestLines)
 
-	// An answer of the application the edge withholds: a WebSocket handshake it answered without switching protocols.
+	// Answers of the application the edge withholds: a WebSocket handshake it answered without switching protocols, and
+	// a PHP session cookie that is not a session id (PHP2Shell).
 	idSocketNotSwitched = 5000079
+	idPHP2ShellSession  = 5000080
 )
 
 // PathPolicy says how plain the request path must be. The zero value is the strict default.

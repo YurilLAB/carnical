@@ -190,6 +190,9 @@ type UploadOptions struct {
 	AllowScriptNames bool `json:"allow_script_names"`
 	// AllowScriptContent lets through a file whose content holds a PHP, ASP or JSP opening tag.
 	AllowScriptContent bool `json:"allow_script_content"`
+	// AllowUploadProgress lets through a multipart body with PHP's session upload progress field, which PHP2Shell
+	// goes through.
+	AllowUploadProgress bool `json:"allow_upload_progress,omitempty"`
 }
 
 // WordPressOptions are the protections for a WordPress site.
@@ -210,6 +213,11 @@ type ResponseOptions struct {
 	KeepCaching bool `json:"keep_caching"`
 	// Inspect also runs the Core Rule Set's response rules (information leaks, web shells). It costs latency.
 	Inspect bool `json:"inspect"`
+	// SessionCookies names the site's PHP session cookies (PHP's session.name) besides PHPSESSID. A response that sets
+	// one to what is not a session id, as PHP2Shell's leak does, is withheld.
+	SessionCookies []string `json:"session_cookies,omitempty"`
+	// AllowBadSessionIDs forwards such a response.
+	AllowBadSessionIDs bool `json:"allow_bad_session_ids,omitempty"`
 }
 
 // FrameworkOptions are options for particular frameworks.

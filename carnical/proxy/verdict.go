@@ -393,7 +393,8 @@ func offencePoints(a *alert.Alert) int {
 			return 4
 		}
 		return 3
-	case a.RuleID == idUploadName || a.RuleID == idUploadScript || a.RuleID == idWordPressPHP:
+	case a.RuleID == idUploadName || a.RuleID == idUploadScript || a.RuleID == idWordPressPHP,
+		a.RuleID == idPHP2ShellUpload || a.RuleID == idPHP2ShellSession:
 		return 4
 	case a.Layer == alert.LayerVPatch:
 		return 4

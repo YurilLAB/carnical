@@ -20,6 +20,9 @@ type UploadPolicy struct {
 	AllowExecutableNames bool
 	// AllowScriptContent lets through a file whose content holds a PHP, ASP or JSP opening tag.
 	AllowScriptContent bool
+	// AllowUploadProgress lets through a multipart body with PHP's session upload progress field, which PHP2Shell goes
+	// through (see php2shell.go).
+	AllowUploadProgress bool
 }
 
 var (

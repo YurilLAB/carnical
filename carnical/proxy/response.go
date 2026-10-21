@@ -15,6 +15,11 @@ type ResponsePolicy struct {
 	KeepBanners bool
 	// KeepCaching leaves Cache-Control alone on responses that set a cookie or look like a static file but are HTML.
 	KeepCaching bool
+	// SessionCookies names the application's PHP session cookies (PHP's session.name) besides PHPSESSID. A response
+	// that sets one to what is not a session id, as PHP2Shell's leak does, is withheld (see php2shell.go).
+	SessionCookies []string
+	// AllowBadSessionIDs forwards such a response.
+	AllowBadSessionIDs bool
 }
 
 var staticSuffix = []string{".css", ".js", ".mjs", ".map", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp", ".woff", ".woff2",

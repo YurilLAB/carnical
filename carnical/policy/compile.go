@@ -71,9 +71,11 @@ func Compile(p Policy) (Compiled, error) {
 		Paths:        proxy.PathPolicy{AllowEncodedSlash: q.Paths.AllowEncodedSlash, AllowPathParams: q.Paths.AllowPathParams},
 		DenyHeaders:  deny,
 		WordPress:    proxy.WordPressPolicy{Enabled: q.WordPress.Enabled, AllowXMLRPC: q.WordPress.AllowXMLRPC, LoginPerMinute: q.WordPress.LoginPerMinute},
-		Uploads:      proxy.UploadPolicy{AllowExecutableNames: q.Uploads.AllowScriptNames, AllowScriptContent: q.Uploads.AllowScriptContent},
-		Responses:    proxy.ResponsePolicy{KeepBanners: q.Responses.KeepBanners, KeepCaching: q.Responses.KeepCaching},
-		MaxFormBody:  q.Body.MaxFormBytes,
+		Uploads: proxy.UploadPolicy{AllowExecutableNames: q.Uploads.AllowScriptNames, AllowScriptContent: q.Uploads.AllowScriptContent,
+			AllowUploadProgress: q.Uploads.AllowUploadProgress},
+		Responses: proxy.ResponsePolicy{KeepBanners: q.Responses.KeepBanners, KeepCaching: q.Responses.KeepCaching,
+			SessionCookies: append([]string(nil), q.Responses.SessionCookies...), AllowBadSessionIDs: q.Responses.AllowBadSessionIDs},
+		MaxFormBody: q.Body.MaxFormBytes,
 		CRS: crs.Settings{
 			Mode:                   mode,
 			ParanoiaLevel:          pre.ParanoiaLevel,
@@ -115,6 +117,7 @@ func (c Compiled) ApplyTo(cfg *proxy.Config) {
 	cfg.WordPress = c.WordPress
 	cfg.Uploads = c.Uploads
 	cfg.Responses = c.Responses
+	cfg.Responses.SessionCookies = append([]string(nil), c.Responses.SessionCookies...)
 	cfg.MaxFormBody = c.MaxFormBody
 	cfg.CRS = c.CRS
 	cfg.CRS.AllowedMethods = append([]string(nil), c.CRS.AllowedMethods...)

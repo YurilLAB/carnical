@@ -147,6 +147,7 @@ var proxyRules = map[int]Entry{
 	5000010: {"Executable upload name", Of(CatUpload), RiskHigh},
 	5000011: {"Script content in an upload", Of(CatUpload), RiskHigh},
 	5000012: {"Multipart form fields over the form body limit", Of(CatProtocol), RiskLow},
+	5000013: {"PHP2Shell: PHP session upload progress field", Of(CatPHP), RiskHigh},
 	5000020: {"Script in a WordPress data directory", Of(CatWordPress), RiskHigh},
 	5000021: {"WordPress xmlrpc.php switched off", Of(CatWordPress), RiskLow},
 	5000022: {"WordPress login rate limit", Of(CatRate), RiskLow},
@@ -175,6 +176,7 @@ var proxyRules = map[int]Entry{
 	5000077: {"Request the engine could not process", Of(CatInspection), RiskLow},
 	5000078: {"Rule match lines over the per-request cap", 0, RiskInfo},
 	5000079: {"WebSocket handshake the application did not switch", Of(CatProtocol), RiskLow},
+	5000080: {"PHP2Shell: session cookie that is not a session id", Of(CatPHP, CatDataLeak), RiskHigh},
 }
 
 // shieldRules are the flood protection's ids (shield/shield.go).

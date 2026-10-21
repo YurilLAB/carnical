@@ -317,9 +317,9 @@ name cannot appear together. Property names inside `api` and `body_formats` rema
 | `block_ips` | up to 5000, none wider than /8 or /16 | none |
 | `allow_paths` | up to 200 path prefixes | none |
 | `paths` | `allow_encoded_slash`, `allow_path_params` | both false |
-| `uploads` | `allow_script_names`, `allow_script_content` | both false |
+| `uploads` | `allow_script_names`, `allow_script_content`, `allow_upload_progress` | all false. `allow_upload_progress` lets PHP's session upload progress field through, which [PHP2Shell](proxy-reference.md#php2shell) goes through |
 | `wordpress` | `enabled`, `allow_xmlrpc`, `login_per_minute` 1 to 600 | off, false, 10 |
-| `responses` | `keep_banners`, `keep_caching`, `inspect` | all false. `inspect` is off because it buffers responses (latency) |
+| `responses` | `keep_banners`, `keep_caching`, `inspect`, `session_cookies` (up to 16 cookie names), `allow_bad_session_ids` | all false, none. `inspect` is off because it buffers responses (latency). `session_cookies` names the site's PHP session cookies besides `PHPSESSID`, checked for [PHP2Shell](proxy-reference.md#php2shell)'s leak |
 | `deny_headers` | up to 50 header names | none |
 | `framework` | `deny_next_action` | false: a Next.js site that uses server actions needs the header, and nothing can tell from outside which sites do |
 | `vpatch` | `tiers` (`verified community experimental`), `software` (up to 200 of `name` or `name@version`) | `["verified"]`, none |
@@ -611,7 +611,8 @@ covers `arg:x`; a shorter path covers a longer one; the whole request covers any
 | `allow_ip.removed`, `allow_path.removed`, `block_ip.added`, `block_ip.wide` (risk) | no | |
 | `body.upload_limit_raised`, `body.form_limit_raised` | yes | |
 | `method.added`, `host.added`, `hosts.opened` (list emptied: any name) | yes | `hosts.restricted` (list given to a site that had none) does not |
-| `uploads.script_names_allowed`, `uploads.script_content_allowed`, `paths.encoded_slash_allowed`, `paths.path_params_allowed`, `wordpress.disabled`, `wordpress.xmlrpc_allowed`, `wordpress.login_rate_raised`, `responses.banners_kept`, `responses.caching_kept`, `responses.inspection_disabled`, `framework.next_action_allowed`, `deny_header.removed` | yes | and each one's opposite does not |
+| `uploads.script_names_allowed`, `uploads.script_content_allowed`, `uploads.upload_progress_allowed`, `responses.bad_session_ids_allowed`, `paths.encoded_slash_allowed`, `paths.path_params_allowed`, `wordpress.disabled`, `wordpress.xmlrpc_allowed`, `wordpress.login_rate_raised`, `responses.banners_kept`, `responses.caching_kept`, `responses.inspection_disabled`, `framework.next_action_allowed`, `deny_header.removed` | yes | and each one's opposite does not |
+| `responses.session_cookie_removed` / `responses.session_cookie_added` | yes / no | a name taken off or added to `session_cookies` |
 | `vpatch.tier_removed`, `vpatch.software_removed` | yes | declared software is what switches the patches about it on, so removing one switches them off |
 | `api.mode_lowered` | yes | off < learn < monitor < enforce |
 | `api.config_changed` | when the API mode is monitor or enforce | the settings are another package's, so a change cannot be judged here |

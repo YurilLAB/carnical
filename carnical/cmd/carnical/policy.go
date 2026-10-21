@@ -152,6 +152,15 @@ func applyPolicy(cfg *proxy.Config, flagsCfg proxy.Config, set map[string]bool, 
 	if set["allow-script-content"] {
 		cfg.Uploads.AllowScriptContent = flagsCfg.Uploads.AllowScriptContent
 	}
+	if set["allow-upload-progress"] {
+		cfg.Uploads.AllowUploadProgress = flagsCfg.Uploads.AllowUploadProgress
+	}
+	if set["session-cookies"] {
+		cfg.Responses.SessionCookies = slices.Clone(flagsCfg.Responses.SessionCookies)
+	}
+	if set["allow-bad-session-ids"] {
+		cfg.Responses.AllowBadSessionIDs = flagsCfg.Responses.AllowBadSessionIDs
+	}
 	if set["keep-banners"] {
 		cfg.Responses.KeepBanners = flagsCfg.Responses.KeepBanners
 	}

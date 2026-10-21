@@ -437,6 +437,8 @@ var flags = []flag{
 		func(p Policy) bool { return p.Uploads.AllowScriptNames }, true},
 	{"uploads", "uploads.script_content_allowed", "uploads.script_content_refused", "Uploads whose content holds the opening tag of a script are now let through.", "Uploads whose content holds the opening tag of a script are now refused.",
 		func(p Policy) bool { return p.Uploads.AllowScriptContent }, true},
+	{"uploads", "uploads.upload_progress_allowed", "uploads.upload_progress_refused", "Uploads with PHP's session upload progress field, which PHP2Shell uses, are now let through.", "Uploads with PHP's session upload progress field, which PHP2Shell uses, are now refused.",
+		func(p Policy) bool { return p.Uploads.AllowUploadProgress }, true},
 	{"wordpress", "wordpress.enabled", "wordpress.disabled", "The WordPress protections were switched on.", "The WordPress protections were switched off.",
 		func(p Policy) bool { return p.WordPress.Enabled }, false},
 	{"wordpress", "wordpress.xmlrpc_allowed", "wordpress.xmlrpc_refused", "xmlrpc.php is now reachable.", "xmlrpc.php is now refused.",
@@ -447,6 +449,8 @@ var flags = []flag{
 		func(p Policy) bool { return p.Responses.KeepCaching }, true},
 	{"responses", "responses.inspection_enabled", "responses.inspection_disabled", "Responses are now inspected for leaks.", "Responses are no longer inspected for leaks.",
 		func(p Policy) bool { return p.Responses.Inspect }, false},
+	{"responses", "responses.bad_session_ids_allowed", "responses.bad_session_ids_withheld", "Responses that set a PHP session cookie to what is not a session id (PHP2Shell's leak) are now forwarded.", "Responses that set a PHP session cookie to what is not a session id (PHP2Shell's leak) are now withheld.",
+		func(p Policy) bool { return p.Responses.AllowBadSessionIDs }, true},
 	{"framework", "framework.next_action_denied", "framework.next_action_allowed", "Requests with a Next-Action header are now refused.", "Requests with a Next-Action header are now let through.",
 		func(p Policy) bool { return p.Framework.DenyNextAction }, false},
 }
@@ -468,6 +472,12 @@ func (d *differ) flags(a, b Policy) {
 		d.add("wordpress.login_rate_raised", "wordpress", true, "The login attempts allowed a minute were raised from %d to %d.", ra, rb)
 	case rb < ra:
 		d.add("wordpress.login_rate_lowered", "wordpress", false, "The login attempts allowed a minute were lowered from %d to %d.", ra, rb)
+	}
+	for _, name := range setDiff(b.Responses.SessionCookies, a.Responses.SessionCookies) {
+		d.add("responses.session_cookie_added", "responses", false, "Responses that set the session cookie %s are now checked for PHP2Shell's leak.", name)
+	}
+	for _, name := range setDiff(a.Responses.SessionCookies, b.Responses.SessionCookies) {
+		d.add("responses.session_cookie_removed", "responses", true, "Responses that set the session cookie %s are no longer checked for PHP2Shell's leak.", name)
 	}
 }
 

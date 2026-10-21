@@ -317,7 +317,7 @@ check that enforces and is sure of what it found scores:
 | --- | --- |
 | CRS anomaly block (949110, 959100) with two or more attack categories, or a scanner | 4 |
 | CRS anomaly block with one category | 3 |
-| Upload policy (5000010, 5000011), WordPress PHP block (5000020), virtual patch | 4 |
+| Upload policy (5000010, 5000011), PHP2Shell (5000013, 5000080), WordPress PHP block (5000020), virtual patch | 4 |
 | A [bot policy](bots.md) refusal of a scanner by name | 4 |
 | A bot policy refusal of a fake search engine | 3 |
 | High-risk format or API contract block | 2 |

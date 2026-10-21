@@ -118,6 +118,9 @@ func runFlags(usage, logs io.Writer, args []string, private map[string]string) e
 	flags.Var(limits, "limit", "per-client rate limits: [METHODS] PATHS COUNT/WINDOW [monitor], separated by ';' or given as repeated flags, as in 'POST /login 5/m; /api 600/m' (windows s, m or h, as in 5/m, 100/10s or 1k/h)")
 	scriptNames := flags.Bool("allow-script-names", false, "allow uploads named like scripts (shell.php, .htaccess); refused by default")
 	scriptContent := flags.Bool("allow-script-content", false, "allow uploads that contain a PHP, ASP or JSP opening tag; refused by default")
+	uploadProgress := flags.Bool("allow-upload-progress", false, "allow multipart bodies with PHP's session upload progress field, which PHP2Shell uses; refused by default")
+	sessionCookies := flags.String("session-cookies", "", "comma-separated names of the application's PHP session cookies besides PHPSESSID, checked in responses for PHP2Shell's leak")
+	badSessionIDs := flags.Bool("allow-bad-session-ids", false, "forward responses that set a PHP session cookie to what is not a session id (PHP2Shell's leak); withheld by default")
 	keepBanners := flags.Bool("keep-banners", false, "keep X-Powered-By and Server headers from the application")
 	keepCaching := flags.Bool("keep-caching", false, "do not add Cache-Control: private, no-store to responses that set a cookie or look like a stylesheet but are HTML")
 	ddos := declareShieldFlags(flags)
@@ -378,8 +381,9 @@ func runFlags(usage, logs io.Writer, args []string, private map[string]string) e
 		AllowedHosts: splitList(*hosts), Paths: proxy.PathPolicy{AllowEncodedSlash: *encodedSlash, AllowPathParams: *pathParams},
 		DenyHeaders: splitList(*denyHeaders), WordPress: proxy.WordPressPolicy{Enabled: *wordpress, AllowXMLRPC: *xmlrpc, LoginPerMinute: *loginRate},
 		APIRate: proxy.APIRatePolicy{PerMinute: *apiRate, Paths: splitList(*apiPaths)}, Limits: limits.rules,
-		Uploads:   proxy.UploadPolicy{AllowExecutableNames: *scriptNames, AllowScriptContent: *scriptContent},
-		Responses: proxy.ResponsePolicy{KeepBanners: *keepBanners, KeepCaching: *keepCaching}, MaxConnsPerIP: *maxConns,
+		Uploads: proxy.UploadPolicy{AllowExecutableNames: *scriptNames, AllowScriptContent: *scriptContent, AllowUploadProgress: *uploadProgress},
+		Responses: proxy.ResponsePolicy{KeepBanners: *keepBanners, KeepCaching: *keepCaching, SessionCookies: splitList(*sessionCookies),
+			AllowBadSessionIDs: *badSessionIDs}, MaxConnsPerIP: *maxConns,
 		AllowRequestEncoding: *requestEncoding, NoJoinedParams: !*joinRepeated, Shield: guard, CrowdSec: cs, Bots: botsPolicy, Hellos: hellos,
 		ErrorLog: stdlog.New(originErrors, "", 0), OnAlert: alerts.onAlert, Alerts: alerts.options, EvalBudgetDetect: alerts.evalMode,
 		NoRuleMatches: !*alertFlag.ruleMatches,

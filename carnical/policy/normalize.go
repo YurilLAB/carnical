@@ -37,6 +37,10 @@ func (p Policy) Normalize() Policy {
 	if len(p.AllowedExtensions) > 0 {
 		q.AllowedExtensions = sortedUnique(mapStrings(p.AllowedExtensions, lowerTrimmed))
 	}
+	q.Responses.SessionCookies = nil // absent too
+	if len(p.Responses.SessionCookies) > 0 {
+		q.Responses.SessionCookies = sortedUnique(mapStrings(p.Responses.SessionCookies, strings.TrimSpace))
+	}
 	q.DenyHeaders = sortedUnique(mapStrings(p.DenyHeaders, func(s string) string {
 		return strings.ReplaceAll(strings.ToLower(strings.TrimSpace(s)), "_", "-")
 	}))

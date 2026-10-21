@@ -293,6 +293,15 @@ func New(cfg Config) (*Edge, error) {
 		return nil, fmt.Errorf("API rate policy: %w", err)
 	}
 	cfg.APIRate = apiRate
+	if len(cfg.Responses.SessionCookies) > MaxSessionCookies {
+		return nil, fmt.Errorf("at most %d session cookie names", MaxSessionCookies)
+	}
+	for _, name := range cfg.Responses.SessionCookies {
+		if !SessionCookieName(name) {
+			return nil, fmt.Errorf("session cookie %q: not a cookie name", excerpt(name))
+		}
+	}
+	cfg.Responses.SessionCookies = slices.Clone(cfg.Responses.SessionCookies)
 	// Config is an API: the rules are checked again, as a caller may build them without ParseRateRules, and copied, so a
 	// caller cannot change them after construction.
 	limits, at, err := normalizeRateRules(cfg.Limits)
@@ -755,6 +764,10 @@ func (e *Edge) guard(next http.Handler) http.Handler {
 					e.refuse(w, r, http.StatusBadRequest, idAmbiguousType, "a multipart Content-Type that parsers read differently")
 					return
 				}
+				if !e.cfg.Uploads.AllowUploadProgress && uploadProgressField(body, []byte("--"+boundary)) {
+					e.refuse(w, r, http.StatusForbidden, idPHP2ShellUpload, "PHP2Shell: a multipart body with PHP's session upload progress field")
+					return
+				}
 				if id, why := scanUpload(body, boundary, e.cfg.Uploads); id != 0 {
 					e.refuse(w, r, http.StatusForbidden, id, why)
 					return
@@ -1005,6 +1018,11 @@ func (e *Edge) forward() http.Handler {
 				// pass the bot checks a page request faces. Not marked as the application's answer: the refusal is the edge's.
 				return errSocketNotSwitched
 			}
+			if !e.cfg.Responses.AllowBadSessionIDs && badSessionCookie(resp.Header, e.cfg.Responses.SessionCookies) {
+				// What PHP2Shell's leak looks like, whatever request caused it. Answered 403 and not marked as the
+				// application's answer, so that the shield counts it as a refusal of the visitor's.
+				return errPHP2Shell
+			}
 			markOrigin(resp.Request.Context())
 			if resp.StatusCode == http.StatusSwitchingProtocols && !e.cfg.AllowUpgrade {
 				return errors.New("upstream protocol upgrade is not supported")
@@ -1041,6 +1059,10 @@ func (e *Edge) forward() http.Handler {
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			if errors.Is(err, errSocketNotSwitched) {
 				e.refuse(w, r, http.StatusBadGateway, idSocketNotSwitched, "a WebSocket handshake the application did not switch")
+				return
+			}
+			if errors.Is(err, errPHP2Shell) {
+				e.refuse(w, r, http.StatusForbidden, idPHP2ShellSession, "PHP2Shell: the application set a session cookie that is not a session id")
 				return
 			}
 			// A request cancelled because its client went away, or because its response was ended to free a place (see

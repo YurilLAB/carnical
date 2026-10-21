@@ -104,8 +104,37 @@ HTML from a stylesheet address. Connection limits and a 100-stream HTTP/2 cap bo
 | `-allow-encoded-slash`, `-allow-path-params` | off | Let `%2f`/`%5c`, or a `;` (Java's `;jsessionid=`), through in paths. |
 | `-allow-xmlrpc` | off | With `-wordpress`, leave `xmlrpc.php` reachable. |
 | `-keep-banners`, `-keep-caching` | off | Keep the application's `X-Powered-By` and `Server` headers, or add no `Cache-Control: private, no-store` to the responses described above. |
+| `-allow-upload-progress` | off | Let multipart bodies with PHP's session upload progress field through ([PHP2Shell](#php2shell)). |
+| `-session-cookies` | none: `PHPSESSID` only | Comma-separated names of the application's PHP session cookies (`session.name`) besides `PHPSESSID`, up to 16, checked in responses for [PHP2Shell](#php2shell)'s leak. |
+| `-allow-bad-session-ids` | off | Forward a response whose PHP session cookie is not a session id ([PHP2Shell](#php2shell)). |
 | `-detection-paranoia` | the `-paranoia` level | Log what a higher paranoia level would find, while blocking at `-paranoia`. |
 | `-confine`, `-confine-connect`, `-confine-read`, `-confine-best-effort` | off; `80,443,53` | Linux self-confinement, the TCP ports it may connect to and extra paths it may read; see [host hardening](hardening.md). |
+
+### PHP2Shell
+
+PHP2Shell (CVE-2026-109618, CVE-2026-109619) is two memory-safety bugs in PHP's handling of an
+upload that reports its progress to the session; they end in code execution, and the published
+exploit reads the PHP process's memory back through the session cookie. Only a fixed PHP removes
+them. Until the application runs one, Carnical checks both sides of the exchange, as Cloudflare's
+managed rules for it do, whatever the rule set's mode:
+
+- **The request.** A multipart body with PHP's session upload progress field
+  (`PHP_SESSION_UPLOAD_PROGRESS`, PHP's default `session.upload_progress.name`) is refused with
+  403 (5000013). The name is looked for wherever a parser could read a part's headers, as PHP reads
+  it: quoted or bare, with escapes, across the header lines PHP joins and after a NUL, in any case.
+  Few sites use upload progress bars; one that does sets `-allow-upload-progress`.
+- **The response.** A response that sets `PHPSESSID`, or a name in `-session-cookies`, to
+  anything but a session id PHP could have made (up to 256 letters, digits, `-` and `,`, which PHP
+  sends as `%2C`; empty and `deleted` are fine) is what the leak looks like, whatever request caused
+  it. It is withheld and answered 403 (5000080); the application's headers and body never reach
+  the visitor. `-allow-bad-session-ids` forwards it; a site needs it whose session ids hold other
+  characters (made by its own session handler, or set with `session_id()`), as does a non-PHP
+  application that names a cookie of its own `PHPSESSID`.
+
+Both are logged as `rule matched` lines whose message starts with `PHP2Shell:`, and their alerts'
+`sig_name` does too. Each counts 4 toward a [repeat offender's ban](ddos.md#repeat-offenders), as
+an upload refusal does. Neither checks a session id carried in URLs (`session.use_trans_sid`, off
+by default) or an upload progress field renamed in `php.ini`.
 
 ## Rate rules
 
@@ -253,7 +282,8 @@ inspector failures 5000040.
 The checks of the request itself refuse with ids of their own: a `Host` that is not one of `-hosts`
 5000001 (421), a path not in plain form 5000002 (400), an internal or framework header 5000003
 (400), a body encoding that cannot be inspected 5000004 (415), a method token not in canonical form
-5000043 (400), a method-override header 5000044 (400), an upload 5000010 or 5000011 (403), and,
+5000043 (400), a method-override header 5000044 (400), an upload 5000010 or 5000011 (403), PHP's
+session upload progress field 5000013 (403, [PHP2Shell](#php2shell)), and,
 with `-wordpress`, a PHP script in an upload or cache directory 5000020 and `xmlrpc.php` 5000021
 (403).
 
@@ -268,7 +298,9 @@ client or request. The first three are reported to the flood protection with `Sh
 from the address's own request limit and counts toward its HTTP rejection share, as a later check's
 refusal does. With `-allow-upgrade`, an answer to a WebSocket handshake that neither switches
 protocols nor is an error is withheld and answered 502 (5000079): a page sent for a handshake would
-reach a program that copied a browser's handshake to pass the bot checks a page request faces.
+reach a program that copied a browser's handshake to pass the bot checks a page request faces. A
+response that sets a PHP session cookie to what is not a session id is withheld too, and answered
+403 (5000080, [PHP2Shell](#php2shell)).
 
 ### Intrusion alerts
 

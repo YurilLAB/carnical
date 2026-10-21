@@ -164,5 +164,6 @@ Superseding does not delete the old record. Set its status and let the history s
 | [0093](0093-bodies-copied-without-a-buffer-each.md) | — | — | unreleased (post-v3.8.1) | ⚡ | Request and response bodies copied without a buffer of their own |
 | [0094](0094-rule-ids-indexed-by-tag.md) | — | — | unreleased (post-v3.8.1) | ⚡ | Rule ids indexed by tag for ctl's removals by tag |
 | [0095](0095-carnical-person-check-hook.md) | — | — | unreleased (post-v3.8.1) | F | A hook for a person check in the Carnical proxy |
+| [0096](0096-carnical-php2shell-checks.md) | — | — | unreleased (post-v3.8.1) | F | PHP2Shell checked on the request and the response in the Carnical proxy |
 
 Categories: **F**eature · **P**arity · **⚡** Perf · **R**efactor

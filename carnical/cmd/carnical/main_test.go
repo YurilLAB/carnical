@@ -3173,7 +3173,7 @@ func TestRecoveredSelectionBounds(t *testing.T) {
 }
 
 func TestRecoveredPolicyKeepsOperatorSettings(t *testing.T) {
-	flags := proxy.Config{CRS: crs.DefaultSettings(), MaxFormBody: 4096, AllowedHosts: []string{"flag.example"}, Paths: proxy.PathPolicy{AllowEncodedSlash: true, AllowPathParams: true}, DenyHeaders: []string{"X_Flag"}, WordPress: proxy.WordPressPolicy{Enabled: true, AllowXMLRPC: true, LoginPerMinute: 7}, Uploads: proxy.UploadPolicy{AllowExecutableNames: true, AllowScriptContent: true}, Responses: proxy.ResponsePolicy{KeepBanners: true, KeepCaching: true}, MaxUpstreamInFlight: 3, MaxConnsPerIP: 5, NoJoinedParams: true}
+	flags := proxy.Config{CRS: crs.DefaultSettings(), MaxFormBody: 4096, AllowedHosts: []string{"flag.example"}, Paths: proxy.PathPolicy{AllowEncodedSlash: true, AllowPathParams: true}, DenyHeaders: []string{"X_Flag"}, WordPress: proxy.WordPressPolicy{Enabled: true, AllowXMLRPC: true, LoginPerMinute: 7}, Uploads: proxy.UploadPolicy{AllowExecutableNames: true, AllowScriptContent: true, AllowUploadProgress: true}, Responses: proxy.ResponsePolicy{KeepBanners: true, KeepCaching: true, SessionCookies: []string{"SHOPSESS"}, AllowBadSessionIDs: true}, MaxUpstreamInFlight: 3, MaxConnsPerIP: 5, NoJoinedParams: true}
 	flags.CRS.Mode = crs.ModeOff
 	flags.CRS.ParanoiaLevel = 2
 	flags.CRS.DetectionParanoiaLevel = 3
@@ -3186,7 +3186,7 @@ func TestRecoveredPolicyKeepsOperatorSettings(t *testing.T) {
 	flags.CRS.UploadDir = "private-uploads"
 	flags.CRS.LocalRulesOff = []int{5006001}
 	set := map[string]bool{}
-	for _, name := range strings.Fields("hosts allow-encoded-slash allow-path-params deny-headers wordpress allow-xmlrpc login-per-minute allow-script-names allow-script-content keep-banners keep-caching max-form-body max-body mode paranoia detection-paranoia inbound-threshold outbound-threshold inspect-responses allowed-methods allowed-content-types allowed-extensions") {
+	for _, name := range strings.Fields("hosts allow-encoded-slash allow-path-params deny-headers wordpress allow-xmlrpc login-per-minute allow-script-names allow-script-content allow-upload-progress session-cookies allow-bad-session-ids keep-banners keep-caching max-form-body max-body mode paranoia detection-paranoia inbound-threshold outbound-threshold inspect-responses allowed-methods allowed-content-types allowed-extensions") {
 		set[name] = true
 	}
 	sp := &sitePolicy{compiled: policy.Compiled{CRS: crs.DefaultSettings(), MaxFormBody: 8192, DenyHeaders: []string{"x-policy"}}}

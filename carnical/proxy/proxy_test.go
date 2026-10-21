@@ -71,6 +71,10 @@ func newUpstream(t testing.TB) *upstream {
 		switch {
 		case r.URL.Path == "/set-cookie":
 			http.SetCookie(w, &http.Cookie{Name: "session", Value: "abc"})
+		case r.URL.Path == "/php-session":
+			for _, c := range r.Header.Values("X-Set-Cookie") {
+				w.Header().Add("Set-Cookie", c)
+			}
 		case r.URL.Path == "/banner":
 			w.Header().Set("X-Powered-By", "PHP/8.3.1")
 			w.Header().Set("Server", "Apache/2.4.58 (Ubuntu)")
@@ -1017,15 +1021,20 @@ func TestBlockedAttacksBanTheirSourceThroughTheShield(t *testing.T) {
 		bannedSays string // the alert of that request, if it is refused
 		ua         string // the attacks' user agent, when it is what they are refused for
 		bots       *bots.Policy
+		request    string // the attack, when it is neither the SQL injection nor its user agent
 	}{
-		{"four blocked attacks ban the source", shield.AutoBlockOn, crs.ModeBlock, nil, 403, "shield-5004008 source_blocked 403", "", nil},
-		{"monitor only reports the source", shield.AutoBlockMonitor, crs.ModeBlock, nil, 200, "", "", nil},
-		{"attacks only detected never ban", shield.AutoBlockOn, crs.ModeDetect, nil, 200, "", "", nil},
-		{"an exempt source is never banned", shield.AutoBlockOn, crs.ModeBlock, []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24")}, 200, "", "", nil},
+		{"four blocked attacks ban the source", shield.AutoBlockOn, crs.ModeBlock, nil, 403, "shield-5004008 source_blocked 403", "", nil, ""},
+		{"monitor only reports the source", shield.AutoBlockMonitor, crs.ModeBlock, nil, 200, "", "", nil, ""},
+		{"attacks only detected never ban", shield.AutoBlockOn, crs.ModeDetect, nil, 200, "", "", nil, ""},
+		{"an exempt source is never banned", shield.AutoBlockOn, crs.ModeBlock, []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24")}, 200, "", "", nil, ""},
 		{"a scanner refused by name is banned, whatever the rule set's mode", shield.AutoBlockOn, crs.ModeDetect, nil, 403,
-			"shield-5004008 source_blocked 403", "sqlmap/1.8.11#stable (https://sqlmap.org)", &bots.Policy{Refuse: 1 << alert.ClientScanner}},
+			"shield-5004008 source_blocked 403", "sqlmap/1.8.11#stable (https://sqlmap.org)", &bots.Policy{Refuse: 1 << alert.ClientScanner}, ""},
 		{"a declared crawler refused by name is not", shield.AutoBlockOn, crs.ModeBlock, nil, 200, "", "GPTBot/1.3",
-			&bots.Policy{Refuse: 1 << alert.ClientAI}},
+			&bots.Policy{Refuse: 1 << alert.ClientAI}, ""},
+		{"PHP2Shell's upload progress field is banned, whatever the rule set's mode", shield.AutoBlockOn, crs.ModeDetect, nil, 403,
+			"shield-5004008 source_blocked 403", "", nil, uploadRequest(multipartBody("Content-Disposition: form-data; name=\"PHP_SESSION_UPLOAD_PROGRESS\"\r\n\r\nup1"))},
+		{"PHP2Shell's leak is banned, whatever the rule set's mode", shield.AutoBlockOn, crs.ModeDetect, nil, 403,
+			"shield-5004008 source_blocked 403", "", nil, get("/php-session", "X-Set-Cookie: PHPSESSID=%00%01\r\n")},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var emu sync.Mutex
@@ -1045,6 +1054,10 @@ func TestBlockedAttacksBanTheirSourceThroughTheShield(t *testing.T) {
 			attack := get(sqli, from("203.0.113.7"))
 			if tt.ua != "" {
 				attack = strings.Replace(get("/", from("203.0.113.7")), "Mozilla/5.0 Chrome/120", tt.ua, 1)
+			}
+			if tt.request != "" {
+				method, rest, _ := strings.Cut(tt.request, "\r\n")
+				attack = method + "\r\n" + from("203.0.113.7") + rest
 			}
 			for range 4 {
 				s.raw(t, attack)
@@ -1077,7 +1090,7 @@ func TestBlockedAttacksBanTheirSourceThroughTheShield(t *testing.T) {
 				}
 			}
 			want := map[shield.AutoBlockMode]string{shield.AutoBlockOn: "source_blocked 203.0.113.7", shield.AutoBlockMonitor: "source_would_block 203.0.113.7"}[tt.mode]
-			if tt.crs == crs.ModeDetect && tt.bots == nil || tt.exempt != nil || tt.bots != nil && tt.after == 200 {
+			if tt.crs == crs.ModeDetect && tt.bots == nil && tt.request == "" || tt.exempt != nil || tt.bots != nil && tt.after == 200 {
 				want = ""
 			}
 			if (want == "") != (len(kinds) == 0) || want != "" && kinds[0] != want {

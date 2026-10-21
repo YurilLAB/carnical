@@ -756,6 +756,14 @@ func TestProxyOptionsFollowThePolicy(t *testing.T) {
 		if got := lax.do("POST", "/upload", mpNamed, named); got == 403 && has(lax.ruleIDs(), 5000010) {
 			t.Errorf("a script name with the option on was still refused by the proxy's upload check")
 		}
+		progress := "--XBOUNDARYX\r\nContent-Disposition: form-data; name=\"PHP_SESSION_UPLOAD_PROGRESS\"\r\n\r\nup1\r\n" + plain
+		if got := strict.do("POST", "/upload", mpPlain, progress); got != 403 || !has(strict.ruleIDs(), 5000013) {
+			t.Errorf("PHP's upload progress field with the default: %d (rules %v), want 403 by 5000013", got, strict.ruleIDs())
+		}
+		progressAllowed := newEdge(t, mut(func(p *Policy) { p.Uploads.AllowUploadProgress = true }))
+		if got := progressAllowed.do("POST", "/upload", mpPlain, progress); got != 200 {
+			t.Errorf("PHP's upload progress field allowed: %d (rules %v)", got, progressAllowed.ruleIDs())
+		}
 	})
 	t.Run("paths", func(t *testing.T) {
 		strict := newEdge(t, Default())
@@ -820,6 +828,19 @@ func TestProxyOptionsFollowThePolicy(t *testing.T) {
 		}
 		if got := inspecting.do("GET", "/leak", nil, ""); got == 200 {
 			t.Errorf("a response that leaks, inspected: %d (rules %v)", got, inspecting.ruleIDs())
+		}
+		named := newEdge(t, mut(func(p *Policy) { p.Responses.SessionCookies = []string{"SHOPSESS"} }))
+		forwarded := newEdge(t, mut(func(p *Policy) {
+			p.Responses.SessionCookies, p.Responses.AllowBadSessionIDs = []string{"SHOPSESS"}, true
+		}))
+		if got := leaky.do("GET", "/sets-shop-session", nil, ""); got != 200 {
+			t.Errorf("a session cookie the policy does not name: %d", got)
+		}
+		if got := named.do("GET", "/sets-shop-session", nil, ""); got != 403 || !has(named.ruleIDs(), 5000080) {
+			t.Errorf("a named session cookie that is not a session id: %d (rules %v), want 403 by 5000080", got, named.ruleIDs())
+		}
+		if got := forwarded.do("GET", "/sets-shop-session", nil, ""); got != 200 {
+			t.Errorf("a named session cookie that is not a session id, allowed: %d", got)
 		}
 	})
 }
