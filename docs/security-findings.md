@@ -600,3 +600,11 @@ CRS harness require Go 1.26.9; the workspace, security CI and digest-pinned cont
 that version. This records a vendor-advisory dependency match, rather than a claim that every
 Carnical deployment exposes each vulnerable HTTP/2 path. Existing OpenPGP import guards and narrowly
 documented policy remain unchanged.
+
+## Certificate trust follow-up — 21 October 2026
+
+The dependency scan identified [GO-2026-6809](https://vuln.go.dev/ID/GO-2026-6809.json) in the
+pinned Go 1.26.9 standard library. Go 1.26.10 and 1.27.3 add a denylist for compromised intermediate
+certificates in cases where the system trust store has not been updated. The engine, Carnical, HTTP
+example and CRS harness now require Go 1.26.10; workspace, CI and the digest-pinned container builder
+use that patch. This updates the toolchain without changing Go minor versions or module dependencies.

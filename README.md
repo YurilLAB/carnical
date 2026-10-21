@@ -33,8 +33,8 @@ and the authenticated control API remain [integration libraries](carnical/docs/R
 
 ## Run locally
 
-Use Go 1.26.9 or later with the security fixes for your release branch; Go 1.27 requires
-1.27.2 or later. The workspace and CI use Go 1.26.9.
+Use Go 1.26.10 or later with the security fixes for your release branch; Go 1.27 requires
+1.27.3 or later. The workspace and CI use Go 1.26.10.
 The proxy runs on Linux, Windows and macOS. Kernel filtering and process confinement require Linux.
 
 With a test application already listening on `127.0.0.1:8081`:

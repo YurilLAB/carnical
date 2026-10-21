@@ -32,8 +32,8 @@ go run ./cmd/carnical check site.json
 go run ./cmd/carnical start site.json
 ```
 
-Use patched Go 1.26.9 or later on that release branch, or Go 1.27.2 or later on the 1.27 branch.
-The workspace selects Go 1.26.9. The example listens on `127.0.0.1:8080` with CRS detection,
+Use patched Go 1.26.10 or later on that release branch, or Go 1.27.3 or later on the 1.27 branch.
+The workspace selects Go 1.26.10. The example listens on `127.0.0.1:8080` with CRS detection,
 format monitoring and flood protection enabled. Review the logs and tune legitimate traffic,
 then enable both content-blocking layers:
 

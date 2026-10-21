@@ -1,6 +1,6 @@
 module github.com/corazawaf/coraza/v3/examples/http-server
 
-go 1.26.9
+go 1.26.10
 
 require github.com/corazawaf/coraza/v3 v3.8.1
 

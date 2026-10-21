@@ -68,7 +68,7 @@ rather than an exception.
 
 ## Local commands
 
-From the repository root, with Python 3.12+ and Go 1.26.9:
+From the repository root, with Python 3.12+ and Go 1.26.10:
 
 ```shell
 python .github/security/install.py gosec

@@ -115,7 +115,7 @@ go run mage.go format
 ## Changes in this fork
 
 
-- `go.work`: includes `./carnical` and pins Go 1.26.9, including the October 2026 HTTP/2 security fixes. Builds also use `golang.org/x/net` v0.60.0.
+- `go.work`: includes `./carnical` and pins Go 1.26.10, including the October 2026 HTTP/2 and certificate trust fixes. Builds also use `golang.org/x/net` v0.60.0.
 - `internal/corazawaf/rulegroup.go`, `rule.go`, `transaction.go`: rule evaluation stops when the transaction's context is done, and a blocking engine refuses the transaction (503). Nothing in the engine looked at the context before, so a request that was expensive to inspect could not be cut short. The proxy gives each evaluation phase a budget through it (`proxy/deadline.go`). A test in `rulegroup_test.go` covers the three cases.
 - `internal/transformations/normalise_path.go`: `path.Clean` instead of `filepath.Clean`, so the transformation gives the same result on every OS.
 - `internal/corazawaf/rule.go`: logging-phase rules keep running after an evaluation timeout, and with multiphase evaluation the rules a cut-short phase did not reach read its variables in the next phase they run in.
