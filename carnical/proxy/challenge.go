@@ -3,7 +3,9 @@
 package proxy
 
 import (
+	"bufio"
 	"errors"
+	"net"
 	"net/http"
 	"strconv"
 	"sync"
@@ -127,6 +129,15 @@ func (g *gateWriter) FlushError() error {
 		g.wrote = false
 	}
 	return err
+}
+
+// Hijack takes ownership of the connection, so the request cannot go on to the application.
+func (g *gateWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	c, rw, err := http.NewResponseController(g.ResponseWriter).Hijack()
+	if err == nil {
+		g.wrote = true
+	}
+	return c, rw, err
 }
 
 // Unwrap lets http.ResponseController reach the connection's writer.

@@ -1137,6 +1137,7 @@ type gate struct {
 	seen   []challenge.Signals
 	late   func(challenge.Outcome)
 	inside chan struct{} // for /gate/racing: closed once its report is under way
+	hijack chan error    // for /gate/hijack: the connection handoff and response result
 }
 
 func (g *gate) Serve(w http.ResponseWriter, r *http.Request, s challenge.Signals, report func(challenge.Outcome)) bool {
@@ -1165,6 +1166,18 @@ func (g *gate) Serve(w http.ResponseWriter, r *http.Request, s challenge.Signals
 			return true
 		}
 		return r.URL.Path == "/gate/flush-handled"
+	case "/gate/hijack", "/gate/hijack-handled":
+		report(challenge.Outcome{Verdict: challenge.Refused})
+		conn, rw, err := http.NewResponseController(w).Hijack()
+		if err == nil {
+			_, err = rw.WriteString("HTTP/1.1 403 Forbidden\r\nContent-Length: 13\r\nConnection: close\r\n\r\nfrom the gate")
+			if err == nil {
+				err = rw.Flush()
+			}
+			conn.Close()
+		}
+		g.hijack <- err
+		return r.URL.Path == "/gate/hijack-handled"
 	case "/gate/read": // reads the whole body, as a check reading its answer might
 		n, err := io.Copy(io.Discard, r.Body)
 		w.Header().Set("X-Read", strconv.FormatInt(n, 10)+" "+strconv.FormatBool(err != nil))
@@ -1218,6 +1231,15 @@ func (w gateUnwrapWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter
 type gateUnsupportedFlusher struct{ http.ResponseWriter }
 
 func (w gateUnsupportedFlusher) FlushError() error { return http.ErrNotSupported }
+
+type gateFailedHijacker struct {
+	http.ResponseWriter
+	err error
+}
+
+func (w gateFailedHijacker) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return nil, nil, w.err
+}
 
 // The person check is offered every request that passed the shield, the bot policy and the request policy, and is told
 // what they found; what it answers goes no further, and what it decides is alerted on and admits a person past the
@@ -1301,6 +1323,91 @@ func TestThePersonCheckIsOfferedEachRequest(t *testing.T) {
 				if gw.wrote || raw.Flushed || raw.Header().Get("Cache-Control") != "public, max-age=60" ||
 					raw.Header().Get("X-Content-Type-Options") != "original" || raw.Header().Get("Connection") != "keep-alive" {
 					t.Fatalf("unsupported flush changed response: wrote=%v flushed=%v headers=%v", gw.wrote, raw.Flushed, raw.Header())
+				}
+			})
+		}
+	})
+	t.Run("taking over the connection answers the request", func(t *testing.T) {
+		failed := errors.New("controlled hijack failure")
+		for _, tc := range []struct {
+			name, method                  string
+			handled, wrapped, unsupported bool
+			failure                       error
+		}{
+			{name: "false return", method: "GET"},
+			{name: "false return for DELETE", method: "DELETE"},
+			{name: "true return", method: "GET", handled: true},
+			{name: "wrapped writer", method: "GET", wrapped: true},
+			{name: "failed handoff", method: "GET", failure: failed},
+			{name: "unsupported handoff", method: "GET", unsupported: true},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				g := &gate{hijack: make(chan error, 1)}
+				up := newUpstream(t)
+				target, _ := url.Parse(up.URL)
+				cfg := Config{Upstream: target, CRS: crs.DefaultSettings(), Origin: loopback, Challenge: g,
+					ErrorLog: log.New(io.Discard, "", 0)}
+				ruleSetOff(&cfg)
+				edge, err := New(cfg)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { edge.Close() })
+				done := make(chan struct{})
+				srv := httptest.NewUnstartedServer(nil)
+				srv.Config = edge.Server("")
+				srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					defer close(done)
+					switch {
+					case tc.failure != nil:
+						w = gateFailedHijacker{w, tc.failure}
+					case tc.unsupported:
+						w = gatePlainWriter{w}
+					case tc.wrapped:
+						w = gateUnwrapWriter{w}
+					}
+					edge.ServeHTTP(w, r)
+				})
+				srv.Start()
+				t.Cleanup(srv.Close)
+				path := "/gate/hijack"
+				if tc.handled {
+					path += "-handled"
+				}
+				probe := &setup{addr: strings.TrimPrefix(srv.URL, "http://")}
+				status, reply := probe.raw(t, strings.Replace(get(path), "GET ", tc.method+" ", 1))
+				select {
+				case <-done:
+				case <-time.After(5 * time.Second):
+					t.Fatal("the edge handler did not return")
+				}
+				hijackErr := <-g.hijack
+				wantStatus, wantOrigin := http.StatusForbidden, 0
+				if tc.failure != nil || tc.unsupported {
+					wantStatus, wantOrigin = http.StatusOK, 1
+					expected := tc.failure
+					if tc.unsupported {
+						expected = http.ErrNotSupported
+					}
+					if !errors.Is(hijackErr, expected) {
+						t.Errorf("handoff error %v, want %v", hijackErr, expected)
+					}
+				} else if hijackErr != nil || !strings.Contains(reply, "from the gate") {
+					t.Errorf("handoff response: %v, %q", hijackErr, reply)
+				}
+				if got := len(up.requests()); status != wantStatus || got != wantOrigin {
+					t.Errorf("status %d, origin requests %d; want %d, %d", status, got, wantStatus, wantOrigin)
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if err := srv.Config.Shutdown(ctx); err != nil {
+					t.Fatal(err)
+				}
+				edge.conns.mu.Lock()
+				pending, groups := len(edge.conns.counted), len(edge.conns.perIP)
+				edge.conns.mu.Unlock()
+				if pending != 0 || groups != 0 {
+					t.Errorf("closed connection still counted: connections=%d addresses=%d", pending, groups)
 				}
 			})
 		}

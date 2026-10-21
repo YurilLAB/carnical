@@ -88,9 +88,10 @@ type Outcome struct {
 type Gate interface {
 	// Serve is offered a request and what the proxy knows about its visitor. It reports whether it answered the request
 	// (the check's page, its answer), which then goes no further; false lets the request go on, and at Admission leaves
-	// the shield's own answer to stand; a gate that wrote anything has answered, whatever it returns. Before it writes
-	// an answer that carries a decision, it calls report with it, once: the proxy may set headers on w from it, and
-	// ignores a second report or one made after Serve returned; one made on another goroutine while Serve returns ends
+	// the shield's own answer to stand; a gate that wrote anything or successfully took over the connection has answered,
+	// whatever it returns. Before it writes an answer that carries a decision, it calls report with it, once: the proxy may
+	// set headers on w from it, and ignores a second report or one made after Serve returned; one made on another goroutine
+	// while Serve returns ends
 	// before the request goes on. The body of r is held to the site's body limit; read it
 	// only for a request the gate answers. Serve runs on the request's goroutine, for every request that reaches its
 	// point, so it must be quick for the requests it lets go on.
