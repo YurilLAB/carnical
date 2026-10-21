@@ -232,6 +232,8 @@ func (c Config) withDefaults() Config {
 	fill(&c.Modes.Learned, d.Modes.Learned)
 	if len(c.Methods) == 0 {
 		c.Methods = d.Methods
+	} else {
+		c.Methods = slices.Clone(c.Methods)
 	}
 	// A method's limit that the owner did not give is the default's, so naming one limit does not drop the others.
 	limits := make(map[string]int64, len(d.BodyLimits))

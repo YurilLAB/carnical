@@ -194,3 +194,43 @@ func TestSettingModesAtRunTime(t *testing.T) {
 		t.Fatal("a refused change altered the configuration")
 	}
 }
+
+func TestConfigKeepsItsOwnMethods(t *testing.T) {
+	for _, replace := range []bool{false, true} {
+		name := "New"
+		if replace {
+			name = "SetConfig"
+		}
+		t.Run(name, func(t *testing.T) {
+			cfg := Config{Methods: []string{"GET"}}
+			initial := cfg
+			if replace {
+				initial = Config{}
+			}
+			g, err := New(initial)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if replace {
+				if err := g.SetConfig(cfg); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// Reusing the caller's configuration for a second site must not change the first site's live policy.
+			cfg.Methods[0] = "POST"
+			other, err := New(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, tt := range []struct {
+				guard  *Guard
+				method string
+				refuse bool
+			}{{g, "GET", false}, {g, "POST", true}, {other, "GET", true}, {other, "POST", false}} {
+				if got := blocked(tt.guard.Inspect(mk(tt.method, "/api/items"))); got != tt.refuse {
+					t.Errorf("first site=%v method=%s refused=%v, want %v", tt.guard == g, tt.method, got, tt.refuse)
+				}
+			}
+		})
+	}
+}
