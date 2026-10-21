@@ -81,7 +81,8 @@ func PathTemplate(r *http.Request) string {
 func pathTemplate(r *http.Request) (uint64, string) {
 	path := r.URL.EscapedPath()
 	var b strings.Builder
-	b.Grow(len(path) + 2)
+	// Six segments of at most 40 bytes, their slashes, an omitted tail and a query marker.
+	b.Grow(min(len(path)+2, 6*41+2+1))
 	n := 0
 	for seg := range strings.SplitSeq(strings.TrimPrefix(path, "/"), "/") {
 		if n == 6 {

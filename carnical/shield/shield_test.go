@@ -222,6 +222,9 @@ func TestPathTemplatesTakeOutTheVariableParts(t *testing.T) {
 		{"/u/0f8e9a7b6c5d4e3f2a1b/avatar.png", "/u/x/avatar.png"},
 		{"/a/b/c/d/e/f/g/h", "/a/b/c/d/e/f/*"},
 		{"/about", "/about"},
+		{"/" + strings.Repeat("a", 16<<10), "/x"},
+		{"/" + strings.Repeat("9", 16<<10), "/9"},
+		{"/a/b/c/d/e/f/" + strings.Repeat("a", 16<<10) + "?q=1", "/a/b/c/d/e/f/*?"},
 		{"/" + strings.Repeat("a", 40) + "/" + strings.Repeat("b", 40) + "/" + strings.Repeat("c", 40), "/" + strings.Repeat("a", 40) + "/" + strings.Repeat("b", 40) + "/" + strings.Repeat("c", 13)},
 	}
 	for _, tt := range tests {
@@ -236,6 +239,23 @@ func TestPathTemplatesTakeOutTheVariableParts(t *testing.T) {
 	c, _ := pathTemplate(req("GET", "/search"))
 	if a != b || a == c {
 		t.Fatal("query values or keys changed the template, or its presence did not")
+	}
+}
+
+func BenchmarkPathTemplate(b *testing.B) {
+	for _, tt := range []struct{ name, path string }{
+		{"normal", "/product/1234/reviews?page=2"},
+		{"long-segment", "/" + strings.Repeat("a", 16<<10)},
+		{"long-digits", "/" + strings.Repeat("9", 16<<10)},
+		{"long-tail", "/a/b/c/d/e/f/" + strings.Repeat("a", 16<<10)},
+	} {
+		r := httptest.NewRequest("GET", tt.path, nil)
+		b.Run(tt.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				PathTemplate(r)
+			}
+		})
 	}
 }
 
