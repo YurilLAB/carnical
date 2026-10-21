@@ -225,6 +225,37 @@ def run(args):
             assert request(tcp, "192.0.2.9") == 403, "overlapping range ban was removed"
             cli("decisions", "delete", "--range", "192.0.2.0/24")
             wait_for(lambda: request(tcp, "192.0.2.9") == 200, "ban deletion")
+
+            def cached_entries():
+                for line in reversed(logs[0].read_text(errors="replace").splitlines()):
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if event.get("msg") == "CrowdSec decisions":
+                        return event.get("entries")
+                return None
+
+            # Confirm each ID reached the actual cache before deleting it.
+            # Default LAPI deduplication hides the longer ID's deletion while
+            # the shorter identical-target ban remains.
+            wait_for(lambda: cached_entries() == 1, "only the IPv6 ban remains")
+            cli("decisions", "add", "--ip", "198.51.100.33", "--duration", "1h")
+            wait_for(lambda: cached_entries() == 2, "shorter duplicate-target ban cached")
+            query = urllib.request.Request(api_url + "/v1/decisions?ip=198.51.100.33&contains=false&dedup=false",
+                headers={"X-Api-Key": api_key})
+            with urllib.request.urlopen(query, timeout=5) as response:
+                shorter_id = json.load(response)[0]["id"]
+            cli("decisions", "add", "--ip", "198.51.100.33", "--duration", "2h")
+            wait_for(lambda: cached_entries() == 3, "both duplicate-target IDs cached")
+            with urllib.request.urlopen(query, timeout=5) as response:
+                longer_id = next(d["id"] for d in json.load(response) if d["id"] != shorter_id)
+            cli("decisions", "delete", "--id", str(longer_id))
+            wait_for(lambda: cached_entries() == 2, "longer duplicate-target ban deleted")
+            assert request(tcp, "198.51.100.33") == 403, "shorter ban was lost"
+            cli("decisions", "delete", "--id", str(shorter_id))
+            wait_for(lambda: request(tcp, "198.51.100.33") == 200, "all duplicate-target bans deleted")
+
             cli("decisions", "add", "--ip", "192.0.2.9", "--duration", "3s")
             wait_for(lambda: request(tcp, "192.0.2.9") == 403, "short-lived ban")
             wait_for(lambda: request(tcp, "192.0.2.9") == 200, "ban expiry")

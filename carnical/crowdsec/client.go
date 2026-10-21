@@ -213,6 +213,9 @@ func (c *Client) Sync(ctx context.Context) (err error) {
 	q := u.Query()
 	q.Set("startup", strconv.FormatBool(c.resync))
 	q.Set("scopes", "ip,range")
+	// Cache deletions are by ID, so LAPI must report every overlapping
+	// decision rather than only the longest ban for a scope/type/value.
+	q.Set("dedup", "false")
 	if c.cfg.Origins != "" {
 		q.Set("origins", c.cfg.Origins)
 	}

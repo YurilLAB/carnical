@@ -77,6 +77,71 @@ func newTestClient(t *testing.T, f *apiFixture, change func(*Config)) *Client {
 
 // LAPI stream cursors and atomic cache transactions are not SecLang behavior.
 func TestStreamTransactions(t *testing.T) {
+	t.Run("all overlapping decision IDs are removed", func(t *testing.T) {
+		for _, target := range []struct{ scope, value, addr string }{
+			{"Ip", "192.0.2.9", "192.0.2.9"},
+			{"Range", "192.0.2.0/24", "192.0.2.9"},
+			{"Range", "2001:db8::/64", "2001:db8::9"},
+		} {
+			t.Run(target.value, func(t *testing.T) {
+				shorter := ban(1, target.scope, target.value, "1h")
+				longer := ban(2, target.scope, target.value, "2h")
+				// LAPI's default deduplication hides the deleted longer ID while
+				// the shorter same-target decision remains. These are the
+				// new/deleted sequences captured from CrowdSec 1.8.1.
+				steps := []struct {
+					full, deduplicated string
+					entries            int
+					want               Action
+				}{
+					{stream([]decision{shorter}, nil), stream([]decision{shorter}, nil), 1, Ban},
+					{stream([]decision{longer}, nil), stream([]decision{longer}, nil), 2, Ban},
+					{stream(nil, []decision{{ID: 2}}), stream(nil, nil), 1, Ban},
+					{stream(nil, []decision{{ID: 1}}), stream(nil, []decision{{ID: 1}}), 0, Allow},
+				}
+				var pull atomic.Int32
+				api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					i := int(pull.Add(1)) - 1
+					if i >= len(steps) {
+						http.Error(w, "unexpected pull", 500)
+						return
+					}
+					wantStartup := "false"
+					if i == 0 {
+						wantStartup = "true"
+					}
+					q := r.URL.Query()
+					if r.URL.Path != "/v1/decisions/stream" || r.Header.Get("X-Api-Key") != key ||
+						q.Get("startup") != wantStartup || q.Get("scopes") != "ip,range" || q.Get("origins") != "cscli,crowdsec" {
+						t.Error("stream authentication or filters changed")
+					}
+					body := steps[i].deduplicated
+					if q.Get("dedup") == "false" {
+						body = steps[i].full
+					}
+					fmt.Fprint(w, body)
+				}))
+				defer api.Close()
+				c, err := New(Config{URL: api.URL, APIKey: key, Origins: "cscli,crowdsec"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer c.Close()
+				addr := netip.MustParseAddr(target.addr)
+				for i, step := range steps {
+					if err := c.Sync(context.Background()); err != nil {
+						t.Fatal(err)
+					}
+					if got := c.Check(addr); got != step.want {
+						t.Errorf("pull %d: action %v, want %v", i, got, step.want)
+					}
+					if got := c.Stats(); got.Entries != step.entries || got.Stale || got.Failures != 0 {
+						t.Errorf("pull %d: stats %+v, want %d entries in a fresh snapshot", i, got, step.entries)
+					}
+				}
+			})
+		}
+	})
 	a, b := netip.MustParseAddr("192.0.2.9"), netip.MustParseAddr("2001:db8::9")
 	first := stream([]decision{ban(1, "Ip", a.String(), "1m"), ban(2, "Range", "2001:db8::/64", "1m")}, nil)
 	tests := []struct {

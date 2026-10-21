@@ -72,7 +72,9 @@ automatically ban an unrelated verified visitor.
 The request path performs local prefix lookups; it never contacts LAPI. The first pull uses
 `startup=true`, then polls deltas every 10 seconds. Any failed pull forces a full resync on the next
 attempt, since LAPI may have advanced its cursor. Changes are published atomically. Deletions use
-decision IDs, so deleting one ban cannot erase another overlapping decision. Bans also expire
+decision IDs. Every pull requests `dedup=false` so LAPI reports all IDs, including deletion of a
+longer same-target ban while a shorter one remains. Deleting one ban cannot erase another
+overlapping decision, and removing all bans cannot leave a hidden ID cached. Bans also expire
 locally during an API outage. CrowdSec rounds remaining durations to seconds, so expiry follows that
 API precision.
 
