@@ -78,14 +78,19 @@ func TestDecodeYAML(t *testing.T) {
 		{name: "a hundred quotes on one line is fine", in: "k: '" + strings.Repeat(`"`, 100) + "'\n"},
 		{name: "thousands of quotes on one line", in: "k: " + strings.Repeat(`"`, 5000) + "\n", wantErr: ErrYAMLUnsafe},
 		{name: "block scalar content is not scanned", in: "k: |\n  " + strings.Repeat(`"[{`, 5000) + "\n"},
+		{name: "a CR dedent ends a block scalar", in: "a: |\n  scalar\rb: '" + strings.Repeat(`"`, 5000) + "'\n", wantErr: ErrYAMLUnsafe},
 		{name: "a block scalar header in a comment opens no block scalar", in: "a: #: |\n  c: " + strings.Repeat("[", 400) + strings.Repeat("]", 400) + "\n", wantErr: ErrYAMLUnsafe},
 		{name: "flow nesting spread over lines", in: "a:\n" + strings.Repeat(" [\n", 30) + strings.Repeat(" ]\n", 30), wantErr: ErrYAMLUnsafe},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			v, err := DecodeYAML([]byte(tt.in), Limits{})
-			if !errors.Is(err, tt.wantErr) {
-				t.Fatalf("error = %v, want %v (value %v)", err, tt.wantErr, v)
+			for _, ending := range []struct{ name, text string }{{"LF", "\n"}, {"CRLF", "\r\n"}, {"CR", "\r"}} {
+				t.Run(ending.name, func(t *testing.T) {
+					v, err := DecodeYAML([]byte(strings.ReplaceAll(tt.in, "\n", ending.text)), Limits{})
+					if !errors.Is(err, tt.wantErr) {
+						t.Fatalf("error = %v, want %v (value %v)", err, tt.wantErr, v)
+					}
+				})
 			}
 		})
 	}

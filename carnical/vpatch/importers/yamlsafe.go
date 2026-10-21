@@ -227,8 +227,12 @@ func yamlPreScan(data []byte) error {
 	blockIndent := -1
 	for len(data) > 0 {
 		var line []byte
-		if i := bytes.IndexByte(data, byteNL); i >= 0 {
+		if i := bytes.IndexAny(data, "\r\n"); i >= 0 {
+			cr := data[i] == '\r'
 			line, data = data[:i], data[i+1:]
+			if cr && len(data) > 0 && data[0] == '\n' {
+				data = data[1:] // CRLF is one YAML line break; CR and LF also stand alone.
+			}
 		} else {
 			line, data = data, nil
 		}
