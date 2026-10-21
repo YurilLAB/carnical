@@ -1159,6 +1159,12 @@ func (g *gate) Serve(w http.ResponseWriter, r *http.Request, s challenge.Signals
 	case "/gate/sloppy": // writes an answer and says it did not: it answered all the same
 		_, _ = io.WriteString(w, "from the gate")
 		return false
+	case "/gate/flush", "/gate/flush-handled":
+		if err := http.NewResponseController(w).Flush(); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return true
+		}
+		return r.URL.Path == "/gate/flush-handled"
 	case "/gate/read": // reads the whole body, as a check reading its answer might
 		n, err := io.Copy(io.Discard, r.Body)
 		w.Header().Set("X-Read", strconv.FormatInt(n, 10)+" "+strconv.FormatBool(err != nil))
@@ -1203,6 +1209,15 @@ func (g *gate) signals() []challenge.Signals {
 	defer g.mu.Unlock()
 	return append([]challenge.Signals(nil), g.seen...)
 }
+
+type gatePlainWriter struct{ http.ResponseWriter }
+type gateUnwrapWriter struct{ http.ResponseWriter }
+
+func (w gateUnwrapWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+type gateUnsupportedFlusher struct{ http.ResponseWriter }
+
+func (w gateUnsupportedFlusher) FlushError() error { return http.ErrNotSupported }
 
 // The person check is offered every request that passed the shield, the bot policy and the request policy, and is told
 // what they found; what it answers goes no further, and what it decides is alerted on and admits a person past the
@@ -1256,6 +1271,38 @@ func TestThePersonCheckIsOfferedEachRequest(t *testing.T) {
 		// Nor does one it wrote an answer to and then let go on.
 		if status, reply := s.raw(t, get("/gate/sloppy")); status != 200 || !strings.Contains(reply, "from the gate") || len(s.up.requests()) != before {
 			t.Fatalf("written and let go on: %d %q; the application saw %d more", status, reply, len(s.up.requests())-before)
+		}
+		for _, path := range []string{"/gate/flush", "/gate/flush-handled"} {
+			status, reply := s.raw(t, get(path))
+			if status != 200 || len(s.up.requests()) != before || strings.Contains(reply, "reached the application") ||
+				!strings.Contains(reply, "Cache-Control: no-store\r\n") || !strings.Contains(reply, "X-Content-Type-Options: nosniff\r\n") {
+				t.Errorf("flushed %s: %d %q; the application saw %d more", path, status, reply, len(s.up.requests())-before)
+			}
+		}
+	})
+	t.Run("an unsupported flush leaves the response untouched", func(t *testing.T) {
+		for _, kind := range []string{"plain", "unwrapped", "explicit-error"} {
+			t.Run(kind, func(t *testing.T) {
+				raw := httptest.NewRecorder()
+				raw.Header().Set("Cache-Control", "public, max-age=60")
+				raw.Header().Set("X-Content-Type-Options", "original")
+				raw.Header().Set("Connection", "keep-alive")
+				var w http.ResponseWriter = gatePlainWriter{raw}
+				switch kind {
+				case "unwrapped":
+					w = gateUnwrapWriter{w}
+				case "explicit-error":
+					w = gateUnsupportedFlusher{raw}
+				}
+				gw := &gateWriter{ResponseWriter: w, closeConn: true}
+				if err := http.NewResponseController(gw).Flush(); !errors.Is(err, http.ErrNotSupported) {
+					t.Fatalf("flush: %v", err)
+				}
+				if gw.wrote || raw.Flushed || raw.Header().Get("Cache-Control") != "public, max-age=60" ||
+					raw.Header().Get("X-Content-Type-Options") != "original" || raw.Header().Get("Connection") != "keep-alive" {
+					t.Fatalf("unsupported flush changed response: wrote=%v flushed=%v headers=%v", gw.wrote, raw.Flushed, raw.Header())
+				}
+			})
 		}
 	})
 	t.Run("it sees the trailers after the body, and what it takes off is not sent", func(t *testing.T) {

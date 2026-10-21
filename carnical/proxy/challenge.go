@@ -3,6 +3,7 @@
 package proxy
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"sync"
@@ -106,6 +107,26 @@ func (g *gateWriter) WriteHeader(code int) { g.prepare(); g.ResponseWriter.Write
 func (g *gateWriter) Write(b []byte) (int, error) {
 	g.prepare()
 	return g.ResponseWriter.Write(b)
+}
+
+// FlushError commits an answer just as Write does, even when the check writes no body.
+func (g *gateWriter) FlushError() error {
+	if g.wrote {
+		return http.NewResponseController(g.ResponseWriter).Flush()
+	}
+	h := g.Header()
+	before := h.Clone()
+	g.prepare()
+	err := http.NewResponseController(g.ResponseWriter).Flush()
+	if errors.Is(err, http.ErrNotSupported) {
+		// An unsupported operation sent nothing. The check may still let the request go on.
+		clear(h)
+		for k, v := range before {
+			h[k] = v
+		}
+		g.wrote = false
+	}
+	return err
 }
 
 // Unwrap lets http.ResponseController reach the connection's writer.
