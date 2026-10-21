@@ -168,6 +168,12 @@ type Config struct {
 	// answer to the shield's challenge would be; one it refuses has an alert (rule 5007001). If it is also a
 	// challenge.Responder, it sees the header of each response the application gives before it is forwarded.
 	Challenge challenge.Gate
+	// MaxChallenges bounds concurrent person-check callbacks, including response hooks (default: the number of CPUs).
+	// Calls beyond the limit are refused with 503 without waiting. It must be between 0 (the default) and 65536.
+	MaxChallenges int
+	// ChallengeBudget is the deadline passed to each person-check callback (default 2 seconds, at most 24 hours).
+	// Checks must honor cancellation and bound their own CPU work; an in-process callback cannot be forcibly stopped.
+	ChallengeBudget time.Duration
 	// CrowdSec checks LAPI bans against the verified visitor before reading a body.
 	// Its owner must Sync before serving, run its refresh loop and close it on shutdown.
 	CrowdSec *crowdsec.Client
@@ -221,6 +227,7 @@ type Edge struct {
 	waf               coraza.WAF
 	handler           http.Handler
 	places            *upstreamPlaces
+	gateSlots         chan struct{}
 	hosts             map[string]bool
 	deny              map[string]bool
 	rules             []*compiledRule // the per-client rate limits, in the order their tables are locked
@@ -333,6 +340,12 @@ func New(cfg Config) (*Edge, error) {
 		// It would refuse every body as too large, and size the read of a chunked one by a negative count.
 		return nil, errors.New("the form body limit must not be negative")
 	}
+	if cfg.MaxChallenges < 0 || cfg.MaxChallenges > 65536 || cfg.ChallengeBudget < 0 || cfg.ChallengeBudget > maxWriteTimeout {
+		return nil, errors.New("person check: MaxChallenges must be between 0 and 65536 and ChallengeBudget between 0 and 24 hours")
+	}
+	if cfg.ChallengeBudget == 0 {
+		cfg.ChallengeBudget = 2 * time.Second
+	}
 	if cfg.ReadTimeout < 0 || cfg.ReadTimeout > maxReadTimeout || cfg.WriteTimeout < 0 || cfg.WriteTimeout > maxWriteTimeout {
 		// net/http takes a negative timeout for none at all, which would let a client hold a connection for ever.
 		return nil, fmt.Errorf("the read timeout must be between zero (the default) and %v, and the write timeout between zero and %v",
@@ -370,6 +383,9 @@ func New(cfg Config) (*Edge, error) {
 		return nil, err
 	}
 	e.cfg = cfg
+	if cfg.Challenge != nil {
+		e.gateSlots = make(chan struct{}, cmp.Or(cfg.MaxChallenges, runtime.GOMAXPROCS(0)))
+	}
 	e.rules = compileLimits(cfg)
 	e.evictLogSecond.Store(neverLogged)
 	e.connLogSecond.Store(neverLogged)
@@ -1034,7 +1050,9 @@ func (e *Edge) forward() http.Handler {
 			path, _, _ := strings.Cut(resp.Request.URL.Opaque, "?")
 			if rs, ok := e.cfg.Challenge.(challenge.Responder); ok { // before the hardening, which sees what it added
 				if in, _ := resp.Request.Context().Value(inboundKey{}).(*http.Request); in != nil {
-					rs.Respond(in, resp.StatusCode, resp.Header)
+					if err := e.callGate(in, func(gr *http.Request) { rs.Respond(gr, resp.StatusCode, resp.Header) }); err != nil {
+						return err
+					}
 				}
 			}
 			e.cfg.Responses.harden(resp, path)
@@ -1043,8 +1061,20 @@ func (e *Edge) forward() http.Handler {
 				if in, _ := resp.Request.Context().Value(inboundKey{}).(*http.Request); in != nil {
 					// The names announced now; what was sent once the body is closed, which is when the transport
 					// fills them in and before the reverse proxy copies them on.
-					rs.RespondTrailer(in, resp.Trailer)
-					resp.Body = &trailerCheck{ReadCloser: resp.Body, check: func() { rs.RespondTrailer(in, resp.Trailer) }}
+					check := func() error {
+						return e.callGate(in, func(gr *http.Request) { rs.RespondTrailer(gr, resp.Trailer) })
+					}
+					if err := check(); err != nil {
+						return err
+					}
+					resp.Body = &trailerCheck{ReadCloser: resp.Body, check: func() {
+						if err := check(); err != nil {
+							if o, ok := in.Context().Value(originKey{}).(*origin); ok {
+								o.answered = false
+							}
+							panic(http.ErrAbortHandler) // headers have gone; do not forward unchecked trailers
+						}
+					}}
 				}
 			}
 			if len(e.cfg.Observers) > 0 {
@@ -1057,6 +1087,13 @@ func (e *Edge) forward() http.Handler {
 			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			if errors.Is(err, errGateBudget) {
+				if o, ok := r.Context().Value(originKey{}).(*origin); ok {
+					o.answered = false // the check failed, not the application
+				}
+				gateUnavailable(w)
+				return
+			}
 			if errors.Is(err, errSocketNotSwitched) {
 				e.refuse(w, r, http.StatusBadGateway, idSocketNotSwitched, "a WebSocket handshake the application did not switch")
 				return

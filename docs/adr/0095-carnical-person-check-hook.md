@@ -78,6 +78,13 @@ described above.
 
 ## Consequences
 
+The hook's resource containment is enforced per edge: `MaxChallenges` limits simultaneous callbacks across all
+three hooks without queuing, and `ChallengeBudget` supplies a cooperative deadline for each call. Busy or expired
+checks fail closed. Calls remain synchronous and retain their place until they actually return, so ignoring
+cancellation cannot create detached work outside the concurrency bound. A deadline does not forcibly preempt CPU
+or every body read; the integrator still needs internal limits or process isolation. Derived callback contexts
+are not used for subsequent origin responses or upgraded connections.
+
 - **Positive:** a person check can be added to any site without forking the proxy, sees what the bot policy and the
   shield found, and its accepted visitors get through an attack as people who answered the shield's challenge do.
 - **Positive:** nothing changes without a check configured; with one, every existing refusal is kept.

@@ -94,7 +94,8 @@ type Gate interface {
 	// while Serve returns ends
 	// before the request goes on. The body of r is held to the site's body limit; read it
 	// only for a request the gate answers. Serve runs on the request's goroutine, for every request that reaches its
-	// point, so it must be quick for the requests it lets go on.
+	// point, so it must be quick for the requests it lets go on. The proxy bounds concurrent callbacks and supplies a
+	// context deadline. Honor cancellation, bound CPU and body reads, and stop all request-owned work before returning.
 	Serve(w http.ResponseWriter, r *http.Request, s Signals, report func(Outcome)) bool
 }
 

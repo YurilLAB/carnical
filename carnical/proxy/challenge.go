@@ -4,6 +4,7 @@ package proxy
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"net"
 	"net/http"
@@ -20,6 +21,38 @@ const idGateRefused = 5007001
 
 // maxGateReason is how much of a person check's reason an alert keeps.
 const maxGateReason = 64
+
+var errGateBudget = errors.New("person check unavailable")
+
+// callGate bounds concurrent callbacks without creating detached work. Cancellation is cooperative: a callback
+// keeps its place until it actually returns, even if it ignores the deadline or its client has disconnected.
+func (e *Edge) callGate(r *http.Request, call func(*http.Request)) error {
+	if r.Context().Err() != nil {
+		return errGateBudget
+	}
+	select {
+	case e.gateSlots <- struct{}{}:
+		defer func() { <-e.gateSlots }()
+	default:
+		return errGateBudget
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), e.cfg.ChallengeBudget)
+	defer cancel()
+	if ctx.Err() != nil {
+		return errGateBudget
+	}
+	call(r.WithContext(ctx))
+	if ctx.Err() != nil {
+		return errGateBudget
+	}
+	return nil
+}
+
+func gateUnavailable(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Retry-After", "1")
+	http.Error(w, "the person check is unavailable", http.StatusServiceUnavailable)
+}
 
 // inboundKey keeps, in the context of a request forwarded to the application, the request as the visitor sent it, for
 // a person check that sees the responses (challenge.Responder).
@@ -41,6 +74,7 @@ func (e *Edge) serveGate(w http.ResponseWriter, r *http.Request, rec *record, p 
 		sig.Attack, sig.Known, sig.Strikes = st.Attack, st.Known, st.Strikes
 	}
 	gw := &gateWriter{ResponseWriter: w}
+	before := w.Header().Clone()
 	gw.closeConn = p == challenge.Admission && d.Action == shield.Refuse && (!rec.via || r.ProtoMajor == 1 && r.ContentLength != 0)
 	gr := r
 	if r.Body != nil && r.Body != http.NoBody {
@@ -50,10 +84,11 @@ func (e *Edge) serveGate(w http.ResponseWriter, r *http.Request, rec *record, p 
 	// A report made on another goroutine while Serve returns ends before the request goes on, as it may set headers on w.
 	var mu sync.Mutex
 	done, reported := false, false
+	var gateContext context.Context
 	report := func(o challenge.Outcome) {
 		mu.Lock()
 		defer mu.Unlock()
-		if done || reported {
+		if done || reported || gateContext.Err() != nil {
 			return
 		}
 		reported = true
@@ -77,10 +112,45 @@ func (e *Edge) serveGate(w http.ResponseWriter, r *http.Request, rec *record, p 
 			}
 		}
 	}
-	handled := e.cfg.Challenge.Serve(gw, gr, sig, report)
+	var handled bool
+	returned := false
+	defer func() {
+		if !returned { // net/http cannot reclaim a connection after the callback hijacked it
+			mu.Lock()
+			done = true
+			mu.Unlock()
+			if gw.hijacked != nil {
+				_ = gw.hijacked.Close()
+			}
+		}
+	}()
+	err := e.callGate(gr, func(gr *http.Request) {
+		gateContext = gr.Context()
+		gw.ctx = gateContext
+		handled = e.cfg.Challenge.Serve(gw, gr, sig, report)
+	})
+	returned = true
 	mu.Lock()
 	done = true // a report after Serve returned is not the request's
 	mu.Unlock()
+	if err != nil {
+		if gw.hijacked != nil {
+			_ = gw.hijacked.Close()
+		}
+		if gw.wrote {
+			panic(http.ErrAbortHandler)
+		}
+		h := w.Header()
+		clear(h)
+		for k, v := range before {
+			h[k] = v
+		}
+		if gw.closeConn {
+			h.Set("Connection", "close")
+		}
+		gateUnavailable(w)
+		return true
+	}
 	return handled || gw.wrote
 }
 
@@ -89,6 +159,15 @@ type gateWriter struct {
 	http.ResponseWriter
 	closeConn bool
 	wrote     bool
+	hijacked  net.Conn
+	ctx       context.Context
+}
+
+func (g *gateWriter) canceled() error {
+	if g.ctx != nil {
+		return g.ctx.Err()
+	}
+	return nil
 }
 
 func (g *gateWriter) prepare() {
@@ -104,15 +183,26 @@ func (g *gateWriter) prepare() {
 	}
 }
 
-func (g *gateWriter) WriteHeader(code int) { g.prepare(); g.ResponseWriter.WriteHeader(code) }
+func (g *gateWriter) WriteHeader(code int) {
+	if g.canceled() == nil {
+		g.prepare()
+		g.ResponseWriter.WriteHeader(code)
+	}
+}
 
 func (g *gateWriter) Write(b []byte) (int, error) {
+	if err := g.canceled(); err != nil {
+		return 0, err
+	}
 	g.prepare()
 	return g.ResponseWriter.Write(b)
 }
 
 // FlushError commits an answer just as Write does, even when the check writes no body.
 func (g *gateWriter) FlushError() error {
+	if err := g.canceled(); err != nil {
+		return err
+	}
 	if g.wrote {
 		return http.NewResponseController(g.ResponseWriter).Flush()
 	}
@@ -133,9 +223,13 @@ func (g *gateWriter) FlushError() error {
 
 // Hijack takes ownership of the connection, so the request cannot go on to the application.
 func (g *gateWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if err := g.canceled(); err != nil {
+		return nil, nil, err
+	}
 	c, rw, err := http.NewResponseController(g.ResponseWriter).Hijack()
 	if err == nil {
 		g.wrote = true
+		g.hijacked = c
 	}
 	return c, rw, err
 }

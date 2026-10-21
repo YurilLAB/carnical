@@ -96,6 +96,20 @@ cfg.Challenge = gate{}
 ```
 
 `Serve` runs for every request that reaches a point, on the request's goroutine, so it must be quick for the
-requests it lets go on. During an attack, the check's answers are held to the shield's per-address and per-network
-rates. Over the attack's budget, though, they are offered to the check rather than refused, so the check must bound
-its own work, for example by limiting answers per network.
+requests it lets go on. `proxy.Config.MaxChallenges` bounds concurrent callbacks across `Serve`, `Respond` and
+`RespondTrailer`, per edge (default: the number of CPUs; valid range 1–65536, with zero selecting the default).
+There is no queue: a busy check gets 503 and `Retry-After: 1`. A callback retains its place until it returns,
+including after cancellation. Requests from different visitors behind a proxy share this bound.
+
+`proxy.Config.ChallengeBudget` gives each callback a context deadline (default 2 seconds, at most 24 hours).
+Checks must honor that context in network calls and bound their own CPU, memory and body reads. A context cannot
+forcibly stop an in-process callback or interrupt every body read; the server's read timeout still applies.
+An expired callback cannot let a request go on or report a new acceptance. Writes attempted after cancellation
+are refused. An already started response is aborted; an expired or busy response hook withholds the response,
+and failure while checking final trailers aborts the stream. Already sent bytes cannot be recalled. The callback's
+deadline does not shorten a forwarded response, SSE stream or upgraded connection after the callback returns.
+
+During an attack, the check's answers are held to the shield's per-address and per-network rates. Over the attack's
+budget, though, they are offered to the check rather than refused. The check must also bound work within each
+callback, for example with network deadlines and limits on answers per network. Hard limits on an uncooperative
+verifier require isolation outside the proxy process.

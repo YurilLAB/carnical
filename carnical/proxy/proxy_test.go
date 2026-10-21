@@ -1255,6 +1255,426 @@ func (g *gate) signals() []challenge.Signals {
 }
 
 type gatePlainWriter struct{ http.ResponseWriter }
+
+type boundedGate struct {
+	serve   func(http.ResponseWriter, *http.Request, challenge.Signals, func(challenge.Outcome)) bool
+	respond func(*http.Request, int, http.Header)
+	trailer func(*http.Request, http.Header)
+}
+
+func (g boundedGate) Serve(w http.ResponseWriter, r *http.Request, s challenge.Signals, report func(challenge.Outcome)) bool {
+	return g.serve(w, r, s, report)
+}
+
+func (g boundedGate) Respond(r *http.Request, status int, h http.Header) {
+	if g.respond != nil {
+		g.respond(r, status, h)
+	}
+}
+
+func (g boundedGate) RespondTrailer(r *http.Request, h http.Header) {
+	if g.trailer != nil {
+		g.trailer(r, h)
+	}
+}
+
+func TestPersonCheckBudgets(t *testing.T) {
+	t.Run("a busy check refuses without queuing and releases its place", func(t *testing.T) {
+		entered, release, finished := make(chan struct{}), make(chan struct{}), make(chan int, 1)
+		var once sync.Once
+		free := func() { once.Do(func() { close(release) }) }
+		g := boundedGate{serve: func(_ http.ResponseWriter, r *http.Request, _ challenge.Signals, _ func(challenge.Outcome)) bool {
+			if r.URL.Path == "/hold" {
+				close(entered)
+				<-release // deliberately ignores cancellation: its place must remain occupied
+			}
+			return false
+		}}
+		s := start(t, func(c *Config) { ruleSetOff(c); c.Challenge = g; c.MaxChallenges = 1; c.ChallengeBudget = time.Hour })
+		t.Cleanup(free)
+		go func() { defer close(finished); code, _ := s.raw(t, get("/hold")); finished <- code }()
+		select {
+		case <-entered:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the first request did not reach the check")
+		}
+		if code, _ := s.raw(t, get("/page")); code != http.StatusServiceUnavailable || len(s.up.requests()) != 0 {
+			t.Errorf("busy check: status %d, origin requests %d", code, len(s.up.requests()))
+		}
+		free()
+		if code := <-finished; code != 200 {
+			t.Fatalf("first request: %d", code)
+		}
+		if code, _ := s.raw(t, get("/page")); code != 200 {
+			t.Fatalf("released check: %d", code)
+		}
+	})
+	t.Run("an expired check cannot forward or grant clearance", func(t *testing.T) {
+		sh, err := shield.New(shield.Config{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(sh.Close)
+		g := boundedGate{serve: func(w http.ResponseWriter, r *http.Request, _ challenge.Signals, report func(challenge.Outcome)) bool {
+			if _, ok := r.Context().Deadline(); !ok {
+				return false
+			}
+			<-r.Context().Done()
+			w.Header().Set("X-Gate-Private", "withheld")
+			report(challenge.Outcome{Verdict: challenge.Passed})
+			return false
+		}}
+		s := start(t, func(c *Config) { ruleSetOff(c); c.Challenge = g; c.Shield = sh; c.ChallengeBudget = time.Millisecond })
+		code, reply := s.raw(t, get("/page"))
+		if code != 503 || len(s.up.requests()) != 0 || strings.Contains(reply, "carnical_clr=") || strings.Contains(reply, "X-Gate-Private") {
+			t.Fatalf("expired check: %d, origin %d, response %q", code, len(s.up.requests()), reply)
+		}
+	})
+	t.Run("invalid limits are rejected", func(t *testing.T) {
+		for _, cfg := range []Config{{MaxChallenges: -1}, {MaxChallenges: 65537}, {ChallengeBudget: -1}, {ChallengeBudget: maxWriteTimeout + 1}} {
+			cfg.Upstream, cfg.Origin, cfg.CRS = mustURL("http://127.0.0.1:1"), loopback, crs.DefaultSettings()
+			if e, err := New(cfg); err == nil {
+				e.Close()
+				t.Fatal("invalid person check limit accepted")
+			}
+		}
+		cfg := Config{Upstream: mustURL("http://127.0.0.1:1"), Origin: loopback, CRS: crs.DefaultSettings(),
+			MaxChallenges: 65536, ChallengeBudget: maxWriteTimeout,
+			Challenge: boundedGate{serve: func(http.ResponseWriter, *http.Request, challenge.Signals, func(challenge.Outcome)) bool {
+				return false
+			}}}
+		e, err := New(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer e.Close()
+		if cap(e.gateSlots) != cfg.MaxChallenges || e.cfg.ChallengeBudget != cfg.ChallengeBudget {
+			t.Fatal("maximum limits were not retained")
+		}
+	})
+	t.Run("canceled requests never enter the check", func(t *testing.T) {
+		s := start(t, func(c *Config) { ruleSetOff(c); c.Challenge = boundedGate{} })
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		r := httptest.NewRequest("GET", "/", nil).WithContext(ctx)
+		if err := s.edge.callGate(r, func(*http.Request) { t.Error("canceled callback ran") }); !errors.Is(err, errGateBudget) || len(s.edge.gateSlots) != 0 {
+			t.Fatalf("error %v, places %d", err, len(s.edge.gateSlots))
+		}
+	})
+	t.Run("a response check failure is not an origin failure", func(t *testing.T) {
+		g := boundedGate{
+			serve: func(http.ResponseWriter, *http.Request, challenge.Signals, func(challenge.Outcome)) bool {
+				return false
+			},
+			respond: func(r *http.Request, _ int, _ http.Header) { <-r.Context().Done() },
+		}
+		s := start(t, func(c *Config) { ruleSetOff(c); c.Challenge = g; c.ChallengeBudget = time.Millisecond })
+		o := new(origin)
+		r := httptest.NewRequest("GET", "/page", nil)
+		r.Host = "shop.example.test"
+		r = r.WithContext(context.WithValue(r.Context(), originKey{}, o))
+		w := httptest.NewRecorder()
+		s.edge.ServeHTTP(w, r)
+		if w.Code != 503 || o.answered {
+			t.Fatalf("status %d, origin failure %v", w.Code, o.answered)
+		}
+	})
+	t.Run("panicking callbacks release their place", func(t *testing.T) {
+		s := start(t, func(c *Config) { ruleSetOff(c); c.Challenge = boundedGate{}; c.MaxChallenges = 1 })
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Error("callback did not panic")
+				}
+			}()
+			_ = s.edge.callGate(httptest.NewRequest("GET", "/", nil), func(*http.Request) { panic("check failure") })
+		}()
+		if err := s.edge.callGate(httptest.NewRequest("GET", "/", nil), func(*http.Request) {}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("a panicking check closes its hijacked connection", func(t *testing.T) {
+		taken := make(chan net.Conn, 1)
+		g := boundedGate{serve: func(w http.ResponseWriter, _ *http.Request, _ challenge.Signals, _ func(challenge.Outcome)) bool {
+			conn, _, err := http.NewResponseController(w).Hijack()
+			if err != nil {
+				t.Error(err)
+				return true
+			}
+			taken <- conn
+			panic(http.ErrAbortHandler)
+		}}
+		s := start(t, func(c *Config) { ruleSetOff(c); c.Challenge = g })
+		t.Cleanup(func() {
+			select {
+			case conn := <-taken:
+				conn.Close()
+			default:
+			}
+		})
+		conn, err := net.DialTimeout("tcp", s.addr, 3*time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		if err := conn.SetDeadline(time.Now().Add(3 * time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.WriteString(conn, get("/page")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := conn.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+			t.Fatalf("hijacked connection after panic: %v", err)
+		}
+	})
+	for _, hijack := range []bool{false, true} {
+		t.Run(fmt.Sprintf("expired committed response hijack=%v", hijack), func(t *testing.T) {
+			g := boundedGate{serve: func(w http.ResponseWriter, r *http.Request, _ challenge.Signals, _ func(challenge.Outcome)) bool {
+				if hijack {
+					_, rw, err := http.NewResponseController(w).Hijack()
+					if err != nil {
+						t.Error(err)
+						return true
+					}
+					if _, err = rw.WriteString("HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\n"); err != nil {
+						t.Error(err)
+					}
+					if err = rw.Flush(); err != nil {
+						t.Error(err)
+					}
+				} else {
+					w.WriteHeader(200)
+					if err := http.NewResponseController(w).Flush(); err != nil {
+						t.Error(err)
+					}
+				}
+				<-r.Context().Done()
+				return true
+			}}
+			s := start(t, func(c *Config) { ruleSetOff(c); c.Challenge = g; c.ChallengeBudget = 50 * time.Millisecond })
+			code, _ := s.rawFor(t, 5*time.Second, get("/page"))
+			if code != 200 || len(s.up.requests()) != 0 || len(s.edge.gateSlots) != 0 {
+				t.Fatalf("expired committed response: %d, origin %d, callbacks %d", code, len(s.up.requests()), len(s.edge.gateSlots))
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name                 string
+		relayed, body, close bool
+		proto                int
+	}{
+		{"direct", false, false, true, 1}, {"proxy", true, false, false, 1},
+		{"proxy with unread body", true, true, true, 1}, {"proxy HTTP2", true, true, false, 2},
+	} {
+		for _, busy := range []bool{false, true} {
+			t.Run(fmt.Sprintf("admission %s busy=%v", tc.name, busy), func(t *testing.T) {
+				g := boundedGate{serve: func(_ http.ResponseWriter, r *http.Request, _ challenge.Signals, _ func(challenge.Outcome)) bool {
+					<-r.Context().Done()
+					return false
+				}}
+				s := start(t, func(c *Config) {
+					ruleSetOff(c)
+					c.Challenge = g
+					c.ChallengeBudget = time.Millisecond
+					c.MaxChallenges = 1
+				})
+				if busy {
+					s.edge.gateSlots <- struct{}{}
+					defer func() { <-s.edge.gateSlots }()
+				}
+				r := httptest.NewRequest("GET", "/page", nil)
+				r.ProtoMajor = tc.proto
+				if tc.body {
+					r.ContentLength = 1
+				}
+				w := httptest.NewRecorder()
+				w.Header().Set("X-Existing", "kept")
+				rec := newRecord()
+				rec.client = netip.MustParseAddr("192.0.2.1")
+				rec.via = tc.relayed
+				if !s.edge.serveGate(w, r, rec, challenge.Admission, shield.Decision{Action: shield.Refuse}) || w.Code != 503 || (w.Header().Get("Connection") == "close") != tc.close || w.Header().Get("X-Existing") != "kept" {
+					t.Fatalf("admission error: %d %v", w.Code, w.Header())
+				}
+			})
+		}
+	}
+	for _, operation := range []string{"none", "header", "write", "flush", "hijack"} {
+		t.Run("expired writer "+operation, func(t *testing.T) {
+			g := boundedGate{serve: func(w http.ResponseWriter, r *http.Request, _ challenge.Signals, _ func(challenge.Outcome)) bool {
+				<-r.Context().Done()
+				var err error
+				switch operation {
+				case "header":
+					w.WriteHeader(200)
+				case "write":
+					_, err = w.Write([]byte("private gate result"))
+				case "flush":
+					err = http.NewResponseController(w).Flush()
+				case "hijack":
+					_, _, err = http.NewResponseController(w).Hijack()
+				}
+				if operation != "header" && operation != "none" && !errors.Is(err, context.DeadlineExceeded) {
+					t.Errorf("operation error %v", err)
+				}
+				return true
+			}}
+			s := start(t, func(c *Config) { ruleSetOff(c); c.Challenge = g; c.ChallengeBudget = time.Millisecond })
+			if code, reply := s.raw(t, get("/page")); code != 503 || strings.Contains(reply, "private gate result") || len(s.up.requests()) != 0 {
+				t.Fatalf("expired writer: %d %q, origin %d", code, reply, len(s.up.requests()))
+			}
+		})
+	}
+	for _, stage := range []string{"response", "trailer names", "trailer values"} {
+		t.Run("expired "+stage, func(t *testing.T) {
+			app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Trailer", "X-Gate-Only")
+				_, _ = w.Write([]byte("origin body"))
+				w.Header().Set("X-Gate-Only", "private trailer")
+			}))
+			defer app.Close()
+			var calls int
+			g := boundedGate{serve: func(http.ResponseWriter, *http.Request, challenge.Signals, func(challenge.Outcome)) bool {
+				return false
+			}}
+			g.respond = func(r *http.Request, _ int, _ http.Header) {
+				if stage == "response" {
+					<-r.Context().Done()
+				}
+			}
+			g.trailer = func(r *http.Request, _ http.Header) {
+				calls++
+				if stage == "trailer names" || calls == 2 {
+					<-r.Context().Done()
+				}
+			}
+			s := start(t, func(c *Config) {
+				ruleSetOff(c)
+				c.Challenge = g
+				c.Upstream = mustURL(app.URL)
+				c.ChallengeBudget = 20 * time.Millisecond
+			})
+			_, reply := s.raw(t, get("/page"))
+			if strings.Contains(reply, "private trailer") || stage != "trailer values" && !strings.HasPrefix(reply, "HTTP/1.1 503") {
+				t.Fatalf("expired response hook: %q", reply)
+			}
+		})
+	}
+	for _, h2 := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream survives callback cancellation HTTP2=%v", h2), func(t *testing.T) {
+			release := make(chan struct{})
+			var once sync.Once
+			free := func() { once.Do(func() { close(release) }) }
+			app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, "data: first\n\n")
+				if err := http.NewResponseController(w).Flush(); err != nil {
+					t.Error(err)
+					return
+				}
+				<-release
+				_, _ = io.WriteString(w, "data: last\n\n")
+			}))
+			t.Cleanup(app.Close)
+			seen := make(chan context.Context, 1)
+			g := boundedGate{
+				serve: func(http.ResponseWriter, *http.Request, challenge.Signals, func(challenge.Outcome)) bool {
+					return false
+				},
+				respond: func(r *http.Request, _ int, _ http.Header) { seen <- r.Context() },
+			}
+			s := start(t, func(c *Config) { ruleSetOff(c); c.Challenge = g; c.Upstream = mustURL(app.URL) })
+			front := httptest.NewUnstartedServer(nil)
+			front.Config = s.edge.Server("")
+			front.EnableHTTP2 = h2
+			if h2 {
+				front.StartTLS()
+			} else {
+				front.Start()
+			}
+			t.Cleanup(front.Close)
+			t.Cleanup(free)
+			client := front.Client()
+			client.Timeout = 5 * time.Second
+			resp, err := client.Get(front.URL + "/events")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			ctx := <-seen
+			<-ctx.Done() // the callback has returned and its child context was canceled
+			free()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil || !strings.Contains(string(body), "data: last") || (resp.ProtoMajor == 2) != h2 {
+				t.Fatalf("stream: HTTP%d %q %v", resp.ProtoMajor, body, err)
+			}
+		})
+	}
+}
+
+func FuzzPersonCheckCapacity(f *testing.F) {
+	f.Add([]byte{1, 2, 0, 1, 2, 3})
+	f.Add([]byte{2, 8, 3, 2, 1, 0})
+	f.Fuzz(func(t *testing.T, data []byte) {
+		if len(data) < 2 {
+			return
+		}
+		limit, n := 1+int(data[0]%8), 1+int(data[1]%32)
+		e := &Edge{cfg: Config{ChallengeBudget: time.Hour}, gateSlots: make(chan struct{}, limit)}
+		ready, release := make(chan struct{}, n), make(chan struct{})
+		var wg sync.WaitGroup
+		var active, peak atomic.Int32
+		for i := range n {
+			mode := data[i%len(data)] % 4
+			wg.Go(func() {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				if mode == 1 {
+					cancel()
+				}
+				called := false
+				defer func() {
+					if v := recover(); v != nil && (mode != 3 || v != "callback failure") {
+						t.Errorf("unexpected callback panic: %v", v)
+					}
+					if !called {
+						ready <- struct{}{}
+					}
+				}()
+				r := httptest.NewRequest("GET", "/", nil).WithContext(ctx)
+				_ = e.callGate(r, func(r *http.Request) {
+					called = true
+					if mode == 1 {
+						t.Error("canceled request entered callback")
+					}
+					if _, ok := r.Context().Deadline(); !ok {
+						t.Error("callback has no deadline")
+					}
+					now := active.Add(1)
+					defer active.Add(-1)
+					for old := peak.Load(); now > old && !peak.CompareAndSwap(old, now); old = peak.Load() {
+					}
+					ready <- struct{}{}
+					<-release
+					if mode == 2 {
+						cancel()
+					}
+					if mode == 3 {
+						panic("callback failure")
+					}
+				})
+			})
+		}
+		for range n {
+			<-ready
+		}
+		close(release)
+		wg.Wait()
+		if int(peak.Load()) > limit || active.Load() != 0 || len(e.gateSlots) != 0 {
+			t.Fatalf("capacity %d, peak %d, active %d, retained %d", limit, peak.Load(), active.Load(), len(e.gateSlots))
+		}
+	})
+}
+
 type gateUnwrapWriter struct{ http.ResponseWriter }
 
 func (w gateUnwrapWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
