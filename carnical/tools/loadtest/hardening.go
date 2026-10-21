@@ -79,5 +79,19 @@ func hardeningCases() []testCase {
 			out = append(out, testCase{Name: fmt.Sprintf("%s/defense-control-%02d", family.category, i), Request: request{Method: "POST", URI: "/api/loadtest/" + family.category, Headers: map[string]string{"Content-Type": "application/json"}, Body: string(body)}, Description: "ordinary nearby control"})
 		}
 	}
+	// PHP2Shell (CVE-2026-109618, CVE-2026-109619) goes through PHP's session upload progress field: the field as PHP
+	// reads it in quotes, bare and across a header line PHP joins, each beside a picture, and the same upload with an
+	// ordinary field, which passes.
+	const boundary = "CarnicalPHP2Shell"
+	upload := func(disposition string) request {
+		body := "--" + boundary + "\r\nContent-Disposition: form-data; " + disposition + "\r\n\r\nupload-1\r\n--" + boundary +
+			"\r\nContent-Disposition: form-data; name=\"photo\"; filename=\"photo.jpg\"\r\nContent-Type: image/jpeg\r\n\r\nJFIF picture\r\n--" + boundary + "--\r\n"
+		return request{Method: "POST", URI: "/api/loadtest/upload", Headers: map[string]string{"Content-Type": "multipart/form-data; boundary=" + boundary}, Body: body}
+	}
+	for i, disposition := range []string{`name="PHP_SESSION_UPLOAD_PROGRESS"`, `name=PHP_SESSION_UPLOAD_PROGRESS`, "name=\"PHP_SESSION_UPLOAD\r\n_PROGRESS\""} {
+		out = append(out, testCase{Name: fmt.Sprintf("php/defense-php2shell-%d", i), Attack: true, Request: upload(disposition),
+			Parent: "php/php2shell", Variation: fmt.Sprintf("upload-progress-field-%d", i), Description: "PHP2Shell's upload progress field; a fixed PHP is the complete fix"})
+	}
+	out = append(out, testCase{Name: "php/defense-php2shell-control", Request: upload(`name="caption"`), Description: "ordinary upload with a caption field"})
 	return out
 }

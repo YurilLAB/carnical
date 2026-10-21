@@ -44,8 +44,10 @@ Linux and Windows target builds. Its default excludes `_test.go`; the CRS harnes
 tests, so no production files are scanned there. The optional CGO `testing/modsecurity` comparison
 harness is included in dependency auditing. Additional build tags are outside this static scan.
 Runtime, fuzz, and live WAF tests remain separate validation. The live WAF gate requires exercised
-attacks in every supported category and both ordinary search and JSON controls. Context-dependent
-attack outcomes and other benign refusals remain in the saved report.
+attacks in every supported category and both ordinary search and JSON controls. It runs the default,
+strict, format-monitor and multiphase builds, and holds each to a baseline in `.github/security/`
+that names every attack still admitted and every control still refused. A change in any template's
+result fails the gate, so an attack refused today stays refused.
 
 OSV uses explicit manifest paths so untracked research, upstream downloads, and `build/` do not
 become project dependencies. `--all-vulns` retains and fails on module advisories even when call

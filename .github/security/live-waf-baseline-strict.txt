@@ -1,0 +1,40 @@
+# Live WAF baseline (strict): tools/loadtest -variants -hardening -strict, with the format checks refusing,
+# repeated parameters refused and the stricter local rules on.
+# The attack templates listed under [admitted attacks] reach the origin and the benign controls listed under
+# [refused controls] are refused. Every other attack must be refused and every other control forwarded, and every
+# entry must still hold: check_live_report.py fails on a change in either direction, so what is blocked now stays
+# blocked. After a deliberate change, regenerate this file from the Security review run's report:
+#   python3 .github/security/check_live_report.py REPORT .github/security/live-waf-baseline-strict.txt --write
+
+[admitted attacks]
+
+[refused controls]
+# hpp: benign repeated multi-valued parameter or scalar control
+hpp/control-01
+hpp/variant-00750
+hpp/variant-00751
+hpp/variant-00752
+hpp/variant-00753
+# prototype: benign object/text without a prototype-reaching write
+prototype/control-02
+prototype/v08-form
+prototype/v08-query
+prototype/v09-json
+prototype/variant-00823
+prototype/variant-00824
+prototype/variant-00825
+prototype/variant-00826
+prototype/variant-00827
+prototype/variant-00828
+prototype/variant-00829
+prototype/variant-00830
+prototype/variant-00831
+prototype/variant-00832
+prototype/variant-00876
+prototype/variant-00877
+prototype/variant-00878
+prototype/variant-00884
+prototype/variant-00885
+prototype/variant-00886
+# xpath: ordinary XML attribute or fragmented text control
+xpath/defense-xml-control-1

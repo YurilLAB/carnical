@@ -336,6 +336,7 @@ func run() error {
 	ddos := flag.String("ddos", "on", "child WAF flood protection: on, monitor or off; recorded in the report")
 	localRules := flag.Bool("local-rules", true, "enable the child WAF's supplemental rules")
 	hardening := flag.Bool("hardening", false, "add held-out bypass syntax and benign controls; requires -variants")
+	formatsMode := flag.String("formats-mode", "block", "child WAF format checks: block or monitor (the default of a site that does not set it)")
 	strict := flag.Bool("strict", false, "run the child WAF as a site with singular parameters can: repeated parameters refused and the stricter local rules on")
 	flag.Parse()
 	if *ddos != "on" && *ddos != "monitor" && *ddos != "off" {
@@ -412,7 +413,7 @@ func run() error {
 	defer logFile.Close()
 	// The WAF picks its own port and says which in its log. A port found free here could be taken before the WAF had it,
 	// and whatever took it would be what the requests reach.
-	args := []string{"-listen", "127.0.0.1:0", "-upstream", origin.URL, "-origin-allow", "127.0.0.1/32", "-mode", "block", "-formats-mode", "block", "-inspect-responses", "-formats-stats-interval", "5s"}
+	args := []string{"-listen", "127.0.0.1:0", "-upstream", origin.URL, "-origin-allow", "127.0.0.1/32", "-mode", "block", "-formats-mode", *formatsMode, "-inspect-responses", "-formats-stats-interval", "5s"}
 	args = append(args, "-ddos", *ddos, fmt.Sprintf("-local-rules=%t", *localRules))
 	if *strict {
 		// What the defaults leave to the site: a name given twice, the address of a script in a form or JSON field, and a

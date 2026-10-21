@@ -172,10 +172,26 @@ jobs:
         run: |
           mkdir -p ../build/security-reports
           go build -o ../build/carnical-ci ./cmd/carnical
-          go run ./tools/loadtest -binary ../build/carnical-ci -corpus tools/loadtest/testdata \
-            -count 10000 -variants -hardening -ddos off \
-            -output ../build/security-reports/live-waf.json
-          python3 ../.github/security/check_live_report.py ../build/security-reports/live-waf.json
+          go build -tags coraza.rule.multiphase_evaluation -o ../build/carnical-ci-multiphase ./cmd/carnical
+          reports=../build/security-reports
+          baselines=../.github/security
+          # Each run is held to its baseline, so an attack refused today fails CI the day it reaches the origin.
+          live() {
+            go run ./tools/loadtest -corpus tools/loadtest/testdata -count 10000 -variants -hardening -ddos off "$@"
+          }
+          live -binary ../build/carnical-ci -output "$reports/live-waf.json"
+          live -binary ../build/carnical-ci -strict -output "$reports/live-waf-strict.json"
+          live -binary ../build/carnical-ci -formats-mode monitor -output "$reports/live-waf-monitor.json"
+          live -binary ../build/carnical-ci-multiphase -output "$reports/live-waf-multiphase.json"
+          status=0
+          python3 "$baselines/check_live_report.py" "$reports/live-waf.json" "$baselines/live-waf-baseline-block.txt" || status=1
+          python3 "$baselines/check_live_report.py" "$reports/live-waf-strict.json" \
+            "$baselines/live-waf-baseline-strict.txt" || status=1
+          python3 "$baselines/check_live_report.py" "$reports/live-waf-monitor.json" \
+            "$baselines/live-waf-baseline-monitor.txt" || status=1
+          python3 "$baselines/check_live_report.py" "$reports/live-waf-multiphase.json" \
+            "$baselines/live-waf-baseline-block.txt" || status=1
+          exit "$status"
       - name: Preserve the live test report
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

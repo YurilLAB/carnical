@@ -1,0 +1,94 @@
+# Live WAF baseline (block): tools/loadtest -variants -hardening, with the format checks refusing.
+# The attack templates listed under [admitted attacks] reach the origin and the benign controls listed under
+# [refused controls] are refused. Every other attack must be refused and every other control forwarded, and every
+# entry must still hold: check_live_report.py fails on a change in either direction, so what is blocked now stays
+# blocked. After a deliberate change, regenerate this file from the Security review run's report:
+#   python3 .github/security/check_live_report.py REPORT .github/security/live-waf-baseline-block.txt --write
+
+[admitted attacks]
+# hpp: form parameter duplication or normalization ambiguity
+hpp/v01-form
+hpp/v01-query
+hpp/v11-form
+hpp/v11-query
+hpp/v12-form
+hpp/v12-query
+hpp/variant-00641
+hpp/variant-00642
+hpp/variant-00643
+hpp/variant-00644
+hpp/variant-00645
+hpp/variant-00646
+hpp/variant-00647
+hpp/variant-00648
+hpp/variant-00721
+hpp/variant-00722
+hpp/variant-00723
+hpp/variant-00724
+hpp/variant-00725
+hpp/variant-00726
+hpp/variant-00727
+hpp/variant-00728
+hpp/variant-00729
+hpp/variant-00730
+hpp/variant-00731
+hpp/variant-00732
+hpp/variant-00733
+hpp/variant-00734
+hpp/variant-00735
+hpp/variant-00736
+hpp/variant-00737
+hpp/variant-00738
+# rfi: synthetic syntax variant; application interpretation is required for impact
+rfi/syntax-0082
+rfi/syntax-0083
+rfi/syntax-0094
+rfi/syntax-0095
+rfi/syntax-0097
+rfi/syntax-0098
+rfi/variant-01222
+rfi/variant-01223
+rfi/variant-01224
+rfi/variant-01225
+rfi/variant-01226
+rfi/variant-01227
+rfi/variant-01228
+rfi/variant-01266
+rfi/variant-01267
+rfi/variant-01268
+rfi/variant-01269
+rfi/variant-01270
+rfi/variant-01271
+rfi/variant-01272
+rfi/variant-01277
+rfi/variant-01278
+rfi/variant-01279
+rfi/variant-01280
+rfi/variant-01281
+rfi/variant-01282
+rfi/variant-01283
+
+[refused controls]
+# prototype: benign object/text without a prototype-reaching write
+prototype/control-02
+prototype/v08-form
+prototype/v08-query
+prototype/v09-json
+prototype/variant-00823
+prototype/variant-00824
+prototype/variant-00825
+prototype/variant-00826
+prototype/variant-00827
+prototype/variant-00828
+prototype/variant-00829
+prototype/variant-00830
+prototype/variant-00831
+prototype/variant-00832
+prototype/variant-00876
+prototype/variant-00877
+prototype/variant-00878
+prototype/variant-00884
+prototype/variant-00885
+prototype/variant-00886
+# xpath: ordinary XML attribute or fragmented text control
+xpath/defense-xml-control-1

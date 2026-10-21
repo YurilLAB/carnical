@@ -113,6 +113,64 @@ class LiveReportTests(unittest.TestCase):
                         self.assertNotEqual(result.returncode, 0, result.stdout)
                         self.assertIn(error, result.stderr)
 
+    def test_baseline(self):
+        # ordinary_report admits csrf/context and refuses malformed/ordinary; everything else is refused or forwarded.
+        exact = "[admitted attacks]\ncsrf/context\n[refused controls]\nmalformed/ordinary\n"
+        original = ordinary_report()
+        partly = copy.deepcopy(original)
+        row = next(row for row in partly["Results"] if row["Name"] == "csrf/context")
+        row["Requests"], row["Statuses"], row["OriginReached"] = 2, {"200": 1, "403": 1}, 1
+        target = next(row for row in partly["Results"] if row["Name"] == "xss/attack")
+        target["Requests"] -= 1
+        target["Statuses"]["403"] -= 1
+        partly = report(partly["Results"])
+        monitored = copy.deepcopy(original)
+        monitored["WAFArgs"] = ["-formats-mode", "monitor"]
+        sqli = next(row for row in monitored["Results"] if row["Name"] == "sqli/attack")
+        sqli["Statuses"], sqli["OriginReached"] = {"200": sqli["Requests"]}, sqli["Requests"]
+        monitored = dict(report(monitored["Results"]), WAFArgs=monitored["WAFArgs"])
+        cases = [
+            ("the baseline holds", original, exact, None),
+            ("an attack outside it reaches the origin", original, "[refused controls]\nmalformed/ordinary\n", "attack now reaches the origin: csrf/context"),
+            ("a control outside it is refused", original, "[admitted attacks]\ncsrf/context\n", "benign control now refused: malformed/ordinary"),
+            ("an attack it lists is refused", original, exact.replace("csrf/context", "csrf/context\nxss/attack"), "attack is now refused"),
+            ("a control it lists passes", original, exact + "json/ordinary\n", "control now passes"),
+            ("it names a template the suite does not have", original, exact + "gone/control\n", "not in the suite: gone/control"),
+            ("it lists an attack as a control", original, exact + "xss/attack\n", "wrong section: xss/attack"),
+            ("an entry outside a section", original, "csrf/context\n" + exact, "outside a section"),
+            ("an attack it lists reaches the origin on some requests only", partly, exact, "only some requests: csrf/context"),
+            ("format checks monitored, with the admitted injection listed", monitored, exact.replace("csrf/context", "csrf/context\nsqli/attack"), None),
+            ("format checks monitored, with the injection not listed", monitored, exact, "attack now reaches the origin: sqli/attack"),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path, baseline = Path(directory) / "report.json", Path(directory) / "baseline.txt"
+            for name, data, text, error in cases:
+                with self.subTest(name=name):
+                    path.write_text(json.dumps(data), encoding="utf-8")
+                    baseline.write_text(text, encoding="utf-8")
+                    result = subprocess.run([sys.executable, str(CHECKER), str(path), str(baseline)],
+                                            capture_output=True, text=True, timeout=30, check=False)
+                    if error is None:
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                    else:
+                        self.assertNotEqual(result.returncode, 0, result.stdout)
+                        self.assertIn(error, result.stderr)
+            with self.subTest(name="format checks monitored without a baseline"):
+                path.write_text(json.dumps(monitored), encoding="utf-8")
+                result = subprocess.run([sys.executable, str(CHECKER), str(path)], capture_output=True, text=True, timeout=30, check=False)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn("needs a baseline", result.stderr)
+            with self.subTest(name="a written baseline holds and keeps its header"):
+                path.write_text(json.dumps(original), encoding="utf-8")
+                baseline.write_text("# kept\n[admitted attacks]\n", encoding="utf-8")
+                result = subprocess.run([sys.executable, str(CHECKER), str(path), str(baseline), "--write"],
+                                        capture_output=True, text=True, timeout=30, check=False)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                written = baseline.read_text(encoding="utf-8")
+                self.assertTrue(written.startswith("# kept\n"), written)
+                self.assertIn("\ncsrf/context\n", written)
+                self.assertIn("\nmalformed/ordinary\n", written)
+
 
 if __name__ == "__main__":
     unittest.main()
