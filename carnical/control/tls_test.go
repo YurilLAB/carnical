@@ -235,6 +235,7 @@ func serverSPKI(c *tls.Conn) Fingerprint {
 }
 
 func TestServerCertificateReloads(t *testing.T) {
+	t.Run("file paths keep their opening directory", func(t *testing.T) { testTLSFilesKeepDirectory(t, true) })
 	p, first, r, srv, dir, clock := newTLS(t)
 	client := clientCfg(p, p.client("ui-a"))
 	certFile, keyFile := filepath.Join(dir, "server.pem"), filepath.Join(dir, "server.key")
@@ -351,6 +352,106 @@ func TestServerCertificateReloads(t *testing.T) {
 	})
 }
 
+// Both reload callbacks must keep using their original files after an embedding process changes directory.
+func testTLSFilesKeepDirectory(t *testing.T, server bool) {
+	t.Helper()
+	for _, tc := range []struct {
+		name              string
+		absolute, symlink bool
+	}{
+		{name: "relative"}, {name: "absolute", absolute: true},
+		{name: "symlink parent", symlink: true}, {name: "absolute symlink parent", absolute: true, symlink: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.symlink && isWindows() {
+				t.Skip("Unix symlink and parent-directory traversal")
+			}
+			first, second := t.TempDir(), t.TempDir()
+			p, other := newPKI(t), newPKI(t)
+			original, decoy := p.client("original"), other.client("other-directory")
+			if server {
+				original, decoy = p.server(), other.server()
+			}
+			certPath, keyPath, caPath := p.files(first, original)
+			otherCert, otherKey, otherCA := other.files(second, decoy)
+			stamp := time.Unix(1_700_000_000, 0)
+			setTimes(t, stamp, certPath, keyPath, caPath)
+			setTimes(t, stamp.Add(time.Minute), otherCert, otherKey, otherCA)
+			opening, prefix := first, ""
+			if tc.symlink {
+				opening = t.TempDir()
+				other.files(opening, decoy) // lexical cleaning would select these decoys
+				for _, pair := range [][2]string{{opening, first}, {second, second}} {
+					nested := filepath.Join(pair[1], "nested")
+					if err := os.Mkdir(nested, 0700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Symlink(nested, filepath.Join(pair[0], "link")); err != nil {
+						t.Fatal(err)
+					}
+				}
+				prefix = "link/../" // preserve the path the kernel resolves, without filepath.Join
+			}
+			t.Chdir(opening)
+			if tc.absolute {
+				prefix = opening + "/" + prefix
+			}
+			clock := &fakeClock{t: epoch}
+			var read func() []byte
+			var reloader *TLSReloader
+			if server {
+				var err error
+				reloader, err = NewTLSReloader(TLSOptions{CertFile: prefix + "server.pem", KeyFile: prefix + "server.key",
+					ClientCAFile: prefix + "clients-ca.pem", Now: clock.now})
+				if err != nil {
+					t.Fatal(err)
+				}
+				read = func() []byte {
+					cfg, err := reloader.Config().GetConfigForClient(nil)
+					if err != nil || reloader.LastError() != nil {
+						t.Fatalf("TLS snapshot: error=%v reload error=%v", err, reloader.LastError())
+					}
+					if !cfg.ClientCAs.Equal(p.pool()) {
+						t.Fatal("the client CA pool switched to the later working directory")
+					}
+					return cfg.Certificates[0].Certificate[0]
+				}
+			} else {
+				files, err := newCertFiles(prefix+"server.pem", prefix+"server.key")
+				if err != nil {
+					t.Fatal(err)
+				}
+				read = func() []byte {
+					files.checked = time.Time{} // force the real reload check without sleeping
+					cert, err := files.get(nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					return cert.Certificate[0]
+				}
+			}
+			t.Chdir(second)
+			clock.advance(3 * time.Second)
+			if string(read()) != string(original.cert.Raw) {
+				t.Fatal("the certificate switched to the later working directory")
+			}
+			renewed := p.client("renewed")
+			if server {
+				renewed = p.server()
+			}
+			p.files(first, renewed)
+			setTimes(t, stamp.Add(2*time.Minute), certPath, keyPath, caPath)
+			clock.advance(3 * time.Second)
+			if string(read()) != string(renewed.cert.Raw) {
+				t.Fatal("renewal in the original directory was not loaded")
+			}
+			if server && reloader.Reloads() != 1 {
+				t.Fatalf("reloads %d, want only the original directory's renewal", reloader.Reloads())
+			}
+		})
+	}
+}
+
 func TestClientCAReloads(t *testing.T) {
 	p, _, r, srv, dir, clock := newTLS(t)
 	caFile := filepath.Join(dir, "clients-ca.pem")
@@ -429,6 +530,42 @@ func TestTLSOptionsAreChecked(t *testing.T) {
 			}
 		})
 	}
+	t.Run("relative files require an opening directory", func(t *testing.T) {
+		if isWindows() {
+			t.Skip("Unix permits removal of the current directory")
+		}
+		gone := filepath.Join(t.TempDir(), "gone")
+		if err := os.Mkdir(gone, 0700); err != nil {
+			t.Fatal(err)
+		}
+		t.Chdir(gone)
+		if err := os.Remove(gone); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Getwd(); !os.IsNotExist(err) {
+			t.Fatalf("expected an unavailable working directory, got %v", err)
+		}
+		for _, opts := range []TLSOptions{
+			{CertFile: "server.pem", KeyFile: key, ClientCAFile: ca},
+			{CertFile: cert, KeyFile: "server.key", ClientCAFile: ca},
+			{CertFile: cert, KeyFile: key, ClientCAFile: "clients-ca.pem"},
+		} {
+			if reloader, err := NewTLSReloader(opts); reloader != nil || !os.IsNotExist(err) {
+				t.Errorf("relative server files: reloader=%v error=%v", reloader, err)
+			}
+		}
+		for _, paths := range [][2]string{{"server.pem", key}, {cert, "server.key"}} {
+			if files, err := newCertFiles(paths[0], paths[1]); files != nil || !os.IsNotExist(err) {
+				t.Errorf("relative client files: files=%v error=%v", files, err)
+			}
+		}
+		if _, err := NewTLSReloader(TLSOptions{CertFile: cert, KeyFile: key, ClientCAFile: ca}); err != nil {
+			t.Errorf("absolute server files should still work: %v", err)
+		}
+		if _, err := newCertFiles(cert, key); err != nil {
+			t.Errorf("absolute client files should still work: %v", err)
+		}
+	})
 }
 
 func TestTLSPeerStateIsWhatTheHandlerNeeds(t *testing.T) {

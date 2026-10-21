@@ -55,6 +55,8 @@ tenant/scope authorization precede store access.
    looked at at most every two seconds, swapped as a whole, a bad file leaves the old one in force and is reported by
    `LastError`); session tickets are off, so no connection is resumed without presenting its certificate again and a restart
    leaves nothing valid; curve preferences are X25519MLKEM768 (the post-quantum hybrid), X25519, P-256.
+   Relative TLS filenames for the server and client retain their opening directory for later reloads, even if the
+   embedding process changes its working directory. Renewed files at those locations are still picked up normally.
 2. **Credential** (`control.Credential`). One per UI deployment: an id, the SHA-256 fingerprints of the public keys of the
    client certificates it may use (the key, not the certificate, so a certificate can be renewed on the same key), an Ed25519
    public key it signs with, the tenants (a list, or "all" for the owner's own tooling), the scopes, optional source

@@ -22,6 +22,13 @@ type certFiles struct {
 }
 
 func newCertFiles(certPath, keyPath string) (*certFiles, error) {
+	for _, path := range []*string{&certPath, &keyPath} {
+		resolved, err := credentialFilePath(*path)
+		if err != nil {
+			return nil, err
+		}
+		*path = resolved
+	}
 	c := &certFiles{certPath: certPath, keyPath: keyPath}
 	sig := c.signature()
 	cert, err := tls.LoadX509KeyPair(certPath, keyPath)

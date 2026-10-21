@@ -645,6 +645,7 @@ func TestConcurrentClients(t *testing.T) {
 func (e *e2e) stats() Stats { return e.harness.srv.Stats() }
 
 func TestClientCertificateIsReloadedFromDisk(t *testing.T) {
+	t.Run("file paths keep their opening directory", func(t *testing.T) { testTLSFilesKeepDirectory(t, false) })
 	e := newE2E(t)
 	id := e.ids["ui-a"]
 	dir := t.TempDir()

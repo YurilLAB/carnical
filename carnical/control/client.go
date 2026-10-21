@@ -43,7 +43,8 @@ type ClientConfig struct {
 	CredentialID string
 	SigningKey   ed25519.PrivateKey
 	// Certificate is the client certificate (mutual TLS). When CertFile and KeyFile are set instead, they are read
-	// again whenever either file changes, so the certificate can be renewed without a restart.
+	// again whenever either file changes, so the certificate can be renewed without a restart. Relative filenames keep
+	// the working directory at construction for subsequent reloads.
 	Certificate       *tls.Certificate
 	CertFile, KeyFile string
 	// RootCAs are the CAs the server's certificate must chain to; nil means the system's.

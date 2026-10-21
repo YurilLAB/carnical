@@ -14,6 +14,7 @@ import (
 )
 
 // TLSOptions say where the server's certificate and the client CA bundle are.
+// Relative filenames keep the working directory at construction for subsequent reloads.
 type TLSOptions struct {
 	// CertFile and KeyFile are the server's certificate chain and private key (PEM).
 	CertFile, KeyFile string
@@ -65,6 +66,13 @@ func TLSConfig(opts TLSOptions) (*tls.Config, error) {
 func NewTLSReloader(opts TLSOptions) (*TLSReloader, error) {
 	if opts.CertFile == "" || opts.KeyFile == "" || opts.ClientCAFile == "" {
 		return nil, errors.New("control: CertFile, KeyFile and ClientCAFile are required")
+	}
+	for _, path := range []*string{&opts.CertFile, &opts.KeyFile, &opts.ClientCAFile} {
+		resolved, err := credentialFilePath(*path)
+		if err != nil {
+			return nil, err
+		}
+		*path = resolved
 	}
 	if opts.CheckEvery <= 0 {
 		opts.CheckEvery = 2 * time.Second
