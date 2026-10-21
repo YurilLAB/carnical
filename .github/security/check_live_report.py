@@ -2,7 +2,8 @@
 
 With a baseline file, every attack template must also be refused and every benign control forwarded, except those the
 baseline lists, and every entry of the baseline must still hold: what is blocked now stays blocked, and what is newly
-blocked is locked in once the baseline is regenerated with --write.
+blocked is locked in once the baseline is regenerated with --write. Every attack that reaches the origin must raise an
+alert, which the run records with loadtest -alert-probe.
 """
 
 import json
@@ -100,6 +101,12 @@ def check_baseline(report, path):
     for name in sorted(expected_refused & refused):
         if rows[name]["OriginReached"]:
             problems.append("control refused on only some requests: " + name)
+    if not report.get("AlertProbe"):
+        problems.append("the run did not record the alerts of the attacks that reach the origin (loadtest -alert-probe)")
+    else:
+        for name in sorted(admitted):
+            if not rows[name].get("Alerts"):
+                problems.append("attack reached the origin without an alert: " + name)
     if problems:
         raise SystemExit("\n".join(problems))
 
@@ -135,7 +142,7 @@ def main():
             write_baseline(report, args[1])
             print("Baseline written: " + args[1])
         check_baseline(report, args[1])
-        print("Every attack refused and every control forwarded but those the baseline lists")
+        print("Every attack refused and every control forwarded but those the baseline lists, each admitted attack alerted")
     print("Supported injection regressions blocked; ordinary search/JSON controls passed")
     print("Context-dependent admissions and other benign refusals remain in the artifact")
 

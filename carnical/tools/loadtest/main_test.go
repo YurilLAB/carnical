@@ -5,11 +5,14 @@ package main
 import (
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 type failedRequestBody struct {
@@ -67,7 +70,7 @@ func TestHTTPExchange(t *testing.T) {
 				req.Header.Set("Content-Length", tc.framing)
 			}
 			before := reached.Load()
-			res, err := rawDo(req)
+			res, err := rawDo(req, &net.Dialer{Timeout: 10 * time.Second})
 			if errors.Is(err, readErr) != tc.wantReadErr || errors.Is(err, closeErr) != tc.wantCloseErr {
 				t.Fatalf("request errors lost: %v", err)
 			}
@@ -137,6 +140,32 @@ func TestListeningIn(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := listeningIn([]byte(tc.log)); got != tc.want {
+				t.Fatalf("%q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// An attack that reaches the origin is probed from an address of its own and owns the alerts written for that address.
+func TestAlertsIn(t *testing.T) {
+	detected := `{"msg":"intrusion detected","alert_id":"a1","sig":"crs-5006102","action":"detected","src":"127.1.0.1"}`
+	for _, tc := range []struct {
+		name, log string
+		want      map[string][]string
+	}{
+		{"a detected alert", detected, map[string][]string{"127.1.0.1": {"crs-5006102 detected"}}},
+		{"a blocked alert", `{"msg":"intrusion blocked","alert_id":"a2","sig":"crs-949110","action":"blocked","src":"127.1.0.2"}`,
+			map[string][]string{"127.1.0.2": {"crs-949110 blocked"}}},
+		{"two alerts of one source, sorted", `{"msg":"intrusion detected","alert_id":"a3","sig":"formats-5002802","action":"detected","src":"127.1.0.1"}` +
+			"\n" + detected, map[string][]string{"127.1.0.1": {"crs-5006102 detected", "formats-5002802 detected"}}},
+		{"a rule match is no alert", `{"msg":"rule matched","rule":5006102,"src":"127.1.0.1"}`, map[string][]string{}},
+		{"a suspected intrusion is no alert of one request", `{"msg":"suspected intrusion","alert_id":"a4","sig":"suspected-intrusion","action":"blocked","src":"127.1.0.1"}`,
+			map[string][]string{}},
+		{"an alert without its source", `{"msg":"intrusion detected","alert_id":"a5","sig":"crs-5006102","action":"detected"}`, map[string][]string{}},
+		{"a line still being written", detected[:40], map[string][]string{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := alertsIn([]byte(tc.log)); !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("%q, want %q", got, tc.want)
 			}
 		})

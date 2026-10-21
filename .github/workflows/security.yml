@@ -175,9 +175,11 @@ jobs:
           go build -tags coraza.rule.multiphase_evaluation -o ../build/carnical-ci-multiphase ./cmd/carnical
           reports=../build/security-reports
           baselines=../.github/security
-          # Each run is held to its baseline, so an attack refused today fails CI the day it reaches the origin.
+          # Each run is held to its baseline, so an attack refused today fails CI the day it reaches the origin, and every
+          # attack that reaches it must raise an alert.
           live() {
-            go run ./tools/loadtest -corpus tools/loadtest/testdata -count 10000 -variants -hardening -ddos off "$@"
+            go run ./tools/loadtest -corpus tools/loadtest/testdata -count 10000 -variants -hardening -ddos off \
+              -alert-probe "$@"
           }
           live -binary ../build/carnical-ci -output "$reports/live-waf.json"
           live -binary ../build/carnical-ci -strict -output "$reports/live-waf-strict.json"

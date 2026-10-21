@@ -42,7 +42,7 @@ def report(results):
     return {"Count": sum(row["Requests"] for row in results),
             "TransportErrors": sum(row["Errors"] for row in results),
             "Unavailable": sum(row["Unavailable"] for row in categories.values()),
-            "CategoryResults": list(categories.values()), "Results": results}
+            "CategoryResults": list(categories.values()), "Results": results, "AlertProbe": True}
 
 
 def ordinary_report():
@@ -50,7 +50,7 @@ def ordinary_report():
     rows = [case(name + "/attack", True, per_case + (i < extra), 403)
             for i, name in enumerate(sorted(SUPPORTED))]
     # Context-dependent attacks and other benign refusals remain diagnostic, not gate failures.
-    rows.extend([case("csrf/context", True, 1, 200), case("search/ordinary", False, 2498, 200),
+    rows.extend([dict(case("csrf/context", True, 1, 200), Alerts=["crs-1 detected"]), case("search/ordinary", False, 2498, 200),
                  case("json/ordinary", False, 2500, 200), case("sqli/ordinary", False, 1, 200),
                  case("malformed/ordinary", False, 1, 403)])
     assert sum(row["Requests"] for row in rows if row["Attack"]) == 5000
@@ -127,10 +127,14 @@ class LiveReportTests(unittest.TestCase):
         monitored = copy.deepcopy(original)
         monitored["WAFArgs"] = ["-formats-mode", "monitor"]
         sqli = next(row for row in monitored["Results"] if row["Name"] == "sqli/attack")
-        sqli["Statuses"], sqli["OriginReached"] = {"200": sqli["Requests"]}, sqli["Requests"]
+        sqli["Statuses"], sqli["OriginReached"], sqli["Alerts"] = {"200": sqli["Requests"]}, sqli["Requests"], ["crs-1 detected"]
         monitored = dict(report(monitored["Results"]), WAFArgs=monitored["WAFArgs"])
+        silent = copy.deepcopy(original)
+        del next(row for row in silent["Results"] if row["Name"] == "csrf/context")["Alerts"]
         cases = [
             ("the baseline holds", original, exact, None),
+            ("an attack it lists reaches the origin without an alert", silent, exact, "without an alert: csrf/context"),
+            ("the run did not record alerts", dict(original, AlertProbe=False), exact, "did not record the alerts"),
             ("an attack outside it reaches the origin", original, "[refused controls]\nmalformed/ordinary\n", "attack now reaches the origin: csrf/context"),
             ("a control outside it is refused", original, "[admitted attacks]\ncsrf/context\n", "benign control now refused: malformed/ordinary"),
             ("an attack it lists is refused", original, exact.replace("csrf/context", "csrf/context\nxss/attack"), "attack is now refused"),

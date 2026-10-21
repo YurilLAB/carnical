@@ -3,7 +3,8 @@
 # The attack templates listed under [admitted attacks] reach the origin and the benign controls listed under
 # [refused controls] are refused. Every other attack must be refused and every other control forwarded, and every
 # entry must still hold: check_live_report.py fails on a change in either direction, so what is blocked now stays
-# blocked. After a deliberate change, regenerate this file from the Security review run's report:
+# blocked. Each listed attack must also raise an alert (loadtest -alert-probe). After a deliberate change, regenerate
+# this file from the Security review run's report:
 #   python3 .github/security/check_live_report.py REPORT .github/security/live-waf-baseline-strict.txt --write
 
 [admitted attacks]

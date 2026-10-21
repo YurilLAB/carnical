@@ -17,6 +17,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -59,6 +60,8 @@ type result struct {
 	Method, URI, WireURI, Description string
 	Parent, Variation, RequestSHA256  string
 	LatencyUS                         []int64 "json:\"-\""
+	// Alerts are the alerts the WAF wrote for an attack that reached the origin, as "SIG ACTION", with -alert-probe.
+	Alerts []string `json:",omitempty"`
 }
 type report struct {
 	Suite, SuiteSHA256                                                                       string
@@ -77,6 +80,7 @@ type report struct {
 	Results                                                                                  []result
 	LogRules                                                                                 map[int]int
 	LogLines                                                                                 int
+	AlertProbe                                                                               bool
 }
 
 type admittedAttack struct {
@@ -117,8 +121,8 @@ func needsRaw(req *http.Request) bool {
 	return false
 }
 
-func rawDo(req *http.Request) (*http.Response, error) {
-	conn, err := net.DialTimeout("tcp", req.URL.Host, 10*time.Second) // #nosec G704 -- run owns a 127.0.0.1 listener; prepare requires path-only corpus targets and keeps URL authority separate from Host.
+func rawDo(req *http.Request, dialer *net.Dialer) (*http.Response, error) {
+	conn, err := dialer.Dial("tcp", req.URL.Host) // #nosec G704 -- run owns a 127.0.0.1 listener; prepare requires path-only corpus targets and keeps URL authority separate from Host.
 	if err != nil {
 		return nil, err
 	}
@@ -302,6 +306,83 @@ func probes() []testCase {
 	return append(out, p)
 }
 
+// noRedirects keeps a client on the response the WAF gave.
+func noRedirects(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+
+// probeAlerts sends each attack that reached the origin once more, from a loopback address of its own, and records the
+// alerts the WAF wrote for it. The WAF writes the first alert of a source and signature at once and only counts its
+// repeats, so from one address one template's alert would hide the next one's. Linux routes all of 127.0.0.0/8 to the
+// loopback interface.
+func probeAlerts(templates []*http.Request, results []result, logPath string) error {
+	sources := map[string]int{} // the result each source address probed
+	for i := range results {
+		if !results[i].Attack || results[i].OriginReached == 0 {
+			continue
+		}
+		n := len(sources) + 1
+		if n > 0xffff {
+			return fmt.Errorf("more than %d attacks to probe", 0xffff)
+		}
+		src := netip.AddrFrom4([4]byte{127, 1, byte(n >> 8), byte(n)})
+		dialer := &net.Dialer{Timeout: 10 * time.Second, LocalAddr: net.TCPAddrFromAddrPort(netip.AddrPortFrom(src, 0))}
+		req := templates[i].Clone(context.Background())
+		if templates[i].GetBody != nil {
+			req.Body, _ = templates[i].GetBody()
+		}
+		var res *http.Response
+		var err error
+		if needsRaw(req) {
+			res, err = rawDo(req, dialer)
+		} else {
+			client := &http.Client{Transport: &http.Transport{DialContext: dialer.DialContext, DisableKeepAlives: true}, Timeout: 10 * time.Second, CheckRedirect: noRedirects}
+			res, err = client.Do(req)
+		}
+		if err == nil {
+			_, err = io.Copy(io.Discard, res.Body)
+			err = errors.Join(err, res.Body.Close())
+		}
+		if err != nil {
+			return fmt.Errorf("probe the alerts of %s from %s: %w", results[i].Name, src, err)
+		}
+		sources[src.String()] = i
+	}
+	// The lines are written as the requests end; give them a moment to reach the log.
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(100 * time.Millisecond) {
+		data, err := os.ReadFile(logPath) // #nosec G304 -- The log this tool itself created beside the operator-selected -output.
+		if err != nil {
+			return fmt.Errorf("read WAF log: %w", err)
+		}
+		found, alerted := alertsIn(data), 0
+		for src, i := range sources {
+			if results[i].Alerts = found[src]; len(found[src]) > 0 {
+				alerted++
+			}
+		}
+		if alerted == len(sources) || time.Now().After(deadline) {
+			return nil
+		}
+	}
+}
+
+// alertsIn reads the alert lines of a WAF log, "SIG ACTION" for each, by the source address they name.
+func alertsIn(log []byte) map[string][]string {
+	out := map[string][]string{}
+	for _, line := range bytes.Split(log, []byte("\n")) {
+		var a struct {
+			Msg, Src, Sig, Action string
+			ID                    string `json:"alert_id"`
+		}
+		if json.Unmarshal(line, &a) != nil || a.ID == "" || a.Src == "" || a.Msg != "intrusion detected" && a.Msg != "intrusion blocked" {
+			continue
+		}
+		out[a.Src] = append(out[a.Src], a.Sig+" "+a.Action)
+	}
+	for _, alerts := range out {
+		sort.Strings(alerts)
+	}
+	return out
+}
+
 // listeningAddress is the address the WAF says in its log that it listens on, or "" while it has not said so.
 func listeningAddress(logPath string) string {
 	data, err := os.ReadFile(logPath) // #nosec G304 -- The log this tool itself created beside the operator-selected -output.
@@ -337,6 +418,7 @@ func run() error {
 	localRules := flag.Bool("local-rules", true, "enable the child WAF's supplemental rules")
 	hardening := flag.Bool("hardening", false, "add held-out bypass syntax and benign controls; requires -variants")
 	formatsMode := flag.String("formats-mode", "block", "child WAF format checks: block or monitor (the default of a site that does not set it)")
+	alertProbe := flag.Bool("alert-probe", false, "send each attack that reached the origin once more from a loopback address of its own (Linux) and record the alerts the WAF wrote for it")
 	strict := flag.Bool("strict", false, "run the child WAF as a site with singular parameters can: repeated parameters refused and the stricter local rules on")
 	flag.Parse()
 	if *ddos != "on" && *ddos != "monitor" && *ddos != "off" {
@@ -415,6 +497,9 @@ func run() error {
 	// and whatever took it would be what the requests reach.
 	args := []string{"-listen", "127.0.0.1:0", "-upstream", origin.URL, "-origin-allow", "127.0.0.1/32", "-mode", "block", "-formats-mode", *formatsMode, "-inspect-responses", "-formats-stats-interval", "5s"}
 	args = append(args, "-ddos", *ddos, fmt.Sprintf("-local-rules=%t", *localRules))
+	if *alertProbe {
+		args = append(args, "-alert-rate", "10000") // every probe's alert is written, none only counted
+	}
 	if *strict {
 		// What the defaults leave to the site: a name given twice, the address of a script in a form or JSON field, and a
 		// forwarded host other than the one asked for.
@@ -436,7 +521,8 @@ func run() error {
 	defer func() { _ = cmd.Process.Kill(); <-waited }()
 	transport := &http.Transport{MaxIdleConns: *concurrency * 2, MaxIdleConnsPerHost: *concurrency, MaxConnsPerHost: *concurrency}
 	defer transport.CloseIdleConnections()
-	client := &http.Client{Transport: transport, Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	client := &http.Client{Transport: transport, Timeout: 10 * time.Second, CheckRedirect: noRedirects}
+	dialer := &net.Dialer{Timeout: 10 * time.Second}
 	addr, target := "", ""
 	ready := false
 	for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); {
@@ -529,7 +615,7 @@ func run() error {
 				var res *http.Response
 				var e error
 				if needsRaw(req) {
-					res, e = rawDo(req)
+					res, e = rawDo(req, dialer)
 				} else {
 					res, e = client.Do(req)
 				}
@@ -625,6 +711,12 @@ func run() error {
 				}
 			}
 		}
+	}
+	if *alertProbe {
+		if err = probeAlerts(templates, rep.Results, logPath); err != nil {
+			return err
+		}
+		rep.AlertProbe = true
 	}
 	sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
 	percentile := func(p float64) float64 {
