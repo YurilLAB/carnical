@@ -145,6 +145,9 @@ func (e *Edge) note(m Match, rec *record) {
 	risk, cats := rating(m)
 	x := found{id: m.RuleID, risk: risk, cats: cats, sev: m.Severity, layer: layerOf(m.RuleID), action: alert.Detected, mode: alert.ModeMonitor}
 	switch {
+	case m.engine && e.cfg.CRS.OnlyDetects(m.RuleID):
+		// A stricter local rule that is not switched on scores nothing, so it is an alert of its own, never the verdict's.
+		x.layer, x.mode = alert.LayerCRS, alert.ModeDetect
 	case m.engine:
 		x.layer, x.mode, x.crs = alert.LayerCRS, crsMode(e.cfg.CRS.Mode), true
 	case m.Disruptive:
@@ -176,7 +179,7 @@ func (e *Edge) note(m Match, rec *record) {
 		rec.found = findingsPool.Get().(*findings)
 	}
 	f := rec.found
-	if !m.engine {
+	if !x.crs {
 		f.add(x)
 		return
 	}

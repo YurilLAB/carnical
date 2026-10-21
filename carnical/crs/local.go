@@ -2,7 +2,7 @@
 
 package crs
 
-// stricterLocalRules are in the rule file like the others and removed again unless Settings.LocalRulesOn names them.
+// stricterLocalRules are in the rule file like the others and score nothing unless Settings.LocalRulesOn names them.
 var stricterLocalRules = [...]int{5006101, 5006102, 5006103}
 
 func isStricterLocalRule(id int) bool {

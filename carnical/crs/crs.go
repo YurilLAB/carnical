@@ -136,8 +136,9 @@ type Settings struct {
 	// LocalRulesOff switches single local rules off by id, for a site whose ordinary traffic one of them refuses (an
 	// admin reaching its own diagnostic page, say). At most 32 ids, each a local rule's.
 	LocalRulesOff []int
-	// LocalRulesOn switches on single stricter local rules (5006101 to 5006103), which are off unless named here because
-	// ordinary requests on some sites look the same as what they refuse.
+	// LocalRulesOn switches on single stricter local rules (5006101 to 5006103). Ordinary requests on some sites look the
+	// same as what they refuse, so one not named here only detects: it reports what it finds, which the proxy alerts on,
+	// and adds nothing to the anomaly score. LocalRulesOff takes one out altogether.
 	LocalRulesOn []int
 	// SiteHosts are the names of this site (the proxy fills them from its AllowedHosts). The local rules that refuse an
 	// address on another host let through one on these names and their subdomains. The request's own Host header says
@@ -149,6 +150,13 @@ type Settings struct {
 // DefaultSettings blocks at paranoia level 1 with the standard thresholds.
 func DefaultSettings() Settings {
 	return Settings{Mode: ModeBlock, ParanoiaLevel: 1, InboundThreshold: 5, OutboundThreshold: 4, RequestBodyLimit: 1 << 20}
+}
+
+// OnlyDetects reports whether id is a stricter local rule that runs without being switched on: it reports what it finds
+// and refuses nothing.
+func (s Settings) OnlyDetects(id int) bool {
+	return !s.DisableLocalRules && isStricterLocalRule(id) && !slices.Contains(s.LocalRulesOn, id) &&
+		!slices.Contains(s.LocalRulesOff, id)
 }
 
 // ResponseBodyLimit is the response body limit base/coraza.conf gives the rules (SecResponseBodyLimit): with
@@ -344,16 +352,20 @@ func (s Settings) Directives() (string, error) {
 				for _, d := range s.siteDirectives() {
 					line("%s", d)
 				}
+				// What each stricter rule adds to the score: nothing until it is switched on.
+				points := make([]string, 0, len(stricterLocalRules))
+				for _, id := range stricterLocalRules {
+					n := 0
+					if slices.Contains(s.LocalRulesOn, id) {
+						n = 5
+					}
+					points = append(points, fmt.Sprintf("setvar:tx.carnical_points_%d=%d", id, n))
+				}
+				line(`SecAction "id:5006099,phase:1,pass,t:none,nolog,%s"`, strings.Join(points, ","))
 				line("Include local/*.conf")
-				// What is switched off, and the stricter rules that were not switched on.
 				var ids []string
 				for _, id := range s.LocalRulesOff {
 					ids = append(ids, strconv.Itoa(id))
-				}
-				for _, id := range stricterLocalRules {
-					if !slices.Contains(s.LocalRulesOn, id) && !slices.Contains(s.LocalRulesOff, id) {
-						ids = append(ids, strconv.Itoa(id))
-					}
 				}
 				if len(ids) > 0 {
 					line("SecRuleRemoveById %s", strings.Join(ids, " "))

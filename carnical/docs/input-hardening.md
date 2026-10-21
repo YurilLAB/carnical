@@ -12,8 +12,8 @@ inspect ARGS, XML text/attributes and cookies (5006011 to 5006014 and 5006018 to
 anomaly points per finding before the CRS blocking evaluation. They load after CRS score initialization and before its attack
 rules, preserving scores in multiphase builds. They share `-mode` and thresholds;
 `-local-rules=false` omits them, and `-local-rules-off 5006012,5006013` omits single rules by id (at most 32;
-an id that is not a local rule is refused at start). `-local-rules-on 5006101,5006102,5006103` switches on the [stricter
-rules](#stricter-rules), which are off unless named. The library settings are `crs.Settings.DisableLocalRules`,
+an id that is not a local rule is refused at start). `-local-rules-on 5006101,5006102,5006103` makes the [stricter
+rules](#stricter-rules) refuse what they find; until one is named it only raises an alert. The library settings are `crs.Settings.DisableLocalRules`,
 `crs.Settings.LocalRulesOff` and `crs.Settings.LocalRulesOn`; a policy file cannot change them. URL, HTML and JavaScript
 decoding is for detection only; values are not rewritten.
 
@@ -48,9 +48,12 @@ no names given, no address counts as this site's, and a link to the site itself 
 
 ### Stricter rules
 
-Three rules refuse what some sites receive in ordinary use, so each is off until `-local-rules-on` names it:
+Three rules find what some sites receive in ordinary use, so each only detects until `-local-rules-on` names it: what
+it finds is an alert (`intrusion detected`, action `detected`, mode `detect`), it adds nothing to the anomaly score, and
+the request goes on. Named, it adds five points like the other local rules and the request is refused.
+`-local-rules-off` takes one out altogether, alert and all, for a site where it would alert on ordinary traffic.
 
-| Rule | Refuses | Why it is not on for everyone |
+| Rule | Finds | Why it does not refuse for everyone |
 | --- | --- | --- |
 | 5006101 | The path `/console`, and nothing under it: where the Werkzeug debugger and WebLogic's console start | A shop may have a page of games consoles there |
 | 5006102 | Rule 5006021 for the fields of a form or a JSON body | A form may ask for a visitor's web address under a field name that does not say so (`input_3`), and that address may be a `.php` page |

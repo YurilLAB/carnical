@@ -211,6 +211,18 @@ type reports struct {
 func (r *reports) add(id int, _ string) { r.mu.Lock(); r.ids = append(r.ids, id); r.mu.Unlock() }
 func (r *reports) count() int           { r.mu.Lock(); defer r.mu.Unlock(); return len(r.ids) }
 
+// stricter is the first stricter local rule reported, or 0.
+func (r *reports) stricter() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, id := range r.ids {
+		if id >= 5006101 && id <= 5006103 {
+			return id
+		}
+	}
+	return 0
+}
+
 func TestEveryParanoiaLevelLoadsTheWholeRuleSet(t *testing.T) {
 	previous := 0
 	for level := 1; level <= 4; level++ {
@@ -894,42 +906,46 @@ func TestThisSiteIsOnlyWhatTheOperatorNamed(t *testing.T) {
 }
 
 // The stricter rules refuse what some sites receive in ordinary use (a page called /console, a visitor's own web address
-// in a form), so each is off until it is named.
-func TestStricterLocalRulesAreOffUntilSwitchedOn(t *testing.T) {
-	both, console := siteSettings(), siteSettings()
+// in a form), so each only reports what it finds until it is named, and nothing once it is switched off.
+func TestStricterLocalRulesOnlyDetectUntilSwitchedOn(t *testing.T) {
+	both, console, off := siteSettings(), siteSettings(), siteSettings()
 	both.LocalRulesOn = []int{5006101, 5006102}
 	console.LocalRulesOn = []int{5006101}
+	off.LocalRulesOff = []int{5006101, 5006102}
 	script := func(field, value string) string { return field + "=" + url.QueryEscape(value) }
 	for name, tc := range map[string]struct {
 		settings                 crs.Settings
 		method, target, ct, body string
-		want                     int
+		want, reported           int // the status, and the stricter rule that reports the request (0: none)
 	}{
-		"on: the request names the remote host": {both, "POST", "/contact?host=evil.example", form, script("input_3", "http://evil.example/a.php"), 403},
-		"off: a console page":                   {siteSettings(), "GET", "/console", "", "", 200},
-		"off: a script in a form":               {siteSettings(), "POST", "/contact", form, script("input_3", "http://evil.example/a.php"), 200},
-		"off: a script in JSON":                 {siteSettings(), "POST", "/api", "application/json", `{"input":"http://evil.example/loadtest.php"}`, 200},
-		"on: a console page":                    {both, "GET", "/console", "", "", 403},
-		"on: a console page with a slash":       {both, "GET", "/console/", "", "", 403},
-		"on: a console page in capitals":        {both, "GET", "/Console", "", "", 403},
-		"on: a script in a form":                {both, "POST", "/contact", form, script("input_3", "http://evil.example/a.php"), 403},
-		"on: a script in JSON":                  {both, "POST", "/api", "application/json", `{"input":"http://evil.example/loadtest.php"}`, 403},
-		"on: a script in nested JSON":           {both, "POST", "/api", "application/json", `{"a":{"b":["https://evil.example/x.php?y=1"]}}`, 403},
-		"on: a script with a port":              {both, "POST", "/contact", form, script("input", "http://evil.example:8080/loadtest.php"), 403},
-		"on: a script on a look-alike host":     {both, "POST", "/contact", form, script("input", "http://evilshop.example.test/a.php"), 403},
-		"on: a script before one on this site":  {both, "POST", "/contact", form, script("a", "http://evil.example/a.php") + "&" + script("b", "https://shop.example.test/b.php"), 403},
-		"on: a console in a shop":               {both, "GET", "/shop/console", "", "", 200},
-		"on: a console page further down":       {both, "GET", "/console/ps5", "", "", 200},
-		"on: a script in a link field":          {both, "POST", "/profile", form, script("website", "http://myblog.example.org/index.php"), 200},
-		"on: a script in a JSON link field":     {both, "POST", "/api", "application/json", `{"profile":{"homepage_url":"http://myblog.example.org/index.php"}}`, 200},
-		"on: a script on this site":             {both, "POST", "/contact", form, script("input_3", "https://shop.example.test/a.php"), 200},
-		"on: a script inside a message":         {both, "POST", "/contact", form, script("message", "my site is http://myblog.example.org/index.php thanks"), 200},
-		"on: a page on another site":            {both, "POST", "/contact", form, script("input_3", "http://myblog.example.org/about.html"), 200},
-		"one on: a console page":                {console, "GET", "/console", "", "", 403},
-		"one on: a script in a form":            {console, "POST", "/contact", form, script("input_3", "http://evil.example/a.php"), 200},
+		"on: the request names the remote host":  {both, "POST", "/contact?host=evil.example", form, script("input_3", "http://evil.example/a.php"), 403, 5006102},
+		"detect: a console page":                 {siteSettings(), "GET", "/console", "", "", 200, 5006101},
+		"detect: a script in a form":             {siteSettings(), "POST", "/contact", form, script("input_3", "http://evil.example/a.php"), 200, 5006102},
+		"detect: a script in JSON":               {siteSettings(), "POST", "/api", "application/json", `{"input":"http://evil.example/loadtest.php"}`, 200, 5006102},
+		"detect: a script on this site":          {siteSettings(), "POST", "/contact", form, script("input_3", "https://shop.example.test/a.php"), 200, 0},
+		"switched off: a console page":           {off, "GET", "/console", "", "", 200, 0},
+		"switched off: a script in a form":       {off, "POST", "/contact", form, script("input_3", "http://evil.example/a.php"), 200, 0},
+		"on: a console page":                     {both, "GET", "/console", "", "", 403, 5006101},
+		"on: a console page with a slash":        {both, "GET", "/console/", "", "", 403, 5006101},
+		"on: a console page in capitals":         {both, "GET", "/Console", "", "", 403, 5006101},
+		"on: a script in a form":                 {both, "POST", "/contact", form, script("input_3", "http://evil.example/a.php"), 403, 5006102},
+		"on: a script in JSON":                   {both, "POST", "/api", "application/json", `{"input":"http://evil.example/loadtest.php"}`, 403, 5006102},
+		"on: a script in nested JSON":            {both, "POST", "/api", "application/json", `{"a":{"b":["https://evil.example/x.php?y=1"]}}`, 403, 5006102},
+		"on: a script with a port":               {both, "POST", "/contact", form, script("input", "http://evil.example:8080/loadtest.php"), 403, 5006102},
+		"on: a script on a look-alike host":      {both, "POST", "/contact", form, script("input", "http://evilshop.example.test/a.php"), 403, 5006102},
+		"on: a script before one on this site":   {both, "POST", "/contact", form, script("a", "http://evil.example/a.php") + "&" + script("b", "https://shop.example.test/b.php"), 403, 5006102},
+		"on: a console in a shop":                {both, "GET", "/shop/console", "", "", 200, 0},
+		"on: a console page further down":        {both, "GET", "/console/ps5", "", "", 200, 0},
+		"on: a script in a link field":           {both, "POST", "/profile", form, script("website", "http://myblog.example.org/index.php"), 200, 0},
+		"on: a script in a JSON link field":      {both, "POST", "/api", "application/json", `{"profile":{"homepage_url":"http://myblog.example.org/index.php"}}`, 200, 0},
+		"on: a script on this site":              {both, "POST", "/contact", form, script("input_3", "https://shop.example.test/a.php"), 200, 0},
+		"on: a script inside a message":          {both, "POST", "/contact", form, script("message", "my site is http://myblog.example.org/index.php thanks"), 200, 0},
+		"on: a page on another site":             {both, "POST", "/contact", form, script("input_3", "http://myblog.example.org/about.html"), 200, 0},
+		"one on: a console page":                 {console, "GET", "/console", "", "", 403, 5006101},
+		"one on: a script in a form is detected": {console, "POST", "/contact", form, script("input_3", "http://evil.example/a.php"), 200, 5006102},
 	} {
 		t.Run(name, func(t *testing.T) {
-			srv, _ := serve(t, tc.settings)
+			srv, reports := serve(t, tc.settings)
 			var headers map[string]string
 			if _, host, ok := strings.Cut(tc.target, "?host="); ok {
 				headers = map[string]string{"Host": host}
@@ -937,46 +953,53 @@ func TestStricterLocalRulesAreOffUntilSwitchedOn(t *testing.T) {
 			if got := do(t, srv, tc.method, tc.target, tc.ct, tc.body, headers); got != tc.want {
 				t.Errorf("status %d, want %d", got, tc.want)
 			}
+			if got := reports.stricter(); got != tc.reported {
+				t.Errorf("reported by stricter rule %d, want %d", got, tc.reported)
+			}
 		})
 	}
 	// 5006103: a forwarded host that is not the host the request was made to. A load balancer in front may send the
 	// public name there while it asks for the origin's, which is why the rule is not on for everyone.
 	forwarded, unnamed := siteSettings(), crs.DefaultSettings()
 	forwarded.LocalRulesOn, unnamed.LocalRulesOn = []int{5006103}, []int{5006103}
+	fwdOff := siteSettings()
+	fwdOff.LocalRulesOff = []int{5006103}
 	for name, tc := range map[string]struct {
 		settings            crs.Settings
 		host, header, value string
 		want                int
+		detected            bool // reported, though not refused
 	}{
-		"off: another host forwarded":               {siteSettings(), "", "X-Forwarded-Host", "evil.example", 200},
-		"other rules on: another host forwarded":    {console, "", "X-Forwarded-Host", "evil.example", 200},
-		"on: another host forwarded":                {forwarded, "", "X-Forwarded-Host", "evil.example", 403},
-		"on: another host as X-Host":                {forwarded, "", "X-Host", "evil.example", 403},
-		"on: another host as X-Original-Host":       {forwarded, "", "X-Original-Host", "evil.example", 403},
-		"on: a host that ends like this one":        {forwarded, "", "X-Forwarded-Host", "evilshop.example.test", 403},
-		"on: a host that starts like this one":      {forwarded, "", "X-Forwarded-Host", "shop.example.test.evil.example", 403},
-		"on: a subdomain of this host":              {forwarded, "", "X-Forwarded-Host", "cdn.shop.example.test", 403},
-		"on: this host and another":                 {forwarded, "", "X-Forwarded-Host", "shop.example.test, evil.example", 403},
-		"on: another host and this one":             {forwarded, "", "X-Forwarded-Host", "evil.example, shop.example.test", 403},
-		"on: another host with a port":              {forwarded, "", "X-Forwarded-Host", "evil.example:443", 403},
-		"on: another host, then this one again":     {forwarded, "", "X-Forwarded-Host", "evil.example\nshop.example.test", 403},
-		"on: this host twice":                       {forwarded, "", "X-Forwarded-Host", "shop.example.test\nshop.example.test:443", 200},
-		"on: this host":                             {forwarded, "", "X-Forwarded-Host", "shop.example.test", 200},
-		"on: this host in capitals, dot and port":   {forwarded, "", "X-Forwarded-Host", " Shop.Example.Test.:443\t", 200},
-		"on: another host with spaces around it":    {forwarded, "", "X-Host", "\tevil.example ", 403},
-		"on: this host, asked for with a port":      {forwarded, "shop.example.test:8443", "X-Forwarded-Host", "shop.example.test", 200},
-		"on: this host, asked for in capitals":      {forwarded, "SHOP.example.test.", "X-Host", "shop.example.test:8443", 200},
-		"on: the proxy's own name is not a host":    {forwarded, "", "X-Forwarded-Server", "lb7.internal.example", 200},
-		"on: no forwarded host":                     {forwarded, "", "Accept-Language", "en", 200},
-		"on: an empty forwarded host":               {forwarded, "", "X-Forwarded-Host", "", 200},
-		"on: a forwarded host of spaces":            {forwarded, "", "X-Original-Host", " \t ", 200},
-		"on: a forwarded host of a dot":             {forwarded, "", "X-Host", ".", 403},
-		"on, no names given: another host":          {unnamed, "", "X-Forwarded-Host", "evil.example", 403},
-		"on, no names given: this host":             {unnamed, "", "X-Forwarded-Host", "shop.example.test", 200},
-		"on, no names given: the host as asked for": {unnamed, "other.example.test", "X-Forwarded-Host", "other.example.test", 200},
+		"detect: another host forwarded":            {siteSettings(), "", "X-Forwarded-Host", "evil.example", 200, true},
+		"other rules on: another host detected":     {console, "", "X-Forwarded-Host", "evil.example", 200, true},
+		"switched off: another host forwarded":      {fwdOff, "", "X-Forwarded-Host", "evil.example", 200, false},
+		"on: another host forwarded":                {forwarded, "", "X-Forwarded-Host", "evil.example", 403, false},
+		"on: another host as X-Host":                {forwarded, "", "X-Host", "evil.example", 403, false},
+		"on: another host as X-Original-Host":       {forwarded, "", "X-Original-Host", "evil.example", 403, false},
+		"on: a host that ends like this one":        {forwarded, "", "X-Forwarded-Host", "evilshop.example.test", 403, false},
+		"on: a host that starts like this one":      {forwarded, "", "X-Forwarded-Host", "shop.example.test.evil.example", 403, false},
+		"on: a subdomain of this host":              {forwarded, "", "X-Forwarded-Host", "cdn.shop.example.test", 403, false},
+		"on: this host and another":                 {forwarded, "", "X-Forwarded-Host", "shop.example.test, evil.example", 403, false},
+		"on: another host and this one":             {forwarded, "", "X-Forwarded-Host", "evil.example, shop.example.test", 403, false},
+		"on: another host with a port":              {forwarded, "", "X-Forwarded-Host", "evil.example:443", 403, false},
+		"on: another host, then this one again":     {forwarded, "", "X-Forwarded-Host", "evil.example\nshop.example.test", 403, false},
+		"on: this host twice":                       {forwarded, "", "X-Forwarded-Host", "shop.example.test\nshop.example.test:443", 200, false},
+		"on: this host":                             {forwarded, "", "X-Forwarded-Host", "shop.example.test", 200, false},
+		"on: this host in capitals, dot and port":   {forwarded, "", "X-Forwarded-Host", " Shop.Example.Test.:443\t", 200, false},
+		"on: another host with spaces around it":    {forwarded, "", "X-Host", "\tevil.example ", 403, false},
+		"on: this host, asked for with a port":      {forwarded, "shop.example.test:8443", "X-Forwarded-Host", "shop.example.test", 200, false},
+		"on: this host, asked for in capitals":      {forwarded, "SHOP.example.test.", "X-Host", "shop.example.test:8443", 200, false},
+		"on: the proxy's own name is not a host":    {forwarded, "", "X-Forwarded-Server", "lb7.internal.example", 200, false},
+		"on: no forwarded host":                     {forwarded, "", "Accept-Language", "en", 200, false},
+		"on: an empty forwarded host":               {forwarded, "", "X-Forwarded-Host", "", 200, false},
+		"on: a forwarded host of spaces":            {forwarded, "", "X-Original-Host", " \t ", 200, false},
+		"on: a forwarded host of a dot":             {forwarded, "", "X-Host", ".", 403, false},
+		"on, no names given: another host":          {unnamed, "", "X-Forwarded-Host", "evil.example", 403, false},
+		"on, no names given: this host":             {unnamed, "", "X-Forwarded-Host", "shop.example.test", 200, false},
+		"on, no names given: the host as asked for": {unnamed, "other.example.test", "X-Forwarded-Host", "other.example.test", 200, false},
 	} {
 		t.Run(name, func(t *testing.T) {
-			srv, _ := serve(t, tc.settings)
+			srv, reports := serve(t, tc.settings)
 			headers := map[string]string{tc.header: tc.value}
 			if tc.host != "" {
 				headers["Host"] = tc.host
@@ -997,6 +1020,13 @@ func TestStricterLocalRulesAreOffUntilSwitchedOn(t *testing.T) {
 			}
 			if got != tc.want {
 				t.Errorf("status %d, want %d", got, tc.want)
+			}
+			want := 0
+			if tc.want == 403 || tc.detected {
+				want = 5006103
+			}
+			if got := reports.stricter(); got != want {
+				t.Errorf("reported by stricter rule %d, want %d", got, want)
 			}
 		})
 	}

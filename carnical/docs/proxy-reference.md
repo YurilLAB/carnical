@@ -307,7 +307,9 @@ response that sets a PHP session cookie to what is not a session id is withheld 
 Besides the `rule matched` lines, each request's final verdict is written as at most one alert per
 signature, as UniFi's IDS reports it: `intrusion blocked` (refused, rate limited or refused because
 its source is banned), `intrusion detected` (found in detection or monitor mode, or would have been
-refused) or `inspection incomplete` (forwarded without a finished inspection). Each alert carries
+refused) or `inspection incomplete` (forwarded without a finished inspection). A [stricter local
+rule](input-hardening.md#stricter-rules) that is not switched on is an `intrusion detected` alert of its own, with mode
+`detect`, even when another rule refuses the request. Each alert carries
 `alert_id` (the request's `tx`), `layer`, a stable `sig` such as `crs-942100`, `sig_name`, `category`,
 `risk`, `action`, `mode`, the status sent, the CRS score, `client` (the kind of client: `person`,
 `ai`, `tool`, ...; see [bots](bots.md)), the source, the method, the host and the path as a

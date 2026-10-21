@@ -825,6 +825,24 @@ func TestMatchesAreReportedWithoutWhatTheVisitorSentUnlessAsked(t *testing.T) {
 				t.Errorf("finding %+v", a)
 			}
 		}},
+		{"a stricter local rule not switched on is detected", nil, get("/console"), 200, []string{"crs-5006101 detected 0"},
+			func(t *testing.T, a alert.Alert) {
+				if a.Layer != alert.LayerCRS || a.Mode != alert.ModeDetect || a.Risk != alert.RiskLow || !a.Categories.Has(alert.CatScanner) {
+					t.Errorf("finding %+v", a)
+				}
+			}},
+		{"switched on, it blocks", func(c *Config) { c.CRS.LocalRulesOn = []int{5006101} }, get("/console"), 403, []string{"crs-949110 blocked 403"},
+			func(t *testing.T, a alert.Alert) {
+				if !slices.Contains(a.Rules, 5006101) {
+					t.Errorf("verdict %+v", a)
+				}
+			}},
+		{"not switched on, it is no part of another attack's verdict", nil, strings.Replace(sqli, "/search?", "/console?", 1), 403,
+			[]string{"crs-5006101 detected 0", "crs-949110 blocked 403"}, func(t *testing.T, a alert.Alert) {
+				if a.RuleID == 949110 && slices.Contains(a.Rules, 5006101) {
+					t.Errorf("verdict %+v", a)
+				}
+			}},
 		{"a monitor finding of an inspector is detected", func(c *Config) { c.Inspectors = []inspect.Inspector{inspector(5002103, 0)} },
 			get("/page"), 200, []string{"formats-5002103 detected 0"}, func(t *testing.T, a alert.Alert) {
 				if a.Layer != alert.LayerFormats || a.Mode != alert.ModeMonitor || a.Risk != alert.RiskMedium {
