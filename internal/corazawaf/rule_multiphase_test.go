@@ -17,15 +17,15 @@ func TestARGSSplit(t *testing.T) {
 	if err := rule.AddVariable(variables.Args, key, false); err != nil {
 		t.Error(err)
 	}
-	if len(rule.variables) != 2 {
-		t.Fatalf("Expected 2 variables, got %d", len(rule.variables))
+	// ARGS concatenates the GET, POST and path arguments; each is read in the phase it is ready in.
+	want := []variables.RuleVariable{variables.ArgsGet, variables.ArgsPost, variables.ArgsPath}
+	if len(rule.variables) != len(want) {
+		t.Fatalf("Expected %d variables, got %d", len(want), len(rule.variables))
 	}
-	if rule.variables[0].Variable != variables.ArgsGet &&
-		rule.variables[1].Variable != variables.ArgsPost {
-		t.Errorf("Expected variables ArgsGet and ArgsPost")
-	}
-	if rule.variables[0].KeyStr != key && rule.variables[1].KeyStr != key {
-		t.Errorf("Expected keys equal to %s, got: %s and %s", key, rule.variables[0].KeyStr, rule.variables[1].KeyStr)
+	for i, v := range want {
+		if rule.variables[i].Variable != v || rule.variables[i].KeyStr != key {
+			t.Errorf("variable %d: got %s:%s, want %s:%s", i, rule.variables[i].Variable.Name(), rule.variables[i].KeyStr, v.Name(), key)
+		}
 	}
 }
 
@@ -52,63 +52,47 @@ func TestRuleNegativeVariablesMulti(t *testing.T) {
 	if err := rule.AddVariable(variables.Args, "", false); err != nil {
 		t.Error(err)
 	}
-	// [0] ArgsGet
-	// [1] ArgsPost
-	if rule.variables[0].Variable != variables.ArgsGet && rule.variables[1].Variable != variables.ArgsPost {
-		t.Error("Variable ARGS has not been properly added and splitted into ArgsPost ArgsGet")
+	// [0] ArgsGet, [1] ArgsPost, [2] ArgsPath
+	if len(rule.variables) != 3 || rule.variables[0].Variable != variables.ArgsGet || rule.variables[1].Variable != variables.ArgsPost ||
+		rule.variables[2].Variable != variables.ArgsPath {
+		t.Fatal("Variable ARGS has not been properly added and splitted into ArgsGet, ArgsPost and ArgsPath")
 	}
-	if rule.variables[0].KeyRx != nil && rule.variables[1].KeyRx != nil {
-		t.Error("invalid key type for variables")
+	for _, v := range rule.variables {
+		if v.KeyRx != nil {
+			t.Error("invalid key type for variables")
+		}
 	}
 
 	if err := rule.AddVariableNegation(variables.Args, "test"); err != nil {
 		t.Error(err)
 	}
-
-	if len(rule.variables[0].Exceptions) != 1 || rule.variables[0].Exceptions[0].KeyStr != "test" {
-		t.Errorf("got %d exceptions, expected 1", len(rule.variables[0].Exceptions))
-	}
-
-	if len(rule.variables[1].Exceptions) != 1 || rule.variables[1].Exceptions[0].KeyStr != "test" {
-		t.Errorf("got %d exceptions, expected 1", len(rule.variables[0].Exceptions))
+	for i, v := range rule.variables {
+		if len(v.Exceptions) != 1 || v.Exceptions[0].KeyStr != "test" {
+			t.Errorf("variable %d: got %d exceptions, expected 1", i, len(v.Exceptions))
+		}
 	}
 
 	if err := rule.AddVariable(variables.Args, "/test.*/", false); err != nil {
 		t.Error(err)
 	}
-	// [0] ArgsGet name (1 exception)
-	// [1] ArgsPost name (1 exception)
-	// [2] ArgsGet regex
-	// [3] ArgsPost regex
-	if rule.variables[2].KeyRx == nil || rule.variables[2].KeyRx.String() != "test.*" {
-		t.Error("variable regex cannot be nil")
-	}
-	if rule.variables[3].KeyRx == nil || rule.variables[3].KeyRx.String() != "test.*" {
-		t.Error("variable regex cannot be nil")
+	// [3] ArgsGet regex, [4] ArgsPost regex, [5] ArgsPath regex
+	for _, v := range rule.variables[3:] {
+		if v.KeyRx == nil || v.KeyRx.String() != "test.*" {
+			t.Error("variable regex cannot be nil")
+		}
 	}
 
-	// [0] ArgsGet name (2 exceptions)
-	// [1] ArgsPost name (2 exceptions)
-	// [2] ArgsGet regex (1 exception)
-	// [3] ArgsPost regex (1 exception)
 	if err := rule.AddVariableNegation(variables.Args, "test2"); err != nil {
 		t.Error(err)
 	}
-
-	if len(rule.variables[0].Exceptions) != 2 || rule.variables[0].Exceptions[1].KeyStr != "test2" {
-		t.Errorf("got %d exceptions, expected 2", len(rule.variables[0].Exceptions))
+	// The names have both exceptions, the regexes the second only.
+	for i, v := range rule.variables {
+		want := 2
+		if i >= 3 {
+			want = 1
+		}
+		if len(v.Exceptions) != want || v.Exceptions[want-1].KeyStr != "test2" {
+			t.Errorf("variable %d: got %d exceptions, expected %d", i, len(v.Exceptions), want)
+		}
 	}
-
-	if len(rule.variables[1].Exceptions) != 2 || rule.variables[1].Exceptions[1].KeyStr != "test2" {
-		t.Errorf("got %d exceptions, expected 2", len(rule.variables[0].Exceptions))
-	}
-
-	if len(rule.variables[2].Exceptions) != 1 || rule.variables[0].Exceptions[1].KeyStr != "test2" {
-		t.Errorf("got %d exceptions, expected 2", len(rule.variables[0].Exceptions))
-	}
-
-	if len(rule.variables[3].Exceptions) != 1 || rule.variables[0].Exceptions[1].KeyStr != "test2" {
-		t.Errorf("got %d exceptions, expected 2", len(rule.variables[0].Exceptions))
-	}
-
 }

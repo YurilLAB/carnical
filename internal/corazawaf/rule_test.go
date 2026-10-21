@@ -43,6 +43,61 @@ func TestMatchEvaluate(t *testing.T) {
 	}
 }
 
+// A rule on ARGS reads the arguments of every source, and an exclusion of ARGS:key excludes them all, in every build:
+// with multiphase evaluation ARGS is split into the collections it concatenates. Not a profile: no request fills
+// ARGS_PATH, which an integrator fills with AddPathRequestArgument.
+func TestArgsReadsEverySource(t *testing.T) {
+	add := map[string]func(tx *Transaction, key, value string){
+		"get":  func(tx *Transaction, key, value string) { tx.AddGetRequestArgument(key, value) },
+		"post": func(tx *Transaction, key, value string) { tx.AddPostRequestArgument(key, value) },
+		"path": func(tx *Transaction, key, value string) { tx.AddPathRequestArgument(key, value) },
+	}
+	tests := []struct {
+		name, source, value string
+		negated, removed    bool // the rule says !ARGS:q, or ctl removes ARGS:q from it
+		match               bool
+	}{
+		{"a query argument", "get", "0", false, false, true},
+		{"a body argument", "post", "0", false, false, true},
+		{"a path argument", "path", "0", false, false, true},
+		{"a path argument that does not match", "path", "1", false, false, false},
+		{"a path argument the rule excepts", "path", "0", true, false, false},
+		{"a path argument removed from the rule", "path", "0", false, true, false},
+		{"a query argument removed from the rule", "get", "0", false, true, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := NewRule()
+			r.ID_, r.LogID_, r.Phase_ = 1, "1", types.PhaseRequestBody
+			if err := r.AddVariable(variables.Args, "", false); err != nil {
+				t.Fatal(err)
+			}
+			if tt.negated {
+				if err := r.AddVariableNegation(variables.Args, "q"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			r.SetOperator(&dummyEqOperator{}, "@eq", "0")
+			_ = r.AddAction("dummyDeny", &dummyDenyAction{})
+			waf := NewWAF()
+			if err := waf.Rules.Add(r); err != nil {
+				t.Fatal(err)
+			}
+			tx := waf.NewTransaction()
+			defer tx.Close()
+			if tt.removed {
+				tx.RemoveRuleTargetByID(1, variables.Args, "q", nil)
+			}
+			add[tt.source](tx, "q", tt.value)
+			tx.ProcessRequestHeaders()
+			_, _ = tx.ProcessRequestBody()
+			if (tx.interruption != nil) != tt.match {
+				t.Errorf("interrupted: %v, want %v", tx.interruption != nil, tt.match)
+			}
+		})
+	}
+}
+
 func TestNoMatchEvaluate(t *testing.T) {
 	r := NewRule()
 	r.ID_ = 1

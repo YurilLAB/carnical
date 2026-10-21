@@ -619,10 +619,12 @@ func (r *Rule) AddVariable(v variables.RuleVariable, key string, iscount bool) e
 	}
 
 	if multiphaseEvaluation {
-		// Splitting Args variable into ArgsGet and ArgsPost
+		// Splitting Args variable into the collections it concatenates: ArgsGet, ArgsPost and ArgsPath. ArgsNames has no
+		// variable for the names of path arguments, so its split leaves them out.
 		if v == variables.Args {
 			r.variables = append(r.variables, newRuleVariableParams(variables.ArgsGet, key, re, iscount))
 			r.variables = append(r.variables, newRuleVariableParams(variables.ArgsPost, key, re, iscount))
+			r.variables = append(r.variables, newRuleVariableParams(variables.ArgsPath, key, re, iscount))
 			return nil
 		}
 		// Splitting ArgsNames variable into ArgsGetNames and ArgsPostNames
@@ -637,10 +639,10 @@ func (r *Rule) AddVariable(v variables.RuleVariable, key string, iscount bool) e
 }
 
 // needToSplitConcatenatedVariable returns true if the variable v is Args or ArgsNames and the
-// variable ve is ArgsGet, ArgsPost, ArgsGetNames or ArgsPostNames
+// variable ve is ArgsGet, ArgsPost, ArgsPath, ArgsGetNames or ArgsPostNames
 func needToSplitConcatenatedVariable(v variables.RuleVariable, ve variables.RuleVariable) bool {
 	return (v == variables.Args || v == variables.ArgsNames) &&
-		(ve == variables.ArgsGet || ve == variables.ArgsPost ||
+		(ve == variables.ArgsGet || ve == variables.ArgsPost || ve == variables.ArgsPath ||
 			ve == variables.ArgsGetNames || ve == variables.ArgsPostNames)
 }
 
