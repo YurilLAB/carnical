@@ -314,16 +314,15 @@ func noRedirects(*http.Request, []*http.Request) error { return http.ErrUseLastR
 // repeats, so from one address one template's alert would hide the next one's. Linux routes all of 127.0.0.0/8 to the
 // loopback interface.
 func probeAlerts(templates []*http.Request, results []result, logPath string) error {
-	sources := map[string]int{} // the result each source address probed
+	sources := map[string]int{}                   // the result each source address probed
+	src := netip.AddrFrom4([4]byte{127, 1, 0, 0}) // the last source address taken
 	for i := range results {
 		if !results[i].Attack || results[i].OriginReached == 0 {
 			continue
 		}
-		n := len(sources) + 1
-		if n > 0xffff {
+		if src = src.Next(); src.As4()[1] != 1 {
 			return fmt.Errorf("more than %d attacks to probe", 0xffff)
 		}
-		src := netip.AddrFrom4([4]byte{127, 1, byte(n >> 8), byte(n)})
 		dialer := &net.Dialer{Timeout: 10 * time.Second, LocalAddr: net.TCPAddrFromAddrPort(netip.AddrPortFrom(src, 0))}
 		req := templates[i].Clone(context.Background())
 		if templates[i].GetBody != nil {
