@@ -10,16 +10,19 @@ import (
 	"golang.org/x/net/http/httpguts"
 )
 
-// PHP2Shell (CVE-2026-109618, CVE-2026-109619) is the name of two memory-safety bugs in PHP's handling of an upload
-// that reports its progress to the session, which end in code execution. The published exploit reads the PHP
-// process's memory back through the session cookie. A fixed PHP is the only complete fix; until the application runs
-// one, the edge checks both sides of the exchange, as Cloudflare's managed rules for it do:
+// PHP2Shell (CVE-2026-109618, CVE-2026-109619) covers memory-safety failures in PHP's handling of out-of-memory and
+// fatal errors and of request-owned state retained across requests. Some demonstrated paths use session upload
+// progress and disclose worker memory through a session cookie; other paths do not need either indicator. A fixed
+// PHP is the only complete fix. These checks reduce exposure to the demonstrated upload and cookie patterns:
 //
 //   - the request: a multipart body with the field that turns on PHP's session upload progress is refused (rule
 //     5000013). Few sites use the feature; one that does turns the check off with UploadPolicy.AllowUploadProgress.
 //   - the response: a session cookie whose value is not a session id PHP could have made, which is what the leak looks
-//     like whatever request caused it, is withheld and answered 403 (rule 5000080), unless
+//     like in the demonstrated cookie leak, is withheld and answered 403 (rule 5000080), unless
 //     ResponsePolicy.AllowBadSessionIDs.
+//
+// Neither check proves a PHP runtime safe: a leak can have another carrier or look like a valid session id, and
+// different fatal-error producers and stale-state consumers can reach code execution without these patterns.
 
 // uploadProgressName is the field PHP reads as the key of an upload's progress, its session.upload_progress.name, in
 // lower case. The name is compared as PHP has read it from the part's Content-Disposition.

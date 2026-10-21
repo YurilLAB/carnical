@@ -10,9 +10,10 @@
 
 ## Context and Problem
 
-PHP2Shell (CVE-2026-109618, CVE-2026-109619) is two memory-safety bugs in PHP's handling of an upload that reports
-its progress to the session. They end in code execution, and the published exploit reads the PHP process's memory
-back through the session cookie. PHP's fix was released the day the owner asked for Carnical to block the attack;
+PHP2Shell (CVE-2026-109618, CVE-2026-109619) covers memory-safety failures during out-of-memory and fatal-error
+handling and request-state cleanup in PHP. Some demonstrated paths use session upload progress and read worker
+memory back through a session cookie; other paths need neither indicator. PHP's fix was released the day the owner
+asked for Carnical to block the attack;
 many sites behind it will run an unfixed PHP for a while. Cloudflare said that blocking it took more than request
 rules: its managed rules look at the request and at the application's response. The owner asked for the same, with
 the attack named PHP2Shell in the logs.
@@ -37,8 +38,9 @@ the attack named PHP2Shell in the logs.
 
 ## Decision Outcome
 
-Chosen: **a request check and a response check in the proxy**, because only the pair covers both the field the
-exploit goes through and the leak it depends on, on every site, without a rule pack or response inspection.
+Chosen: **a request check and a response check in the proxy**, to cover the demonstrated default upload-progress
+trigger and malformed session-cookie leak without a rule pack or response inspection. This does not cover every
+fatal-error producer, stale-state consumer or memory-disclosure channel; only the fixed PHP runtime does.
 
 - A multipart body with PHP's session upload progress field (`PHP_SESSION_UPLOAD_PROGRESS`) is refused with 403 as
   rule 5000013, before the other upload checks, so its line names the attack. The name is looked for in everything
@@ -64,8 +66,8 @@ No substantive technical discussion recorded: the change was made for the owner,
 
 ## Consequences
 
-- **Positive:** every site behind Carnical refuses the published exploit's request and withholds the leak it reads,
-  with the rule set on, in detection mode or off.
+- **Positive:** sites using the default upload-progress name refuse that trigger and withhold recognized malformed
+  session-cookie values, with the rule set on, in detection mode or off.
 - **Positive:** a source that keeps trying is banned by the repeat-offender policy.
 - **Negative:** a site that uses PHP's upload progress has to turn the request check off, and one whose session ids
   hold other characters (its own session handler's, or ids set with `session_id()`), or a non-PHP application that
@@ -78,3 +80,5 @@ No substantive technical discussion recorded: the change was made for the owner,
 - Related ADRs: ADR-0084 (alerts), ADR-0085 (repeat offenders)
 - Code: `carnical/proxy/php2shell.go`, `carnical/proxy/proxy.go`
 - Documentation: `carnical/docs/proxy-reference.md#php2shell`
+- PHP advisories: [out-of-memory handling](https://github.com/php/php-src/security/advisories/GHSA-w8hw-w9fx-j79w),
+  [stale global state](https://github.com/php/php-src/security/advisories/GHSA-6wmf-4rv5-p3rp)

@@ -112,11 +112,11 @@ HTML from a stylesheet address. Connection limits and a 100-stream HTTP/2 cap bo
 
 ### PHP2Shell
 
-PHP2Shell (CVE-2026-109618, CVE-2026-109619) is two memory-safety bugs in PHP's handling of an
-upload that reports its progress to the session; they end in code execution, and the published
-exploit reads the PHP process's memory back through the session cookie. Only a fixed PHP removes
-them. Until the application runs one, Carnical checks both sides of the exchange, as Cloudflare's
-managed rules for it do, whatever the rule set's mode:
+PHP2Shell (CVE-2026-109618, CVE-2026-109619) covers memory-safety failures in PHP's handling of
+out-of-memory and fatal errors and of stale state retained across requests. Some demonstrated
+paths use session upload progress and disclose worker memory through a session cookie. Other
+paths need neither indicator. Carnical checks these request and response patterns, whatever the
+rule set's mode:
 
 - **The request.** A multipart body with PHP's session upload progress field
   (`PHP_SESSION_UPLOAD_PROGRESS`, PHP's default `session.upload_progress.name`) is refused with
@@ -125,8 +125,8 @@ managed rules for it do, whatever the rule set's mode:
   Few sites use upload progress bars; one that does sets `-allow-upload-progress`.
 - **The response.** A response that sets `PHPSESSID`, or a name in `-session-cookies`, to
   anything but a session id PHP could have made (up to 256 letters, digits, `-` and `,`, which PHP
-  sends as `%2C`; empty and `deleted` are fine) is what the leak looks like, whatever request caused
-  it. It is withheld and answered 403 (5000080); the application's headers and body never reach
+  sends as `%2C`; empty and `deleted` are fine) matches the demonstrated cookie leak's shape.
+  It is withheld and answered 403 (5000080); the application's headers and body never reach
   the visitor. `-allow-bad-session-ids` forwards it; a site needs it whose session ids hold other
   characters (made by its own session handler, or set with `session_id()`), as does a non-PHP
   application that names a cookie of its own `PHPSESSID`.
@@ -135,6 +135,14 @@ Both are logged as `rule matched` lines whose message starts with `PHP2Shell:`, 
 `sig_name` does too. Each counts 4 toward a [repeat offender's ban](ddos.md#repeat-offenders), as
 an upload refusal does. Neither checks a session id carried in URLs (`session.use_trans_sid`, off
 by default) or an upload progress field renamed in `php.ini`.
+
+These are partial mitigations. A leak carried elsewhere, or bytes that happen to form a valid session id,
+need not trigger them; fatal-error and stale-state paths without upload progress remain possible.
+Update the PHP origin to **8.2.35, 8.3.36, 8.4.27 or 8.5.12**, or a later fixed release or verified vendor
+backport, and restart every worker. PHP's maintainers identify the complete runtime patch as the only
+reliable mitigation; disabling upload progress covers only the demonstrated session paths.
+See the [out-of-memory advisory](https://github.com/php/php-src/security/advisories/GHSA-w8hw-w9fx-j79w)
+and [stale-state advisory](https://github.com/php/php-src/security/advisories/GHSA-6wmf-4rv5-p3rp).
 
 ## Rate rules
 
