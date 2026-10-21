@@ -1,6 +1,6 @@
 module github.com/corazawaf/coraza/v3/testing/coreruleset
 
-go 1.26.10
+go 1.27.0
 
 require (
 	github.com/bmatcuk/doublestar/v4 v4.10.0
@@ -20,15 +20,12 @@ require (
 	github.com/coreruleset/ftw-tests-schema/v2 v2.3.0 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
-	github.com/goccy/go-json v0.10.5 // indirect
 	github.com/goccy/go-yaml v1.19.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/gotnospirit/makeplural v0.0.0-20180622080156-a5f48d94d976 // indirect
-	github.com/gotnospirit/messageformat v0.0.0-20221001023931-dfe49f1eb092 // indirect
 	github.com/huandu/xstrings v1.5.0 // indirect
 	github.com/icza/backscanner v0.0.0-20241124160932-dff01ac50250 // indirect
-	github.com/kaptinlin/go-i18n v0.1.4 // indirect
-	github.com/kaptinlin/jsonschema v0.4.6 // indirect
+	github.com/kaptinlin/jsonpointer v0.4.28 // indirect
+	github.com/kaptinlin/jsonschema v0.9.10 // indirect
 	github.com/knadh/koanf/maps v0.1.2 // indirect
 	github.com/knadh/koanf/parsers/yaml v1.1.0 // indirect
 	github.com/knadh/koanf/providers/env/v2 v2.0.0 // indirect
@@ -49,6 +46,7 @@ require (
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/valllabh/ocsf-schema-golang v1.0.3 // indirect
 	github.com/yargevad/filepathx v1.0.0 // indirect
+	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.4 // indirect
 	golang.org/x/crypto v0.57.0 // indirect
