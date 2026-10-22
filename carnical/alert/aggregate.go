@@ -899,14 +899,15 @@ func (g *Aggregator) tick(final bool) {
 		}
 	}
 	if final || g.cfg.TotalsInterval > 0 && now >= g.nextTotals {
-		if !final {
-			g.nextTotals = now + int64(g.cfg.TotalsInterval)
-		}
+		taken := true
 		if gen := g.gen.Load(); final || gen != g.lastGen {
 			t := g.Totals()
-			if g.send(Record{Kind: KindTotals, Totals: &t}) {
+			if taken = g.send(Record{Kind: KindTotals, Totals: &t}); taken {
 				g.lastGen = gen
 			}
+		}
+		if !final && taken {
+			g.nextTotals = now + int64(g.cfg.TotalsInterval)
 		}
 	}
 }

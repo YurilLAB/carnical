@@ -285,11 +285,22 @@ func (c *clock) add(d time.Duration) {
 
 // collect is a sink that keeps what it is sent.
 type collect struct {
-	mu   sync.Mutex
-	recs []Record
+	mu     sync.Mutex
+	recs   []Record
+	refuse func(Record) bool // set by a row whose sink refuses some records, as a full queue does
 }
 
-func (c *collect) Send(r Record) { c.mu.Lock(); c.recs = append(c.recs, r); c.mu.Unlock() }
+func (c *collect) Send(r Record) { c.Offer(r) }
+
+func (c *collect) Offer(r Record) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.refuse != nil && c.refuse(r) {
+		return false
+	}
+	c.recs = append(c.recs, r)
+	return true
+}
 
 func (c *collect) of(k Kind) []Record {
 	c.mu.Lock()
@@ -498,6 +509,29 @@ func TestAggregator(t *testing.T) {
 			g.Tick()
 			if d := out.of(KindDropped); len(d) != 1 {
 				t.Fatalf("drops reported again with nothing new: %d", len(d))
+			}
+		}},
+		{"totals the sink refused are offered again on the next tick", Config{TotalsInterval: time.Hour}, func(t *testing.T, g *Aggregator, c *clock, out *collect) {
+			refused := 0
+			out.refuse = func(r Record) bool {
+				if r.Kind == KindTotals && refused == 0 {
+					refused++
+					return true
+				}
+				return false
+			}
+			g.Observe(sqli(srcA))
+			c.add(time.Hour)
+			g.Tick()
+			c.add(time.Second)
+			g.Tick()
+			if n := len(out.of(KindTotals)); refused != 1 || n != 1 {
+				t.Fatalf("totals refused %d times, then written %d times a second later; want once each", refused, n)
+			}
+			c.add(time.Second)
+			g.Tick()
+			if n := len(out.of(KindTotals)); n != 1 {
+				t.Fatalf("totals written %d times; once taken they wait for the next interval", n)
 			}
 		}},
 		{"high risk takes the shared tokens when it comes first", Config{Rate: 1}, func(t *testing.T, g *Aggregator, c *clock, out *collect) {
@@ -882,6 +916,7 @@ func TestSuppressionParsing(t *testing.T) {
 		{"unknown signature form", []string{"sqli /x"}, nil, nil, "not one carnical writes"},
 		{"id outside its prefix's range", []string{"crs-5000010"}, nil, nil, "not one carnical writes"},
 		{"bad date", []string{"crs-920350 until=31/12/2026"}, nil, nil, "YYYY-MM-DD"},
+		{"a date long past is not a suppression without end", []string{"crs-920350 until=0000-12-31"}, nil, nil, "from the year 2000"},
 		{"two paths", []string{"crs-920350 /a /b"}, nil, nil, "more than one path"},
 		{"unknown key", []string{"crs-920350 for=1d"}, nil, nil, "expected a path"},
 		{"empty note", []string{"crs-920350 note="}, nil, nil, "note= is empty"},

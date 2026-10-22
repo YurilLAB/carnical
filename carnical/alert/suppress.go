@@ -158,6 +158,9 @@ func ParseSuppression(entry string) (Suppression, error) {
 			if err != nil {
 				return fail("until= must be a date in the form YYYY-MM-DD")
 			}
+			if d.Year() < 2000 { // the day after 0000-12-31 is the zero time, which would mean never
+				return fail("until= must be a date from the year 2000 on")
+			}
 			s.Until = d.AddDate(0, 0, 1) // it applies through the whole day
 		case strings.HasPrefix(tok, "/"):
 			if s.PathPrefix != "" {
