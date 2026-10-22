@@ -147,6 +147,8 @@ Open rules under BSD ([notice](carnical/vpatch/importers/suricata/testdata/LICEN
 
 ## Contributors and attribution
 
+Carnical is maintained by Jack Stone.
+
 Carnical builds on Coraza and the CRS. Thanks to Juan Pablo Tosso and the Coraza contributors,
 the OWASP Core Rule Set team, and Ivan Ristić for ModSecurity.
 
