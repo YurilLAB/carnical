@@ -215,8 +215,9 @@ func cookieValues(h http.Header, name string, buf []string) []string {
 			pair, rest, _ = strings.Cut(rest, ";")
 			pair = strings.TrimSpace(pair)
 			k, v, ok := strings.Cut(pair, "=")
-			if ok && k == name {
-				buf = append(buf, strings.Trim(v, `"`))
+			// Go's net/http, Python and Node trim spaces and tabs around the name: "limit =9" is limit to them.
+			if ok && strings.Trim(k, " \t") == name {
+				buf = append(buf, strings.Trim(strings.Trim(v, " \t"), `"`))
 			}
 		}
 	}

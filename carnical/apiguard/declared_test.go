@@ -205,6 +205,8 @@ func TestEveryValueOfARepeatedCookieIsChecked(t *testing.T) {
 		{"limit=99999; limit=1", true},
 		{"limit=1; limit=2", false},
 		{"other=1; limit=2", false},
+		{"limit =99999", true}, // Go, Python and Node trim the name, and the application reads 99999
+		{"limit\t=99999", true},
 	} {
 		t.Run(tc.cookie, func(t *testing.T) {
 			res := g.Inspect(mk("GET", "/api/items", withHeader("Cookie", tc.cookie)))
