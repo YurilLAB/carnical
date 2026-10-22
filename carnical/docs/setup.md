@@ -132,6 +132,36 @@ not protect them from an administrator or a compromised WAF account that can rea
 Public settings remain editable operator policy; encryption does not authenticate those
 settings. Keep configuration, key files and parent directories under operator control.
 
+## In a container
+
+The image built from [`deploy/container`](../deploy/container/) runs `carnical` as its entry point, so
+`setup`, `check` and `start` work inside it. The wizard runs as the image's unprivileged user
+(UID 65532), so give it a directory it can write the site file and key into, and certificate files
+it can read:
+
+```sh
+mkdir config && sudo chown 65532:65532 config   # the wizard writes site.json and the key here
+# visitor certificate and key in ./tls, with the key readable by GID 65532 (e.g. root-owned 0640)
+docker run --rm -it -v "$PWD/config:/config" -v "$PWD/tls:/tls:ro" carnical:local setup
+```
+
+Answer the questions as above. Give the certificate paths as `/tls/cert.pem` and `/tls/key.pem`,
+and when it asks where to save, type `/config/site.json` and `/config/site.key`: the default it
+offers is the account's configuration directory, which the image's user cannot write. Then run the
+saved file read-only, as the [container guide](availability-and-deployment.md#linux-container)
+shows:
+
+```sh
+docker run -d -p 443:8443 --read-only --cap-drop ALL \
+  -v "$PWD/config:/config:ro" -v "$PWD/tls:/tls:ro" \
+  --tmpfs /var/lib/carnical/uploads:size=64m,mode=0700,uid=65532,gid=65532 \
+  carnical:local start /config/site.json -config-key-file /config/site.key \
+  -listen :8443 -upload-dir /var/lib/carnical/uploads
+```
+
+`check` runs the same way with the config mounted read-only. The read-only root needs the writable
+upload tmpfs; without it startup stops at the rule set's filesystem check.
+
 ## Services, backups and updates
 
 For another account, copy the key through an approved secret-transfer path and grant access
