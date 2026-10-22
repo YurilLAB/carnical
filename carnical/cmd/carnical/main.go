@@ -341,7 +341,14 @@ func runFlags(usage, logs io.Writer, args []string, private map[string]string) e
 	}
 	// The flags given on the command line or in the site configuration; the others keep their defaults.
 	explicit := setFlags(flags)
-	autoBlock, err := autoBlockSettings(autoBlockFlag, explicit, ddos.mode, alerts.exclude)
+	// A -ddos on the command line changes the run only: with off, the auto-block a site file gives (setup always writes
+	// one) is off for this run too, as its default would be, instead of a conflict in the site file.
+	askedAutoBlock := explicit
+	if site["auto-block"] && explicit["ddos"] && !site["ddos"] {
+		askedAutoBlock = maps.Clone(explicit)
+		delete(askedAutoBlock, "auto-block")
+	}
+	autoBlock, err := autoBlockSettings(autoBlockFlag, askedAutoBlock, ddos.mode, alerts.exclude)
 	if err != nil {
 		return fromSite(err, site, private)
 	}

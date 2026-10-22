@@ -1152,6 +1152,13 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 		{name: "flood protection off leaves the default auto-block quietly off", extraArgs: []string{"-check", "-ddos", "off"}, preflight: true},
 		{name: "auto-block asked for without flood protection refuses startup", extraArgs: []string{"-check", "-ddos", "off", "-auto-block", "on"}, fails: true,
 			says: "-auto-block on needs -ddos on or monitor"},
+		// Setup always saves an auto-block answer: -ddos off after the command turns it off for that run, as flags there do.
+		{name: "flood protection off on the command line turns a saved auto-block off for the run",
+			site:      "{\"version\":1,\"flags\":{\"upstream\":\"$ORIGIN\",\"origin-allow\":\"127.0.0.1/32\",\"auto-block\":\"monitor\"}}",
+			extraArgs: []string{"-check", "-ddos", "off"}, preflight: true},
+		{name: "a site file that asks for auto-block without flood protection is refused",
+			site:      "{\"version\":1,\"flags\":{\"upstream\":\"$ORIGIN\",\"origin-allow\":\"127.0.0.1/32\",\"auto-block\":\"on\",\"ddos\":\"off\"}}",
+			extraArgs: []string{"-check"}, fails: true, says: "-auto-block on needs -ddos on or monitor"},
 		{name: "an unknown auto-block mode refuses startup", extraArgs: []string{"-check", "-auto-block", "always"}, fails: true, says: "-auto-block must be off, monitor or on"},
 		{name: "too few auto-block points refuse startup", extraArgs: []string{"-check", "-auto-block-points", "3"}, fails: true, says: "-auto-block-points must be from 4 to 1000"},
 		{name: "a longest ban shorter than the first refuses startup", extraArgs: []string{"-check", "-auto-block-for", "30m", "-auto-block-max-for", "20m"}, fails: true,
@@ -3252,6 +3259,7 @@ func TestShortCommands(t *testing.T) {
 		{"-config instead of a file", []string{"check", "--config=site.json"}, false, []string{"-check", "-check-origin", "--config=site.json"}, ""},
 		{"no saved site", []string{"start"}, false, nil, "run carnical setup first"},
 		{"the file given twice", []string{"start", "a.json", "-config", "b.json"}, true, nil, "give the site file once"},
+		{"an empty file name is not the saved site", []string{"start", "", "-mode", "block"}, true, nil, "the site file name is empty"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_ = os.RemoveAll(filepath.Dir(saved))

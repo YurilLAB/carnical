@@ -59,6 +59,9 @@ func commandArgs(command string, args []string) ([]string, error) {
 	file := ""
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		file, args = args[0], args[1:]
+		if file == "" { // carnical start "$SITE" with SITE unset: not a request for the saved site
+			return nil, fmt.Errorf("the site file name is empty; name the site file, or run carnical %s without one", command)
+		}
 	}
 	named := false
 	for _, arg := range args {
