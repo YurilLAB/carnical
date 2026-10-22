@@ -330,21 +330,25 @@ func schemaCoversProps(s *Schema, depth int) bool {
 			return true
 		}
 	}
-	// A body that may take one of several schemas lists its properties when every alternative that can be an object does.
+	// A body that may take one of several schemas (anyOf or oneOf) lists its properties when every alternative that can be an
+	// object does.
 	covered := false
-	for _, sub := range s.AnyOf {
-		if t := sub.target(); t != nil && len(t.Type) > 0 && !slices.Contains(t.Type, "object") {
-			continue
+	for _, alts := range [2][]*Schema{s.AnyOf, s.OneOf} {
+		for _, sub := range alts {
+			if t := sub.target(); t != nil && len(t.Type) > 0 && !slices.Contains(t.Type, "object") {
+				continue
+			}
+			if !schemaCoversProps(sub, depth+1) {
+				return false
+			}
+			covered = true
 		}
-		if !schemaCoversProps(sub, depth+1) {
-			return false
-		}
-		covered = true
 	}
 	return covered
 }
 
-// schemaProp finds the schema of a property, in the schema or through allOf. It returns nil if the schema does not list it.
+// schemaProp finds the schema of a property, in the schema or through allOf, anyOf or oneOf. It returns nil if the schema does
+// not list it.
 func schemaProp(s *Schema, name string, depth int) *Schema {
 	if s = s.target(); s == nil || depth > 8 {
 		return nil
@@ -357,9 +361,11 @@ func schemaProp(s *Schema, name string, depth int) *Schema {
 			return p
 		}
 	}
-	for _, sub := range s.AnyOf {
-		if p := schemaProp(sub, name, depth+1); p != nil {
-			return p
+	for _, alts := range [2][]*Schema{s.AnyOf, s.OneOf} {
+		for _, sub := range alts {
+			if p := schemaProp(sub, name, depth+1); p != nil {
+				return p
+			}
 		}
 	}
 	if s.AdditionalSchema != nil {

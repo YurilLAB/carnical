@@ -10,12 +10,16 @@ import (
 	"github.com/YurilLAB/coraza/carnical/inspect"
 )
 
-// writeDoc describes POST /api/users with a body schema that lists name and email, and POST /api/free with a free-form body.
+// writeDoc describes POST /api/users with a body schema that lists name and email, POST /api/free with a free-form body, and
+// POST /api/poly with a body that is one of two shapes.
 const writeDoc = `{"openapi":"3.0.0","paths":{
  "/api/users":{"post":{"requestBody":{"content":{"application/json":{"schema":{"type":"object","properties":{
     "name":{"type":"string"},"email":{"type":"string"},"status":{"type":"string"},"address":{"type":"object","properties":{"city":{"type":"string"}}}}}}}}}},
  "/api/free":{"post":{"requestBody":{"content":{"application/json":{"schema":{"type":"object"}}}}}},
- "/api/items":{"post":{"requestBody":{"content":{"application/json":{"schema":{"type":"array","items":{"type":"object","properties":{"title":{"type":"string"}}}}}}}}}
+ "/api/items":{"post":{"requestBody":{"content":{"application/json":{"schema":{"type":"array","items":{"type":"object","properties":{"title":{"type":"string"}}}}}}}}},
+ "/api/poly":{"post":{"requestBody":{"content":{"application/json":{"schema":{"oneOf":[
+    {"type":"object","required":["name"],"properties":{"name":{"type":"string"}}},
+    {"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}]}}}}}}
 }}`
 
 func TestMassAssignment(t *testing.T) {
@@ -55,6 +59,7 @@ func TestMassAssignment(t *testing.T) {
 		{"a body the guard cannot read is not cleared where the description lists what clients send", withDoc, nil, mk("POST", "/api/users", withJSON("{\"name\":\"a\xff\",\"role\":\"admin\"}")), IDMassAssignRefused, true, "could not be read"},
 		{"a JSON write sent with no Content-Type", withDoc, nil, mk("POST", "/api/users", withBody("", `{"name":"a","role":"admin"}`)), IDMassAssignRefused, true, "role"},
 		{"a free-form body says nothing about what clients send", withDoc, nil, mk("POST", "/api/free", withJSON(`{"role":"admin"}`)), IDMassAssignFlagged, false, "role"},
+		{"a body of one of several shapes lists what clients send in each", withDoc, nil, mk("POST", "/api/poly", withJSON(`{"name":"a","role":"admin"}`)), IDMassAssignRefused, true, "role"},
 		{"items of an array are checked against the item schema", withDoc, nil, mk("POST", "/api/items", withJSON(`[{"title":"a","price":1}]`)), IDMassAssignRefused, true, "price"},
 		{"refusal in monitor mode does not block", withDoc, func(c *Config) { c.Modes.MassAssign = ModeMonitor }, mk("POST", "/api/users", withJSON(`{"role":"admin"}`)), IDMassAssignRefused, false, "role"},
 		{"switched off", withDoc, func(c *Config) { c.Modes.MassAssign = ModeOff }, mk("POST", "/api/users", withJSON(`{"role":"admin"}`)), 0, false, ""},
