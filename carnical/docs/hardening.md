@@ -34,7 +34,7 @@ stopped for an attacker who is **only** the edge user.
 |---|---|---|---|
 | Run a shell or any program | seccomp (`execve`, `execveat` end the process), Landlock (no execute right), unit system call filter, `NoExecPaths` not needed | `carnical_svc_exec`, a SECCOMP record, `host-processes` | Stopped |
 | Setuid or capability abuse, `sudo` | `no_new_privs`, `CapabilityBoundingSet=` empty, no sudoers entry | `carnical_setuid`, `host-suid` | Stopped |
-| Kernel privilege escalation (netfilter, AF_ALG, overlayfs, io_uring, userfaultfd) | seccomp refuses namespaces, `AF_ALG`, `AF_PACKET`, io_uring, BPF, userfaultfd by name; `user.max_user_namespaces=0`; modules blacklisted; patching | `carnical_abuse`, a SECCOMP record | Blocks the listed operations; flaws in allowed syscalls/kernel paths remain possible |
+| Kernel privilege escalation (netfilter, AF_ALG, overlayfs, io_uring, userfaultfd) | seccomp refuses namespaces (`clone3`, whose flags it cannot read, fails as on a kernel without it, so callers use `clone`), `AF_ALG`, `AF_PACKET`, io_uring, BPF, userfaultfd by name; `user.max_user_namespaces=0`; modules blacklisted; patching | `carnical_abuse`, a SECCOMP record | Blocks the listed operations; flaws in allowed syscalls/kernel paths remain possible |
 | Read another service's files (the signer key, other customers) | Landlock, `InaccessiblePaths`, mode 0700 per user | the honeytokens; `carnical_honey` | Stopped |
 | Read another process's environment or memory | `ProtectProc=invisible`, `ptrace_scope=2`, non-dumpable, Landlock | `carnical_abuse` | Stopped (**Measured**: a non-dumpable process hides its own program path from an unprivileged process of the same user) |
 | Reach other services over loopback | nftables (no loopback for the edge), Landlock port rules, no shared sockets | `carnical-edge-private` log lines | Blocked by the supplied policy; required local services need a reviewed UNIX socket or narrow policy exception |
@@ -112,8 +112,6 @@ stopped for an attacker who is **only** the edge user.
   those. That is the single largest remaining step.
 * **The control plane's interface.** If the edge fetches configuration or pushes events over a UNIX socket,
   it can reach the service listening on that socket. Keep the interface small and parse its input strictly.
-* **`clone3` with a namespace flag.** seccomp cannot inspect `clone3`'s arguments (they are in memory). Namespaces are refused instead by `RestrictNamespaces=yes`
-  and `user.max_user_namespaces=0`.
 * **A kernel flaw in a system call the proxy needs.** Patching and rebooting stay the first control. The hardening shrinks the surface; it does not remove it.
 * **CPU and memory.** Capped by the unit, not prevented.
 * **Logs on the same machine.** An attacker with root can edit them. Ship them off the machine (not built).

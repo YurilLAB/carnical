@@ -181,6 +181,12 @@ func buildFilter(allowExec bool) ([]unix.SockFilter, error) {
 		a.label(next)
 	}
 
+	// clone3 carries its flags in memory, where the filter cannot read them, so a namespace flag would pass unseen. It is
+	// answered as a kernel without clone3 answers it: the C library and Go then use clone(2), whose flags are checked
+	// below. Go makes its own threads with clone(2).
+	a.jeq(unix.SYS_CLONE3, "no-clone3", "after-clone3")
+	a.label("after-clone3")
+
 	// clone with a namespace flag (an unprivileged user namespace is how most kernel privilege escalations start).
 	a.jeq(unix.SYS_CLONE, "check-clone", "after-clone")
 	a.label("check-clone")
@@ -243,6 +249,8 @@ func buildFilter(allowExec bool) ([]unix.SockFilter, error) {
 	a.load(offArg0)
 	a.jeq(unix.AF_UNIX, "allow", "kill")
 
+	a.label("no-clone3")
+	a.ret(seccompRetErrnoBase | uint32(unix.ENOSYS))
 	a.label("no-fastopen")
 	a.ret(seccompRetErrnoBase | uint32(unix.EOPNOTSUPP))
 	a.label("no-proto")

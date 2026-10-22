@@ -85,6 +85,7 @@ func TestTheFilterDecidesEachCallAsIntended(t *testing.T) {
 		kill       = seccompRetKillProcess
 		noProto    = seccompRetErrnoBase | uint32(unix.EPROTONOSUPPORT)
 		noFastOpen = seccompRetErrnoBase | uint32(unix.EOPNOTSUPP)
+		noClone3   = seccompRetErrnoBase | uint32(unix.ENOSYS)
 	)
 	tests := []struct {
 		name string
@@ -97,7 +98,8 @@ func TestTheFilterDecidesEachCallAsIntended(t *testing.T) {
 		{"futex", block, seccompData(auditArch, unix.SYS_FUTEX), allow},
 		{"epoll_wait or epoll_pwait", block, seccompData(auditArch, unix.SYS_EPOLL_PWAIT), allow},
 		{"mmap", block, seccompData(auditArch, unix.SYS_MMAP), allow},
-		{"clone3 (thread creation in newer runtimes)", block, seccompData(auditArch, unix.SYS_CLONE3), allow},
+		// Its flags are in memory, out of the filter's sight: refused as unknown, so callers fall back to clone(2).
+		{"clone3", block, seccompData(auditArch, unix.SYS_CLONE3, unix.CLONE_NEWUSER), noClone3},
 		{"execve", block, seccompData(auditArch, unix.SYS_EXECVE), kill},
 		{"execveat", block, seccompData(auditArch, unix.SYS_EXECVEAT), kill},
 		{"execve when starting programs is allowed", allowExec, seccompData(auditArch, unix.SYS_EXECVE), allow},
