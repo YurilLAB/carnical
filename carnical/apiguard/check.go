@@ -3,6 +3,7 @@
 package apiguard
 
 import (
+	"cmp"
 	"errors"
 	"net/http"
 	"slices"
@@ -364,7 +365,13 @@ func (g *Guard) checkRoute(rt *Route, rv *reqView, caps *captures, ids *idSet, c
 	case !hasBody && rt.BodyRequired && !preflight:
 		add(ids.bodyMissing, "")
 	}
-	if hasBody && rt.Body != nil && rv.isJSON && !(rt.c.hasCTypes && !rt.acceptsContentType(rv.ct)) {
+	// A route that takes any type (*/*, application/*) holds a body that starts like JSON to its schema whatever it was sent as:
+	// Go's encoding/json, gin and FastAPI bind it as JSON. One that does not read as JSON is the application's.
+	asJSON := rv.isJSON && !(rt.c.hasCTypes && !rt.acceptsContentType(rv.ct))
+	if !rv.isJSON && hasBody && rt.Body != nil && rt.c.jsonBody && startsLikeJSON(rv.body) {
+		asJSON = rt.acceptsContentType(cmp.Or(rv.ct, "application/octet-stream"))
+	}
+	if hasBody && rt.Body != nil && asJSON {
 		// A body this parser cannot read (nested past its depth, or not UTF-8) may still be one the application's decoder reads,
 		// so it is refused rather than let through unchecked.
 		val, _, err := rv.json()
@@ -372,7 +379,9 @@ func (g *Guard) checkRoute(rt *Route, rv *reqView, caps *captures, ids *idSet, c
 		case errors.Is(err, errTooDeep) || errors.Is(err, errTooMany):
 			add(ids.tooComplex, "")
 		case err != nil:
-			add(ids.bodySchema, "the body is not valid JSON")
+			if rv.isJSON {
+				add(ids.bodySchema, "the body is not valid JSON")
+			}
 		default:
 			viol, ok, over := rt.Body.validateBody(val, true)
 			switch {

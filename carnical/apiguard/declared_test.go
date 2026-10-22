@@ -146,14 +146,21 @@ func TestABodyIsHeldToAnyOfItsJSONMediaTypesSchemas(t *testing.T) {
 		"requestBody":{"required":true,"content":{
 			"application/json-patch+json":{"schema":{"type":"array","items":{"type":"object","required":["op","path"]}}},
 			"application/merge-patch+json":{"schema":{"type":"object","properties":{"title":{"type":"string"}}}}}},
-		"responses":{"200":{"description":"ok"}}}}}}`
+		"responses":{"200":{"description":"ok"}}}},
+		"/any":{"patch":{"requestBody":{"required":true,"content":{"*/*":{"schema":{"type":"object","additionalProperties":false,
+			"properties":{"qty":{"type":"integer","maximum":10}}}}}},"responses":{"200":{"description":"ok"}}}}}}`
 	tests := []struct {
-		name, ct, body string
-		want           int // the first verdict id, 0 for none
+		name, path, ct, body string
+		want                 int // the first verdict id, 0 for none
 	}{
-		{"a merge patch, whose schema is not the one that sorts first", "application/merge-patch+json", `{"title":"x"}`, 0},
-		{"a body that fits neither schema", "application/merge-patch+json", `"x"`, IDSpecBodySchema},
-		{"a privileged property neither schema lists", "application/merge-patch+json", `{"title":"x","role":"admin"}`, IDMassAssignRefused},
+		{"a merge patch, whose schema is not the one that sorts first", "/docs/1", "application/merge-patch+json", `{"title":"x"}`, 0},
+		{"a body that fits neither schema", "/docs/1", "application/merge-patch+json", `"x"`, IDSpecBodySchema},
+		{"a privileged property neither schema lists", "/docs/1", "application/merge-patch+json", `{"title":"x","role":"admin"}`, IDMassAssignRefused},
+		// Any type is taken: Go's encoding/json, gin and FastAPI bind a body that is JSON as JSON whatever it is sent as.
+		{"JSON sent as text to a route that takes any type", "/any", "text/plain", `{"qty":99999}`, IDSpecBodySchema},
+		{"JSON that fits, sent as text", "/any", "text/plain", `{"qty":3}`, 0},
+		{"text that is not JSON is the application's", "/any", "text/plain", `qty=99999`, 0},
+		{"text that only starts like JSON is the application's", "/any", "text/plain", `{qty: 99999`, 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -161,7 +168,7 @@ func TestABodyIsHeldToAnyOfItsJSONMediaTypesSchemas(t *testing.T) {
 			if _, err := g.ImportOpenAPI([]byte(doc)); err != nil {
 				t.Fatal(err)
 			}
-			res := g.Inspect(mk("PATCH", "/docs/1", withBody(tt.ct, tt.body)))
+			res := g.Inspect(mk("PATCH", tt.path, withBody(tt.ct, tt.body)))
 			switch {
 			case tt.want == 0 && len(res.Verdicts) != 0:
 				t.Fatalf("unexpected verdicts: %+v", res.Verdicts)

@@ -204,7 +204,10 @@ checked route rather than checked in part. A JSON body the guard cannot read is 
 let through unchecked (`5003108`, or `5003115` when it is nested more than 32 deep or holds more values
 than the guard reads), and so is a body
 with no `Content-Type` on a route that lists its media types (`5003107`), unless the route takes
-`application/octet-stream` or any type.
+`application/octet-stream` or any type. On a route that takes any type (`*/*`, `application/*`), a
+body that reads as JSON is held to the route's schema whatever it was sent as, since Go's
+`encoding/json`, gin and FastAPI bind it as JSON; one that does not read as JSON is left to the
+application.
 
 Numbers are compared as exact decimals for integer types, enums, constants, bounds, decimal
 multiples and array uniqueness. Equivalent numeric spellings such as `1` and `1.0` compare equally.
