@@ -244,4 +244,14 @@ func TestSnapshotSaysWhereEachRouteCameFrom(t *testing.T) {
 	if err := json.Unmarshal(data, &back); err != nil {
 		t.Fatalf("a snapshot does not load back: %v", err)
 	}
+	// It is a copy: a console that edits the routes it was given changes nothing in force.
+	before := fmt.Sprint(ids(g.Inspect(mk("GET", "/v2/pet/x"))))
+	for i := range snap.Routes {
+		for j := range snap.Routes[i].Params {
+			snap.Routes[i].Params[j].Required, snap.Routes[i].Params[j].Schema = false, nil
+		}
+	}
+	if after := fmt.Sprint(ids(g.Inspect(mk("GET", "/v2/pet/x")))); before == "[]" || after != before {
+		t.Fatalf("verdicts %s before the snapshot was edited, %s after", before, after)
+	}
 }

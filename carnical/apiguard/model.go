@@ -463,6 +463,12 @@ func (m *Model) resolveRefs() {
 }
 
 // compile derives the quick form of one route.
+// detached is r with parameters and content types of its own, so that changing them does not change r's.
+func (r Route) detached() Route {
+	r.Params, r.ContentTypes = slices.Clone(r.Params), slices.Clone(r.ContentTypes)
+	return r
+}
+
 func (r *Route) compile() {
 	c := &routeC{query: map[string]*Param{}}
 	for _, seg := range splitTemplate(r.Path) {

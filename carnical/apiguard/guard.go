@@ -606,15 +606,18 @@ func (g *Guard) LoadLearned(data []byte) error {
 }
 
 // Snapshot returns the guard's current model: the active description's routes (declared), a candidate's (candidate), and what has
-// been learned, each learned route with its state, learned-enforceable or learning.
+// been learned, each learned route with its state, learned-enforceable or learning. Its routes, parameters and lists are copies,
+// which a caller may change; the schemas they point to are the guard's own, to be read and not changed.
 func (g *Guard) Snapshot() Model {
 	m := g.learn.export()
 	m.Source = "snapshot"
 	if a := g.active.Load(); a != nil {
 		m.Title, m.SpecVersion, m.Hash, m.Fetched = a.Title, a.SpecVersion, a.Hash, a.Fetched
-		m.CredentialHeaders, m.CredentialQuery, m.CredentialCookies = a.CredentialHeaders, a.CredentialQuery, a.CredentialCookies
+		m.CredentialHeaders, m.CredentialQuery = slices.Clone(a.CredentialHeaders), slices.Clone(a.CredentialQuery)
+		m.CredentialCookies = slices.Clone(a.CredentialCookies)
 		m.Source = a.Source
 		for _, r := range a.Routes {
+			r = r.detached()
 			r.State = StateDeclared
 			m.Routes = append(m.Routes, r)
 		}
@@ -624,6 +627,7 @@ func (g *Guard) Snapshot() Model {
 			m.Title, m.SpecVersion, m.Hash, m.Fetched, m.Source = c.model.Title, c.model.SpecVersion, c.model.Hash, c.model.Fetched, c.model.Source
 		}
 		for _, r := range c.model.Routes {
+			r = r.detached()
 			r.State = StateCandidate
 			m.Routes = append(m.Routes, r)
 		}
@@ -647,6 +651,11 @@ func (g *Guard) SetModel(m Model) error {
 		return errors.New("the model has too many routes")
 	}
 	if m.idx == nil {
+		// The caller's routes are sorted and compiled in a copy of their own: changing them afterwards changes nothing in force.
+		m.Routes = slices.Clone(m.Routes)
+		for i := range m.Routes {
+			m.Routes[i] = m.Routes[i].detached()
+		}
 		if err := m.validateLoaded(); err != nil {
 			return err
 		}

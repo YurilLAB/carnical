@@ -913,7 +913,7 @@ func (l *learner) export() Model {
 		rt.mu.Lock()
 		var r Route
 		if v := rt.view.Load(); v != nil {
-			r = *v
+			r = v.detached()
 			r.State = StateEnforceable
 		} else {
 			r = Route{Method: rt.method, Path: rt.tmpl, State: StateLearning}
