@@ -191,8 +191,9 @@ as the type the schema asks for, a number with an optional sign and leading zero
 parsers read it (`007` is 7, and its bounds apply); a scalar query or header parameter given twice
 is reported (parameter pollution). A query name that is a declared parameter's in other letters
 (`LIMIT` for `limit`) is held to that parameter too, and counts toward giving it twice, since ASP.NET
-Core and echo bind it to it; a required parameter must still be sent in the spelling the
-description gives it. An array parameter is read as its style writes it, with OpenAPI's defaults
+Core and echo bind it to it. So is a name PHP or Express reads as a scalar parameter's
+(`page.size`, `page size` and `page[size` for `page_size`; `limit[]` and `limit[0]` for `limit`).
+A required parameter must still be sent in the spelling the description gives it. An array parameter is read as its style writes it, with OpenAPI's defaults
 where the description gives none: `a=1&a=2` in a query or cookie, `1,2,3` in a path or header. A
 parameter the description gives as JSON `content` is read as one JSON value; one in the `label` or
 `matrix` style, which the guard does not read, is not checked, and the import report says so. With

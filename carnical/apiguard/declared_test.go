@@ -58,6 +58,10 @@ func TestRequestsAreHeldToTheApiDescription(t *testing.T) {
 		{"an array over its maximum size", mk("GET", "/api/v1/products?tags=a,b,c,d"), IDSpecQueryParam, 400},
 		{"a scalar given twice", mk("GET", "/api/v1/products?limit=1&limit=2"), IDSpecQueryParam, 400},
 		{"a query parameter named in other capitals is held to its schema", mk("GET", "/api/v1/products?LIMIT=101"), IDSpecQueryParam, 400},
+		// PHP and Express read limit[] and limit[0] as limit, an array of one, and PHP page.size as page_size.
+		{"a scalar written as an array is held to its schema", mk("GET", "/api/v1/products?limit[]=101"), IDSpecQueryParam, 400},
+		{"a scalar written as an indexed array is held to its schema", mk("GET", "/api/v1/products?limit%5B0%5D=101"), IDSpecQueryParam, 400},
+		{"a scalar written as an array that fits", mk("GET", "/api/v1/products?limit[]=10"), 0, 0},
 		{"an unknown query parameter is allowed by default", mk("GET", "/api/v1/products?utm_source=x"), 0, 0},
 		{"a path parameter that fits", mk("GET", "/api/v1/products/42"), 0, 0},
 		{"a path parameter of the wrong type", mk("GET", "/api/v1/products/abc"), IDSpecPathParam, 400},
@@ -219,12 +223,17 @@ func TestEveryValueOfARepeatedCookieIsChecked(t *testing.T) {
 
 func TestUnknownQueryParametersCanBeRefused(t *testing.T) {
 	g := shopGuard(t, func(c *Config) { c.RefuseUnknownParams = true })
-	for _, target := range []string{
-		"/api/v1/products?limit[0]=evil", "/api/v1/products?limit[]=evil",
-		"/api/v1/products?limit%5Bvalue%5D=evil", "/api/v1/products?tags[0]=evil",
+	for _, tc := range []struct {
+		target string
+		want   int
+	}{
+		// PHP and Express read a scalar's bracket spellings as the scalar: held to its schema, which evil does not fit.
+		{"/api/v1/products?limit[0]=evil", IDSpecQueryParam}, {"/api/v1/products?limit[]=evil", IDSpecQueryParam},
+		{"/api/v1/products?limit%5Bvalue%5D=evil", IDSpecQueryParam},
+		{"/api/v1/products?tags[0]=evil", IDSpecUnknownQuery},
 	} {
-		t.Run(target, func(t *testing.T) {
-			if res := g.Inspect(mk("GET", target)); !has(res, IDSpecUnknownQuery) || !blocked(res) {
+		t.Run(tc.target, func(t *testing.T) {
+			if res := g.Inspect(mk("GET", tc.target)); !has(res, tc.want) || !blocked(res) {
 				t.Fatalf("an undeclared bracket alias bypassed the scalar/array contract: %+v", res.Verdicts)
 			}
 		})

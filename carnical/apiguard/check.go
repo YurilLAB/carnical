@@ -265,7 +265,9 @@ func (g *Guard) checkRoute(rt *Route, rv *reqView, caps *captures, ids *idSet, c
 	}
 	// ASP.NET Core and echo bind a query name to the parameter it names in other letters (LIMIT for limit), so its values are held
 	// to that parameter too. A required parameter must still be sent in the spelling it is given.
-	var respelled []qpair // named by foldName
+	// PHP reads page.size, "page size" and page[size as page_size, and PHP and Express read page_size[] and page_size[0] as an
+	// array of page_size's values, so those are held to a scalar parameter of that name too.
+	var respelled, mangled []qpair // named by foldName
 	if len(c.queryFold) > 0 {
 		for _, q := range rv.q() {
 			if _, known := c.query[q.name]; known {
@@ -273,6 +275,10 @@ func (g *Guard) checkRoute(rt *Route, rv *reqView, caps *captures, ids *idSet, c
 			}
 			if f := foldName(q.name); c.queryFold[f] != nil {
 				respelled = append(respelled, qpair{name: f, value: q.value})
+			} else if php, _ := phpName(q.name); php != q.name {
+				if f := foldName(php); c.queryFold[f] != nil {
+					mangled = append(mangled, qpair{name: f, value: q.value})
+				}
 			}
 		}
 	}
@@ -288,6 +294,11 @@ func (g *Guard) checkRoute(rt *Route, rv *reqView, caps *captures, ids *idSet, c
 		}
 		for _, q := range respelled {
 			if slices.Contains(c.queryFold[q.name], p.Name) {
+				vals = append(vals, q.value)
+			}
+		}
+		for _, q := range mangled {
+			if scalarParam(p) && slices.Contains(c.queryFold[q.name], p.Name) {
 				vals = append(vals, q.value)
 			}
 		}
@@ -390,6 +401,12 @@ func (g *Guard) checkRoute(rt *Route, rv *reqView, caps *captures, ids *idSet, c
 
 // hasDeepObjectPrefix reports whether a query name such as filter[x] belongs to a described object parameter (written
 // name[key]=value), which is listed by its base name.
+// scalarParam says a parameter takes one plain value: not an array, an object or a value in a media type, whose names in brackets
+// are the parameter's own.
+func scalarParam(p *Param) bool {
+	return p.Media == "" && p.Style != "deepObject" && p.Schema != nil && !hasType(p.Schema, "array") && !hasType(p.Schema, "object")
+}
+
 func hasDeepObjectPrefix(c *routeC, name string) bool {
 	if i := strings.IndexByte(name, '['); i > 0 {
 		p, ok := c.query[name[:i]]
