@@ -3,6 +3,7 @@
 package proxy
 
 import (
+	"bytes"
 	"errors"
 	"net/http"
 	"strings"
@@ -29,25 +30,101 @@ import (
 const uploadProgressName = "php_session_upload_progress"
 
 // uploadProgressField reports the upload progress field in anything a multipart parser could read as a part's headers
-// (see headerBlocks). The text is read as PHP reads a header line, the rest of a line after a NUL dropped, and then
-// squeezed: quotes, backslashes and white space, line ends included, are left out and letters are put in lower case.
-// So a name PHP reads in quotes or bare, with escapes, or across the header lines it joins, is found, and so are a few
-// spellings PHP would not take for the field, which no form sends. Blocks that overlap are read as one stretch, so no
-// byte is read twice, and nothing is copied: a body that is all headers costs one pass.
+// (see headerBlocks). Ordinary headers require a whole Content-Disposition name parameter, so a filename or another
+// header mentioning the marker is harmless. Ambiguous headers retain the conservative squeezed match below: PHP
+// joins continuation lines, truncates at NUL and splits overlong lines into buffer fragments. Overlapping blocks are
+// merged before either scan, so even a body that is all headers costs linear time and constant storage.
 func uploadProgressField(body, delim []byte) bool {
 	blocks := newHeaderBlocks(body, delim)
 	from, to := 0, 0 // the stretch of overlapping blocks taken in so far
 	for blocks.start >= 0 {
 		start, head, _ := blocks.next()
 		if start > to {
-			if squeezedHolds(body[from:to]) {
+			if progressHeaders(body[from:to], delim) {
 				return true
 			}
 			from = start
 		}
 		to = max(to, head)
 	}
-	return squeezedHolds(body[from:to])
+	return progressHeaders(body[from:to], delim)
+}
+
+// progressHeaders narrows only unambiguous CRLF headers. Anything outside that grammar uses the old conservative
+// scan over the entire stretch; an ordinary prefix must not hide a marker in an unusual suffix. The 4 KiB line cap
+// is below PHP's 5 KiB multipart buffer, whose fragments can introduce another header interpretation.
+func progressHeaders(text, delim []byte) bool {
+	found := false
+	first := true
+	for rest := text; len(rest) > 0; first = false {
+		line, after, lf := bytes.Cut(rest, []byte("\n"))
+		rest = after
+		if len(line) > 4096 || bytes.IndexByte(line, 0) >= 0 || lf && !bytes.HasSuffix(line, []byte("\r")) {
+			return squeezedHolds(text)
+		}
+		line = bytes.TrimSuffix(line, []byte("\r"))
+		if first && len(line) == 0 { // a block can start just after a delimiter, before its CRLF
+			continue
+		}
+		if first && (bytes.Equal(line, delim) || bytes.Equal(bytes.TrimSuffix(line, []byte("--")), delim)) {
+			continue
+		}
+		key, value, colon := bytes.Cut(line, []byte(":"))
+		if !colon || !httpguts.ValidHeaderFieldName(string(key)) || bytes.Contains(line, delim) {
+			return squeezedHolds(text)
+		}
+		if bytes.EqualFold(key, []byte("Content-Disposition")) {
+			match, clean := progressDisposition(value)
+			if !clean {
+				return squeezedHolds(text)
+			}
+			found = found || match
+		}
+	}
+	return found
+}
+
+// progressDisposition reads whole parameters only in an ordinary disposition: a token type followed by token keys
+// and bare tokens or closed quoted values. Escapes, malformed quotes and separator ambiguities are left to the
+// conservative scan. Duplicate names are all checked rather than guessing which an application's parser will use.
+func progressDisposition(value []byte) (found, clean bool) {
+	typ, rest, _ := bytes.Cut(value, []byte(";"))
+	if !httpguts.ValidHeaderFieldName(string(bytes.TrimSpace(typ))) {
+		return false, false
+	}
+	for len(rest) > 0 {
+		rest = bytes.TrimLeft(rest, " \t")
+		key, after, equals := bytes.Cut(rest, []byte("="))
+		if !equals || !httpguts.ValidHeaderFieldName(string(key)) {
+			return false, false
+		}
+		after = bytes.TrimLeft(after, " \t")
+		var name []byte
+		if len(after) > 0 && (after[0] == '"' || after[0] == '\'') {
+			quote := after[0]
+			end := bytes.IndexByte(after[1:], quote)
+			if end < 0 {
+				return false, false
+			}
+			name, rest = after[1:1+end], bytes.TrimLeft(after[2+end:], " \t")
+			if bytes.IndexByte(name, '\\') >= 0 || len(rest) > 0 && rest[0] != ';' {
+				return false, false
+			}
+			if len(rest) > 0 {
+				rest = rest[1:]
+			}
+		} else {
+			name, rest, _ = bytes.Cut(after, []byte(";"))
+			name = bytes.TrimRight(name, " \t")
+			if !httpguts.ValidHeaderFieldName(string(name)) {
+				return false, false
+			}
+		}
+		if bytes.EqualFold(key, []byte("name")) && len(name) == len(uploadProgressName) && bytes.EqualFold(name, []byte(uploadProgressName)) {
+			found = true
+		}
+	}
+	return found, true
 }
 
 // progressBorder is, for each prefix of uploadProgressName, the length of its longest proper prefix that is also its
@@ -67,7 +144,9 @@ var progressBorder = func() []int {
 	return border
 }()
 
-// squeezedHolds reports whether text, squeezed as uploadProgressField says, holds uploadProgressName.
+// squeezedHolds reports whether text holds uploadProgressName after dropping quotes, backslashes and C whitespace,
+// folding ASCII case and dropping the rest of each physical line after a NUL. It deliberately overmatches ambiguous
+// headers, including spellings PHP would not take for the field.
 func squeezedHolds(text []byte) bool {
 	w := uploadProgressName
 	k := 0 // how much of the name the squeezed text read so far ends with

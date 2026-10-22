@@ -690,15 +690,43 @@ func TestUploadPolicy(t *testing.T) {
 		{"a script after a boundary in the middle of a line", multipartBody(filePart("photo.jpg", "GIF89a--XX\r\n\r\n<?php system($_GET['c']); ?>")), UploadPolicy{}, idUploadScript},
 		{"script names allowed", multipartBody(filePart("shell.php", "x")), UploadPolicy{AllowExecutableNames: true}, 0},
 		{"script content allowed", multipartBody(filePart("photo.jpg", shell)), UploadPolicy{AllowScriptContent: true}, 0},
-		// PHP2Shell goes through the session upload progress field, which PHP reads before the files.
+		// Demonstrated PHP2Shell session paths use the upload progress field, which PHP reads before the files.
 		{"the session upload progress field", multipartBody(progress(`"PHP_SESSION_UPLOAD_PROGRESS"`), filePart("photo.jpg", jpeg)), UploadPolicy{}, idPHP2ShellUpload},
 		{"the progress field unquoted", multipartBody(progress("PHP_SESSION_UPLOAD_PROGRESS"), filePart("photo.jpg", jpeg)), UploadPolicy{}, idPHP2ShellUpload},
 		{"the progress field in single quotes", multipartBody(progress("'PHP_SESSION_UPLOAD_PROGRESS'"), filePart("photo.jpg", jpeg)), UploadPolicy{}, idPHP2ShellUpload},
 		{"the progress field continued on the next line", multipartBody(progress("\"PHP_SESSION_UPLOAD\r\n_PROGRESS\""), filePart("photo.jpg", jpeg)), UploadPolicy{}, idPHP2ShellUpload},
 		{"the progress field split by a NUL, with the upload checks off", multipartBody(progress("\"PHP_SESSION_UPLOAD\x00x: y\r\n_PROGRESS\""), filePart("photo.jpg", jpeg)),
 			UploadPolicy{AllowExecutableNames: true, AllowScriptContent: true}, idPHP2ShellUpload},
-		{"a name that ends in the progress field's after a false start", multipartBody(progress(`"PHP_SESSION_UPLOAD_PHP_SESSION_UPLOAD_PROGRESS"`)), UploadPolicy{}, idPHP2ShellUpload},
+		{"a name that ends in the progress field's after a false start", multipartBody(progress(`"PHP_SESSION_UPLOAD_PHP_SESSION_UPLOAD_PROGRESS"`)), UploadPolicy{}, 0},
 		{"the progress field after a file", multipartBody(filePart("photo.jpg", jpeg), progress(`"PHP_SESSION_UPLOAD_PROGRESS"`)), UploadPolicy{}, idPHP2ShellUpload},
+		{"progress marker in a filename", multipartBody(filePart("PHP_SESSION_UPLOAD_PROGRESS.txt", "ordinary text")), UploadPolicy{}, 0},
+		{"progress marker in another field", multipartBody(progress(`"about_PHP_SESSION_UPLOAD_PROGRESS"`)), UploadPolicy{}, 0},
+		{"progress marker in an unrelated header", multipartBody("Content-Disposition: form-data; name=\"caption\"\r\nX-Comment: PHP_SESSION_UPLOAD_PROGRESS\r\n\r\nordinary text"), UploadPolicy{}, 0},
+		{"a quoted parameter mentioning the progress name", multipartBody(disposition(`description="name=PHP_SESSION_UPLOAD_PROGRESS"`, "ordinary text")), UploadPolicy{}, 0},
+		{"a quoted parameter with a semicolon before the progress name", multipartBody(disposition(`description="a; name=PHP_SESSION_UPLOAD_PROGRESS"`, "ordinary text")), UploadPolicy{}, 0},
+		{"another header quoting a disposition", multipartBody("Content-Disposition: form-data; name=caption\r\nX-Comment: Content-Disposition: form-data; name=PHP_SESSION_UPLOAD_PROGRESS\r\n\r\nordinary text"), UploadPolicy{}, 0},
+		{"a progress name with a suffix", multipartBody(progress(`"PHP_SESSION_UPLOAD_PROGRESS_extra"`)), UploadPolicy{}, 0},
+		{"a different parameter key", multipartBody(disposition(`othername="PHP_SESSION_UPLOAD_PROGRESS"`, "ordinary text")), UploadPolicy{}, 0},
+		{"a distinct Unicode progress-like name", multipartBody(progress("\"PHP_\u017fESSION_UPLOAD_PROGRESS\"")), UploadPolicy{}, 0},
+		{"the progress field with mixed case keys", multipartBody("cOnTeNt-DiSpOsItIoN: form-data; NaMe=\"PHP_SESSION_UPLOAD_PROGRESS\"\r\n\r\nupload-1"), UploadPolicy{}, idPHP2ShellUpload},
+		{"the progress field with a lower case value", multipartBody(progress(`"php_session_upload_progress"`)), UploadPolicy{}, idPHP2ShellUpload},
+		{"the progress field in a duplicate parameter first", multipartBody(disposition(`name="PHP_SESSION_UPLOAD_PROGRESS"; name=caption`, "upload-1")), UploadPolicy{}, idPHP2ShellUpload},
+		{"the progress field in a duplicate parameter last", multipartBody(disposition(`name=caption; name="PHP_SESSION_UPLOAD_PROGRESS"`, "upload-1")), UploadPolicy{}, idPHP2ShellUpload},
+		{"the progress field in a duplicate header", multipartBody("Content-Disposition: form-data; name=caption\r\nContent-Disposition: form-data; name=PHP_SESSION_UPLOAD_PROGRESS\r\n\r\nupload-1"), UploadPolicy{}, idPHP2ShellUpload},
+		{"the progress field in an unclosed quote", multipartBody(progress(`"PHP_SESSION_UPLOAD_PROGRESS`)), UploadPolicy{}, idPHP2ShellUpload},
+		{"the progress field after repeated equals", multipartBody(progress(`==PHP_SESSION_UPLOAD_PROGRESS`)), UploadPolicy{}, idPHP2ShellUpload},
+		{"the progress field after repeated semicolons", multipartBody(disposition(`;;name=PHP_SESSION_UPLOAD_PROGRESS`, "upload-1")), UploadPolicy{}, idPHP2ShellUpload},
+		{"the progress field without a disposition type", multipartBody("Content-Disposition: name=PHP_SESSION_UPLOAD_PROGRESS\r\n\r\nupload-1"), UploadPolicy{}, idPHP2ShellUpload},
+		{"the progress field after another disposition type", multipartBody("Content-Disposition: arbitrary; name=PHP_SESSION_UPLOAD_PROGRESS\r\n\r\nupload-1"), UploadPolicy{}, idPHP2ShellUpload},
+		{"the progress field after an escaped quoted parameter", multipartBody(disposition(`description="a\"; b"; name=PHP_SESSION_UPLOAD_PROGRESS`, "upload-1")), UploadPolicy{}, idPHP2ShellUpload},
+		{"the progress parameter key continued on the next line", multipartBody("Content-Disposition: form-data; na\r\nme=PHP_SESSION_UPLOAD_PROGRESS\r\n\r\nupload-1"), UploadPolicy{}, idPHP2ShellUpload},
+		{"the progress field among overlapping headers", multipartBody(strings.Repeat("--XX\r\n", 1000) + progress(`"PHP_SESSION_UPLOAD_PROGRESS"`)), UploadPolicy{}, idPHP2ShellUpload},
+		{"the progress field after a long header", multipartBody("X-Comment: " + strings.Repeat("x", 16384) + "\r\n" + progress(`"PHP_SESSION_UPLOAD_PROGRESS"`)), UploadPolicy{}, idPHP2ShellUpload},
+		{"the progress field with LF headers", "--XX\nContent-Disposition: form-data; name=PHP_SESSION_UPLOAD_PROGRESS\n\nupload-1\n--XX--\n", UploadPolicy{}, idPHP2ShellUpload},
+		{"the progress field on a whitespace continuation", multipartBody("Content-Disposition: form-data;\r\n name=PHP_SESSION_UPLOAD_PROGRESS\r\n\r\nupload-1"), UploadPolicy{}, idPHP2ShellUpload},
+		{"the progress field after a boundary inside headers", multipartBody("X-Comment: other--XXContent-Disposition: form-data; name=PHP_SESSION_UPLOAD_PROGRESS\r\n\r\nupload-1"), UploadPolicy{}, idPHP2ShellUpload},
+		{"the progress field after the ordinary line limit", multipartBody("X-Comment: " + strings.Repeat("x", 4085) + "\r\n" + progress(`"PHP_SESSION_UPLOAD_PROGRESS"`)), UploadPolicy{}, idPHP2ShellUpload},
+		{"an ambiguous escaped parameter retains conservative detection", multipartBody(disposition(`description="a\"; name=PHP_SESSION_UPLOAD_PROGRESS"`, "ordinary text")), UploadPolicy{}, idPHP2ShellUpload},
 		{"the progress field allowed", multipartBody(progress(`"PHP_SESSION_UPLOAD_PROGRESS"`), filePart("photo.jpg", jpeg)), UploadPolicy{AllowUploadProgress: true}, 0},
 		{"a field whose text names the progress field", multipartBody("Content-Disposition: form-data; name=\"comment\"\r\n\r\nset PHP_SESSION_UPLOAD_PROGRESS in the form"), UploadPolicy{}, 0},
 		{"a file whose text names the progress field", multipartBody(filePart("notes.txt", "name=\"PHP_SESSION_UPLOAD_PROGRESS\"\r\n")), UploadPolicy{}, 0},
@@ -717,6 +745,9 @@ func TestUploadPolicy(t *testing.T) {
 				if status != 200 || len(s.up.requests()) != 1 {
 					t.Fatalf("a harmless upload: status %d, %d requests", status, len(s.up.requests()))
 				}
+				if string(s.up.requests()[0].Body) != tt.body {
+					t.Fatal("the application did not receive the original multipart body")
+				}
 				return
 			}
 			if status != 403 || len(s.up.requests()) != 0 || seen.last() != tt.refused {
@@ -727,6 +758,55 @@ func TestUploadPolicy(t *testing.T) {
 			}
 		})
 	}
+	// PHP reads a delimiter inside headers as a continuation; a quoted boundary can then supply a parameter.
+	t.Run("a boundary supplying the progress parameter inside headers", func(t *testing.T) {
+		boundary := "XX; name=PHP_SESSION_UPLOAD_PROGRESS"
+		body := "--" + boundary + "\r\nContent-Disposition: form-data; name=caption\r\n--" + boundary + "\r\n\r\nordinary value\r\n--" + boundary + "--\r\n"
+		var seen refusals
+		s := start(t, func(c *Config) { ruleSetOff(c); c.OnMatch = seen.record })
+		request := strings.Replace(uploadRequest(body), "boundary=XX", "boundary=\""+boundary+"\"", 1)
+		status, _ := s.raw(t, request)
+		if status != 403 || len(s.up.requests()) != 0 || seen.last() != idPHP2ShellUpload {
+			t.Fatalf("status %d, %d requests, id %d; want 403, none, %d", status, len(s.up.requests()), seen.last(), idPHP2ShellUpload)
+		}
+	})
+}
+
+// The scanner's parsing and resource bounds are exercised directly; HTTP status and origin reach belong above.
+func FuzzUploadProgressField(f *testing.F) {
+	f.Add([]byte("caption"), []byte("PHP_SESSION_UPLOAD_PROGRESS"))
+	f.Add([]byte("PHP_SESSION_UPLOAD_PROGRESS"), []byte("ordinary"))
+	f.Add([]byte("about_PHP_SESSION_UPLOAD_PROGRESS"), []byte("ordinary"))
+	f.Add([]byte(multipartBody("Content-Disposition: form-data; name=\"PHP_\u017fESSION_UPLOAD_PROGRESS\"\r\n\r\nordinary")), []byte("ordinary"))
+	f.Fuzz(func(t *testing.T, field, note []byte) {
+		if len(field)+len(note) > 16384 {
+			t.Skip()
+		}
+		token := func(raw []byte) string {
+			b := append([]byte(nil), raw...)
+			for i, c := range b {
+				switch {
+				case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '_', c == '-':
+				default:
+					b[i] = 'x'
+				}
+			}
+			return string(b)
+		}
+		name := token(field)
+		// Keep generated headers below the conservative long-line fallback; arbitrary bytes still exercise it below.
+		if len(name) <= 512 && len(note) <= 512 {
+			body := multipartBody("Content-Disposition: form-data; name=\""+name+"\"; description=\""+token(note)+"\"\r\n\r\nordinary",
+				filePart("PHP_SESSION_UPLOAD_PROGRESS.txt", "ordinary"))
+			if got, want := uploadProgressField([]byte(body), []byte("--XX")), strings.EqualFold(name, uploadProgressName); got != want {
+				t.Fatalf("field %q: progress=%v, want %v", name, got, want)
+			}
+		}
+		// Narrowing must never introduce a refusal that the former conservative signature would not make.
+		if uploadProgressField(field, []byte("--XX")) && !squeezedHolds(field) {
+			t.Fatal("progress scanner matched without the marker")
+		}
+	})
 }
 
 func TestWordPressPolicy(t *testing.T) {

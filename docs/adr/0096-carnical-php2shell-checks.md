@@ -44,9 +44,10 @@ fatal-error producer, stale-state consumer or memory-disclosure channel; only th
 
 - A multipart body with PHP's session upload progress field (`PHP_SESSION_UPLOAD_PROGRESS`) is refused with 403 as
   rule 5000013, before the other upload checks, so its line names the attack. The name is looked for in everything
-  a parser could read as a part's headers (the same blocks the NUL check reads), read as PHP reads a header line (the
-  rest of a line after a NUL dropped), with quotes, backslashes and white space taken out and letters in lower case:
-  a superset of what PHP takes for the field. `UploadPolicy.AllowUploadProgress` (`-allow-upload-progress`,
+  a parser could read as a part's headers (the same blocks the NUL check reads). Ordinary headers require a whole
+  `Content-Disposition` `name` parameter. Ambiguous forms retain the conservative text match: the rest of a line
+  after a NUL is dropped, quotes, backslashes and white space are taken out, and ASCII letters are folded to lower
+  case. This remains a superset of what PHP takes for the field. `UploadPolicy.AllowUploadProgress` (`-allow-upload-progress`,
   `uploads.allow_upload_progress`) turns it off.
 - A response that sets `PHPSESSID`, or a name in `ResponsePolicy.SessionCookies` (`-session-cookies`,
   `responses.session_cookies`, up to 16 cookie names), to anything but a session id PHP could have made (empty, or up

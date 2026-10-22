@@ -120,8 +120,12 @@ rule set's mode:
 
 - **The request.** A multipart body with PHP's session upload progress field
   (`PHP_SESSION_UPLOAD_PROGRESS`, PHP's default `session.upload_progress.name`) is refused with
-  403 (5000013). The name is looked for wherever a parser could read a part's headers, as PHP reads
-  it: quoted or bare, with escapes, across the header lines PHP joins and after a NUL, in any case.
+  403 (5000013). Ordinary part headers require the whole `Content-Disposition` `name` parameter,
+  quoted or bare and in any case; filenames, other parameter values and unrelated headers can
+  mention the marker. Ambiguous headers retain a conservative text match, including escapes,
+  unclosed quotes, PHP's continued or NUL-truncated lines, interior boundaries and long lines.
+  Duplicate matching names are refused regardless of their order. These ambiguous forms can
+  still produce false positives; the proxy does not reproduce every PHP multipart configuration.
   Few sites use upload progress bars; one that does sets `-allow-upload-progress`.
 - **The response.** A response that sets `PHPSESSID`, or a name in `-session-cookies`, to
   anything but a session id PHP could have made (up to 256 letters, digits, `-` and `,`, which PHP
