@@ -136,11 +136,18 @@ func TestRequestBounds(t *testing.T) {
 			t.Fatalf("%d pieces", len(got))
 		}
 	})
-	t.Run("a value up to twice the cap is covered whole", func(t *testing.T) {
+	t.Run("a value up to twice the cap is covered whole, across the boundary too", func(t *testing.T) {
 		body := strings.Repeat("a", maxValue-1) + "XY" + strings.Repeat("b", maxValue-3)
 		got := viewOf(t, mkReq("POST", "/", nil, body), kBody)
-		if len(got) != 2 || !strings.Contains(got[0]+got[1], "XY") {
-			t.Fatalf("%d pieces", len(got))
+		whole := false
+		for _, piece := range got {
+			whole = whole || strings.Contains(piece, "XY") // a match is made in one piece, never across two
+			if len(piece) != maxValue {
+				t.Fatalf("a piece of %d bytes", len(piece))
+			}
+		}
+		if len(got) != 3 || !whole {
+			t.Fatalf("%d pieces, XY in one of them: %v", len(got), whole)
 		}
 	})
 	t.Run("cookies and headers are capped", func(t *testing.T) {

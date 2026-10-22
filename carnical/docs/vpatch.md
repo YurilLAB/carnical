@@ -81,7 +81,8 @@ match, refusal and limit totals. Callers must still provide bounded request bodi
 proxy's inspected/forwarded request contract.
 
 Form and JSON bodies are read whole into arguments (at most 1,024); a value longer than 64 KiB, in
-any target, is matched as its first and last 64 KiB. A JSON argument is named by the keys of its
+any target, is matched as its first and last 64 KiB, and under 128 KiB also as the 64 KiB about its
+middle, so a match of up to 32 KiB is seen wherever it lies in such a value. A JSON argument is named by the keys of its
 first 24 levels, each cut to 64 bytes, and is also picked by its own key at any depth; past 1,000
 levels of nesting the rest of the document is read for its string literals, as a malformed document
 is. Multipart parts are read to their end on the same terms. A multipart body with more than 64

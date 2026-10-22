@@ -18,6 +18,7 @@ import (
 const (
 	// maxValue is the longest value matched whole. A longer one is matched as its first and its last maxValue bytes, so that a
 	// payload placed after a long run of padding is still seen: the proxy limits a body that is not an upload to twice this.
+	// Under twice this, a third window about its middle is matched too (see capped).
 	maxValue = 64 << 10
 	// maxArgs is the most arguments (query, form, JSON and multipart together) that are kept.
 	maxArgs = 1024
@@ -177,7 +178,7 @@ func (v *view) add(name, val string) {
 	v.vals = append(v.vals, val)
 }
 
-// addCapped adds a value, or its first and last maxValue bytes if it is longer.
+// addCapped adds a value, or the windows capped gives of it if it is longer.
 func (c *matchCtx) addCapped(v *view, name, s string) {
 	if len(s) <= maxValue {
 		v.vals = append(v.vals, s)
@@ -186,12 +187,8 @@ func (c *matchCtx) addCapped(v *view, name, s string) {
 		}
 		return
 	}
-	c.truncated = true
-	tail := s[len(s)-maxValue:]
-	if len(s) < 2*maxValue {
-		tail = s[maxValue:]
-	}
-	for _, part := range [2]string{s[:maxValue], tail} {
+	parts, n := c.capped(s)
+	for _, part := range parts[:n] {
 		v.vals = append(v.vals, part)
 		if v.names != nil || name != "" {
 			v.names = append(v.names, name)
@@ -317,13 +314,10 @@ func (c *matchCtx) buildArgs() {
 		if len(q) <= maxValue {
 			c.formPairs(q, false)
 		} else {
-			c.truncated = true
-			c.formPairs(q[:maxValue], false)
-			tail := q[len(q)-maxValue:]
-			if len(q) < 2*maxValue {
-				tail = q[maxValue:]
+			parts, n := c.capped(q)
+			for i, part := range parts[:n] {
+				c.formPairs(part, i > 0) // a window after the first begins part way through a pair
 			}
-			c.formPairs(tail, true)
 		}
 	}
 	if len(req.Body) > 0 {
@@ -376,8 +370,13 @@ func clipValue(s string) string {
 // addArg records one argument.
 func (c *matchCtx) addArg(name, val, leaf string) bool {
 	if len(val) > maxValue {
-		head, tail := c.capped(val)
-		return c.addArg(name, head, leaf) && c.addArg(name, tail, leaf)
+		parts, n := c.capped(val)
+		for _, part := range parts[:n] {
+			if !c.addArg(name, part, leaf) {
+				return false
+			}
+		}
+		return true
 	}
 	args := &c.views[kArgs]
 	if len(args.vals) >= maxArgs {
@@ -392,14 +391,18 @@ func (c *matchCtx) addArg(name, val, leaf string) bool {
 	return true
 }
 
-// capped splits a value longer than maxValue into its first and last maxValue bytes (the rest of it, when it is under twice
-// that), as addCapped does, so a payload after a long run of padding is still seen.
-func (c *matchCtx) capped(s string) (head, tail string) {
+// capped splits a value longer than maxValue into windows of maxValue bytes: its first and its last, so a payload after a
+// long run of padding is still seen, and, under twice maxValue, one about its middle. The three then overlap by at least half
+// of maxValue, so a match of up to that length is seen whole wherever it is, the boundary between the first and the last
+// included. From twice maxValue the middle is not matched (readEnds keeps only the ends of such a part).
+func (c *matchCtx) capped(s string) (parts [3]string, n int) {
 	c.truncated = true
+	parts[0], parts[1], n = s[:maxValue], s[len(s)-maxValue:], 2
 	if len(s) < 2*maxValue {
-		return s[:maxValue], s[maxValue:]
+		mid := (len(s) - maxValue) / 2
+		parts[2], n = s[mid:mid+maxValue], 3
 	}
-	return s[:maxValue], s[len(s)-maxValue:]
+	return parts, n
 }
 
 // formPairs reads name=value pairs separated by '&'. A ';' is part of the value, as it is for PHP, Java, ASP.NET, Go and Python's
@@ -735,8 +738,13 @@ func looseString(b []byte, i, j int) string {
 // addJSONArg adds a flattened JSON value as an argument, and its name as an argument name.
 func (c *matchCtx) addJSONArg(path, val, leaf string) bool {
 	if len(val) > maxValue {
-		head, tail := c.capped(val)
-		return c.addJSONArg(path, head, leaf) && c.addJSONArg(path, tail, leaf)
+		parts, n := c.capped(val)
+		for _, part := range parts[:n] {
+			if !c.addJSONArg(path, part, leaf) {
+				return false
+			}
+		}
+		return true
 	}
 	args := &c.views[kArgs]
 	if len(args.vals) >= maxArgs {
@@ -965,8 +973,13 @@ func (c *matchCtx) readEnds(r io.Reader) string {
 // addArgOnly adds an argument whose name is already in the argument names.
 func (c *matchCtx) addArgOnly(name, val string) bool {
 	if len(val) > maxValue {
-		head, tail := c.capped(val)
-		return c.addArgOnly(name, head) && c.addArgOnly(name, tail)
+		parts, n := c.capped(val)
+		for _, part := range parts[:n] {
+			if !c.addArgOnly(name, part) {
+				return false
+			}
+		}
+		return true
 	}
 	args := &c.views[kArgs]
 	if len(args.vals) >= maxArgs {
