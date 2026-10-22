@@ -54,6 +54,8 @@ or changed templates and duplicate names. Reordering results does not change it.
 changes require reviewing the suite and refreshing the affected baselines with `--write`; that
 updates the identity and outcome exceptions together. The pin checks the declared suite, rather
 than authenticating a report producer or claiming literal TCP-byte identity.
+The complete proposed baseline is checked before writing: rejected alert evidence, partial outcomes
+or invalid serialized entries leave an existing baseline unchanged and do not create a new one.
 The checker also validates each measured row directly: integer counts, zero errors or unavailable
 responses (501 remains a refusal), status totals equal to requests, origin hits equal to 200
 responses, and all row requests summing to 10,000. Stale summary zeros cannot hide a failing row.

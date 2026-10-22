@@ -261,16 +261,23 @@ class LiveReportTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0, result.stdout)
                 self.assertIn("needs a baseline", result.stderr)
             with self.subTest(name="a written baseline holds and keeps its header"):
-                path.write_text(json.dumps(original), encoding="utf-8")
+                refreshed = copy.deepcopy(original)
+                next(row for row in refreshed["Results"] if row["Name"] == "php/second")["RequestSHA256"] = "0" * 64
+                path.write_text(json.dumps(refreshed), encoding="utf-8")
                 baseline.write_text("# kept\n[admitted attacks]\n", encoding="utf-8")
                 result = subprocess.run([sys.executable, str(CHECKER), str(path), str(baseline), "--write"],
                                         capture_output=True, text=True, timeout=30, check=False)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 written = baseline.read_text(encoding="utf-8")
                 self.assertTrue(written.startswith("# kept\n"), written)
-                self.assertIn(templates_pin(original), written)
+                self.assertIn(templates_pin(refreshed), written)
                 self.assertIn("\ncsrf/context\n", written)
                 self.assertIn("\nmalformed/ordinary\n", written)
+                baseline.unlink()
+                result = subprocess.run([sys.executable, str(CHECKER), str(path), str(baseline), "--write"],
+                                        capture_output=True, text=True, timeout=30, check=False)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(templates_pin(refreshed), baseline.read_text(encoding="utf-8"))
             malformed = copy.deepcopy(original)
             malformed["Results"][0]["RequestSHA256"] = "invalid"
             duplicate = copy.deepcopy(original)
@@ -279,18 +286,47 @@ class LiveReportTests(unittest.TestCase):
             duplicate["Results"].append(case(duplicate["Results"][0]["Name"], True, 1, 403))
             failed = copy.deepcopy(original)
             failed["Results"][0]["Errors"] = 1
+            invalid_name = copy.deepcopy(original)
+            next(row for row in invalid_name["Results"] if row["Name"] == "csrf/context")["Name"] = "csrf/\ud800"
+            invalid_description = copy.deepcopy(original)
+            next(row for row in invalid_description["Results"] if row["Name"] == "csrf/context")["Description"] = "\ud800"
+            broken_entry = copy.deepcopy(original)
+            next(row for row in broken_entry["Results"] if row["Name"] == "csrf/context")["Description"] = "description\ngone/control"
+            partial_control = copy.deepcopy(original)
+            row = next(row for row in partial_control["Results"] if row["Name"] == "malformed/ordinary")
+            row.update(Requests=2, Statuses={"200": 1, "403": 1}, OriginReached=1)
+            target = next(row for row in partial_control["Results"] if row["Name"] == "xss/attack")
+            target["Requests"] -= 1
+            target["Statuses"]["403"] -= 1
+            partial_control = report(partial_control["Results"])
             for label, data, error in (("malformed request identity", malformed, "template manifest"),
                                        ("duplicate template name", duplicate, "template manifest"),
-                                       ("a row error", failed, "invalid live WAF measurement")):
+                                       ("a row error", failed, "invalid live WAF measurement"),
+                                       ("missing alert probe", dict(original, AlertProbe=False), "did not record the alerts"),
+                                       ("a silent admitted attack", silent, "without an alert"),
+                                       ("a partial admitted attack", partly, "only some requests"),
+                                       ("a partial refused control", partial_control, "only some requests"),
+                                       ("a serialized extra entry", broken_entry, "not in the suite"),
+                                       ("an unencodable name", invalid_name, "valid UTF-8"),
+                                       ("an unencodable description", invalid_description, "valid UTF-8")):
                 with self.subTest(name="writing refuses " + label):
+                    data = copy.deepcopy(data)
+                    next(row for row in data["Results"] if row["Name"] == "php/second")["RequestSHA256"] = "0" * 64
                     path.write_text(json.dumps(data), encoding="utf-8")
                     before = "# kept\n" + exact
                     baseline.write_text(before, encoding="utf-8")
+                    before_bytes = baseline.read_bytes()
                     result = subprocess.run([sys.executable, str(CHECKER), str(path), str(baseline), "--write"],
                                             capture_output=True, text=True, timeout=30, check=False)
                     self.assertNotEqual(result.returncode, 0, result.stdout)
                     self.assertIn(error, result.stderr)
-                    self.assertEqual(baseline.read_text(encoding="utf-8"), before)
+                    self.assertEqual(baseline.read_bytes(), before_bytes)
+                    baseline.unlink()
+                    result = subprocess.run([sys.executable, str(CHECKER), str(path), str(baseline), "--write"],
+                                            capture_output=True, text=True, timeout=30, check=False)
+                    self.assertNotEqual(result.returncode, 0, result.stdout)
+                    self.assertIn(error, result.stderr)
+                    self.assertFalse(baseline.exists())
 
 
 if __name__ == "__main__":

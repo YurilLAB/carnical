@@ -110,9 +110,9 @@ def outcome(report):
     return admitted, refused
 
 
-def read_baseline(path):
+def read_baseline(text):
     lists, current = {ADMITTED: set(), REFUSED: set()}, None
-    for line in pathlib.Path(path).read_text(encoding="utf-8").splitlines():
+    for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
             continue
@@ -126,12 +126,16 @@ def read_baseline(path):
 
 
 def check_baseline(report, path):
-    pins = [line[len(TEMPLATE_PIN):] for line in pathlib.Path(path).read_text(encoding="utf-8").splitlines()
+    check_baseline_text(report, pathlib.Path(path).read_text(encoding="utf-8"))
+
+
+def check_baseline_text(report, text):
+    pins = [line[len(TEMPLATE_PIN):] for line in text.splitlines()
             if line.startswith(TEMPLATE_PIN)]
     if len(pins) != 1 or pins[0] != template_digest(report):
         raise SystemExit("template manifest changed or baseline pin missing/invalid; review the suite before --write")
     admitted, refused = outcome(report)
-    allowed, expected_refused = read_baseline(path)
+    allowed, expected_refused = read_baseline(text)
     rows = {row["Name"]: row for row in report["Results"]}
     problems = []
     for name in sorted(allowed | expected_refused):
@@ -187,7 +191,13 @@ def write_baseline(report, path):
                 out.append("# " + category + ": " + (rows[name].get("Description") or "").strip())
             out.append(name)
         out.append("")
-    pathlib.Path(path).write_text("\n".join(out), encoding="utf-8")
+    text = "\n".join(out)
+    check_baseline_text(report, text)
+    try:
+        encoded = text.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise SystemExit("baseline entries must be valid UTF-8") from error
+    pathlib.Path(path).write_bytes(encoded)
 
 
 def main():
