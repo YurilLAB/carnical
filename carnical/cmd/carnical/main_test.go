@@ -3738,7 +3738,8 @@ func TestAlertEndpointSendsAttacks(t *testing.T) {
 }
 
 // Every intrusion alert written to the log is sent to the endpoint as that line, the source shown as -alert-source
-// says, including those written as the alerts close: the endpoint closes them before it stops sending.
+// says, including those written as the alerts close (the endpoint closes them before it stops sending) and a repeat
+// offender's ban, which the shield's events write.
 func TestAlertEndpointSendsIntrusionAlerts(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -3756,10 +3757,14 @@ func TestAlertEndpointSendsIntrusionAlerts(t *testing.T) {
 			a := alert.Alert{Layer: alert.LayerCRS, RuleID: 942100, Sig: alert.Signature(942100), Risk: alert.RiskHigh, Action: alert.Blocked,
 				Mode: alert.ModeBlock, Status: 403, Src: netip.MustParseAddr("203.0.113.9"), Method: "GET", Host: "example.com", Path: "/search",
 				Count: 1, First: now, Last: now}
+			ban := shield.Event{Kind: "source_blocked", Mode: "on", Source: netip.MustParsePrefix("203.0.113.9/32"), Client: a.Src,
+				Points: 12, Sigs: []string{"crs-942100"}, TTL: 10 * time.Minute, Until: now.Add(10 * time.Minute), Level: 1}
 			if ep.alerts != nil {
-				ep.alerts.onAlert(a) // written at once
-				ep.alerts.onAlert(a) // a repeat, written as "alert repeated" when the alerts close
+				ep.alerts.onAlert(a)                                 // written at once
+				ep.alerts.onAlert(a)                                 // a repeat, written as "alert repeated" when the alerts close
+				shieldEventLogger(log, false, ep.alerts.source)(ban) // the shield's events are logged, then
 			}
+			ep.shieldEvent(ban) // handed to the endpoint
 			ep.close(log)
 			var lines []map[string]any
 			for _, m := range received(nil) {
@@ -3778,7 +3783,7 @@ func TestAlertEndpointSendsIntrusionAlerts(t *testing.T) {
 			var written []map[string]any
 			for _, line := range strings.Split(logs.String(), "\n") {
 				var v map[string]any
-				if json.Unmarshal([]byte(line), &v) == nil && (v["msg"] == "intrusion blocked" || v["msg"] == "alert repeated") {
+				if json.Unmarshal([]byte(line), &v) == nil && (v["msg"] == "intrusion blocked" || v["msg"] == "alert repeated" || v["msg"] == "source blocked") {
 					delete(v, "time")
 					delete(v, "level")
 					written = append(written, v)
@@ -3790,11 +3795,18 @@ func TestAlertEndpointSendsIntrusionAlerts(t *testing.T) {
 				}
 				return
 			}
-			if len(written) != 2 || !reflect.DeepEqual(lines, written) {
-				t.Fatalf("the endpoint was sent\n%v\nwant the log's alert and repeat\n%v", lines, written)
+			byMsg := func(l []map[string]any) { // the ban is written apart from the alerts' queue: their order may differ
+				slices.SortFunc(l, func(x, y map[string]any) int { return strings.Compare(x["msg"].(string), y["msg"].(string)) })
 			}
-			if lines[0]["src"] != tc.src || lines[1]["src"] != tc.src {
-				t.Fatalf("sources %v and %v, want %s", lines[0]["src"], lines[1]["src"], tc.src)
+			byMsg(lines)
+			byMsg(written)
+			if len(written) != 3 || !reflect.DeepEqual(lines, written) {
+				t.Fatalf("the endpoint was sent\n%v\nwant the log's alert, repeat and ban\n%v", lines, written)
+			}
+			for _, l := range lines {
+				if l["src"] != tc.src {
+					t.Fatalf("%s from %v, want %s", l["msg"], l["src"], tc.src)
+				}
 			}
 			if !strings.Contains(logs.String(), `"intrusions_not_sent":0`) {
 				t.Fatalf("the endpoint's close does not say that every alert was sent: %s", logs)

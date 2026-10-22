@@ -103,11 +103,12 @@ Every [intrusion alert](proxy-reference.md#intrusion-alerts) written to the log 
 line, without its `time` and `level`: the same fields under the same names. They are `intrusion
 blocked`, `intrusion detected`, `inspection incomplete`, `alert repeated`, `suspected intrusion`,
 `alerts dropped` and the [repeat offender](ddos.md#repeat-offenders) lines (`source blocked`,
-`source would be blocked`, `source block ended`, `auto-block table full`). The `intrusion totals`
-and `intrusion summary` reports stay in the log. As the endpoint is sent the lines written to the
-log, the log's limits come first: one line per source, signature and action in
-`-alert-repeat-window`, at most `-alert-rate` lines a second, and `-alert-min-risk`,
-`-alert-suppress` and `-alert-exclude-sources` apply. With `-alerts off` none are sent.
+`source would be blocked`, `source block ended`, `auto-block table full; sources not blocked`,
+`auto-block events not reported`). The `intrusion totals` and `intrusion summary` reports stay in
+the log. As the endpoint is sent the lines written to the log, the log's limits come first: one
+alert line per source, signature and action in `-alert-repeat-window`, at most `-alert-rate`
+alert lines a second, and `-alert-min-risk`, `-alert-suppress` and `-alert-exclude-sources` apply.
+The repeat-offender lines are sent as the log writes each one. With `-alerts off` none are sent.
 
 ```json
 {
@@ -141,14 +142,15 @@ log, the log's limits come first: one line per source, signature and action in
 
 | Field | Meaning |
 | --- | --- |
-| `severity` | `critical` when an alert is high risk, a suspected intrusion or a source blocked; `warning` when one is medium risk or alerts were dropped or not sent; `info` otherwise |
+| `severity` | `critical` when an alert is high risk, a suspected intrusion or a source blocked; `warning` when one is medium risk, a source would be blocked, the auto-block table is full or its events were not reported, or alerts were dropped or not sent; `info` otherwise |
 | `intrusions` | The alerts, in the order they were written to the log, each as its line; see [intrusion alerts](proxy-reference.md#intrusion-alerts) for the fields |
-| `intrusions_dropped` | Alerts before these that were not sent: more than 256 waited, or the queue had no room for their message |
+| `intrusions_dropped` | Alerts before these that were not sent: more than 256 waited, or their message found no room in the queue, gave its place or could not be delivered |
 
 A message holds at most 50 alerts and 16 KiB; while more wait, a second follows within the same
-second. When 256 wait, a medium or high risk alert takes the place of the oldest lower one, and any
-other is not sent; the next message counts them in `intrusions_dropped`. The alerts are in the log
-either way.
+second. When 256 wait, a medium or high risk alert, an `alerts dropped` line or a repeat-offender
+line other than `source block ended` takes the place of the oldest line that is none of these, and
+any other is not sent; the next message counts them in `intrusions_dropped`. The alerts are in the
+log either way.
 
 Each alert names the visitor's address as `-alert-source` says: `full` (the default), `prefix`
 (its /24 or /48) or `off`, and the path as `-alert-path` says. Use `-alert-source prefix` or `off`

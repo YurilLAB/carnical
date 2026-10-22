@@ -42,14 +42,19 @@ alert the log does while it keeps up, and is told how many it missed when it doe
 - `alert.NewLine` gives a record as `LogSink` writes it, without the time and the level. `TestSinks` compares the two,
   field for field, for every kind of record; the totals and the summary are reports and have no line.
 - `notify.AlertSink` is an `alert.Sink` that never blocks. At most 256 alerts wait; when that many do, a medium or high
-  risk alert takes the place of the oldest lower one and any other is counted as not sent. Once a second it sends a
+  risk alert, an `alerts dropped` line or a ban takes the place of the oldest line that is none of these, and any other
+  is counted as not sent. Once a second it sends a
   message of event `intrusions` (a second one in the same second when more wait than one holds), each of at most 50
   alerts and 14 KiB of them, with a severity, a line of text and `intrusions_dropped`, the alerts before it that were
   not sent.
 - In the sender's full queue a message of intrusion alerts gives its place to any other, as an attack's update does.
+  The sender counts the alerts of a message it drops, or cannot deliver, and the next message of intrusion alerts
+  reports them in `intrusions_dropped`.
 - In `carnical`, the alert queue's goroutine writes each line and then hands the record to the endpoint's sink, so the
   endpoint gets exactly the lines the log is written, after `-alert-min-risk`, `-alert-suppress`,
   `-alert-exclude-sources`, the deduplication and `-alert-rate`. Each line shows the source as `-alert-source` says.
+  The repeat-offender lines are not records: the shield's event handler builds each as `alert.Line`'s `BanLine`,
+  writes the log line from it and hands it to the sink.
   The endpoint closes the alerts before its own queue, so that the repeats written at shutdown are sent too. With
   `-alerts off` nothing is handed over.
 

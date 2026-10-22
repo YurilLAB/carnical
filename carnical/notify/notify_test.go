@@ -483,6 +483,19 @@ func TestIntrusionAlertsAreBatched(t *testing.T) {
 		}(), 3},
 		{"reports are not sent", []alert.Record{{Kind: alert.KindTotals, Totals: &alert.Totals{}}, {Kind: alert.KindSummary},
 			intrusion(low, alert.Detected, 7)}, []int{7}, 0},
+		{"the log's count of the lines it dropped keeps its place", func() (r []alert.Record) {
+			r = append(r, alert.Record{Kind: alert.KindDropped, Dropped: alert.Drops{High: 5000, Low: 3000}})
+			for n := 1; n < intrusionPending; n++ {
+				r = append(r, intrusion(low, alert.Detected, n))
+			}
+			return append(r, intrusion(high, alert.Blocked, 1000))
+		}(), func() (p []int) {
+			p = append(p, -1)                       // the drops line
+			for n := 2; n < intrusionPending; n++ { // the oldest low one gave its place
+				p = append(p, n)
+			}
+			return append(p, 1000)
+		}(), 1},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			r := newReceiver(t)
@@ -502,6 +515,10 @@ func TestIntrusionAlertsAreBatched(t *testing.T) {
 				}
 				dropped += m.msg.IntrusionsDropped
 				for _, l := range m.msg.Intrusions {
+					if l.Msg == "alerts dropped" {
+						paths = append(paths, -1)
+						continue
+					}
 					var n int
 					if _, err := fmt.Sscanf(l.Path, "/%d/", &n); err != nil || l.Src != "203.0.113.9" || l.Msg == "" {
 						t.Fatalf("line %+v", l)
@@ -557,7 +574,7 @@ func TestIntrusionMessageText(t *testing.T) {
 }
 
 // A message of intrusion alerts, which are in the log too, gives its place in a full queue to an attack's start or
-// end, and finds none to take from them.
+// end, and finds none to take from them. Its alerts are counted as lost, and the next such message says how many.
 func TestIntrusionAlertsYieldToAttacks(t *testing.T) {
 	r := newReceiver(t)
 	release := make(chan struct{})
@@ -572,22 +589,31 @@ func TestIntrusionAlertsYieldToAttacks(t *testing.T) {
 	for r.hits.Load() == 0 {
 		time.Sleep(time.Millisecond)
 	}
-	alerts := func(text string) Message { return Message{Event: Intrusions, Text: text} }
-	s.Send(alerts("a"))
-	s.Send(alerts("b"))                     // the queue is full
+	alerts := func(text string, n int) Message {
+		return Message{Event: Intrusions, Site: "example.com", Text: text, Intrusions: make([]alert.Line, n)}
+	}
+	s.Send(alerts("a", 2))
+	s.Send(alerts("b", 3))                  // the queue is full
 	s.Send(attackMessage(AttackStart, "x")) // a gives way
 	s.Send(attackMessage(AttackEnd, "x"))   // b gives way
-	if s.Send(alerts("c")) {
+	if s.Send(alerts("c", 4)) {
 		t.Fatal("alerts took the place of an attack's start or end")
 	}
 	close(release)
+	for r.hits.Load() < 3 {
+		time.Sleep(time.Millisecond)
+	}
+	s.Send(alerts("d", 1))
 	s.Close(5 * time.Second)
 	var got []string
 	for _, m := range r.messages() {
 		got = append(got, string(m.msg.Event))
 	}
-	if want := []string{"attack_start", "attack_start", "attack_end"}; !slices.Equal(got, want) || s.Stats().Dropped != 3 {
+	if want := []string{"attack_start", "attack_start", "attack_end", "intrusions"}; !slices.Equal(got, want) || s.Stats().Dropped != 3 {
 		t.Fatalf("delivered %q with %d dropped, want %q and 3", got, s.Stats().Dropped, want)
+	}
+	if d := r.messages()[3].msg; d.IntrusionsDropped != 9 || !strings.Contains(d.Text, "9 not sent here") || s.lostAlerts.Load() != 9 {
+		t.Fatalf("the alerts of the messages that gave way: %d said dropped (%q), %d counted lost; want 9", d.IntrusionsDropped, d.Text, s.lostAlerts.Load())
 	}
 }
 

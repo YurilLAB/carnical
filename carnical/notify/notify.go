@@ -189,11 +189,15 @@ type Sender struct {
 	closing bool
 	closeOK bool   // what the first Close reported
 	unsent  uint64 // drops not yet reported in a message
-	wake    chan struct{}
-	stop    chan struct{} // closed when Close stops waiting: the attempt in flight is cancelled
-	done    chan struct{}
+	// unsentAlerts counts the intrusion alerts in messages that were dropped or not delivered, with the drops those
+	// messages were to report, until a message of intrusion alerts reports them (see lose).
+	unsentAlerts uint64
+	wake         chan struct{}
+	stop         chan struct{} // closed when Close stops waiting: the attempt in flight is cancelled
+	done         chan struct{}
 
 	sent, failed, dropped, retries atomic.Uint64
+	lostAlerts                     atomic.Uint64 // intrusion alerts in messages dropped or not delivered
 	logMu                          sync.Mutex
 	lastLog                        time.Time
 	unlogged                       uint64
@@ -263,6 +267,7 @@ func (s *Sender) Send(m Message) bool {
 	defer s.mu.Unlock()
 	if s.closing {
 		s.drop()
+		s.lose(&m)
 		return false
 	}
 	if m.Event.update() {
@@ -286,10 +291,12 @@ func (s *Sender) Send(m Message) bool {
 		case victim >= 0:
 		case m.Event.yields():
 			s.drop()
+			s.lose(&m)
 			return false
 		default:
 			victim = 0
 		}
+		s.lose(&s.queue[victim])
 		s.queue = append(s.queue[:victim], s.queue[victim+1:]...)
 		s.drop()
 	}
@@ -301,6 +308,16 @@ func (s *Sender) Send(m Message) bool {
 func (s *Sender) drop() {
 	s.unsent++
 	s.dropped.Add(1)
+}
+
+// lose counts the intrusion alerts of m, which is not delivered, as lost, and keeps them with the drops m was to report
+// for the next message of intrusion alerts to report. s.mu is held.
+func (s *Sender) lose(m *Message) {
+	if m.Event != Intrusions {
+		return
+	}
+	s.lostAlerts.Add(uint64(len(m.Intrusions)))
+	s.unsentAlerts += uint64(len(m.Intrusions)) + m.IntrusionsDropped
 }
 
 func (s *Sender) signal() {
@@ -368,16 +385,25 @@ func (s *Sender) run() {
 		s.queue[0] = Message{}
 		s.queue = s.queue[1:]
 		m.Dropped, s.unsent = s.unsent, 0
+		if m.Event == Intrusions && s.unsentAlerts > 0 {
+			m.IntrusionsDropped += s.unsentAlerts
+			s.unsentAlerts = 0
+			m.Severity, m.Text = intrusionSeverity(m.Intrusions, m.IntrusionsDropped), intrusionText(m.Intrusions, m.IntrusionsDropped, m.Site)
+		}
 		s.mu.Unlock()
 		if wait := s.gap - s.now().Sub(last); wait > 0 && !s.sleep(wait) {
+			s.mu.Lock()
 			s.dropped.Add(1) // m
+			s.lose(&m)
+			s.mu.Unlock()
 			s.abandonQueue()
 			return
 		}
 		if !s.deliver(m) {
-			// The drops it was to report are reported by the next message instead.
+			// The drops it was to report, and its alerts, are reported by the next message instead.
 			s.mu.Lock()
 			s.unsent += m.Dropped
+			s.lose(&m)
 			s.mu.Unlock()
 		}
 		last = s.now()
@@ -405,6 +431,9 @@ func (s *Sender) sleep(d time.Duration) bool {
 func (s *Sender) abandonQueue() {
 	s.mu.Lock()
 	s.dropped.Add(uint64(len(s.queue)))
+	for i := range s.queue {
+		s.lose(&s.queue[i])
+	}
 	s.queue = nil
 	s.mu.Unlock()
 }

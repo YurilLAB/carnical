@@ -138,17 +138,19 @@ func (e *endpoint) close(log *slog.Logger) {
 	if e == nil || e.sender == nil {
 		return
 	}
-	var messages, lost uint64
 	if e.intrusions != nil {
 		e.alerts.close()
 		e.intrusions.Close()
-		messages, lost = e.intrusions.Stats()
 	}
 	e.mu.Lock()
 	e.finished = true
 	e.mu.Unlock()
 	e.sender.Close(2 * time.Second)
 	st := e.sender.Stats()
+	var messages, lost uint64
+	if e.intrusions != nil {
+		messages, lost = e.intrusions.Stats() // after the sender's close: with the alerts it could not deliver
+	}
 	e.mu.Lock()
 	queued := e.queued + messages
 	e.mu.Unlock()
@@ -156,10 +158,18 @@ func (e *endpoint) close(log *slog.Logger) {
 		"intrusions_not_sent", lost)
 }
 
-// shieldEvent sends an attack's start, its end and at most one update a minute; the shield's other events are left
-// to the log. It never blocks.
+// shieldEvent sends an attack's start, its end and at most one update a minute, and the repeat-offender lines with the
+// intrusion alerts, as the log writes them; the shield's other events are left to the log. It never blocks.
 func (e *endpoint) shieldEvent(ev shield.Event) {
 	if e == nil || e.sender == nil {
+		return
+	}
+	if offenderEvent(ev.Kind) {
+		if e.intrusions != nil {
+			if l, _, ok := offenderLine(ev, e.alerts.source); ok {
+				e.intrusions.SendLine(l)
+			}
+		}
 		return
 	}
 	var kind notify.Event

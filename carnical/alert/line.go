@@ -2,6 +2,11 @@
 
 package alert
 
+import (
+	"encoding/json"
+	"time"
+)
+
 // Line is a record as LogSink writes it, for a sink that sends it elsewhere (the alert endpoint): the same fields under
 // the same names, without the time and the level. Only the records that are alerts have one; the totals and the
 // summary are reports, and stay in the log.
@@ -12,6 +17,78 @@ type Line struct {
 	// Count is an alert's requests, or the lines that were dropped. It is here rather than in both of the above, where
 	// encoding/json would leave out a name the two share.
 	Count uint64 `json:"count"`
+	// Ban is a repeat-offender line's fields, written in place of all the others: they share names with an alert's
+	// (mode, src, note), which encoding/json would leave out of both were Ban embedded beside AlertLine.
+	Ban *BanLine `json:"-"`
+}
+
+// BanLine holds the fields of a repeat-offender line ("source blocked", "source would be blocked", "source block
+// ended", "auto-block table full; sources not blocked", "auto-block events not reported") as the proxy's log writes
+// them. The proxy builds it from the shield's event.
+type BanLine struct {
+	Mode     string     `json:"mode"`
+	SrcKey   string     `json:"src_key,omitempty"`
+	Src      string     `json:"src,omitempty"`
+	Points   *int       `json:"points,omitempty"`
+	Sigs     []string   `json:"sigs,omitempty"`
+	TTL      string     `json:"ttl,omitempty"`
+	Until    *time.Time `json:"until,omitempty"`
+	BanLevel *int       `json:"ban_level,omitempty"`
+	Note     string     `json:"note,omitempty"`
+	Count    *uint64    `json:"count,omitempty"`
+}
+
+// plainLine is Line without its methods, for encoding/json's own way with it.
+type plainLine Line
+
+// banLine is how a repeat-offender line is written.
+type banLine struct {
+	Msg string `json:"msg"`
+	*BanLine
+}
+
+// MarshalJSON writes a repeat-offender line with its own fields, and any other line as its fields say.
+func (l Line) MarshalJSON() ([]byte, error) {
+	if l.Ban != nil {
+		return json.Marshal(banLine{l.Msg, l.Ban})
+	}
+	return json.Marshal(plainLine(l))
+}
+
+// UnmarshalJSON reads what MarshalJSON writes: a repeat-offender line by its message and the layer an alert's line
+// always has (a record of the auto-block kinds is written as an alert).
+func (l *Line) UnmarshalJSON(data []byte) error {
+	var head struct {
+		Msg   string  `json:"msg"`
+		Layer *string `json:"layer"`
+	}
+	if err := json.Unmarshal(data, &head); err != nil {
+		return err
+	}
+	if banMessage(head.Msg) && head.Layer == nil {
+		b := banLine{BanLine: &BanLine{}}
+		if err := json.Unmarshal(data, &b); err != nil {
+			return err
+		}
+		*l = Line{Msg: b.Msg, Ban: b.BanLine}
+		return nil
+	}
+	var p plainLine
+	if err := json.Unmarshal(data, &p); err != nil {
+		return err
+	}
+	*l = Line(p)
+	return nil
+}
+
+// banMessage says a line's message is a repeat-offender line's.
+func banMessage(msg string) bool {
+	switch msg {
+	case "source blocked", "source would be blocked", "source block ended", "auto-block table full; sources not blocked",
+		"auto-block events not reported":
+		return true
+	}
+	return false
 }
 
 // AlertLine holds the fields of an alert, a repeat, a suspected intrusion and a repeat-offender line.

@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -111,38 +112,83 @@ func hostPrefixes() []netip.Prefix {
 	return out
 }
 
-// logOffenderEvent writes the events of repeat-offender blocking, showing the source as -alert-source asks.
+// logOffenderEvent writes the events of repeat-offender blocking as offenderLine gives them.
 func logOffenderEvent(log *slog.Logger, ev shield.Event, source alert.SourceMode) {
-	attrs := []any{"mode", ev.Mode}
+	l, level, ok := offenderLine(ev, source)
+	if !ok {
+		return
+	}
+	b := l.Ban
+	attrs := []any{"mode", b.Mode}
+	if b.SrcKey != "" {
+		attrs = append(attrs, "src_key", b.SrcKey)
+	}
+	if b.Src != "" {
+		attrs = append(attrs, "src", b.Src)
+	}
+	if b.Points != nil {
+		attrs = append(attrs, "points", *b.Points)
+	}
+	if len(b.Sigs) > 0 {
+		attrs = append(attrs, "sigs", b.Sigs)
+	}
+	if b.TTL != "" {
+		attrs = append(attrs, "ttl", b.TTL)
+	}
+	if b.Until != nil {
+		attrs = append(attrs, "until", *b.Until)
+	}
+	if b.BanLevel != nil {
+		attrs = append(attrs, "ban_level", *b.BanLevel)
+	}
+	if b.Note != "" {
+		attrs = append(attrs, "note", b.Note)
+	}
+	if b.Count != nil {
+		attrs = append(attrs, "count", *b.Count)
+	}
+	log.Log(context.Background(), level, l.Msg, attrs...)
+}
+
+// offenderLine is an event of repeat-offender blocking as its log line writes it, the source as -alert-source asks,
+// with the line's level; false for any other event. The alert endpoint is sent the same line.
+func offenderLine(ev shield.Event, source alert.SourceMode) (alert.Line, slog.Level, bool) {
+	b := &alert.BanLine{Mode: ev.Mode}
 	switch source {
 	case alert.SourceFull:
 		if ev.Source.IsValid() {
-			attrs = append(attrs, "src_key", ev.Source.String())
+			b.SrcKey = ev.Source.String()
 		}
 		if ev.Client.IsValid() {
-			attrs = append(attrs, "src", ev.Client.String())
+			b.Src = ev.Client.String()
 		}
 	case alert.SourcePrefix:
 		if ev.Source.IsValid() {
-			attrs = append(attrs, "src", alert.SourceNet(ev.Source.Addr()).String())
+			b.Src = alert.SourceNet(ev.Source.Addr()).String()
 		}
 	}
+	l, level := alert.Line{Ban: b}, slog.LevelWarn
 	switch ev.Kind {
 	case "source_blocked", "source_would_block":
-		attrs = append(attrs, "points", ev.Points, "sigs", ev.Sigs, "ttl", ev.TTL.String(), "until", ev.Until, "ban_level", ev.Level)
+		points, until, banLevel := ev.Points, ev.Until, ev.Level
+		b.Points, b.Sigs, b.TTL, b.Until, b.BanLevel = &points, ev.Sigs, ev.TTL.String(), &until, &banLevel
+		l.Msg = "source would be blocked"
 		if ev.Kind == "source_blocked" {
-			attrs = append(attrs, "note", "an address may be shared by many users; exempt it with -auto-block-exempt")
-			log.Warn("source blocked", attrs...)
-		} else {
-			log.Warn("source would be blocked", attrs...)
+			l.Msg, b.Note = "source blocked", "an address may be shared by many users; exempt it with -auto-block-exempt"
 		}
 	case "source_block_ended":
-		log.Info("source block ended", append(attrs, "until", ev.Until)...)
-	case "auto_block_full":
-		log.Warn("auto-block table full; sources not blocked", append(attrs, "count", ev.Count)...)
-	case "auto_block_unreported":
-		log.Warn("auto-block events not reported", append(attrs, "count", ev.Count)...)
+		until := ev.Until
+		l.Msg, b.Until, level = "source block ended", &until, slog.LevelInfo
+	case "auto_block_full", "auto_block_unreported":
+		count := ev.Count
+		l.Msg, b.Count = "auto-block table full; sources not blocked", &count
+		if ev.Kind == "auto_block_unreported" {
+			l.Msg = "auto-block events not reported"
+		}
+	default:
+		return alert.Line{}, 0, false
 	}
+	return l, level, true
 }
 
 // offenderEvent says an event is one of repeat-offender blocking.

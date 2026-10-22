@@ -29,9 +29,9 @@ const (
 )
 
 // AlertSink is an alert.Sink that sends intrusion alerts to the endpoint through a Sender. Send never blocks: the alerts
-// wait, at most intrusionPending of them, and are sent many to a message. When too many wait, a medium or high risk
-// alert takes the place of the oldest lower one; any other is dropped, and the drops are in the next message. The
-// totals and the summary are not sent: they are reports, and stay in the log.
+// wait, at most intrusionPending of them, and are sent many to a message. When too many wait, a line that matters (see
+// important) takes the place of the oldest one that does not; any other is dropped, and the drops are in the next
+// message. The totals and the summary are not sent: they are reports, and stay in the log.
 type AlertSink struct {
 	s      *Sender
 	site   string
@@ -62,10 +62,14 @@ func newAlertSink(s *Sender, site string, mode alert.SourceMode, every time.Dura
 
 // Send queues r's line, or counts it as dropped. It never blocks.
 func (a *AlertSink) Send(r alert.Record) {
-	l, ok := alert.NewLine(r, a.source)
-	if !ok {
-		return
+	if l, ok := alert.NewLine(r, a.source); ok {
+		a.SendLine(l)
 	}
+}
+
+// SendLine queues a line the log wrote that is not a record's (a repeat offender's), or counts it as dropped. It never
+// blocks.
+func (a *AlertSink) SendLine(l alert.Line) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.closed {
@@ -74,9 +78,9 @@ func (a *AlertSink) Send(r alert.Record) {
 	}
 	if len(a.pending) >= intrusionPending {
 		victim := -1
-		if l.RiskOf() >= alert.RiskMedium {
+		if important(&l) {
 			for i := range a.pending {
-				if a.pending[i].RiskOf() < alert.RiskMedium {
+				if !important(&a.pending[i]) {
 					victim = i
 					break
 				}
@@ -91,17 +95,29 @@ func (a *AlertSink) Send(r alert.Record) {
 	a.pending = append(a.pending, l)
 }
 
+// important says a line keeps its place when too many wait: an alert of medium or high risk, the count of the lines the
+// log dropped, a ban or a would-be ban, and what kept bans from being made or told.
+func important(l *alert.Line) bool {
+	switch l.Msg {
+	case "alerts dropped", "source blocked", "source would be blocked", "auto-block table full; sources not blocked",
+		"auto-block events not reported":
+		return true
+	}
+	return l.RiskOf() >= alert.RiskMedium
+}
+
 // drop counts n alerts as not sent. a.mu is held.
 func (a *AlertSink) drop(n uint64) {
 	a.dropped += n
 	a.lost += n
 }
 
-// Stats are the messages handed to the Sender and the alerts that were not sent.
+// Stats are the messages handed to the Sender and the alerts that were not sent: those too many to wait, and those in
+// messages the Sender dropped or could not deliver. After the Sender's Close the count is final.
 func (a *AlertSink) Stats() (messages, lost uint64) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.messages, a.lost
+	return a.messages, a.lost + a.s.lostAlerts.Load()
 }
 
 // Close sends what waits, in as many messages as it takes, and stops. The Sender's own Close then delivers them.
@@ -163,16 +179,13 @@ func (a *AlertSink) flush() bool {
 	a.mu.Unlock()
 	m := Message{Event: Intrusions, At: time.Now().UTC(), Site: a.site, Severity: intrusionSeverity(lines, dropped),
 		Text: intrusionText(lines, dropped, a.site), Intrusions: lines, IntrusionsDropped: dropped}
-	if !a.s.Send(m) {
-		a.mu.Lock()
-		a.drop(uint64(len(lines))) // the Sender counts the message; these are the alerts it held
-		a.mu.Unlock()
-	}
+	a.s.Send(m) // a message the Sender drops or cannot deliver, it counts with its alerts (Sender.lose)
 	return more
 }
 
 // intrusionSeverity is critical when a line is high risk, a suspected intrusion or a blocked source, warning when one is
-// medium risk or alerts were dropped (from the log or from the messages), and info otherwise.
+// medium risk, another line that matters (important) or alerts were dropped (from the log or from the messages), and
+// info otherwise.
 func intrusionSeverity(lines []alert.Line, dropped uint64) string {
 	sev := "info"
 	if dropped > 0 {
@@ -183,7 +196,7 @@ func intrusionSeverity(lines []alert.Line, dropped uint64) string {
 		switch {
 		case l.RiskOf() == alert.RiskHigh, l.Msg == "suspected intrusion", l.Msg == "source blocked":
 			return "critical"
-		case l.RiskOf() == alert.RiskMedium, l.Msg == "alerts dropped":
+		case l.RiskOf() == alert.RiskMedium, important(l):
 			sev = "warning"
 		}
 	}
@@ -200,7 +213,8 @@ var intrusionWords = []struct{ msg, words string }{
 	{"source blocked", "source blocked"},
 	{"source would be blocked", "source would be blocked"},
 	{"source block ended", "source block ended"},
-	{"auto-block table full", "auto-block table full"},
+	{"auto-block table full; sources not blocked", "auto-block table full"},
+	{"auto-block events not reported", "auto-block events not reported"},
 }
 
 // intrusionText is the message's line for a person: "3 intrusion alerts on example.com: 2 blocked, 1 detected", then
