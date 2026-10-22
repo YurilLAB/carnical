@@ -20,7 +20,8 @@ import (
 //     5000013). Few sites use the feature; one that does turns the check off with UploadPolicy.AllowUploadProgress.
 //   - the response: a session cookie whose value is not a session id PHP could have made, which is what the leak looks
 //     like in the demonstrated cookie leak, is withheld and answered 403 (rule 5000080), unless
-//     ResponsePolicy.AllowBadSessionIDs.
+//     ResponsePolicy.AllowBadSessionIDs. The same check withholds trailers; after headers have been sent, it aborts
+//     the response instead of replacing its status, and cannot recall an already streamed body.
 //
 // Neither check proves a PHP runtime safe: a leak can have another carrier or look like a valid session id, and
 // different fatal-error producers and stale-state consumers can reach code execution without these patterns.

@@ -53,12 +53,16 @@ fatal-error producer, stale-state consumer or memory-disclosure channel; only th
   `responses.session_cookies`, up to 16 cookie names), to anything but a session id PHP could have made (empty, or up
   to 256 letters, digits, `-` and `,`, the last sent as `%2C`) is withheld before its headers are copied and answered
   403 as rule 5000080. It is not marked as the application's answer, so the shield counts it as a refusal of the
-  visitor's. `ResponsePolicy.AllowBadSessionIDs` (`-allow-bad-session-ids`, `responses.allow_bad_session_ids`) turns
-  it off.
+  visitor's. The check also covers announced and unannounced trailers, independently of a proprietary check: at
+  body close, before trailers are copied, an invalid cookie records the same rule and aborts the response. This
+  does not recall headers or body bytes already streamed or replace the committed status with 403. Neither path
+  is credited to origin health. `ResponsePolicy.AllowBadSessionIDs` (`-allow-bad-session-ids`,
+  `responses.allow_bad_session_ids`) turns it off.
 - Both messages start with `PHP2Shell:`, as do their catalog names; both are in the `php` category, the response's
   in `data-leak` too, and both are high risk and count 4 toward a repeat offender's ban (ADR-0085), as an upload
   refusal does.
-- 403 rather than the 502 of a WebSocket handshake the application did not switch: the response is withheld because
+- For a cookie in initial headers, 403 rather than the 502 of a WebSocket handshake the application did not switch:
+  the response is withheld because
   the exchange is an attack, and a 4xx is what the shield counts against the visitor.
 
 ## Technical Discussion

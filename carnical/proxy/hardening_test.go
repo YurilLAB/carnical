@@ -28,6 +28,7 @@ import (
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/hpack"
 
+	"github.com/YurilLAB/coraza/carnical/alert"
 	"github.com/YurilLAB/coraza/carnical/crowdsec"
 	"github.com/YurilLAB/coraza/carnical/crs"
 	"github.com/YurilLAB/coraza/carnical/shield"
@@ -609,6 +610,125 @@ func TestResponsePolicy(t *testing.T) {
 						resp.StatusCode, resp.Header.Values("Set-Cookie"), body, seen.last(), seen.lastMessage())
 				}
 			})
+		}
+		for _, announced := range []bool{false, true} {
+			for _, protocols := range [][2]bool{{false, false}, {true, false}, {false, true}, {true, true}} {
+				h2, originH2 := protocols[0], protocols[1]
+				for _, tt := range tests {
+					t.Run(fmt.Sprintf("trailer %s announced=%v HTTP2=%v originHTTP2=%v", tt.name, announced, h2, originH2), func(t *testing.T) {
+						release := make(chan struct{})
+						var once sync.Once
+						free := func() { once.Do(func() { close(release) }) }
+						defer free()
+						var originProtocol atomic.Int32
+						app := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+							originProtocol.Store(int32(r.ProtoMajor))
+							if announced {
+								w.Header().Set("Trailer", "Set-Cookie")
+							}
+							_, _ = io.WriteString(w, "ordinary response")
+							if err := http.NewResponseController(w).Flush(); err != nil {
+								t.Error(err)
+								return
+							}
+							<-release // the client receives the committed headers before any trailer is written
+							key := "Set-Cookie"
+							if !announced {
+								key = http.TrailerPrefix + key
+							}
+							for _, cookie := range tt.cookies {
+								w.Header().Add(key, cookie)
+							}
+						}))
+						app.EnableHTTP2 = originH2
+						if originH2 {
+							app.StartTLS()
+						} else {
+							app.Start()
+						}
+						t.Cleanup(app.Close)
+						var seen refusals
+						var sh *shield.Shield
+						var clock atomic.Int64
+						var finished chan alert.Alert
+						var trailerValues atomic.Int32
+						if tt.name == "memory in a session id" {
+							clock.Store(time.Unix(1_700_000_000, 0).UnixNano())
+							var err error
+							sh, err = shield.New(shield.Config{Now: func() time.Time { return time.Unix(0, clock.Load()) }})
+							if err != nil {
+								t.Fatal(err)
+							}
+							t.Cleanup(sh.Close)
+							finished = make(chan alert.Alert, 4)
+						}
+						s := start(t, func(c *Config) {
+							ruleSetOff(c)
+							c.Upstream = mustURL(app.URL)
+							c.OnMatch = seen.record
+							c.Responses = tt.policy
+							if sh != nil {
+								c.Shield, c.OnAlert = sh, func(a alert.Alert) { finished <- a }
+								c.Challenge = boundedGate{serve: (&gate{}).Serve, trailer: func(_ *http.Request, h http.Header) {
+									if len(h.Values("Set-Cookie")) != 0 {
+										trailerValues.Add(1)
+										h.Del("Set-Cookie") // cannot hide the bad origin value from the built-in check
+									}
+								}}
+							}
+							if originH2 {
+								c.OriginTLS.Roots = x509.NewCertPool()
+								c.OriginTLS.Roots.AddCert(app.Certificate())
+							}
+						})
+						front := httptest.NewUnstartedServer(nil)
+						front.Config, front.EnableHTTP2 = s.edge.Server(""), h2
+						if h2 {
+							front.StartTLS()
+						} else {
+							front.Start()
+						}
+						t.Cleanup(front.Close)
+						client := front.Client()
+						client.Timeout = 5 * time.Second
+						resp, err := client.Get(front.URL + "/php-session")
+						if err != nil {
+							t.Fatal(err)
+						}
+						defer resp.Body.Close()
+						free()
+						_, readErr := io.ReadAll(resp.Body)
+						if resp.StatusCode != 200 || (resp.ProtoMajor == 2) != h2 || (originProtocol.Load() == 2) != originH2 {
+							t.Fatalf("status %d, protocol %s, origin protocol %d", resp.StatusCode, resp.Proto, originProtocol.Load())
+						}
+						if !tt.withheld {
+							if readErr != nil || len(resp.Trailer.Values("Set-Cookie")) != len(tt.cookies) || seen.last() != 0 {
+								t.Fatalf("body error %v, trailers %q, rule %d; want unchanged valid trailers", readErr, resp.Trailer, seen.last())
+							}
+							return
+						}
+						if readErr == nil || len(resp.Trailer.Values("Set-Cookie")) != 0 || seen.last() != idPHP2ShellSession ||
+							!strings.HasPrefix(seen.lastMessage(), "PHP2Shell: ") {
+							t.Fatalf("body error %v, trailers %q, rule %d, message %q; want abort before invalid trailers", readErr, resp.Trailer, seen.last(), seen.lastMessage())
+						}
+						if sh != nil {
+							select {
+							case a := <-finished: // guard has already told the shield how the request ended
+								if a.RuleID != idPHP2ShellSession || a.Action != alert.Blocked || a.Status != 200 || !a.Refusal || offencePoints(&a) != 4 {
+									t.Fatalf("late refusal alert: %+v", a)
+								}
+							case <-time.After(5 * time.Second):
+								t.Fatal("no late refusal alert")
+							}
+							clock.Add(int64(2 * time.Second))
+							sh.Tick()
+							if sh.Snapshot().ErrRatio != -1 || trailerValues.Load() != 0 {
+								t.Fatalf("origin health %v, cookie-value callbacks %d; want no origin answer credited and no unchecked callback", sh.Snapshot().ErrRatio, trailerValues.Load())
+							}
+						}
+					})
+				}
+			}
 		}
 	})
 }

@@ -130,8 +130,11 @@ rule set's mode:
 - **The response.** A response that sets `PHPSESSID`, or a name in `-session-cookies`, to
   anything but a session id PHP could have made (up to 256 letters, digits, `-` and `,`, which PHP
   sends as `%2C`; empty and `deleted` are fine) matches the demonstrated cookie leak's shape.
-  It is withheld and answered 403 (5000080); the application's headers and body never reach
-  the visitor. `-allow-bad-session-ids` forwards it; a site needs it whose session ids hold other
+  In headers it is withheld and answered 403 (5000080); the application's headers and body never
+  reach the visitor. Announced and unannounced trailers are checked too, independently of a person
+  check: an invalid session cookie ends the response before trailers are forwarded. Headers and body
+  bytes already streamed cannot be recalled, so this late refusal aborts the stream and retains its
+  committed status. `-allow-bad-session-ids` forwards it; a site needs it whose session ids hold other
   characters (made by its own session handler, or set with `session_id()`), as does a non-PHP
   application that names a cookie of its own `PHPSESSID`.
 
@@ -312,7 +315,8 @@ refusal does. With `-allow-upgrade`, an answer to a WebSocket handshake that nei
 protocols nor is an error is withheld and answered 502 (5000079): a page sent for a handshake would
 reach a program that copied a browser's handshake to pass the bot checks a page request faces. A
 response that sets a PHP session cookie to what is not a session id is withheld too, and answered
-403 (5000080, [PHP2Shell](#php2shell)).
+403 (5000080, [PHP2Shell](#php2shell)); an invalid cookie in trailers aborts the stream before the
+trailers are sent, after any headers and body bytes already streamed.
 
 ### Intrusion alerts
 

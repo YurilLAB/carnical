@@ -1060,25 +1060,42 @@ func (e *Edge) forward() http.Handler {
 			}
 			e.cfg.Responses.harden(resp, path)
 			// A switched connection has no trailers, and its body must stay writable for the tunnel.
-			if rs, ok := e.cfg.Challenge.(challenge.TrailerResponder); ok && resp.StatusCode != http.StatusSwitchingProtocols {
-				if in, _ := resp.Request.Context().Value(inboundKey{}).(*http.Request); in != nil {
-					// The names announced now; what was sent once the body is closed, which is when the transport
-					// fills them in and before the reverse proxy copies them on.
-					check := func() error {
+			rs, hasTrailerGate := e.cfg.Challenge.(challenge.TrailerResponder)
+			var in *http.Request
+			if hasTrailerGate {
+				in, _ = resp.Request.Context().Value(inboundKey{}).(*http.Request)
+				hasTrailerGate = in != nil
+			}
+			checkSessionTrailers := !e.cfg.Responses.AllowBadSessionIDs &&
+				(resp.ProtoMajor >= 2 || len(resp.TransferEncoding) != 0 || len(resp.Trailer) != 0)
+			if resp.StatusCode != http.StatusSwitchingProtocols && (hasTrailerGate || checkSessionTrailers) {
+				// The names announced now; what was sent once the body is closed, which is when the transport
+				// fills them in and before the reverse proxy copies them on.
+				check := func() error {
+					if checkSessionTrailers && badSessionCookie(resp.Trailer, e.cfg.Responses.SessionCookies) {
+						return errPHP2Shell
+					}
+					if hasTrailerGate {
 						return e.callGate(in, func(gr *http.Request) { rs.RespondTrailer(gr, resp.Trailer) })
 					}
-					if err := check(); err != nil {
-						return err
-					}
-					resp.Body = &trailerCheck{ReadCloser: resp.Body, check: func() {
-						if err := check(); err != nil {
-							if o, ok := in.Context().Value(originKey{}).(*origin); ok {
-								o.answered = false
-							}
-							panic(http.ErrAbortHandler) // headers have gone; do not forward unchecked trailers
-						}
-					}}
+					return nil
 				}
+				if err := check(); err != nil {
+					return err
+				}
+				resp.Body = &trailerCheck{ReadCloser: resp.Body, check: func() {
+					if err := check(); err != nil {
+						if o, ok := resp.Request.Context().Value(originKey{}).(*origin); ok {
+							o.answered = false
+						}
+						if errors.Is(err, errPHP2Shell) {
+							watch, _ := resp.Request.Context().Value(writeWatchKey{}).(*writeWatch)
+							e.finding(Match{RuleID: idPHP2ShellSession, Severity: "CRITICAL", Disruptive: true, status: watch.sent(),
+								Message: "PHP2Shell: the application sent a session cookie that is not a session id in a trailer"}, nil, resp.Request)
+						}
+						panic(http.ErrAbortHandler) // headers have gone; do not forward unchecked trailers
+					}
+				}}
 			}
 			if len(e.cfg.Observers) > 0 {
 				if ir, ok := resp.Request.Context().Value(observedKey{}).(*inspect.Request); ok {
@@ -1102,6 +1119,9 @@ func (e *Edge) forward() http.Handler {
 				return
 			}
 			if errors.Is(err, errPHP2Shell) {
+				if o, ok := r.Context().Value(originKey{}).(*origin); ok {
+					o.answered = false
+				}
 				e.refuse(w, r, http.StatusForbidden, idPHP2ShellSession, "PHP2Shell: the application set a session cookie that is not a session id")
 				return
 			}
@@ -1177,8 +1197,8 @@ func encodedResponse(h http.Header) bool {
 	return false
 }
 
-// trailerCheck shows a response's trailers to the person check once its body is closed: the transport fills them in
-// then, and the reverse proxy copies them on after.
+// trailerCheck checks a response's trailers once its body is closed: the transport fills them in then, and the reverse
+// proxy copies them on after. It does not buffer the body or delay streaming.
 type trailerCheck struct {
 	io.ReadCloser
 	check func()
