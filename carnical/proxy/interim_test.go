@@ -22,6 +22,9 @@ func TestResponseInspectionSeesTheRealResponse(t *testing.T) {
 		w.Header().Set("Content-Type", "text/html")
 		switch {
 		case r.URL.Path == "/file": // a static file, served in ranges when asked for them
+			if r.Header.Get("Range") == "" { // Apache's byte-range filter reads the legacy Request-Range in its place
+				r.Header.Set("Range", r.Header.Get("Request-Range"))
+			}
 			http.ServeContent(w, r, "page.html", time.Time{}, strings.NewReader(sqlErrorPage))
 		case r.URL.Path == "/deflate": // compressed whatever the request asked for
 			w.Header().Set("Content-Encoding", "deflate")
@@ -53,6 +56,7 @@ func TestResponseInspectionSeesTheRealResponse(t *testing.T) {
 		{"a static file", "/file", "", 403},
 		{"a static file asked for in two ranges (multipart/byteranges)", "/file", "Range: bytes=0-9,10-\r\n", 403},
 		{"a static file asked for in one range", "/file", "Range: bytes=0-40\r\n", 403},
+		{"a static file asked for in ranges with the legacy Request-Range", "/file", "Request-Range: bytes=0-9,10-\r\n", 403},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			s := start(t, inspect)
