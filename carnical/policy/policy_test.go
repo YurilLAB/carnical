@@ -244,6 +244,34 @@ func TestADocumentRoundTripsAndKeepsItsMeaning(t *testing.T) {
 	if !reflect.DeepEqual(p.Normalize(), p) {
 		t.Fatal("a decoded policy is not in normal form")
 	}
+
+	// The encoding always names api_mode, so a document that leaves it out must decode to the mode the edge gives it.
+	for _, tc := range []struct {
+		name, doc string
+		want      APIMode
+	}{
+		{"no api section", `{}`, APIOff},
+		{"a null api section", `{"api":null}`, APIOff},
+		{"an api section alone is enforced", `{"api":{"methods":["GET"]}}`, APIEnforce},
+		{"an api section naming the default", `{"api":{"mode":"default"}}`, APIEnforce},
+		{"an api section naming its mode", `{"api":{"mode":"monitor"}}`, APIMonitor},
+		{"an api section switched off", `{"api":{"mode":"off"}}`, APIOff},
+		{"api_mode named off beside a section", `{"api_mode":"off","api":{"methods":["GET"]}}`, APIOff},
+		{"api_mode named in another case", `{"API_MODE":"monitor","api":{"methods":["GET"]}}`, APIMonitor},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, err := Decode([]byte(tc.doc))
+			wantValid(t, err)
+			if p.APIMode != tc.want {
+				t.Fatalf("api_mode %s; want %s", p.APIMode, tc.want)
+			}
+			enc, err := Encode(p)
+			wantValid(t, err)
+			if again, err := Decode(enc); err != nil || again.APIMode != tc.want {
+				t.Fatalf("after encoding, api_mode %s (%v); want %s", again.APIMode, err, tc.want)
+			}
+		})
+	}
 }
 
 func TestNormalizeIsIdempotentAndHashIsContentOnly(t *testing.T) {

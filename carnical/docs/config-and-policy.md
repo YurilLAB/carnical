@@ -323,7 +323,7 @@ name cannot appear together. Property names inside `api` and `body_formats` rema
 | `deny_headers` | up to 50 header names | none |
 | `framework` | `deny_next_action` | false: a Next.js site that uses server actions needs the header, and nothing can tell from outside which sites do |
 | `vpatch` | `tiers` (`verified community experimental`), `software` (up to 200 of `name` or `name@version`) | `["verified"]`, none |
-| `api_mode` | `off learn monitor enforce` | `off` |
+| `api_mode` | `off learn monitor enforce` | `off`; beside an `api` section, that section's `mode`, or `enforce` when it names none |
 | `api`, `body_formats` | JSON objects owned by other packages | absent |
 | `note` | free text, 1000 bytes | empty |
 

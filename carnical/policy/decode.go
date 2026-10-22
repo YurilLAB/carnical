@@ -107,11 +107,12 @@ func Default() Policy {
 }
 
 // Decode reads a policy document strictly and returns it normalised and validated. A field left out takes the value Default
-// gives it, so a document only names what differs. It refuses (with an *Error that errors.Is ErrInvalid): a document over
-// MaxPolicyBytes, text that is not valid UTF-8 or not a JSON object, nesting deeper than MaxDepth, a field the policy does
-// not have, a field given twice, null where a value is needed (only "threshold" may be null), a value of the wrong kind,
-// anything after the document, and then every problem Validate finds. It never panics, and its time and memory are in
-// proportion to the document's size, which is at most 1 MiB.
+// gives it, so a document only names what differs; api_mode left out beside an "api" section is that section's mode, or
+// enforce, as the edge runs it. It refuses (with an *Error that errors.Is ErrInvalid): a document over MaxPolicyBytes, text
+// that is not valid UTF-8 or not a JSON object, nesting deeper than MaxDepth, a field the policy does not have, a field
+// given twice, null where a value is needed (only "threshold" may be null), a value of the wrong kind, anything after the
+// document, and then every problem Validate finds. It never panics, and its time and memory are in proportion to the
+// document's size, which is at most 1 MiB.
 func Decode(data []byte) (Policy, error) {
 	if len(data) > MaxPolicyBytes {
 		return Policy{}, invalid("$", "the policy is larger than %d KiB", MaxPolicyBytes>>10)
@@ -132,10 +133,34 @@ func Decode(data []byte) (Policy, error) {
 		return Policy{}, invalid("$", "there is more than one document")
 	}
 	p = p.Normalize()
+	if len(p.API) > 0 && !namesAPIMode(data) {
+		p.APIMode = sectionAPIMode(p.API)
+	}
 	if err := p.Validate(); err != nil {
 		return Policy{}, err
 	}
 	return p, nil
+}
+
+// namesAPIMode says whether the document names api_mode, in any case, as the decoder matches it.
+func namesAPIMode(data []byte) bool {
+	var doc struct {
+		APIMode *json.RawMessage `json:"api_mode"`
+	}
+	return json.Unmarshal(data, &doc) == nil && doc.APIMode != nil
+}
+
+// sectionAPIMode is the guard's mode when the document has an "api" section and does not name api_mode: the section's own
+// mode, or enforce if it names none (or one that is not a mode), as the edge runs it. The encoding always names api_mode, so
+// without this a section alone would be off once encoded, and Diff would not see it switched off.
+func sectionAPIMode(api json.RawMessage) APIMode {
+	var s struct {
+		Mode string `json:"mode"`
+	}
+	if json.Unmarshal(api, &s) == nil && validAPIModes[APIMode(s.Mode)] {
+		return APIMode(s.Mode)
+	}
+	return APIEnforce
 }
 
 // policyKeyName follows encoding/json's case-insensitive matching of typed policy fields.
