@@ -47,7 +47,13 @@ Runtime, fuzz, and live WAF tests remain separate validation. The live WAF gate 
 attacks in every supported category and both ordinary search and JSON controls. It runs the default,
 strict, format-monitor and multiphase builds, and holds each to a baseline in `.github/security/`
 that names every attack still admitted and every control still refused. A change in any template's
-result fails the gate, so an attack refused today stays refused.
+result fails the gate, so an attack refused today stays refused. Each baseline also pins a versioned
+digest of every template's name, attack/control class and constructed-request fingerprint. The
+checker recomputes that identity from the results, rejecting missing, added, renamed, reclassified
+or changed templates and duplicate names. Reordering results does not change it. Deliberate corpus
+changes require reviewing the suite and refreshing the affected baselines with `--write`; that
+updates the identity and outcome exceptions together. The pin checks the declared suite, rather
+than authenticating a report producer or claiming literal TCP-byte identity.
 
 OSV uses explicit manifest paths so untracked research, upstream downloads, and `build/` do not
 become project dependencies. `--all-vulns` retains and fails on module advisories even when call

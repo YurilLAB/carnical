@@ -6,6 +6,7 @@
 # blocked. Each listed attack must also raise an alert (loadtest -alert-probe). After a deliberate change, regenerate
 # this file from the Security review run's report:
 #   python3 .github/security/check_live_report.py REPORT .github/security/live-waf-baseline-strict.txt --write
+# templates-sha256-v1: b5ba9e059ede0ed4f09488be2a20745772a715f436df5fc069e27e1998443640
 
 [admitted attacks]
 

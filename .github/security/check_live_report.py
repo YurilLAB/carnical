@@ -6,11 +6,28 @@ blocked is locked in once the baseline is regenerated with --write. Every attack
 alert, which the run records with loadtest -alert-probe.
 """
 
+import hashlib
 import json
 import pathlib
 import sys
 
 ADMITTED, REFUSED = "[admitted attacks]", "[refused controls]"
+TEMPLATE_PIN = "# templates-sha256-v1: "
+
+
+def template_digest(report):
+    """Identify every declared constructed request, independently of ordering, measurements and outcomes."""
+    rows, names = [], set()
+    for row in report["Results"]:
+        name, attack, digest = row.get("Name"), row.get("Attack"), row.get("RequestSHA256")
+        if (not isinstance(name, str) or not name or name in names or not isinstance(attack, bool)
+                or not isinstance(digest, str) or len(digest) != 64
+                or any(c not in "0123456789abcdef" for c in digest)):
+            raise SystemExit("invalid template manifest identity")
+        names.add(name)
+        rows.append([name, attack, digest])
+    encoded = json.dumps(sorted(rows), ensure_ascii=True, separators=(",", ":")).encode("ascii")
+    return hashlib.sha256(b"carnical-live-templates-v1\n" + encoded + b"\n").hexdigest()
 
 
 def formats_monitored(report):
@@ -75,6 +92,10 @@ def read_baseline(path):
 
 
 def check_baseline(report, path):
+    pins = [line[len(TEMPLATE_PIN):] for line in pathlib.Path(path).read_text(encoding="utf-8").splitlines()
+            if line.startswith(TEMPLATE_PIN)]
+    if len(pins) != 1 or pins[0] != template_digest(report):
+        raise SystemExit("template manifest changed or baseline pin missing/invalid; review the suite before --write")
     admitted, refused = outcome(report)
     allowed, expected_refused = read_baseline(path)
     rows = {row["Name"]: row for row in report["Results"]}
@@ -112,6 +133,7 @@ def check_baseline(report, path):
 
 
 def write_baseline(report, path):
+    digest = template_digest(report)
     admitted, refused = outcome(report)
     rows = {row["Name"]: row for row in report["Results"]}
     old = pathlib.Path(path).read_text(encoding="utf-8").splitlines() if pathlib.Path(path).exists() else []
@@ -119,8 +141,9 @@ def write_baseline(report, path):
     for line in old:
         if not line.startswith("#"):
             break
-        header.append(line)
-    out = header + [""]
+        if not line.startswith(TEMPLATE_PIN):
+            header.append(line)
+    out = header + [TEMPLATE_PIN + digest, ""]
     for section, names in ((ADMITTED, admitted), (REFUSED, refused)):
         out.append(section)
         category = None
