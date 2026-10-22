@@ -164,6 +164,23 @@ func (in *Inspector) checkJSONBody(f *finder, ci ctInfo, body []byte, gqlPath bo
 	return in.graphQLEnvelope(f, body, c, gqlPath || f.urlGraphQL)
 }
 
+// multipartGraphQL checks the operations fields of a multipart body (the GraphQL multipart request spec, for uploads) as a JSON
+// body: on a GraphQL path each must be a GraphQL request, and elsewhere one that starts like JSON is one if it reads as one.
+func (in *Inspector) multipartGraphQL(f *finder, ops [][]byte, gqlPath bool) bool {
+	defer func(part string) { f.part = part }(f.part)
+	f.part = "operations"
+	for _, op := range ops {
+		if i := skipSpaces(op, 0); !gqlPath && (i == len(op) || op[i] != '{' && op[i] != '[') {
+			continue
+		}
+		c := &jsonCapture{max: in.pol.GraphQL.MaxBatch + 1}
+		if !scanJSON(f, op, &in.pol.JSON, c, true) || !in.graphQLEnvelope(f, op, c, gqlPath) {
+			return false
+		}
+	}
+	return true
+}
+
 // graphQLEnvelope checks what a JSON body says about GraphQL: one request or a batch.
 func (in *Inspector) graphQLEnvelope(f *finder, body []byte, c *jsonCapture, gqlPath bool) bool {
 	lim := &in.pol.GraphQL

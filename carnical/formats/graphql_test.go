@@ -192,6 +192,18 @@ var graphqlRows = register("graphql", []row{
 		body: gqlReq(`{ __schema { types { name } } ` + strings.Repeat("n", 300) + ` }`), want: idGQLLimit},
 	{name: "introspection by form", path: "/graphql", ct: form, body: "query=%7B__schema%7Btypes%7Bname%7D%7D%7D", want: idGQLIntro},
 	{name: "introspection by application/graphql", path: "/graphql", ct: "application/graphql", body: `{ __schema { types { name } } }`, want: idGQLIntro},
+	// The GraphQL multipart request spec (uploads): the request is the operations field, a JSON envelope, which gqlgen and
+	// graphql-yoga read on their GraphQL path.
+	{name: "introspection by multipart", path: "/graphql", ct: mpType,
+		body: mp(field("operations", gqlReq(`{ __schema { types { name } } }`)), field("map", "{}")), want: idGQLIntro},
+	{name: "introspection by multipart in a batch", path: "/graphql", ct: mpType,
+		body: mp(field("operations", "["+gqlReq(`{ a }`)+","+gqlReq(`{ __type(name: "User") { name } }`)+"]"), field("map", "{}")), want: idGQLIntro},
+	{name: "introspection by multipart on another path", path: "/api/x", ct: mpType,
+		body: mp(field("operations", gqlReq(`{ __schema { types { name } } }`)), field("map", "{}")), want: idGQLIntro},
+	{name: "an upload by multipart", path: "/graphql", ct: mpType,
+		body: mp(field("operations", `{"query":"mutation($f: Upload!) { up(file: $f) }","variables":{"f":null}}`),
+			field("map", `{"0":["variables.f"]}`), file("0", "a.txt", "text"))},
+	{name: "a form field named operations that is not JSON", path: "/api/x", ct: mpType, body: mp(field("operations", "rename, move"))},
 
 	// Fragments.
 	{name: "a fragment that spreads itself", path: "/graphql", ct: appJSON, body: gqlReq("{ ...A }\nfragment A on T { ...A }"), want: idGQLFrag},

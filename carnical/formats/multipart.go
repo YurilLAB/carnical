@@ -47,29 +47,34 @@ type mpScanner struct {
 	delim    []byte
 	names    map[string]struct{}
 	fold     []byte
+	// inOps says the part being read is a form field named operations, which the GraphQL multipart request spec makes the
+	// request itself; ops holds the content of each such field.
+	inOps bool
+	ops   [][]byte
 }
 
-// checkMultipart checks the structure of a multipart body. It returns false when the caller should stop.
-func (in *Inspector) checkMultipart(f *finder, body []byte, boundary string, subtype string) bool {
+// checkMultipart checks the structure of a multipart body and returns the content of its operations fields (see mpScanner). It
+// returns false when the caller should stop.
+func (in *Inspector) checkMultipart(f *finder, body []byte, boundary string, subtype string) ([][]byte, bool) {
 	lim := &in.pol.Multipart
 	if boundary == "" {
 		f.hit(rMPNoBoundary, -1, dNone)
-		return false
+		return nil, false
 	}
 	if len(boundary) > lim.MaxBoundaryLen {
 		if f.hitLimit(rMPBadBound, dBoundaryTooLong, lim.MaxBoundaryLen, -1) {
-			return false
+			return nil, false
 		}
 	}
 	if boundary[len(boundary)-1] == ' ' {
 		if f.hit(rMPBadBound, -1, dBoundaryTrailingSpace) {
-			return false
+			return nil, false
 		}
 	}
 	for i := 0; i < len(boundary); i++ {
 		if !boundaryChar(boundary[i]) {
 			if f.hit(rMPBadBound, -1, dBoundaryChar) {
-				return false
+				return nil, false
 			}
 			break
 		}
@@ -78,7 +83,8 @@ func (in *Inspector) checkMultipart(f *finder, body []byte, boundary string, sub
 	if f.active(rMPDupName) {
 		s.names = map[string]struct{}{}
 	}
-	return s.run()
+	ok := s.run()
+	return s.ops, ok
 }
 
 // run walks the body: preamble, then parts until the closing delimiter, then the epilogue.
@@ -130,12 +136,16 @@ func (s *mpScanner) run() bool {
 			f.hitLimit(rMPLimit, dTooManyParts, s.lim.MaxParts, d)
 			return false
 		}
+		s.inOps = false
 		contentStart, ok := s.headers(start)
 		if !ok {
 			return false
 		}
 		if d, ok = s.nextDelimiter(contentStart); !ok {
 			return false
+		}
+		if s.inOps { // nextDelimiter returns a delimiter at the start of a line: a CRLF ends the content
+			s.ops = append(s.ops, body[contentStart:d-2])
 		}
 	}
 }
@@ -360,6 +370,7 @@ func (s *mpScanner) disposition(value string, at int) bool {
 	if s.formData && !hasName && f.hit(rMPDisp, at, dNoName) {
 		return false
 	}
+	s.inOps = s.formData && name == "operations" && !hasFile && !hasStar
 	if hasName {
 		if len(name) > s.lim.MaxNameLen {
 			f.hitLimit(rMPLimit, dNameTooLong, s.lim.MaxNameLen, at)

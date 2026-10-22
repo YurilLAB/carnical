@@ -115,8 +115,9 @@ every GraphQL endpoint whose path has no `graphql` segment in `graphql_paths`, w
 does not parse is refused.
 
 The query is looked for in a JSON object, an array of them (a batch), an `application/graphql` body,
-a form, and the URL query string on every method. When URL parameters identify GraphQL, body
-envelope checks also apply to that request.
+a form, the `operations` field of a multipart form (the GraphQL multipart request spec that uploads
+use, read as a JSON body is), and the URL query string on every method. When URL parameters identify
+GraphQL, body envelope checks also apply to that request.
 
 Positions in GraphQL messages are bytes of the decoded query text, not of the request.
 

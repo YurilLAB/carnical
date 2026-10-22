@@ -254,7 +254,9 @@ func (in *Inspector) checkBody(f *finder, ci ctInfo, body []byte, gqlPath bool) 
 		}
 	case kindMultipart:
 		boundary, _ := ci.mt.param("boundary")
-		in.checkMultipart(f, body, boundary, ci.mt.sub)
+		if ops, ok := in.checkMultipart(f, body, boundary, ci.mt.sub); ok {
+			in.multipartGraphQL(f, ops, gqlPath || f.urlGraphQL)
+		}
 	case kindJSON:
 		in.checkJSONBody(f, ci, body, gqlPath)
 	case kindNDJSON:

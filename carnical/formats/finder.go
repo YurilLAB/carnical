@@ -30,6 +30,7 @@ type finder struct {
 	graphql      gqlStats // selected-operation totals belong to this request, never the shared Inspector
 	// line is the number of the NDJSON line being checked, 0 when none is.
 	line int
+	part string // the multipart field a finding is in, whose bytes its offset counts
 }
 
 func (f *finder) active(r *rule) bool { return f.in.act[r.idx] != Off }
@@ -76,6 +77,9 @@ func (f *finder) record(r *rule, d detail, limit, off int) bool {
 	}
 	if f.line > 0 {
 		msg += " in line " + strconv.Itoa(f.line)
+	}
+	if f.part != "" {
+		msg += " in the " + f.part + " part"
 	}
 	if off >= 0 {
 		msg += " at byte " + strconv.Itoa(off)
