@@ -39,8 +39,9 @@ type record struct {
 	// lines is how many lines the request has been reported in, and held how many of them went over maxRequestLines.
 	lines, held atomic.Int32
 	// alerts says the edge gives alerts (Config.OnAlert), without which nothing below is kept. via says the visitor's
-	// address came through a trusted proxy.
-	alerts, via bool
+	// address came through a trusted proxy. relayed says the connection is a trusted proxy's, whose forwarded host the
+	// rule set takes as the proxy's own (see budgetWAF.NewTransactionWithOptions).
+	alerts, via, relayed bool
 	// mu guards what follows, which the request's own goroutine fills and finish reads once the request is done: a line
 	// about the request can still come from elsewhere, and is then no longer noted.
 	mu   sync.Mutex

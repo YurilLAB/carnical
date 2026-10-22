@@ -259,6 +259,8 @@ const (
 	siteRuleBytes    = 8 << 10
 	maxSiteHosts     = 4096
 	siteRuleID       = 5006200 // the first of the rules that hold the site's names
+	// siteForwardedRuleID is the first of the rules that count the forwarded hosts that are the site's names.
+	siteForwardedRuleID = 5006600
 )
 
 // siteDirectives sets tx.carnical_site, which the local rules compare the host of a URL with. It starts as a value no
@@ -268,7 +270,7 @@ func (s Settings) siteDirectives() []string {
 	out := []string{
 		// tx.carnical_host is the host the request was made to, as the client wrote it, for rule 5006103.
 		`SecRule REQUEST_HEADERS:Host "@rx \A(.*?)\.?(?::[0-9]{1,5})?\z" "id:5006097,phase:1,pass,t:none,t:lowercase,nolog,capture,setvar:'tx.carnical_host=%{tx.1}'"`,
-		`SecAction "id:5006098,phase:1,pass,t:none,nolog,setvar:'tx.carnical_site=!'"`,
+		`SecAction "id:5006098,phase:1,pass,t:none,nolog,setvar:'tx.carnical_site=!',setvar:tx.carnical_fwd_named=0"`,
 	}
 	var names []string
 	for _, h := range s.SiteHosts {
@@ -286,8 +288,13 @@ func (s Settings) siteDirectives() []string {
 			size += 1 + len(names[n])
 			n++
 		}
+		alternatives := strings.Join(names[:n], "|")
 		out = append(out, fmt.Sprintf(`SecRule REQUEST_HEADERS:Host "@rx \A(?:www\.)?(%s)\.?(?::[0-9]{1,5})?\z" `+
-			`"id:%d,phase:1,pass,t:none,t:lowercase,nolog,capture,setvar:'tx.carnical_site=%%{tx.1}'"`, strings.Join(names[:n], "|"), id))
+			`"id:%d,phase:1,pass,t:none,t:lowercase,nolog,capture,setvar:'tx.carnical_site=%%{tx.1}'"`, alternatives, id),
+			// For rule 5006103: each forwarded host that is one of these names, as it reads them.
+			fmt.Sprintf(`SecRule REQUEST_HEADERS:X-Forwarded-Host|REQUEST_HEADERS:X-Host|REQUEST_HEADERS:X-Original-Host `+
+				`"@rx \A[\t ]*(?:www\.)?(?:%s)\.?(?::[0-9]{1,5})?[\t ]*\z" `+
+				`"id:%d,phase:1,pass,t:none,t:lowercase,nolog,setvar:tx.carnical_fwd_named=+1"`, alternatives, id-siteRuleID+siteForwardedRuleID))
 		names = names[n:]
 	}
 	return out

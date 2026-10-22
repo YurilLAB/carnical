@@ -796,6 +796,7 @@ func TestMatchesAreReportedWithoutWhatTheVisitorSentUnlessAsked(t *testing.T) {
 	numericHost := strings.Replace(get("/page"), "Host: shop.example.test", "Host: 127.0.0.1", 1)
 	firefox10 := strings.Replace(strings.Replace(get("/page", "Accept-Language: en\r\n"), "HTTP/1.1", "HTTP/1.0", 1),
 		"Mozilla/5.0 Chrome/120", "Mozilla/5.0 (X11; Linux x86_64; rv:143.0) Gecko/20100101 Firefox/143.0", 1)
+	trustLoopback := func(c *Config) { c.TrustedProxies = []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")} }
 	gptbot := strings.Replace(get("/page"), "Mozilla/5.0 Chrome/120", "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; GPTBot/1.3; +https://openai.com/gptbot)", 1)
 	for _, tt := range []struct {
 		name    string
@@ -843,6 +844,14 @@ func TestMatchesAreReportedWithoutWhatTheVisitorSentUnlessAsked(t *testing.T) {
 					t.Errorf("verdict %+v", a)
 				}
 			}},
+		{"a visitor's forwarded host is detected", nil, get("/page", "X-Forwarded-Host: evil.example\r\n"), 200,
+			[]string{"crs-5006103 detected 0"}, nil},
+		{"a trusted proxy's forwarded host is its own", trustLoopback, get("/page", "X-Forwarded-For: 203.0.113.9\r\nX-Forwarded-Host: public.example\r\n"),
+			200, nil, nil},
+		{"switched on, a visitor's forwarded host is refused", func(c *Config) { c.CRS.LocalRulesOn = []int{5006103} },
+			get("/page", "X-Forwarded-Host: evil.example\r\n"), 403, []string{"crs-949110 blocked 403"}, nil},
+		{"switched on, a trusted proxy's forwarded host passes", func(c *Config) { trustLoopback(c); c.CRS.LocalRulesOn = []int{5006103} },
+			get("/page", "X-Forwarded-For: 203.0.113.9\r\nX-Forwarded-Host: public.example\r\n"), 200, nil, nil},
 		{"a monitor finding of an inspector is detected", func(c *Config) { c.Inspectors = []inspect.Inspector{inspector(5002103, 0)} },
 			get("/page"), 200, []string{"formats-5002103 detected 0"}, func(t *testing.T, a alert.Alert) {
 				if a.Layer != alert.LayerFormats || a.Mode != alert.ModeMonitor || a.Risk != alert.RiskMedium {

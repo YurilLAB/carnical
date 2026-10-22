@@ -652,6 +652,7 @@ func (e *Edge) guard(next http.Handler) http.Handler {
 			e.reportHeld(rec)
 			rec.finish(e, r, watch.sent())
 		}()
+		rec.relayed = e.relayed(r.RemoteAddr)
 		addr, port, addrErr := clientAddr(r, e.cfg.TrustedProxies)
 		if addrErr == nil {
 			rec.client, rec.via = addr, addr != connAddr(r.RemoteAddr)

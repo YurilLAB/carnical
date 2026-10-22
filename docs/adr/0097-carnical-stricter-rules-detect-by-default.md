@@ -56,9 +56,11 @@ No substantive technical discussion recorded: the change was made for the owner,
 - **Positive:** in the live suite all 59 attacks the default setup forwards now raise an alert, as do all of those the
   format-monitor setup forwards; none of the 390 benign controls forwarded raises one from these rules.
 - **Positive:** an operator sees what a stricter rule would refuse before switching it on.
-- **Negative:** a site whose ordinary traffic matches one of the rules (a load balancer that sends the public name in
-  `X-Forwarded-Host`, a shop's `/console` page) now gets `intrusion detected` lines for it, deduplicated per source; it
-  silences them with `-local-rules-off` or `-alert-suppress`.
+- **Negative:** a site whose ordinary traffic matches one of the rules (a shop's `/console` page, a form that asks for
+  a web address) now gets `intrusion detected` lines for it, deduplicated per source; it silences them with
+  `-local-rules-off` or `-alert-suppress`. Rule 5006103 leaves the case this was first feared for alone: a forwarded
+  host that is one of the site's own names, and any forwarded host a proxy in `-trusted-proxies` sends, are not another
+  host, so a load balancer that sends the public name raises no alert.
 - **Negative:** each stricter rule is evaluated on every request, where it was removed before; they are three anchored
   expressions over the path, the body arguments and three headers.
 
@@ -66,5 +68,5 @@ No substantive technical discussion recorded: the change was made for the owner,
 
 - Related ADRs: ADR-0072 (local rules), ADR-0084 (alerts)
 - Code: `carnical/crs/crs.go`, `carnical/crs/local/REQUEST-499-CARNICAL.conf`, `carnical/proxy/verdict.go`,
-  `carnical/tools/loadtest/main.go`, `.github/security/check_live_report.py`
+  `carnical/proxy/deadline.go`, `carnical/tools/loadtest/main.go`, `.github/security/check_live_report.py`
 - Documentation: `carnical/docs/input-hardening.md#stricter-rules`

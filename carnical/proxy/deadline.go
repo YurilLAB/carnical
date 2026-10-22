@@ -9,6 +9,7 @@ import (
 
 	"github.com/corazawaf/coraza/v3"
 	"github.com/corazawaf/coraza/v3/experimental"
+	"github.com/corazawaf/coraza/v3/experimental/plugins/plugintypes"
 	"github.com/corazawaf/coraza/v3/types"
 )
 
@@ -52,12 +53,18 @@ func (w *budgetWAF) NewTransactionWithOptions(o experimental.Options) types.Tran
 	if o.Context == nil {
 		o.Context = context.Background()
 	}
-	if rec := recordOf(o.Context); rec != nil && o.ID == "" {
+	rec := recordOf(o.Context)
+	if rec != nil && o.ID == "" {
 		o.ID = rec.id
 	}
 	ctx := &budgetCtx{Context: o.Context}
 	o.Context = ctx
 	tx := w.inner.NewTransactionWithOptions(o)
+	// A forwarded host that a trusted proxy sends is the proxy's own, as its X-Forwarded-For is: a load balancer names
+	// the public host there while it asks for the origin's. Rule 5006103 leaves such a request alone.
+	if st, ok := tx.(plugintypes.TransactionState); ok && rec != nil && rec.relayed {
+		st.Variables().TX().Set("carnical_relayed", []string{"1"})
+	}
 	// The joined values of repeated parameters (see joined.go) are arguments in a collection of their own, which the
 	// request's own arguments never use, so the rules read them and nothing of the request is replaced.
 	joined, _ := ctx.Value(joinedKey{}).([]joinedArg)
