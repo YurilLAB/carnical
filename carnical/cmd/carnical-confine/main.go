@@ -193,6 +193,14 @@ var actions = []action{
 		return unix.Unmount(e.rw, 0) // the control, run as root, mounts it on the host: it is not left there
 	}},
 	{"create a user namespace", always(killed), refusedOrErr, func(e *env) error { return unix.Unshare(unix.CLONE_NEWUSER) }},
+	// The filter cannot read clone3's flags, so it refuses the call outright. With no argument block the kernel answers
+	// EFAULT before it creates anything; only the filter answers ENOSYS.
+	{"call clone3, whose namespace flags the filter cannot read", always(refused), allowed, func(e *env) error {
+		if err := rawErr(unix.SYS_CLONE3, 0, 64, 0); errors.Is(err, unix.ENOSYS) {
+			return err
+		}
+		return nil
+	}},
 	{"load the BPF interface", always(killed), refusedOrErr, func(e *env) error { return rawErr(unix.SYS_BPF, 0, 0, 0) }},
 	{"open an io_uring", always(killed), refusedOrErr, func(e *env) error { return rawErr(unix.SYS_IO_URING_SETUP, 1, 0, 0) }},
 	{"open a perf event", always(killed), refusedOrErr, func(e *env) error { return rawErr(unix.SYS_PERF_EVENT_OPEN, 0, 0, 0) }},

@@ -59,6 +59,8 @@ stopped for an attacker who is **only** the edge user.
   dumpable and without the filter.
 * `go test ./sandbox` passes: the filter's interpreter decides 61 calls, and the check notices a run without seccomp and one
   without Landlock.
+* **On 2026-10-22**, after `clone3` was refused, in the same container: 38 actions, 9 allowed, 16 refused (`clone3` answered
+  as unknown) and 13 ended by the filter; the control kills none and lets 28 through, `clone3` among them.
 * `systemd-analyze security --offline` (systemd 255) gives the edge unit **1.4 (OK)**, the audit unit 2.2 and the root
   host-audit unit 2.8, which reads every process and so keeps ptrace and the process tree.
 * The confined proxy's host audit was not repeated: it needs the unprivileged service account, and the container runs as root,
