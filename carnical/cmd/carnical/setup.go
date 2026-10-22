@@ -315,7 +315,7 @@ func askEndpoint(p setupPrompt) (setupEndpoint, error) {
 	if err := p.section("5. Attack alerts"); err != nil {
 		return e, err
 	}
-	raw, err := p.ask("Alert endpoint, an HTTPS URL told when an attack starts and ends (blank for none)", "", "Carnical posts a small signed JSON message to it while an attack goes on: what is attacked\n(its ports and protocols), how hard and from how many addresses, and what Carnical did.\nNothing of any request is sent. Blank: no alerts are sent. It is stored encrypted.", func(value string) error {
+	raw, err := p.ask("Alert endpoint, an HTTPS URL told of intrusion alerts and attacks (blank for none)", "", "Carnical posts small signed JSON messages to it: each intrusion alert it logs, as its log line\n(the visitor's address as the alert settings show it, the method, host and path; never a query\nor a body), and while an attack goes on, what is attacked (its ports and protocols), how hard\nand from how many addresses, and what Carnical did. Blank: no alerts are sent. It is stored\nencrypted.", func(value string) error {
 		if value == "" {
 			return nil
 		}

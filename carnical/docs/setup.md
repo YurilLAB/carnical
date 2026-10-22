@@ -42,10 +42,10 @@ question. A question with no brackets has no safe default and must be answered.
 3. **Protection profile**: the site type and the attack detection level.
 4. **Security settings**: whether attacks are blocked or only logged, flood protection, auto-block,
    a login limit, which bots to block and intrusion alerts.
-5. **Attack alerts**: an HTTPS endpoint told when an attack starts, goes on and ends, with the
-   attacked ports and protocols (blank for none), the private addresses it may be at, and a signing
-   secret file; leave the secret blank and setup makes one when it saves, next to the key. See
-   [alert endpoint](alert-endpoint.md).
+5. **Attack alerts**: an HTTPS endpoint told of each intrusion alert, and when an attack starts,
+   goes on and ends, with the attacked ports and protocols (blank for none), the private addresses
+   it may be at, and a signing secret file; leave the secret blank and setup makes one when it
+   saves, next to the key. See [alert endpoint](alert-endpoint.md).
 6. **Check and save**: the settings are checked as start-up checks them, a summary is shown, and
    setup asks before saving.
 

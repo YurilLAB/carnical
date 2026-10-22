@@ -137,8 +137,9 @@ never replaced. It asks, in order:
   3. Profile: what the site is, and how strict attack detection is.
   4. Security: block or only log, flood protection, auto-block, a login limit, bots
      and alerts.
-  5. Attack alerts: an HTTPS endpoint told when an attack starts, goes on and ends
-     (blank for none), and the file of the secret its messages are signed with.
+  5. Attack alerts: an HTTPS endpoint told of each intrusion alert and when an attack
+     starts, goes on and ends (blank for none), and the file of the secret its
+     messages are signed with.
   6. Check and save: the settings are checked as start-up checks them, then saved
      with the origin details encrypted, and its key kept apart.
 

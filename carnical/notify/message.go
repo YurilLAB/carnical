@@ -5,6 +5,7 @@ package notify
 import (
 	"time"
 
+	"github.com/YurilLAB/coraza/carnical/alert"
 	"github.com/YurilLAB/coraza/carnical/netwatch"
 )
 
@@ -24,6 +25,10 @@ const (
 
 func (e Event) update() bool { return e == AttackUpdate || e == NetworkUpdate }
 
+// yields reports whether a message makes room for others in a full queue: an update, of which a later one says more,
+// and a message of intrusion alerts, which are also in the log. The start and the end of an attack never do.
+func (e Event) yields() bool { return e.update() || e == Intrusions }
+
 // Severity is how urgent a message is.
 func (e Event) Severity() string {
 	switch e {
@@ -36,7 +41,8 @@ func (e Event) Severity() string {
 }
 
 // Message is one alert. Every string in it is carnical's own text, a number, or a label carnical made and bounded
-// (a client fingerprint, a path template, a country or network); no query, body, cookie or visitor's address.
+// (a client fingerprint, a path template, a country or network); no query, body or cookie. Only an intrusion alert
+// names a visitor's address, as the log does (-alert-source).
 type Message struct {
 	Version  int       `json:"version"`  // 1
 	ID       string    `json:"id"`       // the delivery id, also in X-Carnical-Delivery; filled when sent
@@ -51,6 +57,10 @@ type Message struct {
 	Attack  *Attack `json:"attack,omitempty"`
 	// Network is the record of a network attack, as the packet guards counted it.
 	Network *netwatch.Record `json:"network,omitempty"`
+	// Intrusions are the intrusion alerts of an Intrusions message, each as its log line has it.
+	Intrusions []alert.Line `json:"intrusions,omitempty"`
+	// IntrusionsDropped counts the intrusion alerts before these that were not sent: too many waited.
+	IntrusionsDropped uint64 `json:"intrusions_dropped,omitempty"`
 	// Dropped counts the messages before this one that were not sent: the queue was full.
 	Dropped uint64 `json:"dropped,omitempty"`
 }

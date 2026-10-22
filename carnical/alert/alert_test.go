@@ -1027,6 +1027,8 @@ func TestSinks(t *testing.T) {
 	network.Net = SourceNet(a.Src)
 	withClient := a
 	withClient.Client = ClientFake
+	viaProxy := a
+	viaProxy.ViaProxy = true
 	dropped := Record{Kind: KindDropped, Dropped: Drops{High: 2, Repeats: 7},
 		Unwritten: []SigCount{{Sig: "crs-942100", Action: Blocked, N: 7}}}
 	logs := []struct {
@@ -1051,6 +1053,10 @@ func TestSinks(t *testing.T) {
 			[]string{`"status"`}},
 		{"client", SourceFull, Record{Kind: KindAlert, Alert: withClient}, map[string]any{"client": "fake"}, nil},
 		{"no client read", SourceFull, Record{Kind: KindAlert, Alert: a}, map[string]any{"sig": "crs-949110"}, []string{`"client"`}},
+		{"via a trusted proxy", SourceFull, Record{Kind: KindAlert, Alert: viaProxy}, map[string]any{"via_proxy": true}, nil},
+		{"via a trusted proxy, the source off", SourceOff, Record{Kind: KindAlert, Alert: viaProxy}, map[string]any{"sig": "crs-949110"},
+			[]string{"via_proxy"}},
+		{"a source blocked", SourceFull, Record{Kind: KindSourceBlocked, Alert: v4}, map[string]any{"msg": "source blocked", "src": "192.0.2.10"}, nil},
 		{"totals count blocked bots and people", SourceFull, Record{Kind: KindTotals, Totals: &Totals{BotSources: 2, PeopleSources: 1,
 			Refused: []ClientCount{{ClientPerson, 3}, {ClientAI, 4}, {ClientFake, 1}}}}, map[string]any{"blocked_bots": 5.0,
 			"blocked_people": 3.0, "blocked_bot_sources": 2.0, "blocked_people_sources": 1.0,
@@ -1075,6 +1081,27 @@ func TestSinks(t *testing.T) {
 				if strings.Contains(buf.String(), s) {
 					t.Fatalf("%q in %s", s, buf.String())
 				}
+			}
+			// The alert endpoint is sent the same line, without its time and level; the totals stay in the log.
+			line, ok := NewLine(tt.rec, tt.mode)
+			if ok != (tt.rec.Kind != KindTotals && tt.rec.Kind != KindSummary) {
+				t.Fatalf("NewLine reports %v for a record of kind %d", ok, tt.rec.Kind)
+			}
+			if !ok {
+				return
+			}
+			data, err := json.Marshal(line)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var sent map[string]any
+			if err := json.Unmarshal(data, &sent); err != nil {
+				t.Fatal(err)
+			}
+			delete(got, "time")
+			delete(got, "level")
+			if !reflect.DeepEqual(sent, got) {
+				t.Fatalf("the endpoint's line %s, the log's %s", data, buf.String())
 			}
 		})
 	}

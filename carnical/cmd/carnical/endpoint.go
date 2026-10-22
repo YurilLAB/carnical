@@ -28,7 +28,7 @@ type endpointFlags struct {
 
 func declareEndpointFlags(flags *flag.FlagSet) endpointFlags {
 	return endpointFlags{
-		url:        flags.String("alert-endpoint", "", "HTTPS URL that is sent a signed JSON message when an attack starts, goes on (at most once a minute) and ends (default: none)"),
+		url:        flags.String("alert-endpoint", "", "HTTPS URL that is sent signed JSON messages: the intrusion alerts the log writes (batched, a message a second) and when an attack starts, goes on (at most once a minute) and ends (default: none)"),
 		secretFile: flags.String("alert-endpoint-secret-file", "", "file whose first line is the secret that signs the alert endpoint's messages, 32 to 1024 printable characters (not accessible to everyone or writable by its group)"),
 		allow:      flags.String("alert-endpoint-allow", "", "comma-separated addresses or ranges the alert endpoint may be at even though they are not public (default: public addresses only)"),
 		caFile:     flags.String("alert-endpoint-ca-file", "", "CA bundle that verifies the alert endpoint's certificate (default: the system's)"),
@@ -39,12 +39,14 @@ func declareEndpointFlags(flags *flag.FlagSet) endpointFlags {
 // person or a pager does not need.
 const endpointUpdateGap = time.Minute
 
-// endpoint sends the attacks the shield finds to the alert endpoint.
+// endpoint sends the intrusion alerts and the attacks the shield finds to the alert endpoint.
 type endpoint struct {
-	cfg    notify.Config
-	site   string
-	port   uint16
-	sender *notify.Sender
+	cfg        notify.Config
+	site       string
+	port       uint16
+	sender     *notify.Sender
+	alerts     *alerting
+	intrusions *notify.AlertSink
 
 	mu       sync.Mutex
 	updated  map[string]time.Time // attack (by its start) -> when its last update was queued
@@ -111,8 +113,9 @@ func configureEndpoint(log *slog.Logger, f endpointFlags, site string) (*endpoin
 	return &endpoint{cfg: cfg, site: site, port: notify.URLPort(u), updated: map[string]time.Time{}}, nil
 }
 
-// start begins sending. The URL is not logged: it may hold a token, and it says where alerts go.
-func (e *endpoint) start(log *slog.Logger) error {
+// start begins sending, and sends the endpoint every intrusion alert alerts writes to the log, the source shown as
+// there. The URL is not logged: it may hold a token, and it says where alerts go.
+func (e *endpoint) start(log *slog.Logger, alerts *alerting) error {
 	if e == nil {
 		return nil
 	}
@@ -121,14 +124,25 @@ func (e *endpoint) start(log *slog.Logger) error {
 		return err
 	}
 	e.sender = s
+	if alerts != nil && alerts.queue != nil {
+		e.alerts, e.intrusions = alerts, notify.NewAlertSink(s, e.site, alerts.source)
+		alerts.sendTo(e.intrusions)
+	}
 	log.Info("alert endpoint on", "port", e.port)
 	return nil
 }
 
-// close sends what is waiting, for at most two seconds (an attack_end at shutdown), and logs what was sent.
+// close sends what is waiting, for at most two seconds (an attack_end at shutdown), and logs what was sent. The alerts
+// are closed first, so that the last requests' alerts and those the aggregator still holds are sent too.
 func (e *endpoint) close(log *slog.Logger) {
 	if e == nil || e.sender == nil {
 		return
+	}
+	var messages, lost uint64
+	if e.intrusions != nil {
+		e.alerts.close()
+		e.intrusions.Close()
+		messages, lost = e.intrusions.Stats()
 	}
 	e.mu.Lock()
 	e.finished = true
@@ -136,9 +150,10 @@ func (e *endpoint) close(log *slog.Logger) {
 	e.sender.Close(2 * time.Second)
 	st := e.sender.Stats()
 	e.mu.Lock()
-	queued := e.queued
+	queued := e.queued + messages
 	e.mu.Unlock()
-	log.Info("alert endpoint closed", "queued", queued, "sent", st.Sent, "failed", st.Failed, "dropped", st.Dropped, "retries", st.Retries)
+	log.Info("alert endpoint closed", "queued", queued, "sent", st.Sent, "failed", st.Failed, "dropped", st.Dropped, "retries", st.Retries,
+		"intrusions_not_sent", lost)
 }
 
 // shieldEvent sends an attack's start, its end and at most one update a minute; the shield's other events are left

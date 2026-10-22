@@ -166,5 +166,6 @@ Superseding does not delete the old record. Set its status and let the history s
 | [0095](0095-carnical-person-check-hook.md) | — | — | unreleased (post-v3.8.1) | F | A hook for a person check in the Carnical proxy |
 | [0096](0096-carnical-php2shell-checks.md) | — | — | unreleased (post-v3.8.1) | F | PHP2Shell checked on the request and the response in the Carnical proxy |
 | [0097](0097-carnical-stricter-rules-detect-by-default.md) | — | — | unreleased (post-v3.8.1) | F | Carnical's stricter local rules detect until they are switched on |
+| [0098](0098-carnical-intrusion-alerts-at-the-endpoint.md) | — | — | unreleased (post-v3.8.1) | F | Carnical sends its intrusion alerts to the alert endpoint |
 
 Categories: **F**eature · **P**arity · **⚡** Perf · **R**efactor

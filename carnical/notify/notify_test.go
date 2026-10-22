@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/YurilLAB/coraza/carnical/alert"
 	"github.com/YurilLAB/coraza/carnical/netwatch"
 )
 
@@ -432,6 +433,161 @@ func TestNetworkFloodsAreSentAsAttacksAre(t *testing.T) {
 	want := []string{"network_attack_start 08:00 08:00:00", "network_attack_update 08:00 08:00:20", "network_attack_update 09:00 08:00:10"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("delivered %q, want %q", got, want)
+	}
+}
+
+// intrusion is an alert record of risk and action, its path made unique by n.
+func intrusion(risk alert.Risk, action alert.Action, n int) alert.Record {
+	at := time.Unix(1_800_000_000, 0)
+	return alert.Record{Kind: alert.KindAlert, Alert: alert.Alert{Layer: alert.LayerCRS, Sig: alert.Signature(942100), Risk: risk,
+		Action: action, Mode: alert.ModeBlock, Status: 403, Src: netip.MustParseAddr("203.0.113.9"), Method: "POST", Host: "example.com",
+		Path: fmt.Sprintf("/%d/%s", n, strings.Repeat("p", 200)), Count: 1, First: at, Last: at}}
+}
+
+// The intrusion alerts are sent many to a message, each message within the endpoint's size and line limits, in the
+// order they were written. When too many wait, a riskier alert takes a lower one's place, and the next message says
+// how many were not sent; the totals and the summary are never sent.
+func TestIntrusionAlertsAreBatched(t *testing.T) {
+	low, high := alert.RiskLow, alert.RiskHigh
+	for _, tt := range []struct {
+		name    string
+		records []alert.Record
+		paths   []int  // the alerts sent, by n, in order
+		dropped uint64 // said in the messages
+	}{
+		{"a few", []alert.Record{intrusion(low, alert.Detected, 0), intrusion(high, alert.Blocked, 1)}, []int{0, 1}, 0},
+		{"more than a message holds", func() (r []alert.Record) {
+			for n := range 120 {
+				r = append(r, intrusion(low, alert.Blocked, n))
+			}
+			return r
+		}(), func() (p []int) {
+			for n := range 120 {
+				p = append(p, n)
+			}
+			return p
+		}(), 0},
+		{"too many: the riskier kept", func() (r []alert.Record) {
+			r = append(r, intrusion(alert.RiskMedium, alert.Detected, 0))
+			for n := 1; n < intrusionPending; n++ {
+				r = append(r, intrusion(low, alert.Detected, n))
+			}
+			r = append(r, intrusion(high, alert.Blocked, 1000), intrusion(low, alert.Detected, 1001), intrusion(high, alert.Blocked, 1002))
+			return r
+		}(), func() (p []int) {
+			p = append(p, 0)                        // medium: kept
+			for n := 3; n < intrusionPending; n++ { // the first two low ones gave their place to the high ones
+				p = append(p, n)
+			}
+			return append(p, 1000, 1002)
+		}(), 3},
+		{"reports are not sent", []alert.Record{{Kind: alert.KindTotals, Totals: &alert.Totals{}}, {Kind: alert.KindSummary},
+			intrusion(low, alert.Detected, 7)}, []int{7}, 0},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			r := newReceiver(t)
+			s := r.sender(t, nil, nil)
+			a := newAlertSink(s, "example.com", alert.SourceFull, time.Hour) // nothing goes before Close
+			for _, rec := range tt.records {
+				a.Send(rec)
+			}
+			a.Close()
+			a.Send(intrusion(high, alert.Blocked, 2000)) // after Close: counted, never sent
+			s.Close(5 * time.Second)
+			var paths []int
+			var dropped uint64
+			for _, m := range r.messages() {
+				if !m.valid || m.msg.Event != Intrusions || len(m.body) > MaxBody || len(m.msg.Intrusions) > intrusionLines {
+					t.Fatalf("a message of %d bytes and %d alerts: %.200s", len(m.body), len(m.msg.Intrusions), m.body)
+				}
+				dropped += m.msg.IntrusionsDropped
+				for _, l := range m.msg.Intrusions {
+					var n int
+					if _, err := fmt.Sscanf(l.Path, "/%d/", &n); err != nil || l.Src != "203.0.113.9" || l.Msg == "" {
+						t.Fatalf("line %+v", l)
+					}
+					paths = append(paths, n)
+				}
+			}
+			if !slices.Equal(paths, tt.paths) || dropped != tt.dropped {
+				t.Fatalf("sent %v with %d said dropped, want %v and %d", paths, dropped, tt.paths, tt.dropped)
+			}
+			if messages, lost := a.Stats(); messages != uint64(len(r.messages())) || lost != tt.dropped+1 {
+				t.Fatalf("stats: %d messages and %d alerts lost, want %d and %d", messages, lost, len(r.messages()), tt.dropped+1)
+			}
+		})
+	}
+}
+
+// A message's severity and text say what its alerts are.
+func TestIntrusionMessageText(t *testing.T) {
+	line := func(rec alert.Record) alert.Line {
+		l, _ := alert.NewLine(rec, alert.SourceFull)
+		return l
+	}
+	medium, low := intrusion(alert.RiskMedium, alert.Detected, 0), intrusion(alert.RiskLow, alert.Detected, 0)
+	suspected := low
+	suspected.Kind = alert.KindSuspected
+	for _, tt := range []struct {
+		name     string
+		lines    []alert.Line
+		dropped  uint64
+		severity string
+		text     string
+	}{
+		{"high", []alert.Line{line(intrusion(alert.RiskHigh, alert.Blocked, 0)), line(low)}, 0, "critical",
+			"2 intrusion alerts on example.com: 1 blocked, 1 detected"},
+		{"medium", []alert.Line{line(medium)}, 0, "warning", "1 intrusion alert on example.com: 1 detected"},
+		{"low", []alert.Line{line(low), line(low)}, 0, "info", "2 intrusion alerts on example.com: 2 detected"},
+		{"a suspected intrusion", []alert.Line{line(suspected)}, 0, "critical", "1 intrusion alert on example.com: 1 suspected intrusion"},
+		{"low, some not sent", []alert.Line{line(low)}, 4, "warning", "1 intrusion alert on example.com: 1 detected; 4 not sent here (too many waited)"},
+		{"only drops", nil, 4, "warning", "0 intrusion alerts on example.com; 4 not sent here (too many waited)"},
+		{"lines dropped from the log", []alert.Line{line(low), line(alert.Record{Kind: alert.KindDropped, Dropped: alert.Drops{High: 2, Low: 3}})}, 0,
+			"warning", "1 intrusion alert on example.com: 1 detected; 5 not written to the log (too many)"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := intrusionSeverity(tt.lines, tt.dropped); got != tt.severity {
+				t.Errorf("severity %s, want %s", got, tt.severity)
+			}
+			if got := intrusionText(tt.lines, tt.dropped, "example.com"); got != tt.text {
+				t.Errorf("text %q, want %q", got, tt.text)
+			}
+		})
+	}
+}
+
+// A message of intrusion alerts, which are in the log too, gives its place in a full queue to an attack's start or
+// end, and finds none to take from them.
+func TestIntrusionAlertsYieldToAttacks(t *testing.T) {
+	r := newReceiver(t)
+	release := make(chan struct{})
+	r.reply = func(n int, w http.ResponseWriter) {
+		if n == 0 {
+			<-release
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+	s := r.sender(t, nil, func(c *Config) { c.Queue = 2; c.Timeout = 10 * time.Second })
+	s.Send(attackMessage(AttackStart, "first")) // taken by the sender, held by the endpoint
+	for r.hits.Load() == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	alerts := func(text string) Message { return Message{Event: Intrusions, Text: text} }
+	s.Send(alerts("a"))
+	s.Send(alerts("b"))                     // the queue is full
+	s.Send(attackMessage(AttackStart, "x")) // a gives way
+	s.Send(attackMessage(AttackEnd, "x"))   // b gives way
+	if s.Send(alerts("c")) {
+		t.Fatal("alerts took the place of an attack's start or end")
+	}
+	close(release)
+	s.Close(5 * time.Second)
+	var got []string
+	for _, m := range r.messages() {
+		got = append(got, string(m.msg.Event))
+	}
+	if want := []string{"attack_start", "attack_start", "attack_end"}; !slices.Equal(got, want) || s.Stats().Dropped != 3 {
+		t.Fatalf("delivered %q with %d dropped, want %q and 3", got, s.Stats().Dropped, want)
 	}
 }
 

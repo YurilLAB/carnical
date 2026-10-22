@@ -52,7 +52,9 @@ type alerting struct {
 	evalMode proxy.OverBudget
 	agg      *alert.Aggregator
 	queue    *alert.Async
+	also     atomic.Pointer[alert.Sink] // where the lines also go once written: the alert endpoint
 	started  bool
+	closed   bool
 }
 
 // configureAlerts checks the alert flags and, unless -alerts off, builds the aggregator that writes alerts to log
@@ -110,7 +112,13 @@ func configureAlerts(log *slog.Logger, f alertFlags) (*alerting, error) {
 	if err != nil {
 		return nil, refuseFlag("alert-suppress", fmt.Errorf("-alert-suppress: %w", err))
 	}
-	a.queue = alert.NewAsync(alert.NewLogSink(log, source), 0)
+	lines := alert.NewLogSink(log, source)
+	a.queue = alert.NewAsync(alert.SinkFunc(func(r alert.Record) {
+		lines.Send(r)
+		if also := a.also.Load(); also != nil {
+			(*also).Send(r)
+		}
+	}), 0)
 	a.agg, err = alert.NewAggregator(alert.Config{Sink: a.queue, Table: *f.table, Window: *f.window, Rate: *f.rate,
 		MinRisk: risk, Source: source, TotalsInterval: *f.totals, SummaryInterval: *f.summary, Suppress: suppress, Exclude: exclude})
 	if err != nil {
@@ -131,6 +139,13 @@ func configureAlerts(log *slog.Logger, f alertFlags) (*alerting, error) {
 		log.Info("alert source excluded", "source", p.String())
 	}
 	return a, nil
+}
+
+// sendTo sends s every record written to the log, from now on; with -alerts off there are none. s.Send must not block.
+func (a *alerting) sendTo(s alert.Sink) {
+	if a.queue != nil {
+		a.also.Store(&s)
+	}
 }
 
 // start begins the periodic alert lines.
@@ -225,11 +240,13 @@ func (l *matchLog) close(wait time.Duration) {
 }
 
 // close writes what the aggregator still holds and the final totals, and waits at most two seconds for the log. A
-// process that never served (-check, or a start-up refused) has nothing to report and writes nothing.
+// process that never served (-check, or a start-up refused) has nothing to report and writes nothing. Only the first
+// close does anything.
 func (a *alerting) close() {
-	if a.agg == nil {
+	if a.agg == nil || a.closed {
 		return
 	}
+	a.closed = true
 	if a.started {
 		a.agg.Close()
 	}

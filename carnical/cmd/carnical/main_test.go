@@ -3612,7 +3612,8 @@ func TestAlertEndpointSettings(t *testing.T) {
 // signature, which is complete once the endpoint is closed.
 // alertReceiver starts an endpoint posting to a test receiver. received returns what the receiver has accepted, once
 // until says it is all there (or after ten seconds: the test then fails on what is missing); a nil until does not wait.
-func alertReceiver(t *testing.T) (ep *endpoint, log *slog.Logger, logs *bytes.Buffer, received func(until func([]notify.Message) bool) []notify.Message) {
+// With alertArgs (the alert flags; none is their defaults), the endpoint is also sent the intrusion alerts.
+func alertReceiver(t *testing.T, alertArgs ...string) (ep *endpoint, log *slog.Logger, logs *bytes.Buffer, received func(until func([]notify.Message) bool) []notify.Message) {
 	t.Helper()
 	dir := t.TempDir()
 	secret := strings.Repeat("k", 48)
@@ -3645,7 +3646,19 @@ func alertReceiver(t *testing.T) (ep *endpoint, log *slog.Logger, logs *bytes.Bu
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := ep.start(log); err != nil {
+	var alerts *alerting
+	if alertArgs != nil {
+		flags := flag.NewFlagSet("alerts", flag.ContinueOnError)
+		f := declareAlertFlags(flags)
+		if err := flags.Parse(alertArgs); err != nil {
+			t.Fatal(err)
+		}
+		if alerts, err = configureAlerts(log, f); err != nil {
+			t.Fatal(err)
+		}
+		alerts.start()
+	}
+	if err := ep.start(log, alerts); err != nil {
 		t.Fatal(err)
 	}
 	received = func(until func([]notify.Message) bool) []notify.Message {
@@ -3713,6 +3726,72 @@ func TestAlertEndpointSendsAttacks(t *testing.T) {
 	}
 	if strings.Contains(logs.String(), "/hook") || strings.Contains(logs.String(), strings.Repeat("k", 48)) || !strings.Contains(logs.String(), `"sent":`+strconv.Itoa(len(events))) {
 		t.Fatalf("the log names neither the URL nor the secret, and counts what was sent: %s", logs)
+	}
+}
+
+// Every intrusion alert written to the log is sent to the endpoint as that line, the source shown as -alert-source
+// says, including those written as the alerts close: the endpoint closes them before it stops sending.
+func TestAlertEndpointSendsIntrusionAlerts(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		src  string // the source the lines show
+		sent bool
+	}{
+		{"the defaults", []string{}, "203.0.113.9", true},
+		{"the source as a prefix", []string{"-alert-source=prefix"}, "203.0.113.0/24", true},
+		{"alerts off", []string{"-alerts=off"}, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ep, log, logs, received := alertReceiver(t, tc.args...)
+			now := time.Now()
+			a := alert.Alert{Layer: alert.LayerCRS, RuleID: 942100, Sig: alert.Signature(942100), Risk: alert.RiskHigh, Action: alert.Blocked,
+				Mode: alert.ModeBlock, Status: 403, Src: netip.MustParseAddr("203.0.113.9"), Method: "GET", Host: "example.com", Path: "/search",
+				Count: 1, First: now, Last: now}
+			if ep.alerts != nil {
+				ep.alerts.onAlert(a) // written at once
+				ep.alerts.onAlert(a) // a repeat, written as "alert repeated" when the alerts close
+			}
+			ep.close(log)
+			var lines []map[string]any
+			for _, m := range received(nil) {
+				if m.Event != notify.Intrusions {
+					t.Fatalf("a %s message, want only intrusion alerts", m.Event)
+				}
+				for _, l := range m.Intrusions {
+					data, _ := json.Marshal(l)
+					var v map[string]any
+					if err := json.Unmarshal(data, &v); err != nil {
+						t.Fatal(err)
+					}
+					lines = append(lines, v)
+				}
+			}
+			var written []map[string]any
+			for _, line := range strings.Split(logs.String(), "\n") {
+				var v map[string]any
+				if json.Unmarshal([]byte(line), &v) == nil && (v["msg"] == "intrusion blocked" || v["msg"] == "alert repeated") {
+					delete(v, "time")
+					delete(v, "level")
+					written = append(written, v)
+				}
+			}
+			if !tc.sent {
+				if len(lines) != 0 || ep.intrusions != nil {
+					t.Fatalf("sent %v with -alerts off", lines)
+				}
+				return
+			}
+			if len(written) != 2 || !reflect.DeepEqual(lines, written) {
+				t.Fatalf("the endpoint was sent\n%v\nwant the log's alert and repeat\n%v", lines, written)
+			}
+			if lines[0]["src"] != tc.src || lines[1]["src"] != tc.src {
+				t.Fatalf("sources %v and %v, want %s", lines[0]["src"], lines[1]["src"], tc.src)
+			}
+			if !strings.Contains(logs.String(), `"intrusions_not_sent":0`) {
+				t.Fatalf("the endpoint's close does not say that every alert was sent: %s", logs)
+			}
+		})
 	}
 }
 
@@ -3914,7 +3993,7 @@ func TestAlertEndpointNamesAreCheckedWhenConnecting(t *testing.T) {
 			pool := x509.NewCertPool()
 			pool.AddCert(cert)
 			ep.cfg.RootCAs = pool
-			if err := ep.start(log); err != nil {
+			if err := ep.start(log, nil); err != nil {
 				t.Fatal(err)
 			}
 			ep.shieldEvent(shield.Event{Kind: "attack_start", At: time.Now(), Incident: shield.Incident{Start: time.Now()}})

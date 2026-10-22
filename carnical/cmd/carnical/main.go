@@ -308,7 +308,7 @@ func runFlags(usage, logs io.Writer, args []string, private map[string]string) e
 	}
 	if !*check {
 		// Started before the shield and closed after it, so that the end of an attack going on at shutdown is sent.
-		if err := alertEndpoint.start(log); err != nil {
+		if err := alertEndpoint.start(log, alerts); err != nil {
 			return err
 		}
 		defer alertEndpoint.close(log)
@@ -360,8 +360,8 @@ func runFlags(usage, logs io.Writer, args []string, private map[string]string) e
 	if err != nil {
 		return fromSite(err, site, private)
 	}
-	if alertEndpoint != nil && guard == nil && *netwatchState == "" {
-		log.Warn("the alert endpoint is told of the attacks flood protection finds; with -ddos off and no -netwatch-state it is sent nothing")
+	if alertEndpoint != nil && alerts.queue == nil && guard == nil && *netwatchState == "" {
+		log.Warn("the alert endpoint is told of intrusion alerts and of the attacks flood protection finds; with -alerts off, -ddos off and no -netwatch-state it is sent nothing")
 	}
 	if guard != nil {
 		defer guard.Close()

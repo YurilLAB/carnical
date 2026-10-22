@@ -1,16 +1,19 @@
 # Alert endpoint
 
-Carnical can tell your own HTTPS endpoint, while an attack goes on, what is being attacked and how:
-the ports and protocols, how many requests and addresses, what kind of attack it is and what
-Carnical is doing about it. Nothing is sent unless an endpoint is set (`-alert-endpoint`, or the
-"Attack alerts" step of `carnical setup`).
+Carnical can tell your own HTTPS endpoint each [intrusion alert](#intrusion-alerts) it writes to
+the log and, while an attack goes on, what is being attacked and how: the ports and protocols, how
+many requests and addresses, what kind of attack it is and what Carnical is doing about it. Nothing
+is sent unless an endpoint is set (`-alert-endpoint`, or the "Attack alerts" step of
+`carnical setup`).
 
-Messages are few and small: one when an attack starts, at most one a minute while it goes on, and
-one when it ends. They are about the attacks flood protection finds and, with `-netwatch-state`,
-the [network floods](#network-floods) the kernel's packet guards drop; with `-ddos off` and no
-`-netwatch-state` none are sent (start-up warns of it). They are sent by one goroutine from a queue of 32, one at a time and at least half
-a second apart, over one kept-alive connection, so alerting costs next to nothing when the machine
-is short of resources, and a slow or dead endpoint costs one goroutine and a few kilobytes.
+Messages are few and small. The intrusion alerts go as the log's lines, many to a message, one
+message a second (two when more wait than one holds). An attack flood protection finds is told in
+one message when it starts, at most one a minute while it goes on, and one when it ends; with
+`-netwatch-state`, so are the [network floods](#network-floods) the kernel's packet guards drop.
+With `-alerts off`, `-ddos off` and no `-netwatch-state` nothing is sent (start-up warns of it).
+They are sent by one goroutine from a queue of 32, one at a time and at least half a second apart,
+over one kept-alive connection, so alerting costs next to nothing when the machine is short of
+resources, and a slow or dead endpoint costs one goroutine and a few kilobytes.
 
 ## Setting it up
 
@@ -70,7 +73,7 @@ A JSON object, at most 16 KiB:
 
 | Field | Meaning |
 | --- | --- |
-| `event` | `attack_start`, `attack_update` or `attack_end` |
+| `event` | `attack_start`, `attack_update` or `attack_end` (and `intrusions`, `network_attack_*`, below) |
 | `severity` | `critical` for a start, `warning` for an update, `info` for an end |
 | `text` | One line for a person, a chat or a pager |
 | `attack.kinds` | What the attack is: see [the attack record](ddos.md#what-the-attack-record-says) |
@@ -87,10 +90,72 @@ template is the path with its identifiers taken out (numbers, and segments over 
 of 16 and more that hold a digit), at most six segments in 96 bytes, so a word or a name in a path
 is kept. Labels made from what clients sent have control characters escaped and `<` and `>`
 replaced by `‹` and `›`, so a chat that reads markup cannot be made to ping a channel. No message
-holds a query string, a body, another header, a cookie, an address of a visitor or matched data.
+holds a query string, a body, another header, a cookie or matched data, and only an intrusion
+alert holds a visitor's address, as its log line does.
 
-When the queue is full, an update waiting gives its place to a start or an end, and a newer update
-of the same attack replaces one still waiting: the endpoint gets the latest.
+When the queue is full, an update or a message of intrusion alerts waiting gives its place to a
+start or an end, and a newer update of the same attack replaces one still waiting: the endpoint
+gets the latest.
+
+## Intrusion alerts
+
+Every [intrusion alert](proxy-reference.md#intrusion-alerts) written to the log is sent as that
+line, without its `time` and `level`: the same fields under the same names. They are `intrusion
+blocked`, `intrusion detected`, `inspection incomplete`, `alert repeated`, `suspected intrusion`,
+`alerts dropped` and the [repeat offender](ddos.md#repeat-offenders) lines (`source blocked`,
+`source would be blocked`, `source block ended`, `auto-block table full`). The `intrusion totals`
+and `intrusion summary` reports stay in the log. As the endpoint is sent the lines written to the
+log, the log's limits come first: one line per source, signature and action in
+`-alert-repeat-window`, at most `-alert-rate` lines a second, and `-alert-min-risk`,
+`-alert-suppress` and `-alert-exclude-sources` apply. With `-alerts off` none are sent.
+
+```json
+{
+  "version": 1,
+  "id": "4be0d27c95a1e3f8076b2d9c1a5e8f34",
+  "event": "intrusions",
+  "severity": "critical",
+  "at": "2026-10-22T09:15:02Z",
+  "site": "example.com",
+  "text": "3 intrusion alerts on example.com: 1 blocked, 1 detected, 1 repeated",
+  "intrusions": [
+    {"msg": "intrusion blocked", "alert_id": "8d1f3a7c2b9e4f60", "layer": "crs", "sig": "crs-942100",
+     "sig_name": "SQL injection (libinjection)", "rules": [942100, 949110], "category": ["sqli"],
+     "risk": "high", "severity_raw": "CRITICAL", "action": "blocked", "mode": "block", "status": 403,
+     "score": 10, "threshold": 5, "src": "203.0.113.9", "src_key": "203.0.113.9", "method": "GET",
+     "host": "example.com", "path": "/search", "count": 1},
+    {"msg": "intrusion detected", "alert_id": "2c90e1b4a7d35f18", "layer": "crs", "sig": "crs-5006102",
+     "sig_name": "Script on another host in a body parameter", "rules": [5006102], "category": ["rfi"],
+     "risk": "low", "severity_raw": "CRITICAL", "action": "detected", "mode": "detect", "status": 0,
+     "src": "198.51.100.23", "src_key": "198.51.100.23", "method": "POST", "host": "example.com",
+     "path": "/contact", "count": 1},
+    {"msg": "alert repeated", "alert_id": "8d1f3a7c2b9e4f60", "layer": "crs", "sig": "crs-942100",
+     "sig_name": "SQL injection (libinjection)", "rules": [942100, 949110], "category": ["sqli"],
+     "risk": "high", "severity_raw": "CRITICAL", "action": "blocked", "mode": "block", "score": 10,
+     "threshold": 5, "src": "203.0.113.9", "src_key": "203.0.113.9", "method": "GET",
+     "host": "example.com", "path": "/search", "first": "2026-10-22T09:14:02Z",
+     "last": "2026-10-22T09:14:43Z", "count": 14}
+  ]
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `severity` | `critical` when an alert is high risk, a suspected intrusion or a source blocked; `warning` when one is medium risk or alerts were dropped or not sent; `info` otherwise |
+| `intrusions` | The alerts, in the order they were written to the log, each as its line; see [intrusion alerts](proxy-reference.md#intrusion-alerts) for the fields |
+| `intrusions_dropped` | Alerts before these that were not sent: more than 256 waited, or the queue had no room for their message |
+
+A message holds at most 50 alerts and 16 KiB; while more wait, a second follows within the same
+second. When 256 wait, a medium or high risk alert takes the place of the oldest lower one, and any
+other is not sent; the next message counts them in `intrusions_dropped`. The alerts are in the log
+either way.
+
+Each alert names the visitor's address as `-alert-source` says: `full` (the default), `prefix`
+(its /24 or /48) or `off`, and the path as `-alert-path` says. Use `-alert-source prefix` or `off`
+when the endpoint is not to hold visitors' addresses. At shutdown the alerts written as the alerts
+close (the repeats still being counted and the last requests') are sent before the endpoint stops,
+within its two seconds; `alert endpoint closed` counts the alerts that were not sent in
+`intrusions_not_sent`.
 
 ## Network floods
 
@@ -188,9 +253,10 @@ The secret is the text of the file's first line, not its decoding.
   a failed delivery is logged as its reason only (`the address is not allowed`, `the endpoint's
   certificate is not trusted`, `timed out`, `TLS failed`, `could not connect`, or the status), at
   most once every 30 seconds.
-- An attacker cannot make Carnical flood the endpoint: messages come from attacks, not requests;
-  there is at most one update a minute per attack, one post at a time, at least half a second apart,
-  and at most three attempts each (retried only after no reply, 408, 429 or 5xx, after one and three
+- An attacker cannot make Carnical flood the endpoint: attack messages come from attacks, not
+  requests, at most one update a minute per attack; intrusion alerts are the log's deduplicated,
+  rate-limited lines, at most two messages a second of at most 50 each, and 256 waiting; there is
+  one post at a time, at least half a second apart, and at most three attempts each (retried only after no reply, 408, 429 or 5xx, after one and three
   seconds; never for a refused address or a certificate that is not trusted, which no attempt can
   change).
 - Each attempt is bounded by a five-second timeout, and the reply is read to 4 KiB at most. A kept
@@ -203,9 +269,12 @@ The secret is the text of the file's first line, not its decoding.
 `go test ./notify` covers the URL and secret rules, signing and verifying (a changed body, a
 changed timestamp, another secret and a stale timestamp are refused), delivery with one kept-alive
 connection, retries only for failures that may pass, a refused redirect, the queue's priorities,
-an endpoint that never answers (shutdown stays within its wait), and failure lines that hold neither
-URL nor secret. `go test ./cmd/carnical -run 'TestAlertEndpoint|TestRequestFormatsAtCLI'` covers the
-flags, the setup step and the saved secret. On Linux, `go test ./proxy -run
+an endpoint that never answers (shutdown stays within its wait), failure lines that hold neither
+URL nor secret, and the intrusion alerts' batching, size limits, priorities, text and severity.
+`go test ./alert -run TestSinks` checks that an alert sent is its log line, field for field.
+`go test ./cmd/carnical -run 'TestAlertEndpoint|TestRequestFormatsAtCLI'` covers the flags, the
+setup step, the saved secret, and that the alerts written to the log, including the repeats
+written at shutdown, reach a TLS endpoint as those lines, with the source as `-alert-source` says. On Linux, `go test ./proxy -run
 TestAFloodFromAThousandAddressesThroughTheProxy` sends a real flood from a thousand addresses
 through the proxy and checks that the signed `attack_start` that reaches a TLS endpoint names the
 attacked port, the protocol, the kinds and the spread.

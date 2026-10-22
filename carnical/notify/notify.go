@@ -255,8 +255,9 @@ func New(cfg Config) (*Sender, error) {
 }
 
 // Send queues m for delivery and reports whether there was room. It never blocks. When the queue is full, the oldest
-// update waiting makes room; a message that is neither an update nor finds an update to replace takes the place of the
-// oldest message. An update of an attack whose last update still waits replaces it: the endpoint needs the latest.
+// update or message of intrusion alerts waiting makes room (see Event.yields); such a message that finds none is
+// dropped, and any other takes the place of the oldest message. An update of an attack whose last update still waits
+// replaces it: the endpoint needs the latest.
 func (s *Sender) Send(m Message) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -276,14 +277,14 @@ func (s *Sender) Send(m Message) bool {
 	if len(s.queue) >= s.size {
 		victim := -1
 		for i := range s.queue {
-			if s.queue[i].Event.update() {
+			if s.queue[i].Event.yields() {
 				victim = i
 				break
 			}
 		}
 		switch {
 		case victim >= 0:
-		case m.Event.update():
+		case m.Event.yields():
 			s.drop()
 			return false
 		default:
