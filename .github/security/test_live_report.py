@@ -106,7 +106,59 @@ class LiveReportTests(unittest.TestCase):
             for field in ("Requests", "OriginReached"):
                 changed = copy.deepcopy(original)
                 next(row for row in changed["Results"] if row["Name"].startswith(group + "/"))[field] = 0
-                cases.append((group + " zero " + field, changed, "controls"))
+                cases.append((group + " zero " + field, changed, "invalid live WAF measurement"))
+        for label, field, value in (("negative errors", "Errors", -1), ("negative origin", "OriginReached", -1),
+                                    ("fractional requests", "Requests", 1.5), ("boolean origin", "OriginReached", False)):
+            changed = copy.deepcopy(original)
+            next(row for row in changed["Results"] if row["Name"] == "php/attack")[field] = value
+            cases.append((label, changed, "invalid live WAF measurement"))
+        for label, statuses, errors, requests, origin in (
+                ("an error hidden by summaries", {"403": 1}, 1, 2, 0),
+                ("an error beside complete status counts", {"403": 2}, 1, 2, 0),
+                ("503 hidden by summaries", {"403": 1, "503": 1}, 0, 2, 0),
+                ("too many status counts", {"403": 3}, 0, 2, 0),
+                ("status total under-count", {"403": 1}, 0, 2, 0),
+                ("status total over-count", {"403": 1, "404": 2}, 0, 2, 0),
+                ("negative status count", {"403": 3, "200": -1}, 0, 2, 0),
+                ("boolean status count", {"403": True}, 0, 1, 0),
+                ("a non-HTTP status", {"invalid": 2}, 0, 2, 0),
+                ("a noncanonical status", {"0403": 2}, 0, 2, 0),
+                ("origin exceeds requests", {"200": 2}, 0, 2, 3),
+                ("origin and 200 differ", {"403": 2}, 0, 2, 1),
+                ("a malformed status map", [], 0, 2, 0),
+                ("unexercised row", {}, 0, 0, 0)):
+            changed = copy.deepcopy(original)
+            row = next(row for row in changed["Results"] if row["Name"] == "php/second")
+            target = next(row for row in changed["Results"] if row["Name"] == "php/attack")
+            target["Requests"] += row["Requests"] - requests
+            target["Statuses"]["403"] += row["Requests"] - requests
+            row.update(Statuses=statuses, Errors=errors, Requests=requests, OriginReached=origin)
+            cases.append((label, changed, "invalid live WAF measurement"))
+        changed = copy.deepcopy(original)
+        row = next(row for row in changed["Results"] if row["Name"] == "php/attack")
+        row["Requests"] -= 1
+        row["Statuses"]["403"] -= 1
+        cases.append(("missing a measured request", changed, "invalid live WAF measurement"))
+        changed = copy.deepcopy(original)
+        row = next(row for row in changed["Results"] if row["Name"] == "php/attack")
+        row["Requests"] += 1
+        row["Statuses"]["403"] += 1
+        cases.append(("an extra measured request", changed, "invalid live WAF measurement"))
+        changed = copy.deepcopy(original)
+        row = next(row for row in changed["Results"] if row["Name"] == "php/attack")
+        row["Requests"], row["Statuses"] = 10001, {"403": 10001}
+        cases.append(("a row exceeds the measurement", changed, "invalid live WAF measurement"))
+        for label, rows in (("missing rows", None), ("a non-row", [None]), ("no measured rows", [])):
+            changed = copy.deepcopy(original)
+            changed["Results"] = rows
+            cases.append((label, changed, "invalid live WAF measurement"))
+        changed = copy.deepcopy(original)
+        changed["TransportErrors"] = False
+        cases.append(("a boolean failure total", changed, "invalid live WAF measurement"))
+        changed = copy.deepcopy(original)
+        row = next(row for row in changed["Results"] if row["Name"] == "php/second")
+        row["Statuses"] = {"501": row["Requests"]}
+        cases.append(("501 is a refusal", changed, None))
         for field in ("Count", "TransportErrors", "Unavailable"):
             changed = copy.deepcopy(original)
             changed[field] = 9999 if field == "Count" else 1
@@ -222,8 +274,14 @@ class LiveReportTests(unittest.TestCase):
             malformed = copy.deepcopy(original)
             malformed["Results"][0]["RequestSHA256"] = "invalid"
             duplicate = copy.deepcopy(original)
-            duplicate["Results"].append(copy.deepcopy(duplicate["Results"][0]))
-            for label, data in (("malformed request identity", malformed), ("duplicate template name", duplicate)):
+            duplicate["Results"][0]["Requests"] -= 1
+            duplicate["Results"][0]["Statuses"]["403"] -= 1
+            duplicate["Results"].append(case(duplicate["Results"][0]["Name"], True, 1, 403))
+            failed = copy.deepcopy(original)
+            failed["Results"][0]["Errors"] = 1
+            for label, data, error in (("malformed request identity", malformed, "template manifest"),
+                                       ("duplicate template name", duplicate, "template manifest"),
+                                       ("a row error", failed, "invalid live WAF measurement")):
                 with self.subTest(name="writing refuses " + label):
                     path.write_text(json.dumps(data), encoding="utf-8")
                     before = "# kept\n" + exact
@@ -231,7 +289,7 @@ class LiveReportTests(unittest.TestCase):
                     result = subprocess.run([sys.executable, str(CHECKER), str(path), str(baseline), "--write"],
                                             capture_output=True, text=True, timeout=30, check=False)
                     self.assertNotEqual(result.returncode, 0, result.stdout)
-                    self.assertIn("template manifest", result.stderr)
+                    self.assertIn(error, result.stderr)
                     self.assertEqual(baseline.read_text(encoding="utf-8"), before)
 
 

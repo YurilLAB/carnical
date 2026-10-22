@@ -36,8 +36,42 @@ def formats_monitored(report):
     return any(a == "-formats-mode" and b == "monitor" for a, b in zip(args, args[1:]))
 
 
+def valid_measurement(report):
+    """Check the producer's success invariants from rows, even when summaries are stale."""
+    if type(report.get("Count")) is not int or report["Count"] != 10000:
+        return False
+    if any(type(report.get(key)) is not int or report[key] != 0 for key in ("TransportErrors", "Unavailable")):
+        return False
+    rows = report.get("Results")
+    if not isinstance(rows, list):
+        return False
+    total = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            return False
+        values = [row.get(key) for key in ("Requests", "Errors", "OriginReached")]
+        if any(type(value) is not int or value < 0 for value in values):
+            return False
+        requests, errors, origin = values
+        statuses = row.get("Statuses")
+        if requests <= 0 or requests > report["Count"] or errors or not isinstance(statuses, dict):
+            return False
+        for status, count in statuses.items():
+            if (not isinstance(status, str) or len(status) != 3 or not status.isascii() or not status.isdigit()
+                    or not 100 <= int(status) <= 599 or type(count) is not int or not 0 <= count <= requests):
+                return False
+            if count and int(status) >= 500 and status != "501":
+                return False
+        if sum(statuses.values()) != requests or origin != statuses.get("200", 0):
+            return False
+        total += requests
+        if total > report["Count"]:
+            return False
+    return total == report["Count"]
+
+
 def gate(report, baseline):
-    if report["TransportErrors"] or report["Unavailable"] or report["Count"] != 10000:
+    if not valid_measurement(report):
         raise SystemExit("invalid live WAF measurement")
     # With the format checks only monitoring, the attacks only they refuse (GraphQL envelopes, duplicate JSON keys,
     # parameter-name tricks) reach the origin by design; the baseline says which, template by template.

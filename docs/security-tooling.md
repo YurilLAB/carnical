@@ -54,6 +54,9 @@ or changed templates and duplicate names. Reordering results does not change it.
 changes require reviewing the suite and refreshing the affected baselines with `--write`; that
 updates the identity and outcome exceptions together. The pin checks the declared suite, rather
 than authenticating a report producer or claiming literal TCP-byte identity.
+The checker also validates each measured row directly: integer counts, zero errors or unavailable
+responses (501 remains a refusal), status totals equal to requests, origin hits equal to 200
+responses, and all row requests summing to 10,000. Stale summary zeros cannot hide a failing row.
 
 OSV uses explicit manifest paths so untracked research, upstream downloads, and `build/` do not
 become project dependencies. `--all-vulns` retains and fails on module advisories even when call
