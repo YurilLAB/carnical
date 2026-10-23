@@ -28,7 +28,8 @@ machine concurrency limits remain operator settings. Restart after changing the 
 
 The `body_formats` section supplies format rules unless `-formats-policy` names a separate file.
 An explicit `-formats-mode` wins over the section's `monitor` setting. The `vpatch` section selects
-tiers and declared software; it requires `-vpatch-pack`. Additional API checks use `api_mode` or
+tiers and declared software; one other than the default requires `-vpatch-pack`, and an empty
+`tiers` list switches the patches off. Additional API checks use `api_mode` or
 `api.mode`, with `-api-guard` taking precedence. API learning and discovery settings are rejected
 by the command. Explicit contracts continue to use `-api-spec`.
 

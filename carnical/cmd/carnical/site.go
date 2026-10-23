@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -153,7 +154,15 @@ func configureSite(f *siteFlags, set map[string]bool, cfg *proxy.Config, log *sl
 	if err != nil {
 		return fail(err)
 	}
-	if sp != nil && !set["vpatch-tiers"] {
+	// The policy is read by its values, not by the fields it names: its canonical encoding names them all. An empty tier
+	// list switches the patches off, as the policy's Diff says; the default section asks for nothing.
+	policyOff, policyAsks := false, false
+	if sp != nil {
+		v := sp.compiled.VPatch
+		policyOff = !set["vpatch-tiers"] && len(v.Tiers) == 0
+		policyAsks = !policyOff && (len(v.Software) > 0 || !slices.Equal(v.Tiers, []string{vpatch.TierVerified}))
+	}
+	if sp != nil && !set["vpatch-tiers"] && !policyOff {
 		tiers, err = parseVPatchTiers("policy vpatch.tiers", sp.compiled.VPatch.Tiers)
 		if err != nil {
 			return fail(err)
@@ -168,9 +177,11 @@ func configureSite(f *siteFlags, set map[string]bool, cfg *proxy.Config, log *sl
 	}
 	var vp *vpatch.Engine
 	if f.vpatchPack == "" {
-		if (set["vpatch-mode"] && !off) || set["vpatch-tiers"] || set["vpatch-scope"] || set["vpatch-exclude"] || (sp != nil && (sp.named["vpatch.tiers"] || sp.named["vpatch.software"])) {
+		if (set["vpatch-mode"] && !off) || set["vpatch-tiers"] || set["vpatch-scope"] || set["vpatch-exclude"] || policyAsks {
 			return fail(errors.New("virtual-patch settings require -vpatch-pack"))
 		}
+	} else if policyOff {
+		log.Info("virtual patches switched off by the policy", "pack", f.vpatchPack)
 	} else if !off {
 		pack, err := readPackFile(f.vpatchPack)
 		if err != nil {
