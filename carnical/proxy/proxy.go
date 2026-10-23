@@ -1181,7 +1181,7 @@ func (e *Edge) forward() http.Handler {
 			watch.setCancel(cancel)
 			r = r.WithContext(ctx)
 		}
-		rp.ServeHTTP(noInterim{w}, r)
+		rp.ServeHTTP(&noInterim{ResponseWriter: w, kept: keptHeaders(w.Header())}, r)
 	})
 }
 
@@ -1217,11 +1217,34 @@ func (t *trailerCheck) Close() error {
 // noInterim drops interim (1xx) responses from the application. The engine takes the first status it is given for the
 // final one: after a 103 Early Hints it never sees the real response's headers, does not buffer its body, and the
 // response rules are never run on it. Nothing is lost by dropping them: they only let a browser start early.
-type noInterim struct{ http.ResponseWriter }
+//
+// The reverse proxy empties the header map after each interim response, which would also take what the edge set for the
+// visitor before the request went on, such as the person check's clearance cookie. kept holds that, to be put back.
+type noInterim struct {
+	http.ResponseWriter
+	kept    http.Header
+	interim bool
+}
 
-func (n noInterim) WriteHeader(code int) {
+// keptHeaders is a copy of h, or nil when it is empty, as it is for most requests.
+func keptHeaders(h http.Header) http.Header {
+	if len(h) == 0 {
+		return nil
+	}
+	return h.Clone()
+}
+
+func (n *noInterim) WriteHeader(code int) {
 	if code >= 100 && code < 200 && code != http.StatusSwitchingProtocols {
+		n.interim = true
 		return
+	}
+	if n.interim {
+		h := n.Header()
+		for k, v := range n.kept {
+			h[k] = append(v, h[k]...) // first, as they would be had the map not been emptied
+		}
+		n.interim = false
 	}
 	// A response the application sent without a type goes on without one. The server would otherwise guess one from the
 	// body, and a stored file that looks like a page would be declared text/html, which nosniff cannot undo.
@@ -1231,7 +1254,7 @@ func (n noInterim) WriteHeader(code int) {
 	n.ResponseWriter.WriteHeader(code)
 }
 
-func (n noInterim) Unwrap() http.ResponseWriter { return n.ResponseWriter }
+func (n *noInterim) Unwrap() http.ResponseWriter { return n.ResponseWriter }
 
 // originKey marks, for the shield, that a response came from (or was about) the application rather than from a check,
 // or that the client hung up while the application had the request.

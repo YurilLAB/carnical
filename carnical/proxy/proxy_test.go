@@ -85,7 +85,7 @@ func newUpstream(t testing.TB) *upstream {
 			w.Header()["Content-Type"] = nil
 			_, _ = w.Write([]byte("<html><p>a stored file</p></html>"))
 			return
-		case r.URL.Path == "/early-hints":
+		case strings.HasSuffix(r.URL.Path, "/early-hints"):
 			w.Header().Set("X-Gate-Only-Early", "for the check")
 			w.WriteHeader(http.StatusEarlyHints)
 			w.Header().Del("X-Gate-Only-Early")
@@ -1193,6 +1193,9 @@ func (g *gate) Serve(w http.ResponseWriter, r *http.Request, s challenge.Signals
 	switch r.URL.Path {
 	case "/gate/pass":
 		report(challenge.Outcome{Verdict: challenge.Passed, Score: 5})
+	case "/gate/pass/page", "/gate/pass/early-hints": // passes the visitor and lets the request go on
+		report(challenge.Outcome{Verdict: challenge.Passed, Score: 5})
+		return false
 	case "/gate/refuse":
 		report(challenge.Outcome{Verdict: challenge.Refused, Score: 140, Reason: "straight-line+20, <script>\n" + strings.Repeat("x", 100)})
 		report(challenge.Outcome{Verdict: challenge.Refused, Score: 1, Reason: "a second report"}) // ignored
@@ -1960,6 +1963,12 @@ func TestThePersonCheckIsOfferedEachRequest(t *testing.T) {
 		}
 		if _, reply := s.raw(t, get("/gate/show")); strings.Contains(reply, "carnical_clr") {
 			t.Fatal("a check only shown admitted the visitor")
+		}
+		// Let on to the application, the visitor gets the clearance with its answer, an interim response before it or not.
+		for _, path := range []string{"/gate/pass/page", "/gate/pass/early-hints"} {
+			if _, reply := s.raw(t, get(path)); !strings.Contains(reply, "Set-Cookie: carnical_clr=") || !strings.Contains(reply, "reached the application") {
+				t.Fatalf("%s: %q", path, reply)
+			}
 		}
 	})
 	t.Run("what the bot policy refuses never reaches it", func(t *testing.T) {
