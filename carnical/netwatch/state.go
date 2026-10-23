@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -146,7 +147,56 @@ func ReadStateChecked(path string, check func(fs.FileInfo) error) (State, error)
 	if err := dec.Decode(&s); err != nil {
 		return State{}, errors.New("netwatch: the state file cannot be read")
 	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return State{}, errors.New("netwatch: the state file has more after the state")
+	}
+	if !namesAsWritten(data) {
+		return State{}, errors.New("netwatch: the state file names a field in a way the watch does not write")
+	}
 	return s, s.check()
+}
+
+// namesAsWritten says whether every name in the document is given once in its object and spelt as WriteState spells
+// names, in lower-case ASCII letters, digits and '_'. encoding/json matches a name to a field in any case (and some
+// other letters, such as the Kelvin sign for 'k') and keeps the last of two, so a file that differs from one the watch
+// wrote would otherwise read as the same state. The document has already been decoded, so it is valid JSON.
+func namesAsWritten(data []byte) bool {
+	type object struct {
+		names   map[string]bool
+		wantKey bool
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	var stack []*object // nil for an array
+	for {
+		tok, err := dec.Token()
+		if errors.Is(err, io.EOF) {
+			return true
+		}
+		if err != nil {
+			return false
+		}
+		if d, ok := tok.(json.Delim); ok {
+			switch d {
+			case '{':
+				stack = append(stack, &object{names: map[string]bool{}, wantKey: true})
+				continue
+			case '[':
+				stack = append(stack, nil)
+				continue
+			}
+			stack = stack[:len(stack)-1] // '}' or ']': a value of the enclosing object ended
+		} else if name, ok := tok.(string); ok && len(stack) > 0 && stack[len(stack)-1] != nil && stack[len(stack)-1].wantKey {
+			o := stack[len(stack)-1]
+			if name == "" || o.names[name] || strings.ContainsFunc(name, func(r rune) bool { return (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '_' }) {
+				return false
+			}
+			o.names[name], o.wantKey = true, false
+			continue
+		}
+		if len(stack) > 0 && stack[len(stack)-1] != nil {
+			stack[len(stack)-1].wantKey = true
+		}
+	}
 }
 
 // check refuses a state that WriteState would not have written from a Detector's record.

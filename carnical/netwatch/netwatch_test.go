@@ -574,6 +574,11 @@ func TestTheStateFile(t *testing.T) {
 		{"a negative rate", strings.Replace(string(good), `"peak_packet_rate":5000`, `"peak_packet_rate":-1`, 1)},
 		{"too large", `{"version":1,"x":"` + strings.Repeat("a", MaxState) + `"}`},
 		{"not JSON", "{"},
+		{"a second state after it", string(good) + string(good)},
+		{"bytes after it", string(good) + "not json \x00\x01"},
+		{"a name in capitals", strings.Replace(string(good), `"seq":7`, `"SEQ":7`, 1)},
+		{"a name spelt with the Kelvin sign", strings.Replace(string(good), `"kinds":`, "\"\u212ainds\":", 1)},
+		{"a name given twice", strings.Replace(string(good), `"seq":7`, `"seq":1,"seq":7`, 1)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.data == string(good) {
