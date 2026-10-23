@@ -236,6 +236,7 @@ func edgeRouting(ctx context.Context, t Tenancy) (out Outcome) {
 			}
 		}
 	}
+	cross := 0
 	for _, a := range cs {
 		for _, b := range cs {
 			if a.Tenant == b.Tenant {
@@ -244,15 +245,22 @@ func edgeRouting(ctx context.Context, t Tenancy) (out Outcome) {
 			for _, r := range routesTo(a, b, "/") {
 				rep, _ := t.Edge(ctx, r.req)
 				out.Checked++
+				cross++
 				if contains(rep.Body, b.Marker) {
 					out.Problems = append(out.Problems, fmt.Sprintf("%s's origin answered a request that came in as %s's: %s", b.Tenant, a.Tenant, r.label))
 				}
 			}
 		}
 	}
+	if cross == 0 {
+		out.Problems = append(out.Problems, noPair)
+	}
 	sort.Strings(out.Problems)
 	return out
 }
+
+// noPair is the problem of an edge check that had only its positive controls to run: no two canaries with hosts.
+const noPair = "no two canary tenants with hosts, so no request could be sent as one to the other"
 
 func policyConfusion(ctx context.Context, t Tenancy) (out Outcome) {
 	cs, skip := canaries(t)
@@ -262,7 +270,7 @@ func policyConfusion(ctx context.Context, t Tenancy) (out Outcome) {
 	if cs == nil {
 		return Outcome{Problems: []string{"fewer than two canary tenants, so there is nothing to set against each other"}}
 	}
-	blockers := 0
+	blockers, cross := 0, 0
 	for _, b := range cs {
 		if !b.Blocking || len(b.Hosts) == 0 {
 			continue
@@ -282,6 +290,7 @@ func policyConfusion(ctx context.Context, t Tenancy) (out Outcome) {
 			for _, r := range routesTo(a, b, attackTarget) {
 				rep, _ := t.Edge(ctx, r.req)
 				out.Checked++
+				cross++
 				if rep.Status < 400 && contains(rep.Body, b.Marker) {
 					out.Problems = append(out.Problems, fmt.Sprintf("an attack that came in as %s's reached %s's origin unblocked: %s", a.Tenant, b.Tenant, r.label))
 				}
@@ -290,6 +299,8 @@ func policyConfusion(ctx context.Context, t Tenancy) (out Outcome) {
 	}
 	if blockers == 0 {
 		out.Problems = append(out.Problems, "no canary tenant is in block mode, so there is no policy to confuse")
+	} else if cross == 0 && len(out.Problems) == 0 {
+		out.Problems = append(out.Problems, noPair)
 	}
 	sort.Strings(out.Problems)
 	return out

@@ -493,6 +493,16 @@ func TestTenantChecksNeedADeploymentAndTwoCanaries(t *testing.T) {
 			t.Errorf("%s with one canary: %s, want fail", r.Check, r.Status)
 		}
 	}
+	// Two canaries, one with no host: the edge checks have no pair of hosts to set against each other, and pass only by
+	// their positive controls unless they say so. Its records still let the API check try both ways.
+	hostless := newFake(leaks{})
+	hostless.cans = hostless.cans[1:]
+	hostless.cans[1].Hosts = nil
+	for _, r := range Run(context.Background(), TenantChecks(hostless), time.Second).Results {
+		if want := map[bool]Status{true: Pass, false: Fail}[r.Check == "tenant-api-isolation"]; r.Status != want {
+			t.Errorf("%s with a canary that has no host: %s after %d cases, want %s", r.Check, r.Status, r.Checked, want)
+		}
+	}
 }
 
 func TestHostVariantsAreWhatTheFakeCanActuallyTellApart(t *testing.T) {
