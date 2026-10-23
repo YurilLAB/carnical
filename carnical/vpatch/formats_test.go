@@ -185,6 +185,8 @@ func TestReadPackRefuses(t *testing.T) {
 		{"brackets nested far too deep", "format: carnical-vpatch-1\nsignatures: " + strings.Repeat("[", 100000), "nested deeper"},
 		{"braces nested far too deep", "format: carnical-vpatch-1\nsignatures: " + strings.Repeat("{a: ", 100000), "nested deeper"},
 		{"sequences nested far too deep", strings.Repeat("- ", 100000) + "x", "sequence markers"},
+		{"brackets nested too deep after a quote inside a value", "format: carnical-vpatch-1\nname: a \"b\nsignatures: " + strings.Repeat("[", 4000), "nested deeper"},
+		{"sequences nested too deep on lines that end in CR", "format: carnical-vpatch-1\rsignatures:\r" + strings.Repeat("- ", 4000) + "x\r", "sequence markers"},
 		{"indentation far too deep", "a:\n" + strings.Repeat(" ", 5000) + "b: 1\n", "indentation"},
 		{"not a pack at all", "- 1\n- 2\n", "reading the pack"},
 		{"too many signatures", func() string {

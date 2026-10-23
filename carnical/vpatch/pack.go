@@ -13,7 +13,9 @@ import (
 
 	"github.com/goccy/go-yaml"
 	"github.com/goccy/go-yaml/ast"
+	"github.com/goccy/go-yaml/lexer"
 	"github.com/goccy/go-yaml/parser"
+	"github.com/goccy/go-yaml/token"
 )
 
 // PackFormat is the value of "format" in a pack.
@@ -242,6 +244,36 @@ func checkYAMLShape(b []byte) error {
 	return nil
 }
 
+// checkYAMLTokens applies the bracket and "- " limits of checkYAMLShape to the tokens the parser reads. The text scan guesses where
+// a quoted string or a line starts; the lexer knows, so a quote in the middle of a plain value, or lines that end in a bare CR,
+// cannot hide nesting from the parser's input. Tokenizing takes time in proportion to the input; parsing does not.
+func checkYAMLTokens(tokens token.Tokens) error {
+	depth, line, dashes := 0, -1, 0
+	for _, tk := range tokens {
+		switch tk.Type {
+		case token.SequenceStartType, token.MappingStartType:
+			if depth++; depth > maxYAMLFlowDepth {
+				return fmt.Errorf("reading the pack: brackets nested deeper than %d", maxYAMLFlowDepth)
+			}
+		case token.SequenceEndType, token.MappingEndType:
+			if depth > 0 {
+				depth--
+			}
+		case token.SequenceEntryType:
+			if tk.Position == nil {
+				continue
+			}
+			if tk.Position.Line != line {
+				line, dashes = tk.Position.Line, 0
+			}
+			if dashes++; dashes > maxYAMLDashRun {
+				return fmt.Errorf("reading the pack: more than %d nested sequence markers on a line", maxYAMLDashRun)
+			}
+		}
+	}
+	return nil
+}
+
 func decodeYAMLPack(data []byte, p *Pack) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -251,7 +283,11 @@ func decodeYAMLPack(data []byte, p *Pack) (err error) {
 	if err := checkYAMLShape(data); err != nil {
 		return err
 	}
-	file, err := parser.ParseBytes(data, 0)
+	tokens := lexer.Tokenize(string(data))
+	if err := checkYAMLTokens(tokens); err != nil {
+		return err
+	}
+	file, err := parser.Parse(tokens, 0)
 	if err != nil {
 		return fmt.Errorf("reading the pack: %s", firstLine(err.Error()))
 	}
