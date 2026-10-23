@@ -93,7 +93,7 @@ var (
 	rXMLEncBad    = reg(5002210, "xml-encoding-disallowed", 400, "high", Block, "a declared encoding this site does not accept")
 	rXMLLimit     = reg(5002211, "xml-limit", 400, "high", Block, "XML over a size, depth or count limit")
 	rXMLDupAttr   = reg(5002212, "xml-duplicate-attr", 400, "high", Block, "an attribute given twice on one element")
-	rXMLTextSplit = reg(5002213, "xml-text-split", 400, "high", Block, "text split by a comment or CDATA section")
+	rXMLTextSplit = reg(5002213, "xml-text-split", 400, "high", Block, "text split by a comment, a CDATA section or a tag")
 
 	// GraphQL.
 	rGQLSyntax         = reg(5002300, "graphql-syntax", 400, "high", Block, "a GraphQL document that cannot be parsed")

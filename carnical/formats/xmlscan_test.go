@@ -48,6 +48,8 @@ var xmlRows = register("xml", []row{
 	{name: "svg is xml", ct: "image/svg+xml", body: `<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/></svg>`},
 	{name: "xml at the depth limit", ct: "application/xml", body: nested("<a>", "</a>", 32)},
 	{name: "namespaced attributes", ct: "application/xml", body: `<a xmlns:x="urn:x" xmlns="urn:y" x:id="1"/>`},
+	{name: "values in sibling elements with nothing between", ct: "application/xml", body: `<user><name>bob</name><age>30</age><role>admin</role></user>`},
+	{name: "mixed content with words whole", ct: "application/xml", body: `<p>Hello <b>world</b>, a line<br/> and <i>more</i>.</p>`},
 
 	// DOCTYPE, entities, external references.
 	{name: "doctype", ct: "application/xml", body: `<!DOCTYPE a><a/>`, want: idXMLDoctype},
@@ -102,6 +104,12 @@ var xmlRows = register("xml", []row{
 	{name: "text then cdata", ct: "application/xml", body: `<a>sel<![CDATA[ect]]></a>`, want: idXMLTextSplit},
 	{name: "two cdata sections", ct: "application/xml", body: `<a><![CDATA[sel]]><![CDATA[ect]]></a>`, want: idXMLTextSplit},
 	{name: "cdata then text", ct: "application/xml", body: `<a><![CDATA[sel]]>ect</a>`, want: idXMLTextSplit},
+	{name: "a word split by an empty element", ct: "application/xml", body: `<a>sel<x/>ect</a>`, want: idXMLTextSplit},
+	{name: "a word split by an element with an attribute", ct: "application/xml", body: `<a>sel<x y="1"/>ect</a>`, want: idXMLTextSplit},
+	{name: "a word split by an element with nothing in it", ct: "application/xml", body: `<a>sel<x></x>ect</a>`, want: idXMLTextSplit},
+	{name: "a word with an element in the middle", ct: "application/xml", body: `<a>uni<b>o</b>n</a>`, want: idXMLTextSplit},
+	{name: "a word split by cdata in a child element", ct: "application/xml", body: `<a>sel<b><![CDATA[ect]]></b></a>`, want: idXMLTextSplit},
+	{name: "a word split by a tag, then a character reference", ct: "application/xml", body: `<a>sel<x/>&#101;ct</a>`, want: idXMLTextSplit},
 
 	// Structure and limits.
 	{name: "duplicate attribute", ct: "application/xml", body: `<a x="1" x="2"/>`, want: idXMLDupAttr},

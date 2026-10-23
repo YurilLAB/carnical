@@ -10,8 +10,8 @@ import (
 // what to do with odd input, and the point is that nothing here is left to a decoder's choice. The scanner reads the document once,
 // from the first byte to the last, keeps only the names of the elements that are open, and refuses what no request body needs and
 // what every XML attack uses: a DOCTYPE (and so every entity, external or not), XInclude, XSLT, processing instructions, entity
-// references that are not the five predefined ones, text split by comments or CDATA sections to hide a keyword from a filter, and an
-// encoding that is not the one the bytes are in.
+// references that are not the five predefined ones, text split by comments, CDATA sections or tags to hide a keyword from a filter,
+// and an encoding that is not the one the bytes are in.
 
 const (
 	xmlnsXInclude = "http://www.w3.org/2001/XInclude"
@@ -32,6 +32,14 @@ type xmlScanner struct {
 	rootSeen   bool
 	rootClosed bool
 	attrs      []span // names of the attributes of the element being read
+	word       wordEnd
+}
+
+// wordEnd is the last piece of text, if it ended in a word character, for the word that tags can split (see joinsWord).
+type wordEnd struct {
+	ok       bool
+	depth    int // the number of open elements at the piece
+	minDepth int // the fewest open since
 }
 
 // checkXML checks an XML body (XML, SOAP, XML-RPC, any +xml type). It returns false when the caller should stop.
@@ -463,9 +471,66 @@ func (p *xmlScanner) text() bool {
 		if p.pieces > 1 && p.f.hit(rXMLTextSplit, start, dNone) {
 			return false
 		}
+		if p.joinsWord(firstTextByte(b[start:end]), lastTextByte(b[start:end]), start) {
+			return false
+		}
+	} else {
+		p.word.ok = false // white space between: a word does not go on past it
 	}
 	p.i = end
 	return true
+}
+
+// joinsWord reports a piece of text, starting with first and ending with last, that goes on a word the last piece ended with only
+// tags between, and notes how the piece ends. A reader that takes an element's text whole (DOM textContent, XPath string(),
+// ElementTree itertext) reads "sel<x/>ect" and "uni<b>o</b>n" as one word, which Coraza's XML processor hands the rules in
+// pieces. The pieces join when one element holds the other: the same element, or one inside the other however deep. Text in two
+// sibling elements ("<a>x</a><b>y</b>") does not join.
+func (p *xmlScanner) joinsWord(first, last byte, at int) bool {
+	depth := len(p.stack)
+	m := min(p.word.minDepth, depth)
+	if p.word.ok && (m == p.word.depth || m == depth) && xmlWordByte(first) && p.f.hit(rXMLTextSplit, at, dNone) {
+		return true
+	}
+	p.word = wordEnd{ok: xmlWordByte(last), depth: depth, minDepth: depth}
+	return false
+}
+
+// firstTextByte is the first character of a piece of text, with a reference at its start resolved; 0 when there is none.
+func firstTextByte(piece []byte) byte {
+	if len(piece) == 0 {
+		return 0
+	}
+	if piece[0] == '&' {
+		if end := bytes.IndexByte(piece, ';'); end > 0 {
+			if v := decodeRefs(piece[:end+1]); v != "" {
+				return v[0]
+			}
+		}
+		return 0
+	}
+	return piece[0]
+}
+
+// lastTextByte is the last character of a piece of text, with a reference at its end resolved; 0 when there is none.
+func lastTextByte(piece []byte) byte {
+	if len(piece) == 0 {
+		return 0
+	}
+	if last := piece[len(piece)-1]; last != ';' {
+		return last
+	}
+	if amp := bytes.LastIndexByte(piece, '&'); amp >= 0 {
+		if v := decodeRefs(piece[amp:]); v != "" && v != string(piece[amp:]) {
+			return v[len(v)-1]
+		}
+	}
+	return ';'
+}
+
+// xmlWordByte reports an ASCII letter, digit or underscore: what a keyword a filter looks for is made of.
+func xmlWordByte(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_'
 }
 
 func (p *xmlScanner) startTag() bool {
@@ -676,6 +741,7 @@ func (p *xmlScanner) endTag() bool {
 		return p.syntax(dMismatchedTag)
 	}
 	p.stack = p.stack[:len(p.stack)-1]
+	p.word.minDepth = min(p.word.minDepth, len(p.stack))
 	p.i++
 	p.pieces = 0
 	if len(p.stack) == 0 {
@@ -731,6 +797,9 @@ func (p *xmlScanner) bang() bool {
 		if end > 0 {
 			p.pieces++
 			if p.pieces > 1 && p.f.hit(rXMLTextSplit, p.i, dNone) {
+				return false
+			}
+			if p.joinsWord(rest[9], rest[9+end-1], p.i) { // what a CDATA section holds is text as it stands, references too
 				return false
 			}
 		}
