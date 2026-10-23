@@ -4,9 +4,13 @@ package apiguard
 
 import (
 	"bytes"
+	"cmp"
+	"encoding"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -440,10 +444,15 @@ func (d DiscoveryConfig) validate() error {
 }
 
 // ParseConfig reads a configuration from JSON, strictly: a field that is not part of the configuration is an error, so a
-// misspelt setting is found instead of ignored. What the document leaves out takes the default.
+// misspelt setting is found instead of ignored, and so is a field named twice or in other capitals, which encoding/json would
+// take (the last of the two, or as if written in the configuration's own capitals). What the document leaves out takes the
+// default.
 func ParseConfig(data []byte) (Config, error) {
 	if len(data) > 1<<20 {
 		return Config{}, errors.New("the configuration is larger than 1 MiB")
+	}
+	if err := checkNames(json.NewDecoder(bytes.NewReader(data)), reflect.TypeFor[Config]()); err != nil {
+		return Config{}, fmt.Errorf("the configuration is not valid: %w", err)
 	}
 	var c Config
 	dec := json.NewDecoder(bytes.NewReader(data))
@@ -451,7 +460,7 @@ func ParseConfig(data []byte) (Config, error) {
 	if err := dec.Decode(&c); err != nil {
 		return Config{}, fmt.Errorf("the configuration is not valid: %w", err)
 	}
-	if dec.More() {
+	if _, err := dec.Token(); err != io.EOF {
 		return Config{}, errors.New("the configuration has data after the object")
 	}
 	if err := c.Validate(); err != nil {
@@ -459,6 +468,71 @@ func ParseConfig(data []byte) (Config, error) {
 	}
 	return c, nil
 }
+
+// checkNames reads one JSON value of type typ and refuses an object member named twice, or a name that is not exactly one of the
+// fields of the struct it is for. A map's keys are free, but are not repeated either. The walk follows typ, so it goes no deeper
+// than the configuration's own types: an object or array where they have a scalar is refused here, as decoding would refuse it.
+// Reflection is used only when a configuration is read.
+func checkNames(dec *json.Decoder, typ reflect.Type) error {
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	d, isDelim := tok.(json.Delim)
+	if !isDelim {
+		return nil // a scalar, which decoding checks
+	}
+	for typ.Kind() == reflect.Pointer {
+		typ = typ.Elem()
+	}
+	scalar := typ.Implements(textUnmarshaler) || reflect.PointerTo(typ).Implements(textUnmarshaler)
+	switch {
+	case d == '{' && !scalar && (typ.Kind() == reflect.Struct || typ.Kind() == reflect.Map):
+		fields := map[string]reflect.Type{}
+		if typ.Kind() == reflect.Struct {
+			for i := range typ.NumField() {
+				f := typ.Field(i)
+				name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+				if f.IsExported() && name != "-" {
+					fields[cmp.Or(name, f.Name)] = f.Type
+				}
+			}
+		}
+		seen := map[string]bool{}
+		for dec.More() {
+			key, err := dec.Token()
+			if err != nil {
+				return err
+			}
+			name, _ := key.(string)
+			if seen[name] {
+				return fmt.Errorf("%q is named twice", name)
+			}
+			seen[name] = true
+			var next reflect.Type
+			if typ.Kind() == reflect.Map {
+				next = typ.Elem()
+			} else if next = fields[name]; next == nil {
+				return fmt.Errorf("there is no field %q (names are written as in the documentation, capitals too)", name)
+			}
+			if err := checkNames(dec, next); err != nil {
+				return fmt.Errorf("%s: %w", name, err)
+			}
+		}
+	case d == '[' && !scalar && typ.Kind() == reflect.Slice:
+		for dec.More() {
+			if err := checkNames(dec, typ.Elem()); err != nil {
+				return err
+			}
+		}
+	default:
+		return fmt.Errorf("expected %s", typ.Kind())
+	}
+	_, err = dec.Token() // the closing bracket
+	return err
+}
+
+var textUnmarshaler = reflect.TypeFor[encoding.TextUnmarshaler]()
 
 // effective is the mode a protection really runs in, given the guard-wide cap.
 func effective(master, own Mode) Mode {
