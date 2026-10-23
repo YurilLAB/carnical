@@ -2,7 +2,7 @@ package main
 
 import (
 	"bytes"
-	"log"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,24 +17,32 @@ func setupTestServer(t *testing.T) *httptest.Server {
 	return httptest.NewServer(txhttp.WrapHandler(waf, http.HandlerFunc(exampleHandler)))
 }
 
-func doGetRequest(t *testing.T, getPath string) int {
+func doGetRequest(t *testing.T, getPath string) (int, string) {
 	t.Helper()
 	resp, err := http.Get(getPath)
 	if err != nil {
-		log.Fatalln(err)
+		t.Fatal(err)
 	}
-	resp.Body.Close()
-	return resp.StatusCode
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp.StatusCode, string(body)
 }
 
-func doPostRequest(t *testing.T, postPath string, data []byte) int {
+func doPostRequest(t *testing.T, postPath string, data []byte) (int, string) {
 	t.Helper()
 	resp, err := http.Post(postPath, "application/x-www-form-urlencoded", bytes.NewBuffer(data))
 	if err != nil {
-		log.Fatalln(err)
+		t.Fatal(err)
 	}
-	resp.Body.Close()
-	return resp.StatusCode
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp.StatusCode, string(body)
 }
 
 func TestHttpServer(t *testing.T) {
@@ -44,9 +52,10 @@ func TestHttpServer(t *testing.T) {
 		expStatus int
 		envVars   map[string]string
 		body      []byte // if body is populated, POST request is sent
+		expBody   string
 	}{
-		{"negative", "/", 200, nil, nil},
-		{"positive for query parameter", "/?id=0", 403, nil, nil},
+		{"negative", "/", 200, nil, nil, "Hello world, transaction not disrupted."},
+		{"positive for query parameter", "/?id=0", 403, nil, nil, ""},
 		{
 			"positive for response body",
 			"/",
@@ -56,6 +65,7 @@ func TestHttpServer(t *testing.T) {
 				"RESPONSE_BODY":   "creditcard",
 			},
 			nil,
+			"",
 		},
 		{
 			"positive for response header",
@@ -66,6 +76,7 @@ func TestHttpServer(t *testing.T) {
 				"RESPONSE_HEADERS": "foo:bar",
 			},
 			nil,
+			"",
 		},
 		{
 			"negative for request body process partial (payload beyond processed body)",
@@ -75,6 +86,17 @@ func TestHttpServer(t *testing.T) {
 				"DIRECTIVES_FILE": "./testdata/request-body-limits-processpartial.conf",
 			},
 			[]byte("beyond the limit script"),
+			"Hello world, transaction not disrupted.",
+		},
+		{
+			"positive for request body process partial (payload inside processed body)",
+			"/",
+			403,
+			map[string]string{
+				"DIRECTIVES_FILE": "./testdata/request-body-limits-processpartial.conf",
+			},
+			[]byte("script beyond the limit"),
+			"",
 		},
 		{
 			"positive for response body limit reject",
@@ -85,12 +107,14 @@ func TestHttpServer(t *testing.T) {
 				"RESPONSE_BODY":   "response body beyond the limit",
 			},
 			nil,
+			"",
 		},
 	}
 	// Perform tests
 	for _, tc := range tests {
 		tt := tc
 		var statusCode int
+		var responseBody string
 		t.Run(tt.name, func(t *testing.T) {
 			if len(tt.envVars) > 0 {
 				for k, v := range tt.envVars {
@@ -103,12 +127,15 @@ func TestHttpServer(t *testing.T) {
 			testServer := setupTestServer(t)
 			defer testServer.Close()
 			if tt.body == nil {
-				statusCode = doGetRequest(t, testServer.URL+tt.path)
+				statusCode, responseBody = doGetRequest(t, testServer.URL+tt.path)
 			} else {
-				statusCode = doPostRequest(t, testServer.URL+tt.path, tt.body)
+				statusCode, responseBody = doPostRequest(t, testServer.URL+tt.path, tt.body)
 			}
 			if want, have := tt.expStatus, statusCode; want != have {
 				t.Errorf("Unexpected status code, want: %d, have: %d", want, have)
+			}
+			if want, have := tt.expBody, responseBody; want != have {
+				t.Errorf("Unexpected response body, want: %q, have: %q", want, have)
 			}
 		})
 	}
@@ -143,9 +170,9 @@ func TestHttpServerConcurrent(t *testing.T) {
 					t.Parallel()
 					var statusCode int
 					if tt.body == nil {
-						statusCode = doGetRequest(t, testServer.URL+tt.path)
+						statusCode, _ = doGetRequest(t, testServer.URL+tt.path)
 					} else {
-						statusCode = doPostRequest(t, testServer.URL+tt.path, tt.body)
+						statusCode, _ = doPostRequest(t, testServer.URL+tt.path, tt.body)
 					}
 					if want, have := tt.expStatus, statusCode; want != have {
 						t.Errorf("Unexpected status code, want: %d, have: %d", want, have)
