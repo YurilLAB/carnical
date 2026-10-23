@@ -5,6 +5,7 @@ package corazawaf
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -183,6 +184,17 @@ var requestBodyWriters = map[string]func(tx *Transaction, body string) (*types.I
 	},
 }
 
+type bodyLimitReadFunc func([]byte) (int, error)
+
+func (f bodyLimitReadFunc) Read(p []byte) (int, error) { return f(p) }
+
+type bodyLimitLenReader struct {
+	io.Reader
+	length func() int
+}
+
+func (r bodyLimitLenReader) Len() int { return r.length() }
+
 func TestWriteRequestBody(t *testing.T) {
 	const (
 		urlencodedBody    = "some=result&second=data"
@@ -202,6 +214,29 @@ func TestWriteRequestBody(t *testing.T) {
 			requestBodyLimit:       urlencodedBodyLen + 2,
 			requestBodyLimitAction: types.BodyLimitAction(-1),
 			limitReached:           false,
+		},
+		{
+			name:                   "ExactLimitReject",
+			requestBodyLimit:       urlencodedBodyLen,
+			requestBodyLimitAction: types.BodyLimitActionReject,
+		},
+		{
+			name:                            "ExactLimitDefaultReject",
+			requestBodyLimit:                urlencodedBodyLen,
+			avoidRequestBodyLimitActionInit: true,
+		},
+		{
+			name:                   "OneByteOverReject",
+			requestBodyLimit:       urlencodedBodyLen - 1,
+			requestBodyLimitAction: types.BodyLimitActionReject,
+			shouldInterrupt:        true,
+			limitReached:           true,
+		},
+		{
+			name:                   "ExactLimitPartial",
+			requestBodyLimit:       urlencodedBodyLen,
+			requestBodyLimitAction: types.BodyLimitActionProcessPartial,
+			limitReached:           true,
 		},
 		{
 			name:                   "LimitReachedAndRejects",
@@ -255,20 +290,37 @@ func TestWriteRequestBody(t *testing.T) {
 							}
 
 							var err error
+							written := 0
 
 							for _, c := range chunks {
-								if it, _, err = writeRequestBody(tx, c); err != nil {
+								var n int
+								if it, n, err = writeRequestBody(tx, c); err != nil {
 									t.Fatalf("Failed to write body buffer: %s", err.Error())
 								}
+								written += n
 							}
-							if testCase.limitReached && tx.variables.inboundDataError.Get() != "1" {
-								t.Fatalf("Expected INBOUND_DATA_ERROR to be set")
+							wantFlag := ""
+							if testCase.limitReached {
+								wantFlag = "1"
+							}
+							if got := tx.variables.inboundDataError.Get(); got != wantFlag {
+								t.Fatalf("INBOUND_DATA_ERROR = %q, want %q", got, wantFlag)
+							}
+							wantPhase := types.PhaseRequestHeaders
+							if waf.RequestBodyLimitAction == types.BodyLimitActionProcessPartial && testCase.limitReached {
+								wantPhase = types.PhaseRequestBody
+							}
+							if tx.lastPhase != wantPhase {
+								t.Fatalf("phase after ingestion = %v, want %v", tx.lastPhase, wantPhase)
 							}
 							if testCase.shouldInterrupt {
 								if it == nil {
 									t.Fatal("Expected interruption, got nil")
 								}
 							} else {
+								if want := min(urlencodedBodyLen, testCase.requestBodyLimit); written != want {
+									t.Fatalf("wrote %d bytes, want %d", written, want)
+								}
 								it, err := tx.ProcessRequestBody()
 								if err != nil {
 									t.Fatal(err)
@@ -298,19 +350,40 @@ func TestWriteRequestBody(t *testing.T) {
 }
 
 func TestWriteRequestBodyOnLimitReached(t *testing.T) {
-	testCases := map[string]struct {
+	type bodyLimitCase struct {
 		requestBodyLimitAction  types.BodyLimitAction
 		preexistingInterruption *types.Interruption
-	}{
+		prefix                  string
+		prefillWriter           string
+		body                    string
+		freshInterruption       bool
+		initialLimit            int64
+	}
+	testCases := map[string]bodyLimitCase{
 		"reject": {
 			requestBodyLimitAction: types.BodyLimitActionReject,
+			body:                   "c",
 			preexistingInterruption: &types.Interruption{
 				RuleID: 123,
 			},
 		},
 		"partial processing": {
 			requestBodyLimitAction: types.BodyLimitActionProcessPartial,
+			body:                   "c",
 		},
+		"reject already interrupted below limit": {
+			requestBodyLimitAction:  types.BodyLimitActionReject,
+			preexistingInterruption: &types.Interruption{RuleID: 123},
+			prefix:                  "a", body: "c",
+		},
+		"reject limit lowered below buffered body": {
+			requestBodyLimitAction: types.BodyLimitActionReject,
+			prefix:                 "abc", initialLimit: 3, freshInterruption: true,
+		},
+	}
+	for name := range requestBodyWriters {
+		testCases["exact via "+name+" then empty"] = bodyLimitCase{requestBodyLimitAction: types.BodyLimitActionReject, prefillWriter: name}
+		testCases["exact via "+name+" then extra"] = bodyLimitCase{requestBodyLimitAction: types.BodyLimitActionReject, prefillWriter: name, body: "c", freshInterruption: true}
 	}
 
 	for tName, tCase := range testCases {
@@ -318,24 +391,50 @@ func TestWriteRequestBodyOnLimitReached(t *testing.T) {
 		waf.RuleEngine = types.RuleEngineOn
 		waf.RequestBodyAccess = true
 		waf.RequestBodyLimit = 2
+		if tCase.initialLimit != 0 {
+			waf.RequestBodyLimit = tCase.initialLimit
+		}
 		waf.RequestBodyLimitAction = tCase.requestBodyLimitAction
 
 		t.Run(tName, func(t *testing.T) {
 			for wName, writer := range requestBodyWriters {
 				t.Run(wName, func(t *testing.T) {
 					tx := waf.NewTransaction()
-					_, err := tx.requestBodyBuffer.Write([]byte("ab"))
+					prefix := tCase.prefix
+					if prefix == "" {
+						prefix = "ab"
+					}
+					var err error
+					if tCase.prefillWriter != "" {
+						var it *types.Interruption
+						var n int
+						it, n, err = requestBodyWriters[tCase.prefillWriter](tx, prefix)
+						if it != nil || n != len(prefix) {
+							t.Fatalf("exact prefill: interruption %v, bytes %d", it, n)
+						}
+					} else {
+						_, err = tx.requestBodyBuffer.Write([]byte(prefix))
+					}
 					if err != nil {
 						t.Fatalf("unexpected error when writing to body buffer directly: %s", err.Error())
 					}
 					tx.interruption = tCase.preexistingInterruption
+					tx.RequestBodyLimit = 2
 
-					it, n, err := writer(tx, "c")
+					it, n, err := writer(tx, tCase.body)
 					if err != nil {
 						t.Fatalf("unexpected error: %s", err.Error())
 					}
 
-					if it != tCase.preexistingInterruption {
+					if tCase.freshInterruption {
+						if it == nil || it.Status != 413 || tx.variables.inboundDataError.Get() != "1" {
+							t.Fatalf("expected fresh body-limit refusal, got %v", it)
+						}
+						again, n, err := writer(tx, "more")
+						if again != it || n != 0 || err != nil {
+							t.Fatalf("refusal changed on repeated write: %v, %d, %v", again, n, err)
+						}
+					} else if it != tCase.preexistingInterruption {
 						t.Fatalf("unexpected interruption")
 					}
 
@@ -347,6 +446,94 @@ func TestWriteRequestBodyOnLimitReached(t *testing.T) {
 						t.Fatalf("Failed to close transaction: %s", err.Error())
 					}
 				})
+			}
+		})
+	}
+	// Reader behavior and transaction state are Go API contracts, not SecLang profiles.
+	for _, tc := range []struct {
+		name             string
+		n                int
+		err              error
+		emptyReads       int
+		wantInterruption bool
+		wantError        error
+		invalidCount     bool
+		interrupted      bool
+		known            bool
+	}{
+		{name: "EOF", err: io.EOF},
+		{name: "temporary empty then EOF", emptyReads: 2, err: io.EOF},
+		{name: "no progress", emptyReads: 100, wantError: io.ErrNoProgress},
+		{name: "extra byte", n: 1, wantInterruption: true},
+		{name: "extra byte and EOF", n: 1, err: io.EOF, wantInterruption: true},
+		{name: "extra byte and error", n: 1, err: io.ErrUnexpectedEOF, wantInterruption: true},
+		{name: "reader error", err: io.ErrUnexpectedEOF, wantError: io.ErrUnexpectedEOF},
+		{name: "negative count", n: -1, invalidCount: true},
+		{name: "oversized count", n: 2, invalidCount: true},
+		{name: "already interrupted unknown", interrupted: true},
+		{name: "already interrupted known", interrupted: true, known: true},
+	} {
+		t.Run("probe/"+tc.name, func(t *testing.T) {
+			waf := NewWAF()
+			waf.RuleEngine, waf.RequestBodyAccess, waf.RequestBodyLimit = types.RuleEngineOn, true, 2
+			waf.RequestBodyLimitAction = types.BodyLimitActionReject
+			tx := waf.NewTransaction()
+			t.Cleanup(func() {
+				if err := tx.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			prefix := "ab"
+			if tc.interrupted {
+				prefix = "a"
+				tx.interruption = &types.Interruption{RuleID: 123}
+			}
+			if _, err := tx.requestBodyBuffer.Write([]byte(prefix)); err != nil {
+				t.Fatal(err)
+			}
+			calls := 0
+			var reader io.Reader = bodyLimitReadFunc(func(p []byte) (int, error) {
+				calls++
+				if tc.interrupted {
+					t.Fatal("read after interruption")
+				}
+				if len(p) != 1 {
+					t.Fatalf("probe length %d, want 1", len(p))
+				}
+				if calls <= tc.emptyReads {
+					return 0, nil
+				}
+				return tc.n, tc.err
+			})
+			if tc.known {
+				reader = bodyLimitLenReader{Reader: reader, length: func() int { t.Fatal("Len after interruption"); return 0 }}
+			}
+			it, n, err := tx.ReadRequestBodyFrom(reader)
+			if tc.invalidCount {
+				if err == nil {
+					t.Fatal("invalid read count accepted")
+				}
+			} else if !errors.Is(err, tc.wantError) {
+				t.Fatalf("error %v, want %v", err, tc.wantError)
+			}
+			switch {
+			case tc.interrupted:
+				if it != tx.interruption || it == nil || it.RuleID != 123 {
+					t.Fatal("interruption replaced")
+				}
+			case tc.wantInterruption:
+				if it == nil || it.Status != 413 {
+					t.Fatalf("expected413, got %v", it)
+				}
+			case it != nil:
+				t.Fatalf("unexpected interruption %v", it)
+			}
+			wantCalls := min(tc.emptyReads+1, 100)
+			if tc.interrupted {
+				wantCalls = 0
+			}
+			if calls != wantCalls || n != 0 || tx.requestBodyBuffer.length != int64(len(prefix)) {
+				t.Fatalf("calls=%d written=%d buffered=%d", calls, n, tx.requestBodyBuffer.length)
 			}
 		})
 	}

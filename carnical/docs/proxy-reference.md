@@ -29,6 +29,13 @@ that pool. A body over its limit is refused with 413 (rule 5000074), and one tha
 (a malformed chunk, a body that ends early) with 400 (rule 5000075). Should the rule engine still
 leave a request unanswered, it is refused with 400 (rule 5000077) rather than given an empty 200.
 
+With `SecRequestBodyLimitAction Reject`, the engine accepts a body exactly equal to
+`SecRequestBodyLimit`; only a larger body is refused. Streaming bodies must end before an
+exact-limit body can be accepted, so callers embedding the engine must set read deadlines.
+The engine's standalone HTTP middleware returns an empty 500 on request-processing errors;
+the Carnical proxy applies the body-read error and timeout responses above. `ProcessPartial`
+keeps its existing behavior of processing the inspected prefix when it reaches the limit.
+
 A client has 30 seconds to send a whole request (10 for its headers), and a response must be
 finished 120 seconds after the end of the request's headers. A body still arriving at 30 seconds is
 answered with 408 Request Timeout, which the flood protection does not count as a security

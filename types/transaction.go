@@ -89,6 +89,7 @@ type Transaction interface {
 	// returns an interruption if the body is bigger than the limit and the action is to
 	// reject. This is specially convenient to resolve an interruption before copying
 	// the body into the request body buffer.
+	// Reject accepts a body exactly equal to the limit; a subsequent nonempty append exceeds it.
 	// ProcessRequestBody is called automatically when the action is to process partially
 	// the body (up to the limit) if the limit is reached.
 	//
@@ -99,6 +100,9 @@ type Transaction interface {
 	// returns an interruption if the body is bigger than the limit and the action is to
 	// reject. This is specially convenient to resolve an interruption before copying
 	// the body into the request body buffer.
+	// Reject accepts equality. A reader without Len may be read one byte beyond the limit to
+	// distinguish EOF from overflow; a consumed extra byte always interrupts the request.
+	// The EOF probe bounds empty reads, but a blocking Read still requires caller deadlines.
 	// ProcessRequestBody is called automatically when the action is to process partially
 	// the body (up to the limit) if the limit is reached.
 	//

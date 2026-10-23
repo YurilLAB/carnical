@@ -196,6 +196,7 @@ func WrapHandler(waf coraza.WAF, h http.Handler) http.Handler {
 		}
 		if err != nil {
 			tx.DebugLogger().Error().Err(err).Msg("Failed to process request")
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 		if it != nil {

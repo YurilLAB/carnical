@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/iotest"
 
 	"github.com/corazawaf/coraza/v3"
 	"github.com/corazawaf/coraza/v3/debuglog"
@@ -259,6 +260,8 @@ type httpTest struct {
 	reqURI                  string
 	reqBody                 string
 	echoReqBody             bool
+	streamReqBody           bool // omit Content-Length, using chunked framing for HTTP/1
+	bodyReadError           bool // inject a server-side read error after the request bytes
 	readReqBodyLate         bool // the request body is read only after the handler has returned
 	reqBodyLimit            int
 	shouldRejectOnBodyLimit bool
@@ -375,6 +378,38 @@ func TestHttpServer(t *testing.T) {
 			expectedRespHeadersKeys: expectedBlockingHeaders,
 		},
 	}
+	for _, h2 := range []bool{false, true} {
+		for _, stream := range []bool{false, true} {
+			for _, size := range []int{7, 8, 9} {
+				row := httpTest{http2: h2, reqURI: "/hello", reqBody: strings.Repeat("a", size),
+					echoReqBody: true, streamReqBody: stream, reqBodyLimit: 8, shouldRejectOnBodyLimit: true,
+					expectedProto: "HTTP/1.1", expectedStatus: 201, expectedRespHeadersKeys: expectedNoBlockingHeaders,
+					expectedRespBody: strings.Repeat("a", size)}
+				if h2 {
+					row.expectedProto = "HTTP/2.0"
+				}
+				if size > 8 {
+					row.expectedStatus, row.expectedRespHeadersKeys, row.expectedRespBody = 413, expectedBlockingHeaders, ""
+				}
+				tests[fmt.Sprintf("reject boundary size%d HTTP2%t stream%t", size, h2, stream)] = row
+			}
+			row := tests["request body larger than limit (process partial)"]
+			row.http2, row.streamReqBody = h2, stream
+			if h2 {
+				row.expectedProto = "HTTP/2.0"
+			}
+			tests[fmt.Sprintf("partial full echo HTTP2%t stream%t", h2, stream)] = row
+		}
+		for _, size := range []int{7, 8} {
+			row := httpTest{http2: h2, reqURI: "/hello", reqBody: strings.Repeat("a", size),
+				streamReqBody: true, bodyReadError: true, reqBodyLimit: 8, shouldRejectOnBodyLimit: true,
+				expectedProto: "HTTP/1.1", expectedStatus: 500, expectedRespHeadersKeys: expectedBlockingHeaders}
+			if h2 {
+				row.expectedProto = "HTTP/2.0"
+			}
+			tests[fmt.Sprintf("body read error size%d HTTP2%t", size, h2)] = row
+		}
+	}
 
 	logger := debuglog.Default().
 		WithOutput(testLogOutput{t}).
@@ -471,9 +506,12 @@ func runAgainstWAF(t *testing.T, tCase httpTest, waf coraza.WAF) {
 	late, lateErrC := make(chan struct{}), make(chan error, 1)
 
 	// Spin up the test server
-	ts := httptest.NewUnstartedServer(WrapHandler(waf, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+	handler := WrapHandler(waf, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if want, have := tCase.expectedProto, req.Proto; want != have {
 			t.Errorf("unexpected proto, want: %s, have: %s", want, have)
+		}
+		if tCase.streamReqBody && req.ContentLength != -1 {
+			t.Errorf("streamed request Content-Length = %d, want -1", req.ContentLength)
 		}
 
 		w.Header().Set("Content-Type", "text/plain")
@@ -503,7 +541,16 @@ func runAgainstWAF(t *testing.T, tCase httpTest, waf coraza.WAF) {
 				serverErrC <- err
 			}
 		}
-	})))
+	}))
+	ts := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if tCase.bodyReadError {
+			req.Body = struct {
+				io.Reader
+				io.Closer
+			}{io.MultiReader(req.Body, iotest.ErrReader(errors.New("request read failed"))), req.Body}
+		}
+		handler.ServeHTTP(w, req)
+	}))
 	if tCase.http2 {
 		ts.EnableHTTP2 = true
 		ts.StartTLS()
@@ -522,6 +569,9 @@ func runAgainstWAF(t *testing.T, tCase httpTest, waf coraza.WAF) {
 	var reqBody io.Reader
 	if tCase.reqBody != "" {
 		reqBody = strings.NewReader(tCase.reqBody)
+	}
+	if tCase.streamReqBody {
+		reqBody = struct{ io.Reader }{reqBody}
 	}
 	req, _ := http.NewRequest("POST", ts.URL+tCase.reqURI, reqBody)
 	// When sending a POST request, the "application/x-www-form-urlencoded" content-type header is needed

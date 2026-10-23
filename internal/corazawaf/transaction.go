@@ -1008,16 +1008,12 @@ func (tx *Transaction) WriteRequestBody(b []byte) (*types.Interruption, int, err
 		return nil, 0, nil
 	}
 
-	if tx.RequestBodyLimit == tx.requestBodyBuffer.length {
-		// tx.RequestBodyLimit will never be zero so if this happened, we have an
-		// interruption (that has been previously raised, but ignored by the connector) for sure.
-		if tx.WAF.RequestBodyLimitAction == types.BodyLimitActionReject {
-			return tx.interruption, 0, nil
-		}
-
-		if tx.WAF.RequestBodyLimitAction == types.BodyLimitActionProcessPartial {
-			return nil, 0, nil
-		}
+	reject := tx.WAF.RequestBodyLimitAction == types.BodyLimitActionReject
+	if reject && tx.interruption != nil {
+		return tx.interruption, 0, nil
+	}
+	if tx.RequestBodyLimit == tx.requestBodyBuffer.length && tx.WAF.RequestBodyLimitAction == types.BodyLimitActionProcessPartial {
+		return nil, 0, nil
 	}
 
 	var (
@@ -1031,7 +1027,7 @@ func (tx *Transaction) WriteRequestBody(b []byte) (*types.Interruption, int, err
 		return nil, 0, errors.New("overflow reached while writing request body")
 	}
 
-	if tx.requestBodyBuffer.length+writingBytes >= tx.RequestBodyLimit {
+	if total := tx.requestBodyBuffer.length + writingBytes; total > tx.RequestBodyLimit || total == tx.RequestBodyLimit && !reject {
 		tx.variables.inboundDataError.Set("1")
 		if tx.WAF.RequestBodyLimitAction == types.BodyLimitActionReject {
 			// We interrupt this transaction in case RequestBodyLimitAction is Reject
@@ -1073,23 +1069,24 @@ func (tx *Transaction) ReadRequestBodyFrom(r io.Reader) (*types.Interruption, in
 		return nil, 0, nil
 	}
 
-	if tx.RequestBodyLimit == tx.requestBodyBuffer.length {
-		// tx.RequestBodyLimit will never be zero so if this happened, we have an
-		// interruption (that has been previously raised, but ignored by the connector) for sure.
-		if tx.WAF.RequestBodyLimitAction == types.BodyLimitActionReject {
-			return tx.interruption, 0, nil
-		}
-
-		if tx.WAF.RequestBodyLimitAction == types.BodyLimitActionProcessPartial {
-			return nil, 0, nil
-		}
+	reject := tx.WAF.RequestBodyLimitAction == types.BodyLimitActionReject
+	if reject && tx.interruption != nil {
+		return tx.interruption, 0, nil
+	}
+	if reject && tx.requestBodyBuffer.length > tx.RequestBodyLimit {
+		tx.variables.inboundDataError.Set("1")
+		return setAndReturnBodyLimitInterruption(tx, 413)
+	}
+	if tx.RequestBodyLimit == tx.requestBodyBuffer.length && tx.WAF.RequestBodyLimitAction == types.BodyLimitActionProcessPartial {
+		return nil, 0, nil
 	}
 
 	var (
 		writingBytes          int64
 		runProcessRequestBody = false
 	)
-	if l, ok := r.(ByteLenger); ok {
+	l, knownLength := r.(ByteLenger)
+	if knownLength {
 		writingBytes = int64(l.Len())
 		// Overflow check
 		if tx.requestBodyBuffer.length >= (math.MaxInt64 - writingBytes) {
@@ -1097,7 +1094,7 @@ func (tx *Transaction) ReadRequestBodyFrom(r io.Reader) (*types.Interruption, in
 			// bytes.Buffer does not work with this kind of sizes. See comments in BodyBuffer Write(data []byte)
 			return nil, 0, errors.New("overflow reached while writing request body")
 		}
-		if tx.requestBodyBuffer.length+writingBytes >= tx.RequestBodyLimit {
+		if total := tx.requestBodyBuffer.length + writingBytes; total > tx.RequestBodyLimit || total == tx.RequestBodyLimit && !reject {
 			tx.variables.inboundDataError.Set("1")
 			if tx.WAF.RequestBodyLimitAction == types.BodyLimitActionReject {
 				return setAndReturnBodyLimitInterruption(tx, 413)
@@ -1118,13 +1115,36 @@ func (tx *Transaction) ReadRequestBodyFrom(r io.Reader) (*types.Interruption, in
 	}
 
 	if tx.requestBodyBuffer.length == tx.RequestBodyLimit {
-		tx.variables.inboundDataError.Set("1")
-		if tx.WAF.RequestBodyLimitAction == types.BodyLimitActionReject {
-			return setAndReturnBodyLimitInterruption(tx, 413)
-		}
-
-		if tx.WAF.RequestBodyLimitAction == types.BodyLimitActionProcessPartial {
-			runProcessRequestBody = true
+		if reject {
+			if !knownLength {
+				// The limited copy cannot distinguish an exact body from a longer one. Only Reject probes:
+				// any consumed byte refuses the request, so an accepted body never needs that byte replayed.
+				var probe [1]byte
+				for emptyReads := 0; ; emptyReads++ {
+					if emptyReads == 100 {
+						return nil, int(w), io.ErrNoProgress
+					}
+					n, probeErr := r.Read(probe[:])
+					if n < 0 || n > len(probe) {
+						return nil, int(w), errors.New("invalid read count at request body limit")
+					}
+					if n > 0 {
+						tx.variables.inboundDataError.Set("1")
+						return setAndReturnBodyLimitInterruption(tx, 413)
+					}
+					if probeErr == io.EOF {
+						break
+					}
+					if probeErr != nil {
+						return nil, int(w), probeErr
+					}
+				}
+			}
+		} else {
+			tx.variables.inboundDataError.Set("1")
+			if tx.WAF.RequestBodyLimitAction == types.BodyLimitActionProcessPartial {
+				runProcessRequestBody = true
+			}
 		}
 	}
 
