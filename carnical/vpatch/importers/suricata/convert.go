@@ -149,11 +149,15 @@ type cvt struct {
 	lim   importers.Limits
 	rep   *importers.Report
 	drops map[string]bool
+	// approx holds the mappings that differ from Suricata's meaning in some detail.
+	approx map[string]bool
 	// uriLits are literal URI fragments, for scope inference.
 	uriLits []string
 }
 
 func (c *cvt) drop(kind string) { c.drops[kind] = true }
+
+func (c *cvt) approximate(kind string) { c.approx[kind] = true }
 
 type group struct {
 	buf    string

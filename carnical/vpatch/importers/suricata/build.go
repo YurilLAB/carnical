@@ -348,7 +348,8 @@ var headerLineRe = regexp.MustCompile(`(?s)^([A-Za-z][A-Za-z0-9-]{0,63}):(.*)$`)
 // headerConds handles the whole-header-block buffer. In Suricata it holds "Name: value" lines, one after another; the model has one
 // target per named header whose value is the part after the colon. A content that is a header line ("User-Agent: x", optionally
 // with the line breaks around it) becomes a condition on that header. A content that is a piece of a value becomes a condition on
-// every header value. A content that needs two lines, or the position in the block, is skipped.
+// every header value; Suricata also finds it in the names, so the import reports it as an approximation. A content that needs two
+// lines, or the position in the block, is skipped.
 func (c *cvt) headerConds(g *group) ([]vpatch.Condition, error) {
 	var out []vpatch.Condition
 	for i, a := range g.atoms {
@@ -413,6 +414,7 @@ func (c *cvt) headerCond(a *atom, xf []string) (vpatch.Condition, error) {
 		s = asciiLower(s)
 		tf = append(tf, "lowercase")
 	}
+	c.approximate("header-content-values-only")
 	cond := importers.NewCondition(vpatch.OpContains, s, []string{vpatch.TargetHeaders}, tf)
 	cond.Negate = a.negated
 	return cond, nil

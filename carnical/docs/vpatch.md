@@ -133,7 +133,10 @@ carry the `sm` flags Coraza compiles them with, and length, size and position ch
 CrowdSec `not`, and a SecLang `!@` operator, is converted only where the negation means the same as
 in Coraza: on the path, the URI, the method or the body, which have one value. A named argument,
 header or cookie can be repeated, and one copy that matched would switch the negation off for the
-copy that does not, so such a rule is skipped and reported (`negated-on-many-values`). YAML rule
+copy that does not, so such a rule is skipped and reported (`negated-on-many-values`). A Suricata
+`http.header` content that is not a whole header line is matched against header values only, while
+Suricata also searches the names, so the report counts it as an approximation
+(`header-content-values-only`). YAML rule
 files that nest flow collections more than 24 deep, counted across lines, are refused as
 `yaml-unsafe` before they are parsed.
 

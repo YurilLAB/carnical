@@ -158,6 +158,8 @@ func TestConvertRules(t *testing.T) {
 		want     []vpatch.Condition // main first, then Also in order; nil when wantSkip is set
 		wantSkip string
 		wantDrop string
+		// wantApprox is the approximation the conversion reports, if any.
+		wantApprox string
 	}{
 		// Buffers and how a content becomes a condition.
 		{name: "uri content", rule: rl(`http.uri; content:"/a.php?";`), want: []vpatch.Condition{cond("contains", "/a.php?", uriT, dec)}},
@@ -250,11 +252,16 @@ func TestConvertRules(t *testing.T) {
 		{name: "a header that must be present", rule: rl(`http.header; content:"|0d 0a|X-Forwarded-Host|3a|";`), want: []vpatch.Condition{cond("rx", "^", []string{"header:x-forwarded-host"})}},
 		{name: "a header that must be absent", rule: rl(`http.uri; content:"/a"; http.header; content:!"|0d 0a|Referer|3a|";`),
 			want: []vpatch.Condition{cond("contains", "/a", uriT, dec), {Operator: "rx", Pattern: "^", Targets: []string{"header:referer"}, Negate: true}}},
-		{name: "a piece of a header value", rule: rl(`http.header; content:"substr{"; nocase;`), want: []vpatch.Condition{cond("contains", "substr{", []string{"headers"}, lower)}},
-		{name: "a url in a header is a piece, not a header line", rule: rl(`http.header; content:"http://evil";`), want: []vpatch.Condition{cond("contains", "http://evil", []string{"headers"})}},
+		{name: "a piece of a header value", rule: rl(`http.header; content:"substr{"; nocase;`), want: []vpatch.Condition{cond("contains", "substr{", []string{"headers"}, lower)},
+			wantApprox: "header-content-values-only"},
+		{name: "a url in a header is a piece, not a header line", rule: rl(`http.header; content:"http://evil";`), want: []vpatch.Condition{cond("contains", "http://evil", []string{"headers"})},
+			wantApprox: "header-content-values-only"},
+		{name: "a header name without its colon matches values only", rule: rl(`http.header; content:"X-Api-Version";`),
+			want: []vpatch.Condition{cond("contains", "X-Api-Version", []string{"headers"})}, wantApprox: "header-content-values-only"},
 		{name: "content that needs two header lines", rule: rl(`http.header; content:"a|0d 0a|b";`), wantSkip: "header-spanning-lines"},
 		{name: "order between header contents is dropped", rule: rl(`http.header; content:"Content-Type|3a|"; content:"multipart"; distance:0;`),
-			want: []vpatch.Condition{cond("rx", "^", []string{"header:content-type"}), cond("contains", "multipart", []string{"headers"})}, wantDrop: "header-content-order"},
+			want: []vpatch.Condition{cond("rx", "^", []string{"header:content-type"}), cond("contains", "multipart", []string{"headers"})}, wantDrop: "header-content-order",
+			wantApprox: "header-content-values-only"},
 
 		// What is not converted.
 		{name: "response direction", rule: strings.Replace(rl(`http.uri; content:"/a";`), "to_server", "to_client", 1), wantSkip: "response-direction"},
@@ -310,6 +317,9 @@ func TestConvertRules(t *testing.T) {
 			}
 			if s.Tier != wantTier {
 				t.Fatalf("tier %q, want %q", s.Tier, wantTier)
+			}
+			if want := map[string]int{tt.wantApprox: 1}; tt.wantApprox == "" && len(res.Report.Approximations) > 0 || tt.wantApprox != "" && !reflect.DeepEqual(res.Report.Approximations, want) {
+				t.Fatalf("approximations %v, want %q", res.Report.Approximations, tt.wantApprox)
 			}
 		})
 	}

@@ -76,7 +76,7 @@ func convertFile(name string, data []byte, opts importers.Options, rep *importer
 			rep.Skip("licence-not-bsd", "sid:"+strconv.Itoa(sid))
 			continue
 		}
-		c := &cvt{opts: opts, lim: lim, rep: rep, drops: map[string]bool{}}
+		c := &cvt{opts: opts, lim: lim, rep: rep, drops: map[string]bool{}, approx: map[string]bool{}}
 		sig, err := c.convertRule(r)
 		if err != nil {
 			rep.Skip(reasonOf(err), unitName(trimmed))
@@ -84,6 +84,9 @@ func convertFile(name string, data []byte, opts importers.Options, rep *importer
 		}
 		for _, k := range importers.SortedKeys(c.drops) {
 			rep.Drop(k)
+		}
+		for _, k := range importers.SortedKeys(c.approx) {
+			rep.Approximate(k)
 		}
 		rep.UnitsConverted++
 		out = append(out, *sig)
