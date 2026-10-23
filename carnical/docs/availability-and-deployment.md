@@ -91,6 +91,12 @@ changes per-client budgets. Preserve source addresses where possible; test IPv4 
 and failover. Do not trust arbitrary forwarded headers to compensate for a deployment that loses
 identity.
 
+The application is told the scheme of Carnical's own connection in `X-Forwarded-Proto`, even behind
+a trusted proxy. Behind a load balancer that ends TLS and connects to Carnical over plain HTTP, the
+application is told `http`; one that redirects plain-HTTP requests to HTTPS by that header redirects
+forever. Give Carnical a certificate (`-tls-cert`) and have the load balancer connect to it over
+TLS, or make the application take the scheme from its own configuration.
+
 The CLI forwards to one origin and does not automatically retry failed requests across origins. Put
 a separately authenticated, tested origin load balancer behind it when origin redundancy is
 required. Blindly replaying a POST during failover can duplicate a transaction.
