@@ -380,10 +380,19 @@ func InferScope(paths []string, texts []string, tags []string) []string {
 		}
 	}
 	sort.Strings(out)
-	if len(out) > 4 {
-		out = out[:4]
+	return boundScope(out)
+}
+
+// maxScope is the most scope tags a signature may carry (the engine refuses more).
+const maxScope = 32
+
+// boundScope is the scope, or none when it names more software than a signature takes. Scope narrows where a signature
+// runs, so cutting the list would silently stop it on sites that declare what was cut; with none it runs everywhere.
+func boundScope(s []string) []string {
+	if len(s) > maxScope {
+		return nil
 	}
-	return out
+	return s
 }
 
 func hasPrefixKey(m map[string]bool, prefix string) bool {
@@ -437,10 +446,7 @@ func MergeScope(s []string, extra ...string) []string {
 		out = append(out, k)
 	}
 	sort.Strings(out)
-	if len(out) > 4 {
-		out = out[:4]
-	}
-	return out
+	return boundScope(out)
 }
 
 // KnownTransforms are the transforms the model defines (see the comment in vpatch/signature.go).

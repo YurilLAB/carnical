@@ -155,6 +155,15 @@ func TestInferScope(t *testing.T) {
 		{name: "names no software", paths: []string{"/cgi-bin/luci/;stok=/locale"}, texts: []string{"router RCE"}, want: nil},
 		{name: "a variable is not a plugin slug", paths: []string{"/wp-content/plugins/{{x}}/a"}, want: []string{"wordpress"}},
 		{name: "javascript is not java", texts: []string{"JavaScript library"}, want: nil},
+		{name: "every product named is kept", texts: []string{"SQL injection in a component shared by Drupal, Joomla, Magento, PrestaShop and WordPress"},
+			want: []string{"drupal", "joomla", "magento", "prestashop", "wordpress"}},
+		{name: "more products than a signature takes apply it everywhere", paths: func() []string {
+			var p []string
+			for i := range 33 {
+				p = append(p, fmt.Sprintf("/wp-content/plugins/p%02d/a.php", i))
+			}
+			return p
+		}(), want: nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
