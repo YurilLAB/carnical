@@ -59,6 +59,11 @@ or invalid serialized entries leave an existing baseline unchanged and do not cr
 The checker also validates each measured row directly: integer counts, zero errors or unavailable
 responses (501 remains a refusal), status totals equal to requests, origin hits equal to 200
 responses, and all row requests summing to 10,000. Stale summary zeros cannot hide a failing row.
+It recomputes class totals, origin counts, unique request counts and every numeric category summary
+from those rows before using category coverage or admission totals. Counts must be integers, and
+each result-name category must have exactly one summary. Repeated request hashes within a class
+remain valid; a hash labeled as both attack and control is rejected, as it is by the producer.
+These consistency checks also apply when running the checker without a baseline.
 
 OSV uses explicit manifest paths so untracked research, upstream downloads, and `build/` do not
 become project dependencies. `--all-vulns` retains and fails on module advisories even when call

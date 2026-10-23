@@ -19,7 +19,7 @@ CHECKER = Path(__file__).with_name("check_live_report.py")
 def case(name, attack, requests, status):
     return {"Name": name, "Attack": attack, "Requests": requests, "Errors": 0,
             "Statuses": {str(status): requests}, "OriginReached": requests if status == 200 else 0,
-            "RequestSHA256": hashlib.sha256(name.encode()).hexdigest()}
+            "RequestSHA256": hashlib.sha256(name.encode()).hexdigest(), "Variation": ""}
 
 
 def templates_pin(data):
@@ -30,26 +30,38 @@ def templates_pin(data):
 
 
 def report(results):
-    categories = {}
-    for row in results:
-        name = row["Name"].split("/")[0]
-        cat = categories.setdefault(name, {"Category": name, "AttackCases": 0,
-            "AttackRequests": 0, "UniqueAttackTemplates": 0, "AdmittedAttackCases": 0,
-            "AttackOrigin": 0, "Errors": 0, "Unavailable": 0})
-        if row["Attack"]:
-            cat["AttackCases"] += 1
-            cat["AttackRequests"] += row["Requests"]
-            cat["UniqueAttackTemplates"] += 1  # these fixtures have distinct request hashes
-            cat["AdmittedAttackCases"] += row["OriginReached"] > 0
-            cat["AttackOrigin"] += row["OriginReached"]
-        cat["Errors"] += row["Errors"]
-        cat["Unavailable"] += sum(n for status, n in row["Statuses"].items()
-                                  if int(status) >= 500 and int(status) != 501)
-        assert sum(row["Statuses"].values()) + row["Errors"] == row["Requests"]
-    return {"Count": sum(row["Requests"] for row in results),
+    def refused(rows):
+        return sum(n for row in rows for status, n in row["Statuses"].items()
+                   if 400 <= int(status) < 500 or status == "501")
+
+    data = {"Count": sum(row["Requests"] for row in results),
             "TransportErrors": sum(row["Errors"] for row in results),
-            "Unavailable": sum(row["Unavailable"] for row in categories.values()),
-            "CategoryResults": list(categories.values()), "Results": results, "AlertProbe": True}
+            "Unavailable": sum(n for row in results for status, n in row["Statuses"].items()
+                               if int(status) >= 500 and status != "501"),
+            "CategoryResults": [], "Results": results, "AlertProbe": True}
+    for label, attack in (("Attack", True), ("Benign", False)):
+        rows = [row for row in results if row["Attack"] == attack]
+        data[label + "Requests"] = sum(row["Requests"] for row in rows)
+        data[label + "Passed"] = sum(row["Statuses"].get("200", 0) for row in rows)
+        data[label + "Refused"] = refused(rows)
+        data["OriginAttacks" if attack else "OriginBenign"] = sum(row["OriginReached"] for row in rows)
+        data["Unique" + label + "Templates"] = len({row["RequestSHA256"] for row in rows})
+    for name in sorted({row["Name"].split("/")[0] for row in results}):
+        members = [row for row in results if row["Name"].split("/")[0] == name]
+        cat = {"Category": name, "Errors": sum(row["Errors"] for row in members),
+               "Unavailable": sum(n for row in members for status, n in row["Statuses"].items()
+                                  if int(status) >= 500 and status != "501"),
+               "AdmittedAttackCases": sum(row["Attack"] and row["OriginReached"] > 0 for row in members)}
+        for label, attack in (("Attack", True), ("Benign", False)):
+            rows = [row for row in members if row["Attack"] == attack]
+            cat[label + "Cases"] = len(rows)
+            cat[label + "Requests"] = sum(row["Requests"] for row in rows)
+            cat[label + "Refused"] = refused(rows)
+            cat[label + "Origin"] = sum(row["OriginReached"] for row in rows)
+            cat["Unique" + label + "Templates"] = len({row["RequestSHA256"] for row in rows})
+            cat["Variant" + label + "Cases"] = sum(bool(row.get("Variation")) for row in rows)
+        data["CategoryResults"].append(cat)
+    return data
 
 
 def ordinary_report():
@@ -94,14 +106,94 @@ class LiveReportTests(unittest.TestCase):
         for field in ("AttackCases", "AttackRequests", "UniqueAttackTemplates"):
             changed = copy.deepcopy(original)
             next(row for row in changed["CategoryResults"] if row["Category"] == "sqli")[field] = 0
-            cases.append(("zero " + field, changed, "not exercised"))
+            cases.append(("zero " + field, changed, "summaries"))
         for field in ("Errors", "Unavailable", "AttackOrigin", "AdmittedAttackCases"):
             changed = copy.deepcopy(original)
             next(row for row in changed["CategoryResults"] if row["Category"] == "sqli")[field] = 1
-            cases.append(("bad category " + field, changed, "supported injection"))
+            cases.append(("bad category " + field, changed, "summaries"))
         changed = copy.deepcopy(original)
         changed["CategoryResults"] = [row for row in changed["CategoryResults"] if row["Category"] != "sqli"]
-        cases.append(("missing category", changed, "missing required"))
+        cases.append(("missing category", changed, "summaries"))
+        for field in ("AttackRequests", "AttackPassed", "AttackRefused", "BenignRequests", "BenignPassed",
+                      "BenignRefused", "OriginAttacks", "OriginBenign", "UniqueAttackTemplates", "UniqueBenignTemplates"):
+            changed = copy.deepcopy(original)
+            changed[field] += 1
+            cases.append(("stale global " + field, changed, "summaries"))
+        for field in next(row for row in original["CategoryResults"] if row["Category"] == "sqli"):
+            if field == "Category":
+                continue
+            changed = copy.deepcopy(original)
+            next(row for row in changed["CategoryResults"] if row["Category"] == "sqli")[field] += 1
+            cases.append(("stale category " + field, changed, "summaries"))
+        for label, field, value in (("integral float", "AttackRequests", 5000.0),
+                                    ("numeric string", "BenignRequests", "5000"),
+                                    ("negative", "BenignRefused", -1),
+                                    ("missing", "OriginAttacks", None)):
+            changed = copy.deepcopy(original)
+            changed[field] = value
+            cases.append((label + " global count", changed, "summaries"))
+        for value in (False, 0.0, "0", -1, None):
+            changed = copy.deepcopy(original)
+            next(row for row in changed["CategoryResults"] if row["Category"] == "php")["VariantAttackCases"] = value
+            cases.append(("noninteger category count " + repr(value), changed, "summaries"))
+        for label, summaries in (("duplicate", original["CategoryResults"] + [original["CategoryResults"][0]]),
+                                  ("duplicate replacing category", original["CategoryResults"][1:] + [original["CategoryResults"][1]]),
+                                  ("extra", original["CategoryResults"] + [{"Category": "extra"}]),
+                                  ("missing benign-only", [row for row in original["CategoryResults"] if row["Category"] != "search"]),
+                                  ("non-list", {}), ("non-row", original["CategoryResults"][:-1] + [None]),
+                                  ("invalid name", original["CategoryResults"][:-1] + [dict(original["CategoryResults"][-1], Category=[])])):
+            changed = copy.deepcopy(original)
+            changed["CategoryResults"] = summaries
+            cases.append((label + " category summaries", changed, "summaries"))
+        for value in (None, False, 0, [], {}):
+            changed = copy.deepcopy(original)
+            next(row for row in changed["Results"] if row["Name"] == "php/second")["Variation"] = value
+            next(row for row in changed["CategoryResults"] if row["Category"] == "php")["VariantAttackCases"] = 1
+            cases.append(("non-string variation with matching count " + repr(value), changed, "summaries"))
+        changed = copy.deepcopy(original)
+        del next(row for row in changed["Results"] if row["Name"] == "php/second")["Variation"]
+        next(row for row in changed["CategoryResults"] if row["Category"] == "php")["VariantAttackCases"] = 1
+        cases.append(("missing variation with matching count", changed, "summaries"))
+        changed = copy.deepcopy(original)
+        row = next(row for row in changed["Results"] if row["Name"] == "php/second")
+        row.update(Statuses={"200": 1}, OriginReached=1)
+        cases.append(("supported admission hidden by summaries", changed, "summaries"))
+        changed = copy.deepcopy(original)
+        next(row for row in changed["Results"] if row["Name"] == "csrf/context")["RequestSHA256"] = next(
+            row for row in changed["Results"] if row["Name"] == "sqli/ordinary")["RequestSHA256"]
+        changed = report(changed["Results"])
+        cases.append(("cross-class request identity", changed, "summaries"))
+        changed = copy.deepcopy(changed)
+        changed["UniqueAttackTemplates"] -= 1
+        cases.append(("cross-class request with last-label totals", changed, "summaries"))
+        changed = copy.deepcopy(original)
+        changed["CategoryResults"].reverse()
+        changed["Results"].reverse()
+        cases.append(("summary and result order do not matter", changed, None))
+        changed = copy.deepcopy(original)
+        next(row for row in changed["Results"] if row["Name"] == "php/second").update(
+            RequestSHA256=next(row for row in changed["Results"] if row["Name"] == "php/attack")["RequestSHA256"],
+            Variation=" ", Parent="")
+        next(row for row in changed["Results"] if row["Name"] == "sqli/ordinary").update(Variation="mutation", Parent="")
+        next(row for row in changed["Results"] if row["Name"] == "csrf/context").update(
+            RequestSHA256=next(row for row in changed["Results"] if row["Name"] == "php/attack")["RequestSHA256"], Parent="base")
+        changed = report(changed["Results"])
+        # Explicit producer-contract counts: names and categories do not create distinct constructed requests.
+        changed.update(UniqueAttackTemplates=len(SUPPORTED), AttackRequests=5000, AttackPassed=1, AttackRefused=4999)
+        php = next(row for row in changed["CategoryResults"] if row["Category"] == "php")
+        php.update(AttackCases=2, UniqueAttackTemplates=1, VariantAttackCases=1)
+        cases.append(("shared fingerprints and Variation independent of Parent", changed, None))
+        changed = copy.deepcopy(original)
+        next(row for row in changed["Results"] if row["Name"] == "php/second").update(Statuses={"302": 1})
+        changed["AttackRefused"] -= 1
+        next(row for row in changed["CategoryResults"] if row["Category"] == "php")["AttackRefused"] -= 1
+        cases.append(("302 is neither passed nor refused", changed, None))
+        changed = copy.deepcopy(original)
+        row = next(row for row in changed["Results"] if row["Name"] == "csrf/context")
+        row.update(Requests=2, Statuses={"200": 2}, OriginReached=2)
+        target = next(row for row in changed["Results"] if row["Name"] == "json/ordinary")
+        target.update(Requests=2499, Statuses={"200": 2499}, OriginReached=2499)
+        cases.append(("class counts need not be balanced", report(changed["Results"]), None))
         for group in ("search", "json"):
             for field in ("Requests", "OriginReached"):
                 changed = copy.deepcopy(original)
@@ -299,6 +391,9 @@ class LiveReportTests(unittest.TestCase):
             target["Requests"] -= 1
             target["Statuses"]["403"] -= 1
             partial_control = report(partial_control["Results"])
+            stale_summary = dict(original, AttackRequests=1)
+            malformed_categories = copy.deepcopy(original)
+            malformed_categories["CategoryResults"][-1]["Category"] = []
             for label, data, error in (("malformed request identity", malformed, "template manifest"),
                                        ("duplicate template name", duplicate, "template manifest"),
                                        ("a row error", failed, "invalid live WAF measurement"),
@@ -306,6 +401,8 @@ class LiveReportTests(unittest.TestCase):
                                        ("a silent admitted attack", silent, "without an alert"),
                                        ("a partial admitted attack", partly, "only some requests"),
                                        ("a partial refused control", partial_control, "only some requests"),
+                                       ("a stale numeric summary", stale_summary, "summaries"),
+                                       ("malformed category summaries", malformed_categories, "summaries"),
                                        ("a serialized extra entry", broken_entry, "not in the suite"),
                                        ("an unencodable name", invalid_name, "valid UTF-8"),
                                        ("an unencodable description", invalid_description, "valid UTF-8")):

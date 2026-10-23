@@ -70,9 +70,65 @@ def valid_measurement(report):
     return total == report["Count"]
 
 
+def valid_summaries(report):
+    """Reconcile numeric summaries with measured rows, using the loadtest producer's classifications."""
+    totals = {side + field: 0 for side in ("Attack", "Benign") for field in ("Requests", "Passed", "Refused")}
+    totals.update(OriginAttacks=0, OriginBenign=0, UniqueAttackTemplates=0, UniqueBenignTemplates=0)
+    fields = ("AttackCases", "BenignCases", "AdmittedAttackCases", "AttackRequests", "BenignRequests",
+              "AttackRefused", "BenignRefused", "AttackOrigin", "BenignOrigin", "Errors", "Unavailable",
+              "UniqueAttackTemplates", "UniqueBenignTemplates", "VariantAttackCases", "VariantBenignCases")
+    categories, unique, labels = {}, {}, {}
+    for row in report["Results"]:
+        attack, digest, variation = row["Attack"], row["RequestSHA256"], row.get("Variation")
+        # A successful producer cannot label the same constructed request as both attack and control.
+        if not isinstance(variation, str) or digest in labels and labels[digest] != attack:
+            return False
+        labels[digest] = attack
+        side = "Attack" if attack else "Benign"
+        name = row["Name"].split("/", 1)[0]
+        category = categories.setdefault(name, dict.fromkeys(fields, 0))
+        seen = unique.setdefault((name, side), set())
+        category["Unique" + side + "Templates"] += digest not in seen
+        seen.add(digest)
+        category[side + "Cases"] += 1
+        category["Variant" + side + "Cases"] += variation != ""
+        category["AdmittedAttackCases"] += attack and row["OriginReached"] > 0
+        category[side + "Requests"] += row["Requests"]
+        category[side + "Origin"] += row["OriginReached"]
+        refused = sum(n for status, n in row["Statuses"].items() if 400 <= int(status) < 500 or status == "501")
+        category[side + "Refused"] += refused
+        totals[side + "Requests"] += row["Requests"]
+        totals[side + "Passed"] += row["Statuses"].get("200", 0)
+        totals[side + "Refused"] += refused
+        totals["OriginAttacks" if attack else "OriginBenign"] += row["OriginReached"]
+    for side, attack in (("Attack", True), ("Benign", False)):
+        totals["Unique" + side + "Templates"] = sum(label == attack for label in labels.values())
+    if any(type(report.get(field)) is not int or report[field] != value for field, value in totals.items()):
+        return False
+    claimed = report.get("CategoryResults")
+    if not isinstance(claimed, list) or len(claimed) != len(categories):
+        return False
+    seen = set()
+    for category in claimed:
+        if not isinstance(category, dict):
+            return False
+        name = category.get("Category")
+        if not isinstance(name, str) or name not in categories or name in seen:
+            return False
+        seen.add(name)
+        # Errors and unavailable counts are zero because valid_measurement already checked every row.
+        if any(type(category.get(field)) is not int or category[field] != value
+               for field, value in categories[name].items()):
+            return False
+    return True
+
+
 def gate(report, baseline):
     if not valid_measurement(report):
         raise SystemExit("invalid live WAF measurement")
+    template_digest(report)
+    if not valid_summaries(report):
+        raise SystemExit("inconsistent live WAF summaries")
     # With the format checks only monitoring, the attacks only they refuse (GraphQL envelopes, duplicate JSON keys,
     # parameter-name tricks) reach the origin by design; the baseline says which, template by template.
     monitored = formats_monitored(report)
