@@ -494,8 +494,11 @@ func (c *cvt) newPCRE(o opt, cur string, curX []string) (*atom, error) {
 			flags = append(flags, f)
 		case 'R':
 			a.pcreRelative = true
-		case 'E', 'O', 'Q':
-			// $ matches only at the very end (E), limits and no-alert: no effect on whether a request matches
+		case 'E', 'O':
+			// $ matches only at the very end (E), and limits: no effect on whether a request matches
+		case 'Q':
+			// the response body (http_server_body), which the model has no target for
+			return nil, skip("unsupported-buffer:response")
 		case 'x', 'G', 'K', 'S', 'Y':
 			return nil, skip("pcre-flag:%c", f)
 		default:

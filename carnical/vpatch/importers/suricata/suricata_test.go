@@ -266,6 +266,7 @@ func TestConvertRules(t *testing.T) {
 		{name: "request line buffer", rule: rl(`http.request_line; content:"GET /a";`), wantSkip: "unsupported-buffer:request-line"},
 		{name: "header names buffer", rule: rl(`http.header_names; content:"|0d 0a|host|0d 0a|";`), wantSkip: "unsupported-buffer:header-names"},
 		{name: "response buffer", rule: rl(`http.response_body; content:"x";`), wantSkip: "unsupported-buffer:response"},
+		{name: "pcre on the response body (Q)", rule: rl(`pcre:"/Index of \//Q";`), wantSkip: "unsupported-buffer:response"},
 		{name: "binary content", rule: rl(`http.uri; content:"|c0 af|";`), wantSkip: "binary-content"},
 		{name: "not http", rule: strings.Replace(rl(`content:"x";`), "alert http", "alert udp", 1), wantSkip: "not-http-rule:udp"},
 		{name: "tcp rule that uses http buffers", rule: strings.Replace(rl(`http.uri; content:"/a";`), "alert http", "alert tcp", 1), want: []vpatch.Condition{cond("contains", "/a", uriT, dec)}},
