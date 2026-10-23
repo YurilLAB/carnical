@@ -163,6 +163,19 @@ func (s Settings) OnlyDetects(id int) bool {
 // InspectResponses, the response body rules run when a response reaches it.
 const ResponseBodyLimit = 512 << 10
 
+// continued reports whether the last line of SecLang text that is not blank or a comment ends with a backslash.
+func continued(text string) bool {
+	for text != "" {
+		i := strings.LastIndexByte(text, '\n')
+		line := strings.TrimSpace(text[i+1:])
+		text = text[:max(i, 0)]
+		if line != "" && line[0] != '#' {
+			return strings.HasSuffix(line, `\`)
+		}
+	}
+	return false
+}
+
 // ResponseLimit is ResponseBodyLimit, or 0 when Before or After may change it.
 func (s Settings) ResponseLimit() int64 {
 	if strings.Contains(strings.ToLower(s.Before+s.After), "responsebodylimit") {
@@ -202,6 +215,14 @@ func (s Settings) Validate() error {
 	// SecLang joins a line ending in a backslash to the next one, which would swallow the following directive.
 	if strings.HasSuffix(s.UploadDir, `\`) {
 		return fmt.Errorf("the upload directory must not end with a backslash")
+	}
+	// So would the last directive of Before, whose next line is the CRS's own initialization; the last of After would be
+	// dropped unread. The parser trims each line and passes over blank lines and comments while it joins.
+	if continued(s.Before) {
+		return fmt.Errorf("the directives before the CRS must not end with a backslash")
+	}
+	if continued(s.After) {
+		return fmt.Errorf("the directives after the CRS must not end with a backslash")
 	}
 	for _, m := range s.AllowedMethods {
 		if !methodShape.MatchString(m) {

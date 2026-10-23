@@ -127,6 +127,13 @@ func TestSettingsAreValidated(t *testing.T) {
 		"such a line after the rule set": func(s *crs.Settings) {
 			s.After = "SecAction \"id:1,phase:1,pass,nolog\"\n# " + strings.Repeat("x", 60<<10)
 		},
+		"rules before the CRS whose last line runs on into it": func(s *crs.Settings) { s.Before = "SecRuleRemoveByTag carnical-none \\" },
+		"the same behind a comment and blank lines": func(s *crs.Settings) {
+			s.Before = "SecRuleRemoveByTag carnical-none \\  \n\n# a note\n"
+		},
+		"rules after the CRS that end inside a directive": func(s *crs.Settings) {
+			s.After = `SecRule ARGS:zz "@streq x" "id:1999999,phase:1,deny,status:418" \`
+		},
 		"a CRS rule as local":        func(s *crs.Settings) { s.LocalRulesOff = []int{942100} },
 		"an unknown local rule":      func(s *crs.Settings) { s.LocalRulesOff = []int{5006012, 5006999} },
 		"33 local rules off":         func(s *crs.Settings) { s.LocalRulesOff = slices.Repeat([]int{5006012}, 33) },
@@ -158,7 +165,10 @@ func TestSettingsAreValidated(t *testing.T) {
 		"REST methods": func(s *crs.Settings) {
 			s.AllowedMethods = []string{"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}
 		},
-		"responses on":  func(s *crs.Settings) { s.InspectResponses = true },
+		"responses on": func(s *crs.Settings) { s.InspectResponses = true },
+		"a rule before the CRS continued over two lines": func(s *crs.Settings) {
+			s.Before = "SecRule ARGS:zz \"@streq x\" \\\n    \"id:1999999,phase:1,pass,nolog\""
+		},
 		"detect mode":   func(s *crs.Settings) { s.Mode = crs.ModeDetect },
 		"off":           func(s *crs.Settings) { s.Mode = crs.ModeOff },
 		"stricter":      func(s *crs.Settings) { s.InboundThreshold = 3 },
