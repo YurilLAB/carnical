@@ -21,6 +21,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -226,6 +227,9 @@ func TestPathTemplatesTakeOutTheVariableParts(t *testing.T) {
 		{"/" + strings.Repeat("9", 16<<10), "/9"},
 		{"/a/b/c/d/e/f/" + strings.Repeat("a", 16<<10) + "?q=1", "/a/b/c/d/e/f/*?"},
 		{"/" + strings.Repeat("a", 40) + "/" + strings.Repeat("b", 40) + "/" + strings.Repeat("c", 40), "/" + strings.Repeat("a", 40) + "/" + strings.Repeat("b", 40) + "/" + strings.Repeat("c", 13)},
+		{"/a%20b/caf%C3%A9", "/a%20b/caf%C3%A9"}, // escaped as the client sent them
+		{"/%41bc/a%2Fb", "/%41bc/a%2Fb"},         // and in the client's own escaping
+		{"/x/" + strings.Repeat("%20", 100), "/x/x"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.target, func(t *testing.T) {
@@ -240,6 +244,21 @@ func TestPathTemplatesTakeOutTheVariableParts(t *testing.T) {
 	if a != b || a == c {
 		t.Fatal("query values or keys changed the template, or its presence did not")
 	}
+	// Every request pays for its template before any limit applies, so what it costs must not grow with the path, however
+	// the path is escaped.
+	for _, target := range []string{"/" + strings.Repeat("%20", 32<<10/3), "/" + strings.Repeat("%41", 10<<10)} {
+		r := req("GET", target)
+		var before, after runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&before)
+		for range 20 {
+			pathTemplate(r)
+		}
+		runtime.ReadMemStats(&after)
+		if per := (after.TotalAlloc - before.TotalAlloc) / 20; per > 1024 {
+			t.Errorf("%d bytes for the template of a %d-byte path", per, len(target))
+		}
+	}
 }
 
 func BenchmarkPathTemplate(b *testing.B) {
@@ -248,6 +267,7 @@ func BenchmarkPathTemplate(b *testing.B) {
 		{"long-segment", "/" + strings.Repeat("a", 16<<10)},
 		{"long-digits", "/" + strings.Repeat("9", 16<<10)},
 		{"long-tail", "/a/b/c/d/e/f/" + strings.Repeat("a", 16<<10)},
+		{"long-escaped", "/" + strings.Repeat("%20", 16<<10/3)},
 	} {
 		r := httptest.NewRequest("GET", tt.path, nil)
 		b.Run(tt.name, func(b *testing.B) {

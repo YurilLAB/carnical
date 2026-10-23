@@ -5,6 +5,7 @@ package shield
 import (
 	"crypto/tls"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -79,7 +80,17 @@ func PathTemplate(r *http.Request) string {
 // "/product/1234/reviews?page=2" and "/product/98/reviews?page=7" are both "/product/9/reviews?"; a cache-busting flood
 // of "/?r=<random>" is "/?" however the random part changes.
 func pathTemplate(r *http.Request) (uint64, string) {
-	path := r.URL.EscapedPath()
+	// The path as EscapedPath writes it, but read only as far as the template keeps: escaping (or, for a path the client
+	// encoded its own way, unescaping to check) the whole of it would cost as much as the path, before any limit applies.
+	// RawPath is what the client sent, when that differs from Path's own escaping. A long one is taken as it was sent,
+	// though EscapedPath would escape Path instead if the client left in a byte that needs escaping.
+	path, escaped := r.URL.RawPath, true
+	switch {
+	case path == "":
+		path, escaped = r.URL.Path, r.URL.Path == "*"
+	case len(path) <= 1<<10:
+		path = r.URL.EscapedPath()
+	}
 	var b strings.Builder
 	// Six segments of at most 40 bytes, their slashes, an omitted tail and a query marker.
 	b.Grow(min(len(path)+2, 6*41+2+1))
@@ -88,6 +99,9 @@ func pathTemplate(r *http.Request) (uint64, string) {
 		if n == 6 {
 			b.WriteString("/*")
 			break
+		}
+		if !escaped {
+			seg = escapeSegment(seg)
 		}
 		b.WriteByte('/')
 		b.WriteString(segment(seg))
@@ -101,6 +115,17 @@ func pathTemplate(r *http.Request) (uint64, string) {
 	}
 	t := b.String()
 	return hashString(t), printable(cut(t, 96))
+}
+
+// escapeSegment is a segment of Path as EscapedPath writes it, as far as segment reads it. One longer than 40 bytes is
+// left as it is: escaping only lengthens it and adds a '%', so segment makes the same placeholder of it either way.
+func escapeSegment(s string) string {
+	if len(s) > 40 || strings.IndexFunc(s, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '.' || r == '_' || r == '~')
+	}) < 0 {
+		return s
+	}
+	return (&url.URL{Path: "/" + s}).EscapedPath()[1:]
 }
 
 // segment replaces a path segment that is an identifier with a placeholder: digits become "9", anything long that mixes
