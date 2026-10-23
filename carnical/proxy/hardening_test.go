@@ -518,6 +518,16 @@ func TestResponsePolicy(t *testing.T) {
 				t.Fatalf("X-Content-Type-Options = %q", h.Get("X-Content-Type-Options"))
 			}
 		}},
+		{"a type the application sent is kept", "/page", ResponsePolicy{}, func(t *testing.T, h http.Header) {
+			if h.Get("Content-Type") != "text/plain" {
+				t.Fatalf("Content-Type = %q", h.Get("Content-Type"))
+			}
+		}},
+		{"a response the application sent without a type is not given one", "/untyped", ResponsePolicy{}, func(t *testing.T, h http.Header) {
+			if ct, ok := h["Content-Type"]; ok || h.Get("X-Content-Type-Options") != "nosniff" {
+				t.Fatalf("Content-Type = %q, X-Content-Type-Options = %q; want no type, and nosniff", ct, h.Get("X-Content-Type-Options"))
+			}
+		}},
 		{"banners are removed", "/banner", ResponsePolicy{}, func(t *testing.T, h http.Header) {
 			if h.Get("X-Powered-By") != "" || h.Get("Server") != "" {
 				t.Fatalf("banners remain: %q %q", h.Get("X-Powered-By"), h.Get("Server"))

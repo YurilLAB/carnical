@@ -1223,6 +1223,11 @@ func (n noInterim) WriteHeader(code int) {
 	if code >= 100 && code < 200 && code != http.StatusSwitchingProtocols {
 		return
 	}
+	// A response the application sent without a type goes on without one. The server would otherwise guess one from the
+	// body, and a stored file that looks like a page would be declared text/html, which nosniff cannot undo.
+	if _, ok := n.Header()["Content-Type"]; !ok {
+		n.Header()["Content-Type"] = nil
+	}
 	n.ResponseWriter.WriteHeader(code)
 }
 

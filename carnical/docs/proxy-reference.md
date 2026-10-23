@@ -99,7 +99,9 @@ most once a second with how many refusals were not logged; the address is in the
 `-log-details`.
 
 Responses get `nosniff`, lose software banners and prevent caching when they set cookies or serve
-HTML from a stylesheet address. Connection limits and a 100-stream HTTP/2 cap bound transport work.
+HTML from a stylesheet address. A response the application sends without a `Content-Type` is
+forwarded without one, not given a type guessed from its body. Connection limits and a 100-stream
+HTTP/2 cap bound transport work.
 
 | Switch | Default | Effect |
 | --- | --- | --- |

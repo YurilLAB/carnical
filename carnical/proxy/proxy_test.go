@@ -80,6 +80,11 @@ func newUpstream(t testing.TB) *upstream {
 			w.Header().Set("Server", "Apache/2.4.58 (Ubuntu)")
 		case strings.HasSuffix(r.URL.Path, ".css"):
 			w.Header().Set("Content-Type", "text/html")
+		case r.URL.Path == "/untyped":
+			// A stored file sent with no type, as a server with no type for its extension sends it.
+			w.Header()["Content-Type"] = nil
+			_, _ = w.Write([]byte("<html><p>a stored file</p></html>"))
+			return
 		case r.URL.Path == "/early-hints":
 			w.Header().Set("X-Gate-Only-Early", "for the check")
 			w.WriteHeader(http.StatusEarlyHints)
