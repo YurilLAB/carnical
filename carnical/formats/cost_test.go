@@ -199,7 +199,8 @@ func TestAdversarialBodiesCostInProportionToTheirSize(t *testing.T) {
 			nsSmall := float64(ts.Nanoseconds()) / float64(len(small.body))
 			nsLarge := float64(tl.Nanoseconds()) / float64(len(large.body))
 			t.Logf("%7d bytes %9v %6.1f ns/byte; %7d bytes %9v %6.1f ns/byte", len(small.body), ts.Round(time.Microsecond), nsSmall, len(large.body), tl.Round(time.Microsecond), nsLarge)
-			if nsLarge > perByteCeiling {
+			// The race detector costs each step many times over, so under it only the growth below is a finding.
+			if nsLarge > perByteCeiling && !raceDetector {
 				t.Errorf("%.1f ns/byte at %d bytes", nsLarge, len(large.body))
 			}
 			// Four times the bytes may take four times as long, with room for caches and the collector, but not sixteen.
