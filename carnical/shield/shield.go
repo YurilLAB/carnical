@@ -775,10 +775,10 @@ func (s *Shield) mark(ns int64, key netip.Addr, info *attackInfo, shown bool) {
 			}
 		}
 		// Counting starts again, so an address that goes on after its ban runs out is banned again. Its standing goes
-		// with the ban: being known, and the higher limit it had earned.
+		// with the ban: being known, the answers that made it known, and the higher limit it had earned.
 		if int(src.strikes) >= s.cfg.BanAfter {
 			src.bannedUntil, src.knownUntil, src.strikes, src.fromShown, src.shown, ban = max(src.bannedUntil, ns+int64(s.cfg.BanFor)), 0, 0, 0, 0, true
-			src.earned = earned{}
+			src.earned, src.good, src.goodFirst = earned{}, 0, 0
 		}
 	})
 	if !ban {

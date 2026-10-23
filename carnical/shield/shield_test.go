@@ -1509,6 +1509,7 @@ func (b chanBanner) Ban(_ context.Context, p netip.Prefix, _ time.Duration, _ st
 func TestRepeatOffenders(t *testing.T) {
 	type step struct {
 		after  time.Duration // the clock moves on first
+		answer bool          // then one ordinary request of the client is answered
 		points int
 		sig    string // "" is crs-942100
 		want   OffendOutcome
@@ -1534,78 +1535,81 @@ func TestRepeatOffenders(t *testing.T) {
 		events string // the repeat-offender events of the client's source, and auto_block_full
 		sigs   string // the signatures of the last ban's event
 	}{
-		{name: "below the points", steps: []step{{0, 4, "", OffendCounted, 0}, {m, 4, "", OffendCounted, 0}, {m, 3, "", OffendCounted, 0}}},
-		{name: "the points ban the source", steps: []step{{0, 4, "", OffendCounted, 0}, {m, 4, "crs-930120", OffendCounted, 0}, {m, 4, "bad\nsig\x1b[31m", OffendBlocked, 10 * m}},
+		{name: "below the points", steps: []step{{0, false, 4, "", OffendCounted, 0}, {m, false, 4, "", OffendCounted, 0}, {m, false, 3, "", OffendCounted, 0}}},
+		{name: "the points ban the source", steps: []step{{0, false, 4, "", OffendCounted, 0}, {m, false, 4, "crs-930120", OffendCounted, 0}, {m, false, 4, "bad\nsig\x1b[31m", OffendBlocked, 10 * m}},
 			banned: true, events: "source_blocked", sigs: "crs-942100 crs-930120 bad_sig__31m"},
 		{name: "a source keeps its first eight signatures", steps: func() []step {
 			var steps []step
 			for i := range 9 {
-				steps = append(steps, step{0, 1, "sig-" + strconv.Itoa(i), OffendCounted, 0})
+				steps = append(steps, step{0, false, 1, "sig-" + strconv.Itoa(i), OffendCounted, 0})
 			}
-			return append(steps, step{0, 3, "sig-9", OffendBlocked, 10 * m})
+			return append(steps, step{0, false, 3, "sig-9", OffendBlocked, 10 * m})
 		}(), banned: true, events: "source_blocked", sigs: "sig-0 sig-1 sig-2 sig-3 sig-4 sig-5 sig-6 sig-7"},
-		{name: "flood monitor still bans", mod: func(c *Config) { c.MonitorOnly = true }, steps: []step{{0, 12, "", OffendBlocked, 10 * m}},
+		{name: "flood monitor still bans", mod: func(c *Config) { c.MonitorOnly = true }, steps: []step{{0, false, 12, "", OffendBlocked, 10 * m}},
 			banned: true, events: "source_blocked"},
-		{name: "an offence while banned counts nothing", steps: []step{{0, 12, "", OffendBlocked, 10 * m}, {5 * m, 12, "", OffendAlreadyBlocked, 0}},
+		{name: "an offence while banned counts nothing", steps: []step{{0, false, 12, "", OffendBlocked, 10 * m}, {5 * m, false, 12, "", OffendAlreadyBlocked, 0}},
 			banned: true, events: "source_blocked"},
-		{name: "the ban ends", steps: []step{{0, 12, "", OffendBlocked, 10 * m}}, then: 10 * m, events: "source_blocked source_block_ended"},
+		{name: "the ban ends", steps: []step{{0, false, 12, "", OffendBlocked, 10 * m}}, then: 10 * m, events: "source_blocked source_block_ended"},
 		{name: "a trusted source is never banned", mod: func(c *Config) { c.Trusted = []netip.Prefix{netip.MustParsePrefix("203.0.113.9/32")} },
-			steps: []step{{0, 12, "", OffendExempt, 0}, {0, 12, "", OffendExempt, 0}}},
+			steps: []step{{0, false, 12, "", OffendExempt, 0}, {0, false, 12, "", OffendExempt, 0}}},
 		{name: "an exempt range is never banned", mod: func(c *Config) { c.AutoBlock.Exempt = []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24")} },
-			steps: []step{{0, 12, "", OffendExempt, 0}, {0, 12, "", OffendExempt, 0}}},
+			steps: []step{{0, false, 12, "", OffendExempt, 0}, {0, false, 12, "", OffendExempt, 0}}},
 		{name: "an exempt address exempts its /64", client: "2001:db8:1::9", mod: func(c *Config) { c.AutoBlock.Exempt = []netip.Prefix{netip.MustParsePrefix("2001:db8:1::5/128")} },
-			steps: []step{{0, 12, "", OffendExempt, 0}}},
+			steps: []step{{0, false, 12, "", OffendExempt, 0}}},
 		{name: "control: an exempt range elsewhere", mod: func(c *Config) { c.AutoBlock.Exempt = []netip.Prefix{netip.MustParsePrefix("203.0.114.0/24")} },
-			steps: []step{{0, 12, "", OffendBlocked, 10 * m}}, banned: true, events: "source_blocked"},
-		{name: "an IPv6 ban covers the /64", client: "2001:db8:1::9", probe: "2001:db8:1::77", steps: []step{{0, 12, "", OffendBlocked, 10 * m}},
+			steps: []step{{0, false, 12, "", OffendBlocked, 10 * m}}, banned: true, events: "source_blocked"},
+		{name: "an IPv6 ban covers the /64", client: "2001:db8:1::9", probe: "2001:db8:1::77", steps: []step{{0, false, 12, "", OffendBlocked, 10 * m}},
 			banned: true, events: "source_blocked"},
-		{name: "control: a neighbouring /64", client: "2001:db8:1::9", probe: "2001:db8:1:1::9", steps: []step{{0, 12, "", OffendBlocked, 10 * m}},
+		{name: "control: a neighbouring /64", client: "2001:db8:1::9", probe: "2001:db8:1:1::9", steps: []step{{0, false, 12, "", OffendBlocked, 10 * m}},
 			events: "source_blocked"},
-		{name: "loopback", client: "127.0.0.1", steps: []step{{0, 12, "", OffendExempt, 0}}},
-		{name: "IPv4-mapped loopback", client: "::ffff:127.0.0.2", steps: []step{{0, 12, "", OffendExempt, 0}}},
-		{name: "link-local", client: "fe80::1", steps: []step{{0, 12, "", OffendExempt, 0}}},
-		{name: "unspecified", client: "::", steps: []step{{0, 12, "", OffendExempt, 0}}},
-		{name: "escalation doubles up to MaxFor", steps: []step{{0, 12, "", OffendBlocked, 10 * m}, {10 * m, 12, "", OffendBlocked, 20 * m},
-			{20 * m, 12, "", OffendBlocked, 40 * m}, {40 * m, 12, "", OffendBlocked, 60 * m}, {60 * m, 12, "", OffendBlocked, 60 * m}},
+		{name: "loopback", client: "127.0.0.1", steps: []step{{0, false, 12, "", OffendExempt, 0}}},
+		{name: "IPv4-mapped loopback", client: "::ffff:127.0.0.2", steps: []step{{0, false, 12, "", OffendExempt, 0}}},
+		{name: "link-local", client: "fe80::1", steps: []step{{0, false, 12, "", OffendExempt, 0}}},
+		{name: "unspecified", client: "::", steps: []step{{0, false, 12, "", OffendExempt, 0}}},
+		{name: "escalation doubles up to MaxFor", steps: []step{{0, false, 12, "", OffendBlocked, 10 * m}, {10 * m, false, 12, "", OffendBlocked, 20 * m},
+			{20 * m, false, 12, "", OffendBlocked, 40 * m}, {40 * m, false, 12, "", OffendBlocked, 60 * m}, {60 * m, false, 12, "", OffendBlocked, 60 * m}},
 			banned: true, events: "source_blocked source_block_ended source_blocked source_block_ended source_blocked source_block_ended source_blocked source_block_ended source_blocked"},
-		{name: "MaxFor without a ban starts again", steps: []step{{0, 12, "", OffendBlocked, 10 * m}, {70 * m, 12, "", OffendBlocked, 10 * m}},
+		{name: "MaxFor without a ban starts again", steps: []step{{0, false, 12, "", OffendBlocked, 10 * m}, {70 * m, false, 12, "", OffendBlocked, 10 * m}},
 			banned: true, events: "source_blocked source_block_ended source_blocked"},
-		{name: "control: a ban within MaxFor of the last escalates", steps: []step{{0, 12, "", OffendBlocked, 10 * m}, {69 * m, 12, "", OffendBlocked, 20 * m}},
+		{name: "control: a ban within MaxFor of the last escalates", steps: []step{{0, false, 12, "", OffendBlocked, 10 * m}, {69 * m, false, 12, "", OffendBlocked, 20 * m}},
 			banned: true, events: "source_blocked source_block_ended source_blocked"},
-		{name: "points within the window add up", steps: []step{{0, 8, "", OffendCounted, 0}, {9 * m, 4, "", OffendBlocked, 10 * m}}, banned: true, events: "source_blocked"},
-		{name: "points two windows old are gone", steps: []step{{0, 8, "", OffendCounted, 0}, {20 * m, 8, "", OffendCounted, 0}}},
-		{name: "control: points two windows old take nothing away", steps: []step{{0, 12, "", OffendBlocked, 10 * m}, {10 * m, 8, "", OffendCounted, 0},
-			{25 * m, 12, "", OffendBlocked, 20 * m}}, banned: true, events: "source_blocked source_block_ended source_blocked"},
-		{name: "the last window's points fade", steps: []step{{0, 8, "", OffendCounted, 0}, {16 * m, 8, "", OffendCounted, 0}}},
-		{name: "control: half faded", steps: []step{{0, 8, "", OffendCounted, 0}, {15 * m, 8, "", OffendBlocked, 10 * m}}, banned: true, events: "source_blocked"},
+		{name: "points within the window add up", steps: []step{{0, false, 8, "", OffendCounted, 0}, {9 * m, false, 4, "", OffendBlocked, 10 * m}}, banned: true, events: "source_blocked"},
+		{name: "points two windows old are gone", steps: []step{{0, false, 8, "", OffendCounted, 0}, {20 * m, false, 8, "", OffendCounted, 0}}},
+		{name: "control: points two windows old take nothing away", steps: []step{{0, false, 12, "", OffendBlocked, 10 * m}, {10 * m, false, 8, "", OffendCounted, 0},
+			{25 * m, false, 12, "", OffendBlocked, 20 * m}}, banned: true, events: "source_blocked source_block_ended source_blocked"},
+		{name: "the last window's points fade", steps: []step{{0, false, 8, "", OffendCounted, 0}, {16 * m, false, 8, "", OffendCounted, 0}}},
+		{name: "control: half faded", steps: []step{{0, false, 8, "", OffendCounted, 0}, {15 * m, false, 8, "", OffendBlocked, 10 * m}}, banned: true, events: "source_blocked"},
 		{name: "monitor never bans", mod: func(c *Config) { c.AutoBlock.Mode = AutoBlockMonitor },
-			steps:  []step{{0, 12, "", OffendWouldBlock, 10 * m}, {5 * m, 12, "", OffendAlreadyBlocked, 0}, {5 * m, 12, "", OffendWouldBlock, 20 * m}},
+			steps:  []step{{0, false, 12, "", OffendWouldBlock, 10 * m}, {5 * m, false, 12, "", OffendAlreadyBlocked, 0}, {5 * m, false, 12, "", OffendWouldBlock, 20 * m}},
 			events: "source_would_block source_would_block"},
 		{name: "a full table bans no more, and keeps the points", mod: func(c *Config) { c.AutoBlock.Max = 100 }, fill: 100,
-			steps:  []step{{0, 12, "", OffendTableFull, 0}, {10 * m, 1, "", OffendBlocked, 10 * m}},
+			steps:  []step{{0, false, 12, "", OffendTableFull, 0}, {10 * m, false, 1, "", OffendBlocked, 10 * m}},
 			banned: true, events: "auto_block_full source_blocked"},
 		{name: "a full table", mod: func(c *Config) { c.AutoBlock.Max = 100 }, fill: 100,
-			steps:  []step{{0, 12, "", OffendTableFull, 0}, {10 * time.Second, 12, "", OffendTableFull, 0}, {9 * m, 12, "", OffendTableFull, 0}},
+			steps:  []step{{0, false, 12, "", OffendTableFull, 0}, {10 * time.Second, false, 12, "", OffendTableFull, 0}, {9 * m, false, 12, "", OffendTableFull, 0}},
 			events: "auto_block_full auto_block_full"},
 		{name: "a full table and its bans, past the repeat offenders' share of the event queue", mod: func(c *Config) { c.AutoBlock.Max = 300 }, fill: 300,
-			burst: true, steps: []step{{0, 12, "", OffendTableFull, 0}}, events: "auto_block_full auto_block_unreported"},
+			burst: true, steps: []step{{0, false, 12, "", OffendTableFull, 0}}, events: "auto_block_full auto_block_unreported"},
 		{name: "an IPv6 /48 holds a sixteenth of the bans", client: "2001:db8:7::9", mod: func(c *Config) { c.AutoBlock.Max = 160 }, fill: 10,
 			fillAt: in48,
-			steps:  []step{{0, 12, "", OffendTableFull, 0}}, events: "auto_block_full"},
+			steps:  []step{{0, false, 12, "", OffendTableFull, 0}}, events: "auto_block_full"},
 		{name: "control: an IPv6 /48 below its share", client: "2001:db8:7::9", mod: func(c *Config) { c.AutoBlock.Max = 160 }, fill: 9,
 			fillAt: in48,
-			steps:  []step{{0, 12, "", OffendBlocked, 10 * m}}, banned: true, events: "source_blocked"},
+			steps:  []step{{0, false, 12, "", OffendBlocked, 10 * m}}, banned: true, events: "source_blocked"},
 		{name: "control: another network, with one network's share banned", client: "2001:db8:8::9", mod: func(c *Config) { c.AutoBlock.Max = 160 }, fill: 10,
 			fillAt: in48,
-			steps:  []step{{0, 12, "", OffendBlocked, 10 * m}}, banned: true, events: "source_blocked"},
+			steps:  []step{{0, false, 12, "", OffendBlocked, 10 * m}}, banned: true, events: "source_blocked"},
 		{name: "an IPv4 /24 holds a sixteenth of the bans", mod: func(c *Config) { c.AutoBlock.Max = 100 }, fill: 6,
 			fillAt: func(i int) netip.Addr { return netip.AddrFrom4([4]byte{203, 0, 113, byte(100 + i)}) },
-			steps:  []step{{0, 12, "", OffendTableFull, 0}, {10 * m, 1, "", OffendBlocked, 10 * m}}, banned: true, events: "auto_block_full source_blocked"},
-		{name: "a known source needs twice the points", known: true, steps: []step{{0, 12, "", OffendCounted, 0}, {m, 11, "", OffendCounted, 0}}},
-		{name: "control: a known source's twice the points", known: true, steps: []step{{0, 12, "", OffendCounted, 0}, {m, 12, "", OffendBlocked, 10 * m}},
+			steps:  []step{{0, false, 12, "", OffendTableFull, 0}, {10 * m, false, 1, "", OffendBlocked, 10 * m}}, banned: true, events: "auto_block_full source_blocked"},
+		{name: "a known source needs twice the points", known: true, steps: []step{{0, false, 12, "", OffendCounted, 0}, {m, false, 11, "", OffendCounted, 0}}},
+		{name: "control: a known source's twice the points", known: true, steps: []step{{0, false, 12, "", OffendCounted, 0}, {m, false, 12, "", OffendBlocked, 10 * m}},
 			banned: true, events: "source_blocked"},
-		{name: "offences of no points", steps: []step{{0, 0, "", OffendIgnored, 0}, {0, -12, "", OffendIgnored, 0}}},
-		{name: "auto-block off", mod: func(c *Config) { c.AutoBlock.Mode = AutoBlockOff }, steps: []step{{0, 12, "", OffendIgnored, 0}}},
+		{name: "a ban takes the standing, and one answer after it does not give it back", known: true,
+			steps:  []step{{0, false, 12, "", OffendCounted, 0}, {0, false, 12, "", OffendBlocked, 10 * m}, {10*m + time.Second, true, 12, "", OffendBlocked, 20 * m}},
+			banned: true, events: "source_blocked source_block_ended source_blocked"},
+		{name: "offences of no points", steps: []step{{0, false, 0, "", OffendIgnored, 0}, {0, false, -12, "", OffendIgnored, 0}}},
+		{name: "auto-block off", mod: func(c *Config) { c.AutoBlock.Mode = AutoBlockOff }, steps: []step{{0, false, 12, "", OffendIgnored, 0}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1623,6 +1627,7 @@ func TestRepeatOffenders(t *testing.T) {
 			if tt.known {
 				s.sources.do(SourceKey(client), now.UnixNano(), func(src *source) {
 					src.knownAt, src.knownUntil = now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano()
+					src.good, src.goodFirst = uint16(s.cfg.KnownAfter), now.Add(-time.Hour).UnixNano() // the answers that earned it
 				})
 			}
 			blocked := tt.fill
@@ -1641,6 +1646,9 @@ func TestRepeatOffenders(t *testing.T) {
 			var would, full uint64
 			for i, st := range tt.steps {
 				now = now.Add(st.after)
+				if st.answer {
+					s.Done(s.Admit(req("GET", "/", "User-Agent", "Mozilla/5.0", "Accept", "text/html"), client), 200, true)
+				}
 				r := s.Offend(client, st.points, cmp.Or(st.sig, "crs-942100"))
 				if r.Outcome != st.want || r.TTL != st.ttl {
 					t.Fatalf("step %d: %v for %s, want %v for %s (%+v)", i, r.Outcome, r.TTL, st.want, st.ttl, r)

@@ -476,7 +476,7 @@ func (s *Shield) Offend(client netip.Addr, points int, sig string) OffendResult 
 				return
 			}
 			r.Outcome = OffendBlocked
-			src.bannedUntil, src.knownUntil, src.earned = max(src.bannedUntil, until), 0, earned{}
+			src.bannedUntil, src.knownUntil, src.earned, src.good, src.goodFirst = max(src.bannedUntil, until), 0, earned{}, 0, 0
 		}
 		sigIDs = append(sigIDs, o.sigs[:o.nsigs]...)
 		o.level, o.until, o.keep = min(level+1, 64), until, until+maxFor
