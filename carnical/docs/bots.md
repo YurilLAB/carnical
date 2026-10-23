@@ -162,7 +162,9 @@ the site's refusals, and a refused request earns its address no standing.
 For `fake`, a request that claims to be Googlebot (or GoogleOther, Google-CloudVertexBot), AdsBot,
 Mediapartners-Google, Bingbot, Applebot, YandexBot, Baiduspider, PetalBot, SeznamBot, Naver's Yeti,
 Amazonbot or AmazonAdBot is checked as each engine asks sites to. The address's DNS name must be in
-the engine's domains, and that name must resolve back to the address.
+the engine's domains, and that name must resolve back to the address. The claim is checked whatever
+else the user agent names, such as an AI crawler or a search engine with no DNS check; one that names
+several engines is checked against one of them, which only that operator's addresses pass.
 
 | Engine | Domains |
 | --- | --- |

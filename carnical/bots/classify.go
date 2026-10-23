@@ -10,6 +10,7 @@
 package bots
 
 import (
+	"cmp"
 	"net/http"
 	"slices"
 	"strconv"
@@ -243,14 +244,21 @@ func Classify(r *http.Request, hello Hello) (alert.Client, Engine) {
 		return alert.ClientBot, 0
 	}
 	long := len(ua) > maxUA
-	best, engine := 0, Engine(0)
+	// The engine is the one of the kind that wins, or else the first a crawler in the user agent names: a claim to be a
+	// crawler that DNS can check is checked whatever else the user agent says. Only that operator's own addresses pass the
+	// check, so which of several claims is checked does not matter, only that one is.
+	best, engine, claimed := 0, Engine(0), Engine(0)
 	it := known.IterOverlapping(ua)
 	for m := it.Next(); m != nil; m = it.Next() {
 		s := &signatures[m.Pattern()]
 		if r := rankOf(s.client); best == 0 || r < best {
 			best, engine = r, s.engine
 		}
+		if claimed == 0 {
+			claimed = s.engine
+		}
 	}
+	engine = cmp.Or(engine, claimed)
 	browser := strings.HasPrefix(ua, "Mozilla/5.0 (") || strings.HasPrefix(ua, "Opera/")
 	switch {
 	case best != 0 && rank[best-1] != alert.ClientPerson:
