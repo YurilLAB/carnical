@@ -155,8 +155,10 @@ func (a *asm) program() ([]unix.SockFilter, error) {
 }
 
 // buildFilter assembles the filter. Order matters only for speed: the calls a running service makes all the time are
-// not in the list, so most calls cost one pass over the list and are allowed.
-func buildFilter(allowExec bool) ([]unix.SockFilter, error) {
+// not in the list, so most calls cost one pass over the list and are allowed. noListen refuses listen(2), for a process
+// that may listen on no port: Landlock checks bind(2), and listen(2) on a socket that was never bound takes a port the
+// kernel picks without it.
+func buildFilter(allowExec, noListen bool) ([]unix.SockFilter, error) {
 	a := newAsm()
 
 	// The architecture must be the one the numbers below are for, or a call made through a different entry
@@ -231,6 +233,11 @@ func buildFilter(allowExec bool) ([]unix.SockFilter, error) {
 	a.label("after-socket")
 	a.load(offNr)
 
+	if noListen {
+		a.jeq(unix.SYS_LISTEN, "no-listen", "after-listen")
+		a.label("after-listen")
+	}
+
 	// sendto, sendmsg and sendmmsg with MSG_FASTOPEN: on a new TCP socket that connects, sending the SYN itself, without
 	// the connect(2) that Landlock's port rule is checked on. Go never sets the flag. Refuse it with the error a kernel
 	// with client Fast Open switched off gives.
@@ -251,6 +258,8 @@ func buildFilter(allowExec bool) ([]unix.SockFilter, error) {
 
 	a.label("no-clone3")
 	a.ret(seccompRetErrnoBase | uint32(unix.ENOSYS))
+	a.label("no-listen")
+	a.ret(seccompRetErrnoBase | uint32(unix.EACCES))
 	a.label("no-fastopen")
 	a.ret(seccompRetErrnoBase | uint32(unix.EOPNOTSUPP))
 	a.label("no-proto")
@@ -265,8 +274,8 @@ func buildFilter(allowExec bool) ([]unix.SockFilter, error) {
 // applySeccomp installs the filter on every thread (SECCOMP_FILTER_FLAG_TSYNC), which is why the call is made once
 // and from here: a filter loaded without TSYNC covers only the calling thread, and the goroutines that matter would
 // run on the others.
-func applySeccomp(allowExec bool) error {
-	prog, err := buildFilter(allowExec)
+func applySeccomp(allowExec, noListen bool) error {
+	prog, err := buildFilter(allowExec, noListen)
 	if err != nil {
 		return err
 	}

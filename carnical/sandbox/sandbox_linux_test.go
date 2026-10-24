@@ -72,11 +72,15 @@ func seccompData(arch uint32, nr uint32, args ...uint64) [64]byte {
 }
 
 func TestTheFilterDecidesEachCallAsIntended(t *testing.T) {
-	block, err := buildFilter(false)
+	block, err := buildFilter(false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	allowExec, err := buildFilter(true)
+	allowExec, err := buildFilter(true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	noListen, err := buildFilter(false, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,6 +90,7 @@ func TestTheFilterDecidesEachCallAsIntended(t *testing.T) {
 		noProto    = seccompRetErrnoBase | uint32(unix.EPROTONOSUPPORT)
 		noFastOpen = seccompRetErrnoBase | uint32(unix.EOPNOTSUPP)
 		noClone3   = seccompRetErrnoBase | uint32(unix.ENOSYS)
+		refused    = seccompRetErrnoBase | uint32(unix.EACCES)
 	)
 	tests := []struct {
 		name string
@@ -151,6 +156,11 @@ func TestTheFilterDecidesEachCallAsIntended(t *testing.T) {
 		{"sendmmsg with TCP Fast Open", block, seccompData(auditArch, unix.SYS_SENDMMSG, 3, 0, 1, unix.MSG_FASTOPEN), noFastOpen},
 		{"sendmmsg with ordinary flags", block, seccompData(auditArch, unix.SYS_SENDMMSG, 3, 0, 1, 0), allow},
 		{"recvfrom with the same bit set", block, seccompData(auditArch, unix.SYS_RECVFROM, 3, 0, 1, unix.MSG_FASTOPEN), allow},
+		// listen(2) on a socket never bound takes a port the kernel picks, which Landlock does not check.
+		{"listen when no port may be listened on", noListen, seccompData(auditArch, unix.SYS_LISTEN, 3, 16), refused},
+		{"listen when ports may be listened on", block, seccompData(auditArch, unix.SYS_LISTEN, 3, 16), allow},
+		{"execve when no port may be listened on", noListen, seccompData(auditArch, unix.SYS_EXECVE), kill},
+		{"socket when no port may be listened on", noListen, seccompData(auditArch, unix.SYS_SOCKET, unix.AF_INET, unix.SOCK_STREAM, 0), allow},
 		{"socketpair: UNIX", block, seccompData(auditArch, unix.SYS_SOCKETPAIR, unix.AF_UNIX, unix.SOCK_STREAM, 0), allow},
 		{"socketpair: INET", block, seccompData(auditArch, unix.SYS_SOCKETPAIR, unix.AF_INET, unix.SOCK_STREAM, 0), kill},
 		{"a different architecture", block, seccompData(0x40000003, unix.SYS_READ), kill},
@@ -218,7 +228,7 @@ func tsyncChild(t *testing.T) {
 	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
 		t.Skipf("no_new_privs: %v", err)
 	}
-	err := applySeccomp(false)
+	err := applySeccomp(false, false)
 	if err == nil || !strings.Contains(err.Error(), "could not take the filter") {
 		t.Fatalf("applySeccomp returned %v, want the thread that could not take the filter", err)
 	}
@@ -238,7 +248,7 @@ func tsyncChild(t *testing.T) {
 }
 
 func TestEveryJumpFitsAndNoneGoesBackwards(t *testing.T) {
-	prog, err := buildFilter(false)
+	prog, err := buildFilter(false, false)
 	if err != nil {
 		t.Fatal(err)
 	}

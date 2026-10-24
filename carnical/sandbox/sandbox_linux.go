@@ -75,7 +75,7 @@ func Apply(p Policy) (Report, error) {
 
 	// 4. seccomp, last: after it, calls the filter denies end the process, including the ones this function would make.
 	if skip("seccomp") {
-	} else if err := applySeccomp(p.AllowExec); err != nil {
+	} else if err := applySeccomp(p.AllowExec, p.BindTCP != nil && len(p.BindTCP) == 0); err != nil {
 		if p.Require {
 			return fail("seccomp", err)
 		}

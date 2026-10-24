@@ -31,6 +31,9 @@ type Policy struct {
 	ReadWrite []string
 	// BindTCP and ConnectTCP are the TCP ports the process may listen on and connect to. A nil list means no
 	// restriction on that direction; an empty, non-nil list means none at all. Needs Landlock ABI 4 (Linux 6.7).
+	// Landlock checks bind(2), and listen(2) on a socket that was never bound takes a port the kernel picks without
+	// it: with an empty BindTCP the system-call filter refuses listen(2) on every socket, so open the listeners before
+	// Apply and leave the list empty. A non-empty list leaves that way open.
 	BindTCP, ConnectTCP []uint16
 	// AllowExec lets the process start programs. The proxy never does, so the default is that it cannot.
 	AllowExec bool
