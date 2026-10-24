@@ -96,7 +96,7 @@ func OpenFileAudit(path string, now func() time.Time) (*FileAudit, error) {
 	if !isWindows() && st.Mode().Perm()&0o077 != 0 {
 		return nil, fmt.Errorf("control: the audit log %s is accessible to other users (mode %o); it must be 0600", path, st.Mode().Perm())
 	}
-	rep, err := verifyChain(f)
+	rep, err := verifyChain(f, 0)
 	a := &FileAudit{f: f, path: path, now: now, seq: rep.HeadSeq, prev: rep.HeadHash, size: rep.goodBytes, write: f.Write, sync: f.Sync}
 	if rep.HeadHash == "" {
 		a.prev = zeroHash
@@ -271,30 +271,40 @@ type ChainReport struct {
 	HeadHash string // hex SHA-256 of the last good line; empty for an empty log
 
 	goodBytes int64
+	markHash  string // the hash of the line verifyChain was asked to mark, once it is read
 }
 
 // VerifyChain reads a log and reports the first line that does not belong. A line that was edited is reported at the
 // line after it, because that is the first line whose "prev" no longer matches; a line that is missing, inserted or
 // moved is reported at the first line out of place. The edit of the very last line cannot be seen by the chain alone:
 // use VerifyChainHead for that.
-func VerifyChain(r io.Reader) (ChainReport, error) { return verifyChain(r) }
+func VerifyChain(r io.Reader) (ChainReport, error) { return verifyChain(r, 0) }
 
-// VerifyChainHead is VerifyChain plus a check that the log ends where a head recorded earlier (Head) says: the same
-// sequence number and hash. It finds a cut-off tail, and an edited last line.
+// VerifyChainHead is VerifyChain plus a check that the log still holds a head recorded earlier (Head): its line with
+// the same sequence number and hash. It finds a tail cut off below that line, and an edit of it. A live log goes on
+// after the recorded head; for a log that has been closed for good, compare the report's HeadSeq with the head
+// recorded at its close to find lines added since.
 func VerifyChainHead(r io.Reader, seq uint64, hash string) (ChainReport, error) {
-	rep, err := verifyChain(r)
+	rep, err := verifyChain(r, seq)
 	if err != nil {
 		return rep, err
 	}
-	if rep.HeadSeq != seq || rep.HeadHash != hash {
-		return rep, &ChainError{Line: rep.Lines, Reason: fmt.Sprintf("the log ends at sequence %d but the recorded head is sequence %d", rep.HeadSeq, seq)}
+	if rep.HeadSeq < seq {
+		return rep, &ChainError{Line: rep.Lines, Reason: fmt.Sprintf("the log ends at sequence %d, before the recorded head at sequence %d", rep.HeadSeq, seq)}
+	}
+	if rep.markHash != hash {
+		return rep, &ChainError{Line: int(seq), Reason: fmt.Sprintf("line %d is not the recorded head", seq)}
 	}
 	return rep, nil
 }
 
-func verifyChain(r io.Reader) (ChainReport, error) {
+// verifyChain is VerifyChain, and also keeps the hash of line mark (zeroHash for line 0, before the first).
+func verifyChain(r io.Reader, mark uint64) (ChainReport, error) {
 	br := bufio.NewReaderSize(r, 32<<10)
 	rep := ChainReport{}
+	if mark == 0 {
+		rep.markHash = zeroHash
+	}
 	prev := zeroHash
 	var offset int64
 	for n := 1; ; n++ {
@@ -318,6 +328,9 @@ func verifyChain(r io.Reader) (ChainReport, error) {
 		sum := sha256.Sum256(raw)
 		prev = hex.EncodeToString(sum[:])
 		rep.Lines, rep.HeadSeq, rep.HeadHash = n, uint64(n), prev
+		if uint64(n) == mark {
+			rep.markHash = prev
+		}
 		offset += int64(len(line))
 		rep.goodBytes = offset
 	}

@@ -230,7 +230,6 @@ func TestChainTamperingIsFound(t *testing.T) {
 		for name, log := range map[string]string{
 			"the last line deleted":        join(remove(5)),
 			"the last two lines gone":      join(lines[:4]),
-			"a forged line appended":       join(append(append([]string(nil), lines...), forge(t, lines[5], 7))),
 			"the last line edited":         edit(5, `"outcome":"ok"`, `"outcome":"no"`),
 			"the whole log rewritten":      join(rechain(t, append(append([]string(nil), lines[:2]...), strings.Replace(lines[2], `"user-1"`, `"user-9"`, 1), lines[3], lines[4], lines[5]))),
 			"the log emptied":              "",
@@ -245,6 +244,22 @@ func TestChainTamperingIsFound(t *testing.T) {
 		}
 		if _, err := VerifyChainHead(bytes.NewReader(good), seq, head); err != nil {
 			t.Fatalf("the untouched log with its head: %v", err)
+		}
+		// A live log goes on after a head recorded earlier. A log closed for good does not, so a line added after its close
+		// shows in where the report says the log ends.
+		sum := sha256.Sum256([]byte(lines[3]))
+		if rep, err := VerifyChainHead(bytes.NewReader(good), 4, hex.EncodeToString(sum[:])); err != nil || rep.HeadSeq != 6 {
+			t.Fatalf("the untouched log with a head recorded two lines earlier: %+v %v", rep, err)
+		}
+		if _, err := VerifyChainHead(strings.NewReader(edit(3, `"outcome":"ok"`, `"outcome":"no"`)), 4, hex.EncodeToString(sum[:])); err == nil {
+			t.Fatal("the line of an earlier head edited: not noticed")
+		}
+		appended := join(append(append([]string(nil), lines...), forge(t, lines[5], 7)))
+		if rep, err := VerifyChainHead(strings.NewReader(appended), seq, head); err != nil || rep.HeadSeq != 7 {
+			t.Fatalf("a line appended after the head recorded at the close: %+v %v", rep, err)
+		}
+		if _, err := VerifyChainHead(strings.NewReader(""), 0, zeroHash); err != nil {
+			t.Fatalf("an empty log with the head of an empty log: %v", err)
 		}
 	})
 }

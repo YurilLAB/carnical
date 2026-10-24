@@ -438,8 +438,11 @@ lists.
   unfinished last line (a crash during a write, never acknowledged) is cut off and reported by `Repaired()`.
 * **What a chain cannot do.** It cannot show that the last lines were cut off, or that the last line was edited, and it
   cannot stop someone who can rewrite the whole file and recompute it. For that, copy `FileAudit.Head()` (the sequence number
-  and hash of the last line) somewhere the log's own user cannot write, regularly, and check with `VerifyChainHead`. The tests
-  show each of these cases: the chain alone misses them and the recorded head finds them.
+  and hash of the last line) somewhere the log's own user cannot write, regularly, and check with `VerifyChainHead`, which
+  requires the log to still hold that line: everything up to the recorded head is covered, and the lines written since are
+  not, until a later head is recorded. For a log closed for good, also compare the report's `HeadSeq` with the head recorded
+  at its close, to find lines added after it. The tests show each of these cases: the chain alone misses them and the
+  recorded head finds them.
 
 ## 10. Key rotation
 
