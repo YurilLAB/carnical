@@ -272,6 +272,7 @@ type ChainReport struct {
 
 	goodBytes int64
 	markHash  string // the hash of the line verifyChain was asked to mark, once it is read
+	markLine  int    // and its line number
 }
 
 // VerifyChain reads a log and reports the first line that does not belong. A line that was edited is reported at the
@@ -293,7 +294,7 @@ func VerifyChainHead(r io.Reader, seq uint64, hash string) (ChainReport, error) 
 		return rep, &ChainError{Line: rep.Lines, Reason: fmt.Sprintf("the log ends at sequence %d, before the recorded head at sequence %d", rep.HeadSeq, seq)}
 	}
 	if rep.markHash != hash {
-		return rep, &ChainError{Line: int(seq), Reason: fmt.Sprintf("line %d is not the recorded head", seq)}
+		return rep, &ChainError{Line: rep.markLine, Reason: fmt.Sprintf("line %d is not the recorded head", seq)}
 	}
 	return rep, nil
 }
@@ -329,7 +330,7 @@ func verifyChain(r io.Reader, mark uint64) (ChainReport, error) {
 		prev = hex.EncodeToString(sum[:])
 		rep.Lines, rep.HeadSeq, rep.HeadHash = n, uint64(n), prev
 		if uint64(n) == mark {
-			rep.markHash = prev
+			rep.markHash, rep.markLine = prev, n
 		}
 		offset += int64(len(line))
 		rep.goodBytes = offset
