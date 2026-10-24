@@ -59,13 +59,16 @@ func parseThreadStatus(data []byte) threadStatus {
 	return t
 }
 
-// asksToConfine reports whether a command line (NUL-separated, as /proc shows it) turns -confine on. Flags are read as the Go
-// flag package reads them: -confine or --confine, with an optional =value, and the last one given wins.
-func asksToConfine(cmdline []byte) bool {
+// asksToConfine reports whether a command line (NUL-separated, as /proc shows it) turns -confine on.
+func asksToConfine(cmdline []byte) bool { return boolFlag(cmdline, "confine") }
+
+// boolFlag reports whether a command line turns a boolean flag on. Flags are read as the Go flag package reads them:
+// -name or --name, with an optional =value, and the last one given wins.
+func boolFlag(cmdline []byte, flag string) bool {
 	on := false
 	for _, arg := range strings.Split(string(cmdline), "\x00") {
 		name, value, hasValue := strings.Cut(strings.TrimPrefix(strings.TrimPrefix(arg, "-"), "-"), "=")
-		if !strings.HasPrefix(arg, "-") || name != "confine" {
+		if !strings.HasPrefix(arg, "-") || name != flag {
 			continue
 		}
 		if !hasValue {
@@ -111,6 +114,7 @@ func Confined(src Source, spec EdgeSpec) audit.Check {
 				return audit.Outcome{SkipReason: "the edge is not running"}
 			}
 			var out audit.Outcome
+			var notes []string
 			for _, p := range edge {
 				// The unit's own NoNewPrivileges and system call filter put the same marks on every thread, so the threads
 				// alone do not show that the edge confined itself: its command line has to ask for it.
@@ -120,6 +124,9 @@ func Confined(src Source, spec EdgeSpec) audit.Check {
 					out.Problems = append(out.Problems, fmt.Sprintf("pid %d: its command line cannot be read: %v", p.PID, err))
 				case !asksToConfine(cmdline):
 					out.Problems = append(out.Problems, fmt.Sprintf("pid %d was started without -confine, so it does not confine itself", p.PID))
+				case boolFlag(cmdline, "confine-best-effort"):
+					// Its threads look the same whichever layers it applied; its own log says which it left out.
+					notes = append(notes, fmt.Sprintf("pid %d runs with -confine-best-effort, so a layer its kernel lacks was left out without stopping it; its \"confined\" log line says which", p.PID))
 				}
 				tasks, _ := src.Glob("/proc/" + strconv.Itoa(p.PID) + "/task/[0-9]*")
 				if len(tasks) == 0 {
@@ -149,6 +156,7 @@ func Confined(src Source, spec EdgeSpec) audit.Check {
 				}
 			}
 			sort.Strings(out.Problems)
+			out.Note = strings.Join(notes, "; ")
 			return out
 		},
 	}

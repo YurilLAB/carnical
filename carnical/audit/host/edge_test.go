@@ -51,16 +51,20 @@ func TestConfined(t *testing.T) {
 		change   func(*fake)
 		want     audit.Status
 		contains string
+		note     string
 	}{
-		{"every thread confined", all, nil, audit.Pass, ""},
-		{"one thread without the filter", map[string]string{"100": good, "101": status(990, "1", "0", zero, zero)}, nil, audit.Fail, "thread 101 has no seccomp filter"},
-		{"one thread that can gain privileges", map[string]string{"100": good, "101": status(990, "0", "2", zero, zero)}, nil, audit.Fail, "thread 101 can gain new privileges"},
-		{"a capability left in the bounding set", map[string]string{"100": status(990, "1", "2", zero, "0000000000000400")}, nil, audit.Fail, "holds capabilities"},
-		{"running as root", map[string]string{"100": status(0, "1", "2", zero, zero)}, nil, audit.Fail, "runs as uid 0, not carnical-edge"},
+		{"every thread confined", all, nil, audit.Pass, "", ""},
+		{"one thread without the filter", map[string]string{"100": good, "101": status(990, "1", "0", zero, zero)}, nil, audit.Fail, "thread 101 has no seccomp filter", ""},
+		{"one thread that can gain privileges", map[string]string{"100": good, "101": status(990, "0", "2", zero, zero)}, nil, audit.Fail, "thread 101 can gain new privileges", ""},
+		{"a capability left in the bounding set", map[string]string{"100": status(990, "1", "2", zero, "0000000000000400")}, nil, audit.Fail, "holds capabilities", ""},
+		{"running as root", map[string]string{"100": status(0, "1", "2", zero, zero)}, nil, audit.Fail, "runs as uid 0, not carnical-edge", ""},
 		// The unit's NoNewPrivileges and system call filter mark every thread whether or not the edge confined itself.
-		{"started without -confine", all, cmdline("/usr/local/bin/carnical\x00-systemd-socket\x00"), audit.Fail, "pid 100 was started without -confine"},
-		{"-confine turned off by a later flag", all, cmdline(edgeCmdline + "-confine=false\x00"), audit.Fail, "started without -confine"},
-		{"the command line cannot be read", all, func(f *fake) { delete(f.files, "/proc/100/cmdline") }, audit.Fail, "its command line cannot be read"},
+		{"started without -confine", all, cmdline("/usr/local/bin/carnical\x00-systemd-socket\x00"), audit.Fail, "pid 100 was started without -confine", ""},
+		{"-confine turned off by a later flag", all, cmdline(edgeCmdline + "-confine=false\x00"), audit.Fail, "started without -confine", ""},
+		{"the command line cannot be read", all, func(f *fake) { delete(f.files, "/proc/100/cmdline") }, audit.Fail, "its command line cannot be read", ""},
+		// The threads look the same whichever layers a best-effort edge applied, so the result says it could not tell.
+		{"best effort", all, cmdline(edgeCmdline + "-confine-best-effort\x00"), audit.Pass, "", "pid 100 runs with -confine-best-effort"},
+		{"best effort turned off by a later flag", all, cmdline(edgeCmdline + "-confine-best-effort\x00-confine-best-effort=false\x00"), audit.Pass, "", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -71,6 +75,9 @@ func TestConfined(t *testing.T) {
 			r := run(Confined(m, DefaultEdge))
 			if r.Status != tt.want || (tt.contains != "" && !strings.Contains(strings.Join(r.Problems, "\n"), tt.contains)) {
 				t.Fatalf("%+v", r)
+			}
+			if !strings.Contains(r.Note, tt.note) || tt.note == "" && tt.want == audit.Pass && r.Note != "" {
+				t.Fatalf("note %q, want %q", r.Note, tt.note)
 			}
 			if tt.want == audit.Pass && r.Checked != 4 {
 				t.Fatalf("%d cases, want the command line and three threads", r.Checked)
