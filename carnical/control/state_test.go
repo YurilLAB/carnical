@@ -570,6 +570,16 @@ func TestCredentialBackoffNeverLocksOutTheRealCaller(t *testing.T) {
 			t.Fatalf("the attacker's answers were %v, want %v", attacker, want)
 		}
 	}
+	// the failures below the threshold and the one that starts the wait are audited, not each one during it
+	lines := 0
+	for _, e := range h.audit.all() {
+		if e.Credential == "ui-a" && e.Outcome == "auth_failed" {
+			lines++
+		}
+	}
+	if lines != 3 {
+		t.Fatalf("%d audit lines for the credential's failures, want 3", lines)
+	}
 	// the real caller, from its own address, still gets in
 	if w := h.do(reqOpts{target: status}); w.Code != 200 {
 		t.Fatalf("the real caller was locked out: %d %s", w.Code, w.Body.String())

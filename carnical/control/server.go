@@ -416,11 +416,16 @@ func (s *Server) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 		s.stats.authFailures.Add(1)
 		s.fails.fail(srcKey, now)
 		var credWait time.Duration
+		quiet := false
 		if ar.claimed != "" {
+			// A failure for a credential id that is already waiting is not audited: the one that started the wait was.
+			quiet = s.fails.wait("cred:"+ar.claimed, now) > 0
 			s.fails.fail("cred:"+ar.claimed, now)
 			credWait = s.fails.wait("cred:"+ar.claimed, now)
 		}
-		s.auditFailure(rid, ar.claimed, src, ar.reason, now, "auth_failed")
+		if !quiet {
+			s.auditFailure(rid, ar.claimed, src, ar.reason, now, "auth_failed")
+		}
 		if credWait > 0 {
 			writeError(w, rid, &apiError{status: http.StatusTooManyRequests, code: "too_many_failures", msg: "too many failed attempts; wait before trying again", retry: ceilSeconds(credWait)})
 			return
