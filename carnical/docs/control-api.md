@@ -332,7 +332,7 @@ from that.
 | `POST /v1/tenants/{tenant}/publish` | publish | `Idempotency-Key` | body `{"revision": N}`, N must be the current revision (409 `revision_not_current`); calls the publisher; returns `{"sequence", "revision"}`. The same key with the same body returns the first answer and `Idempotent-Replay: true`; the same key with another body is 422; an unfinished one is 409 `in_progress`. Keys belong to one credential and tenant; unfinished claims are retained until completion or failure, and successful answers last 24 hours from completion (configurable) |
 | `GET /v1/tenants/{tenant}/hosts` | read | | each hostname with its state (`pending` or `verified`), whether it is routable, and for a pending one the DNS challenge |
 | `POST /v1/tenants/{tenant}/hosts` | write | | body `{"hostname": "..."}`; lower-cased; a public name only (no address, no wildcard, no port, no internal suffix). 201 with a challenge: a TXT record named `_carnical-challenge.<hostname>` with the value `carnical-verify=<32 hex>`. The same name again returns the same challenge |
-| `POST /v1/tenants/{tenant}/hosts/{hostname}:verify` | write | | asks the `HostVerifier`; verified only if it says yes; at most one check per hostname per 10 seconds (429 `too_soon`). A pending claim does not stop another tenant claiming the same name; the first to prove it holds it, and the other's later check is refused |
+| `POST /v1/tenants/{tenant}/hosts/{hostname}:verify` | write | | asks the `HostVerifier`; verified only if it says yes; at most one check of a hostname per tenant per 10 seconds (429 `too_soon`), so that another tenant checking the same name cannot hold back the owner's check. A pending claim does not stop another tenant claiming the same name; the first to prove it holds it, and the other's later check is refused |
 | `GET /v1/tenants/{tenant}/status` | read | | health, last publish, each edge's acknowledged sequence |
 | `GET /v1/tenants/{tenant}/events` | read | | `?limit&cursor`: events newest first, in the feed's vocabulary; addresses cut to /24 and /48 (also inside the free-text fields) unless the credential has `raw-addresses` |
 | `GET /v1/tenants/{tenant}/traffic` | read | | `?limit&cursor`: one row per day |
@@ -454,7 +454,7 @@ lists.
 | **The server certificate** | Replace the files; the next connection uses it with no restart. Clients that pin should pin two keys (the current and the next) so a planned change does not need a coordinated deploy. |
 | **The client CA** | Put the new CA's certificate in the bundle next to the old, issue client certificates from it, then remove the old CA from the bundle. Removal takes effect at the next connection. |
 | **A credential's lifetime** | Every credential has a `not_after`. A credential past it is refused. Set it to the time the key is due to be replaced. |
-| **Revoking in an emergency** | `POST /v1/credentials/{id}:revoke`, or `"revoked": true` in the file, or remove the file's entry: effective on the very next request. |
+| **Revoking in an emergency** | `POST /v1/credentials/{id}:revoke`, effective on the very next request; or `"revoked": true` in the file, or remove the file's entry, effective within a second. Deleting or emptying the file revokes nothing: the last good set stays in force. |
 
 ## 11. The feed
 

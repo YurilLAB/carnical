@@ -918,8 +918,12 @@ func TestHosts(t *testing.T) {
 		if w.Code != 201 {
 			t.Fatalf("%d", w.Code)
 		}
+		// the squatter's checks do not hold back the owner's: the wait is per tenant
+		h.do(reqOpts{as: "ui-b", method: "POST", target: "/v1/tenants/" + tenantB + "/hosts/shop.example.com:verify"})
 		h.verify.result["shop.example.com"] = true
-		h.do(reqOpts{method: "POST", target: hostsT + "/shop.example.com:verify"})
+		if w := h.do(reqOpts{method: "POST", target: hostsT + "/shop.example.com:verify"}); w.Code != 200 {
+			t.Fatalf("the owner's check just after the squatter's: %d %s", w.Code, w.Body.String())
+		}
 		if owner, _ := h.hosts.routable("shop.example.com"); owner != tenantA {
 			t.Fatalf("routable for %q", owner)
 		}
