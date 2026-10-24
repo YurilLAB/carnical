@@ -5,9 +5,12 @@
 //
 // It uses three kernel features that an unprivileged process can apply to itself and that cannot be undone:
 //
-//   - no_new_privs and a non-dumpable process (no ptrace or /proc/PID/mem by a process of the same user);
+//   - no_new_privs, and a non-dumpable process (no ptrace or /proc/PID/mem by a process of the same user). The process
+//     can make itself dumpable again: that guards against the other processes of the user, not the code inside, which
+//     can read its own memory anyway; the core file size limit of zero cannot be raised;
 //   - Landlock (Linux 5.13 and later): file access limited to named directories, TCP connect and bind limited to named
-//     ports, and abstract UNIX sockets and signals limited to the process's own domain;
+//     ports, and abstract UNIX sockets and signals limited to the process's own domain. Connecting to a UNIX socket at
+//     a path is not checked (up to ABI 7), so a service listening on one is as reachable as its file permissions allow;
 //   - seccomp-BPF: the system calls an attacker needs after getting in (execve, ptrace, mount, bpf, io_uring,
 //     memfd_create, namespace creation, kernel module loading, other socket families) end the process, which also
 //     leaves a record in the audit log.
