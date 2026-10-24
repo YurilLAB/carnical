@@ -279,6 +279,14 @@ func TestAnOlderKeyListCannotBringBackARevokedKey(t *testing.T) {
 		if _, err := LoadKeySet(oldA, both, t0, store); !errors.Is(err, ErrRollback) {
 			t.Fatalf("loading an older list at start-up: %v", err)
 		}
+		// Root A's list with the number of the list accepted from root B was never accepted, so it is not the list to load.
+		sameA := signSet(t, KeySet{Seq: 10, Issued: issued, Expires: listEnds, Keys: []TrustedKey{key}, Revoked: []string{}})
+		if _, err := AcceptKeySet(sameA, both, t0, store); !errors.Is(err, ErrRollback) {
+			t.Fatalf("root A's list with the number root B used: %v", err)
+		}
+		if _, err := LoadKeySet(sameA, both, t0, store); !errors.Is(err, ErrRollback) {
+			t.Fatalf("loading root A's list with the number root B used: %v", err)
+		}
 		if ks, err := LoadKeySet(revokingB, both, t0, store); err != nil || ks.Seq != 10 {
 			t.Fatalf("loading the newest list at start-up: %v", err)
 		}

@@ -215,7 +215,8 @@ func AcceptKeySet(raw []byte, roots []ed25519.PublicKey, now time.Time, store Se
 
 // LoadKeySet is VerifyKeySet for the list an edge persisted, read again at start-up: AcceptKeySet would refuse it as
 // not newer. It refuses (ErrRollback) a list older than the newest one accepted from any pinned root, which a swapped
-// file would otherwise bring back.
+// file would otherwise bring back, and a list with that newest number from a root other than the one it was accepted
+// from: that list was never accepted, and could still trust a key the accepted one revoked.
 func LoadKeySet(raw []byte, roots []ed25519.PublicKey, now time.Time, store SeqStore) (*KeySet, error) {
 	ks, err := VerifyKeySet(raw, roots, now)
 	if err != nil {
@@ -227,6 +228,15 @@ func LoadKeySet(raw []byte, roots []ed25519.PublicKey, now time.Time, store SeqS
 	}
 	if ks.Seq < floor {
 		return nil, ErrRollback
+	}
+	if ks.Seq == floor {
+		own, err := store.Last(KeySetStream(ks.RootID))
+		if err != nil {
+			return nil, err
+		}
+		if own != ks.Seq {
+			return nil, ErrRollback
+		}
 	}
 	return ks, nil
 }
