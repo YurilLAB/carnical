@@ -391,9 +391,9 @@ rule in the RCE group):
 
 Carnical's own [local rules](input-hardening.md#local-rules) belong to the group that finds the
 same kind of attack: `sqli` 5006001, 5006002, 5006009 (XPath); `lfi` 5006006; `rfi` 5006015,
-5006016, 5006017, 5006021, 5006102; `rce` 5006003, 5006004, 5006010; `ssrf` 5006005, 5006008;
-`java` 5006007; `scanner` 5006011 to 5006014, 5006018 to 5006020, 5006101; `protocol` 5006022,
-5006023, 5006103. An exclusion keeps them away with the group's CRS rules. The states below switch
+5006016, 5006017, 5006021, 5006102; `rce` 5006003, 5006004, 5006010; `ssrf` 5006005, 5006008,
+5006025 (Base64 payloads); `java` 5006007; `xss` 5006024; `scanner` 5006011 to 5006014, 5006018 to
+5006020, 5006101; `protocol` 5006022, 5006023, 5006103. An exclusion keeps them away with the group's CRS rules. The states below switch
 the CRS rules only; `-local-rules-off` switches a local rule off for the whole site.
 
 - **on**: nothing is generated.

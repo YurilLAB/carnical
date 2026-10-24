@@ -25,12 +25,12 @@ type GroupInfo struct {
 // attack-ssti and 944 carries attack-rce, so a tag would put a Java rule in the RCE group).
 var groups = []GroupInfo{
 	{"sqli", "SQL injection", 942000, 942999, []int{5006001, 5006002, 5006009}}, // and XPath, the other query language
-	{"xss", "Cross-site scripting", 941000, 941999, nil},
+	{"xss", "Cross-site scripting", 941000, 941999, []int{5006024}},
 	{"lfi", "Reading local files", 930000, 930999, []int{5006006}},
 	{"rfi", "Including remote files", 931000, 931999, []int{5006015, 5006016, 5006017, 5006021, 5006102}},
 	{"rce", "Running commands", 932000, 932999, []int{5006003, 5006004, 5006010}},
 	{"php", "PHP code injection", 933000, 933999, nil},
-	{"ssrf", "Requests to inner addresses and other generic attacks", 934000, 934999, []int{5006005, 5006008}},
+	{"ssrf", "Requests to inner addresses and other generic attacks", 934000, 934999, []int{5006005, 5006008, 5006025}},
 	{"java", "Java and Log4j", 944000, 944999, []int{5006007}},
 	{"scanner", "Scanners and attack tools", 913000, 913999, []int{5006011, 5006012, 5006013, 5006014, 5006018, 5006019, 5006020, 5006101}},
 	{"protocol", "Malformed requests and protocol attacks", 920000, 922999, []int{5006022, 5006023, 5006103}},

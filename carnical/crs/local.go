@@ -64,6 +64,10 @@ func LocalRuleMessage(id int) string {
 		return "Forwarded host header that is not a host name"
 	case 5006023:
 		return "Unicode newline header injection (response splitting)"
+	case 5006024:
+		return "Script sink called as a method or wrapped"
+	case 5006025:
+		return "Base64-encoded attack payload"
 	case 5006101:
 		return "Console path"
 	case 5006102:

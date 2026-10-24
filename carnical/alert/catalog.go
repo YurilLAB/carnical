@@ -131,6 +131,8 @@ var localRules = map[int]Entry{
 	5006021: {"Script on another host in a URL parameter", Of(CatRFI), RiskLow},
 	5006022: {"Forwarded host header that is not a host name", Of(CatProtocol), RiskLow},
 	5006023: {"Unicode newline header injection (response splitting)", Of(CatProtocol), RiskLow},
+	5006024: {"Script sink called as a method or wrapped", Of(CatXSS), RiskLow},
+	5006025: {"Base64-encoded attack payload", Of(CatEvasion), RiskLow},
 	5006101: {"Console path", Of(CatScanner), RiskLow},
 	5006102: {"Script on another host in a body parameter", Of(CatRFI), RiskLow},
 	5006103: {"Forwarded host that is not the host asked for", Of(CatProtocol), RiskLow},

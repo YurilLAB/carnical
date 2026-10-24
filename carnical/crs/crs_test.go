@@ -3,6 +3,7 @@ package crs_test
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -316,6 +317,12 @@ func TestTheRuleSetBlocksCommonAttacksAndPassesOrdinaryTraffic(t *testing.T) {
 		"sql injection in a form":               {"POST", "/login", form, "user=admin'--&pass=x", nil, 403},
 		"script tag in the query":               {"GET", q("<script>alert(document.cookie)</script>"), "", "", nil, 403},
 		"event handler":                         {"GET", q(`"><img src=x onerror=alert(1)>`), "", "", nil, 403},
+		"script sink called as a method":        {"GET", q("alert.call(null,1)"), "", "", nil, 403},
+		"script sink wrapped in parentheses":    {"GET", q("(alert)(1)"), "", "", nil, 403},
+		"script sink via an array method":       {"GET", q("[1].map(confirm)"), "", "", nil, 403},
+		"base64 body onload":                    {"GET", "/?x=" + base64.StdEncoding.EncodeToString([]byte("<body onload=alert('x')>")), "", "", nil, 403},
+		"base64 union select":                   {"GET", "/?x=" + base64.StdEncoding.EncodeToString([]byte("1 union select user from pw")), "", "", nil, 403},
+		"base64 etc passwd":                     {"GET", "/?x=" + base64.StdEncoding.EncodeToString([]byte("img/../../../etc/passwd")), "", "", nil, 403},
 		"path traversal":                        {"GET", q("../../../../etc/passwd"), "", "", nil, 403},
 		"encoded traversal":                     {"GET", "/download?f=..%2f..%2f..%2fetc%2fpasswd", "", "", nil, 403},
 		"command injection":                     {"GET", q("; cat /etc/passwd"), "", "", nil, 403},
@@ -458,6 +465,9 @@ func TestTheRuleSetBlocksCommonAttacksAndPassesOrdinaryTraffic(t *testing.T) {
 		"static asset":                 {"GET", "/assets/app.css?v=3", "", "", nil, 200},
 		"search for ordinary words":    {"GET", q("blue widgets for sale"), "", "", nil, 200},
 		"a name with an apostrophe":    {"GET", q("O'Brien"), "", "", nil, 200},
+		"the word confirm in prose":    {"GET", q("please confirm your order (see below)"), "", "", nil, 200},
+		"a base64 token in a field":    {"GET", "/?t=" + base64.StdEncoding.EncodeToString([]byte("session=abc123 user=alice")), "", "", nil, 200},
+		"a JWT-shaped value":           {"GET", "/?jwt=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTYifQ.AbCdEf", "", "", nil, 200},
 		"plain function discussion":    {"GET", q("XPath count() and true() functions"), "", "", nil, 200},
 		"plain arithmetic":             {"GET", q("7*7=49"), "", "", nil, 200},
 		"template variable":            {"GET", q("{{customer_name}}"), "", "", nil, 200},
