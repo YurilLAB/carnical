@@ -67,7 +67,8 @@ func Apply(p Policy) (Report, error) {
 	// 3. Landlock.
 	if skip("landlock") {
 	} else if err := applyLandlock(p, &rep); err != nil {
-		if errors.Is(err, errNeedsStaticBuild) || p.Require {
+		var pe policyError
+		if errors.Is(err, errNeedsStaticBuild) || errors.As(err, &pe) || p.Require {
 			return fail("landlock", err)
 		}
 		rep.Notes = append(rep.Notes, "Landlock skipped: "+err.Error())

@@ -42,7 +42,8 @@ type Policy struct {
 	Skip []string
 	// Require makes Apply fail if any layer cannot be applied (an old kernel without Landlock, or without the port rules
 	// a port list needs) instead of applying the layers that are available and reporting which they were. Abstract-socket
-	// and signal scoping, which needs Landlock ABI 6 (Linux 6.12), is not required: without it Notes says so.
+	// and signal scoping, which needs Landlock ABI 6 (Linux 6.12), is not required: without it Notes says so. A path in
+	// ReadOnly or ReadWrite that cannot be used fails Apply either way: it is a mistake, not a missing kernel feature.
 	Require bool
 }
 

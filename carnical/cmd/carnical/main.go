@@ -524,7 +524,11 @@ func runFlags(usage, logs io.Writer, args []string, private map[string]string) e
 		if err != nil {
 			return err
 		}
-		log.Info("confined", "no_new_privs", rep.NoNewPrivs, "undumpable", rep.Undumpable, "landlock_abi", rep.LandlockABI,
+		level := slog.LevelInfo
+		if len(rep.Notes) > 0 {
+			level = slog.LevelWarn // a layer was left out: the notes say which
+		}
+		log.Log(ctx, level, "confined", "no_new_privs", rep.NoNewPrivs, "undumpable", rep.Undumpable, "landlock_abi", rep.LandlockABI,
 			"files", rep.LandlockFS, "ports", rep.LandlockNet, "scope", rep.LandlockScope, "seccomp", rep.Seccomp, "notes", rep.Notes)
 	}
 	if cs != nil {

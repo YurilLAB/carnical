@@ -6,11 +6,13 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -252,6 +254,40 @@ func tsyncChild(t *testing.T) {
 	}
 	if filtered != 1 {
 		t.Fatalf("%d of %d threads have a filter, want only the one that installed its own", filtered, len(ts))
+	}
+}
+
+// TestABadPathFailsWithoutRequireToo runs each row in a child process, since Apply cannot be undone. Best effort is for a
+// kernel without a feature: a path that does not exist would otherwise drop the file, port and scope rules together.
+func TestABadPathFailsWithoutRequireToo(t *testing.T) {
+	rows := []struct {
+		name    string
+		policy  func(dir string) Policy
+		wantErr bool
+	}{
+		{"a read-only path that does not exist", func(dir string) Policy { return Policy{ReadOnly: []string{dir + "/missing"}} }, true},
+		{"a read-write path that does not exist", func(dir string) Policy { return Policy{ReadWrite: []string{dir + "/missing"}} }, true},
+		{"paths that exist", func(dir string) Policy { return Policy{ReadOnly: []string{dir}, ReadWrite: []string{dir}} }, false},
+	}
+	if row := os.Getenv("CARNICAL_SANDBOX_PATH_CHILD"); row != "" {
+		i, _ := strconv.Atoi(row)
+		rep, err := Apply(rows[i].policy(os.Getenv("CARNICAL_SANDBOX_PATH_DIR")))
+		fmt.Printf("result abi=%d landlock=%v err=%v\n", rep.LandlockABI, rep.LandlockFS, err)
+		return
+	}
+	for i, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			cmd := exec.Command(os.Args[0], "-test.run=^TestABadPathFailsWithoutRequireToo$", "-test.count=1")
+			cmd.Env = append(os.Environ(), "CARNICAL_SANDBOX_PATH_CHILD="+strconv.Itoa(i), "CARNICAL_SANDBOX_PATH_DIR="+t.TempDir())
+			out, _ := cmd.CombinedOutput()
+			if bytes.Contains(out, []byte("result abi=0 ")) {
+				t.Skip("this kernel has no Landlock")
+			}
+			failed, applied := bytes.Contains(out, []byte("err=sandbox: landlock:")), bytes.Contains(out, []byte("landlock=true err=<nil>"))
+			if row.wantErr && !failed || !row.wantErr && !applied {
+				t.Fatalf("child: %s", out)
+			}
+		})
 	}
 }
 

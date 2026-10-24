@@ -179,6 +179,13 @@ func (r *ruleset) enforce() error {
 
 var errNeedsStaticBuild = errors.New("sandbox: this binary was built with cgo, so a restriction cannot reach all of its threads; build with CGO_ENABLED=0")
 
+// policyError is a fault in the policy, such as a path that does not exist, and not a kernel feature that is missing:
+// it fails Apply even without Require, which is for kernels, not for mistakes.
+type policyError struct{ err error }
+
+func (e policyError) Error() string { return e.err.Error() }
+func (e policyError) Unwrap() error { return e.err }
+
 // applyLandlock builds and enforces a ruleset for the policy. It reports which kinds of access are now restricted.
 func applyLandlock(p Policy, rep *Report) error {
 	abi := landlockABI()
@@ -232,12 +239,12 @@ func applyLandlock(p Policy, rep *Report) error {
 	}
 	for _, path := range p.ReadOnly {
 		if err := rs.allowPath(path, read); err != nil {
-			return fmt.Errorf("read-only path %s: %w", path, err)
+			return policyError{fmt.Errorf("read-only path %s: %w", path, err)}
 		}
 	}
 	for _, path := range p.ReadWrite {
 		if err := rs.allowPath(path, write); err != nil {
-			return fmt.Errorf("read-write path %s: %w", path, err)
+			return policyError{fmt.Errorf("read-write path %s: %w", path, err)}
 		}
 	}
 	if handleNet&netBindTCP != 0 {
