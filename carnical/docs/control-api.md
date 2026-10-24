@@ -426,7 +426,7 @@ lists.
   counted (`Stats().AuditFailures`) and reported, and later changes are refused (`503 audit_unavailable`) until the log has
   been checked and the server started again, even if the log works again. This holds whatever the change's outcome, because
   a store can commit a change and then report an error; a change that panics after its `started` line is closed with
-  outcome `error`, detail `panic`.
+  outcome `error`, detail `panic`, and a read that panics has its one line with the same.
 * **Durability.** Opened for appending only, mode 0600 (a log other users can read is refused at open), every line flushed to
   disk before a successful `Append` returns. A failed write attempts rollback; a rollback failure closes the log and
   rejects subsequent appends. Windows repair uses a separate read/write handle and checks that it identifies the same

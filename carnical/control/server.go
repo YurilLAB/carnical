@@ -341,8 +341,9 @@ func (s *Server) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 			}
 			s.stats.panics.Add(1)
 			s.internal(rid, "panic", nil)
-			// A change that panicked after its "started" line may have been made, so it is closed like any other.
-			if rc != nil && rc.started {
+			// Every authenticated request has a line, and a change that panicked after its "started" line may have been
+			// made, so it is closed like any other.
+			if rc != nil {
 				s.finishAudit(rc, "error", "panic")
 			}
 			if !w.wrote {
@@ -429,16 +430,17 @@ func (s *Server) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 	}
 	s.fails.succeed(srcKey)
 
-	if !s.perCred.acquire(ar.cred.ID) {
-		writeError(w, rid, &apiError{status: http.StatusTooManyRequests, code: "too_many_requests", msg: "too many requests in flight for this credential", retry: 1})
-		return
-	}
-	defer s.perCred.release(ar.cred.ID)
-
 	ctx, cancel := context.WithTimeout(r.Context(), s.lim.OperationTimeout)
 	defer cancel()
 	rc = &reqCtx{s: s, r: r, ctx: ctx, id: rid, now: now, route: rt, params: params, body: body, query: query, cred: ar.cred, user: ar.user,
 		stepUp: ar.stepUp, hasStepUp: ar.hasStepUp, tenant: tenant, source: src}
+
+	if !s.perCred.acquire(ar.cred.ID) {
+		s.finishAudit(rc, "refused", "too_many_requests")
+		writeError(w, rid, &apiError{status: http.StatusTooManyRequests, code: "too_many_requests", msg: "too many requests in flight for this credential", retry: 1})
+		return
+	}
+	defer s.perCred.release(ar.cred.ID)
 
 	res, aerr := s.run(rc)
 	if aerr != nil {
@@ -521,8 +523,8 @@ func (s *Server) entry(rc *reqCtx, outcome, detail string) AuditEntry {
 		Action: rc.route.action, RevBefore: rc.revBefore, RevAfter: rc.revAfter, Changes: rc.changes, Source: rc.source, Outcome: outcome, Detail: detail}
 }
 
-// finishAudit writes the closing line of a change, or the only line of a read that failed. A failure to write it is
-// counted and reported, not turned into an error: the change may have been made.
+// finishAudit writes the closing line of a change, or the only line of a read that failed or of a request refused once
+// authenticated. A failure to write it is counted and reported, not turned into an error: the change may have been made.
 func (s *Server) finishAudit(rc *reqCtx, outcome, detail string) {
 	if err := s.cfg.Audit.Append(s.entry(rc, outcome, detail)); err != nil {
 		s.stats.auditFailures.Add(1)

@@ -620,6 +620,22 @@ func TestAPanicInAStoreIsAUniformError(t *testing.T) {
 	if got := h.internalErrors(); len(got) != 1 || !strings.HasSuffix(got[0], " panic") {
 		t.Fatalf("hook calls: %v", got)
 	}
+	// a read that panics is audited too, with the one line a read has
+	w = h.do(reqOpts{method: "POST", target: "/v1/tenants/" + tenantA + "/policy:validate", body: []byte(`{"mode":"block","panic":true}`)})
+	if got := linesOf(h, w); w.Code != 500 || len(got) != 1 || got[0].Outcome != "error" || got[0].Detail != "panic" {
+		t.Fatalf("a read that panicked: %d, audit lines %+v", w.Code, got)
+	}
+}
+
+// linesOf returns the audit lines of the request that w answered.
+func linesOf(h *harness, w *httptest.ResponseRecorder) []AuditEntry {
+	var out []AuditEntry
+	for _, e := range h.audit.all() {
+		if e.RequestID == w.Header().Get(HeaderRequestID) {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 func TestStoreErrorsAreUniformAndNeverShowTheirText(t *testing.T) {
@@ -717,6 +733,11 @@ func TestPerCredentialInFlightLimit(t *testing.T) {
 	w := h.do(reqOpts{target: "/v1/tenants/" + tenantA + "/status"})
 	if w.Code != 429 || errorOf(t, w).Code != "too_many_requests" {
 		t.Fatalf("second request of the same credential: %d %s", w.Code, w.Body.String())
+	}
+	// it was authenticated, so it is audited like any other request
+	if got := linesOf(h, w); len(got) != 1 || got[0].Credential != "ui-a" || got[0].Tenant != tenantA ||
+		got[0].Outcome != "refused" || got[0].Detail != "too_many_requests" {
+		t.Fatalf("audit lines of the refused request: %+v", got)
 	}
 	// another credential is not held up by it
 	if w := h.do(reqOpts{as: "ui-b", target: "/v1/tenants/" + tenantB + "/status"}); w.Code != 200 {
