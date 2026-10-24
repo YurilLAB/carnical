@@ -225,6 +225,8 @@ func TestMounts(t *testing.T) {
 		want                   audit.Status
 	}{
 		{"all set", good, "", audit.Pass},
+		// the unit's own namespace shows every mount nosuid, so this is seen only in the machine's table
+		{"/var/tmp without nosuid", strings.Replace(good, "/var/tmp tmpfs rw,nosuid,nodev,noexec", "/var/tmp tmpfs rw,nodev,noexec", 1), "/var/tmp is mounted without nosuid", audit.Fail},
 		{"/tmp without noexec", strings.Replace(good, "/tmp tmpfs rw,nosuid,nodev,noexec", "/tmp tmpfs rw,nosuid,nodev", 1), "/tmp is mounted without noexec", audit.Fail},
 		{"/tmp not a mount of its own", strings.Replace(good, "tmpfs /tmp tmpfs rw,nosuid,nodev,noexec 0 0\n", "", 1), "/tmp is not a mount of its own", audit.Fail},
 		{"/proc shows everyone's processes", strings.Replace(good, ",hidepid=invisible", "", 1), "/proc shows every user's processes", audit.Fail},
@@ -232,7 +234,7 @@ func TestMounts(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r := run(Mount(&fake{files: map[string]string{"/proc/self/mounts": tt.mounts}}, Mounts))
+			r := run(Mount(&fake{files: map[string]string{machineMounts: tt.mounts, "/proc/self/mounts": asTheUnitSees(tt.mounts)}}, Mounts))
 			if r.Status != tt.want || (tt.contains != "" && !strings.Contains(strings.Join(r.Problems, "\n"), tt.contains)) {
 				t.Fatalf("%+v", r)
 			}
@@ -1380,10 +1382,29 @@ type suidFake struct {
 }
 
 func (s *suidFake) ReadFile(p string) ([]byte, error) {
-	if p == "/proc/self/mounts" {
+	switch p {
+	case machineMounts:
 		return []byte(s.mounts), nil
+	case "/proc/self/mounts":
+		return []byte(asTheUnitSees(s.mounts)), nil
 	}
 	return s.runFake.ReadFile(p)
+}
+
+// asTheUnitSees is a mount table as the shipped unit's own namespace shows it: with NoNewPrivileges=yes, systemd remounts
+// every mount there nosuid.
+func asTheUnitSees(table string) string {
+	var out strings.Builder
+	for line := range strings.Lines(table) {
+		f := strings.Fields(line)
+		if len(f) < 4 {
+			out.WriteString(line)
+			continue
+		}
+		f[3] += ",nosuid"
+		out.WriteString(strings.Join(f, " ") + "\n")
+	}
+	return out.String()
 }
 func (s *suidFake) Run(_ context.Context, name string, args ...string) ([]byte, error) {
 	s.ran = append([]string{name}, args...)

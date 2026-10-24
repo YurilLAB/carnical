@@ -188,7 +188,7 @@ var remoteTypes = map[string]bool{
 	"fuse.sshfs": true,
 }
 
-// unescapeMount undoes the octal escapes /proc/self/mounts writes for a space, a tab, a newline and a backslash in a path.
+// unescapeMount undoes the octal escapes a mount table writes for a space, a tab, a newline and a backslash in a path.
 func unescapeMount(s string) string {
 	if !strings.Contains(s, `\`) {
 		return s
@@ -236,7 +236,7 @@ func unscannedSUIDMounts(mounts []byte) []string {
 	return out
 }
 
-// mountTable is each mount point in /proc/self/mounts with the mount in force there.
+// mountTable is each mount point in a mount table with the mount in force there.
 func mountTable(mounts []byte) map[string]mount {
 	last := map[string]mount{}
 	for _, line := range strings.Split(string(mounts), "\n") {
@@ -346,9 +346,9 @@ func findFailure(err error, roots []string, table map[string]mount) string {
 // SUIDFiles lists the setuid and setgid files on every mount where they would work. Each is a way to become another user, so a
 // new one, or a changed one, is a finding.
 func SUIDFiles(ctx context.Context, src Source) ([]string, error) {
-	mounts, err := src.ReadFile("/proc/self/mounts")
+	mounts, err := src.ReadFile(machineMounts)
 	if err != nil {
-		return nil, fmt.Errorf("the mount table: %w", err)
+		return nil, fmt.Errorf("the machine's mount table: %w", err)
 	}
 	roots := suidRoots(mounts)
 	if len(roots) == 0 {
@@ -488,7 +488,7 @@ func SUID(src Source, manifestPath string) audit.Check {
 			}
 			var out audit.Outcome
 			table := map[string]mount{}
-			if mounts, err := src.ReadFile("/proc/self/mounts"); err == nil {
+			if mounts, err := src.ReadFile(machineMounts); err == nil {
 				table = mountTable(mounts)
 				for _, m := range unscannedSUIDMounts(mounts) {
 					out.Problems = append(out.Problems, "setuid files would work on "+m+", which the scan does not walk: mount it nosuid")

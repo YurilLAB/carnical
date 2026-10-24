@@ -179,7 +179,12 @@ var Mounts = []MountRule{
 	{"/dev/shm", []string{"nosuid", "nodev", "noexec"}},
 }
 
-// ParseMounts reads /proc/self/mounts: mount point to its options.
+// machineMounts is the mount table of the machine: PID 1's. The audit's own can differ: under the shipped unit, systemd
+// remounts every mount nosuid in the service's namespace (NoNewPrivileges=yes with ProtectSystem=), so /proc/self/mounts
+// would show nosuid everywhere whatever the machine has.
+const machineMounts = "/proc/1/mounts"
+
+// ParseMounts reads a mount table (/proc/PID/mounts): mount point to its options.
 func ParseMounts(data []byte) map[string]map[string]bool {
 	out := map[string]map[string]bool{}
 	// Every line is read however long it is: a mount point can be longer than a scanner's line, and a table read only up
@@ -209,9 +214,9 @@ func Mount(src Source, rules []MountRule) audit.Check {
 			if why := linux(); why != "" {
 				return audit.Outcome{SkipReason: why}
 			}
-			data, err := src.ReadFile("/proc/self/mounts")
+			data, err := src.ReadFile(machineMounts)
 			if err != nil {
-				return audit.Outcome{SkipReason: "cannot read the mount table: " + err.Error()}
+				return audit.Outcome{SkipReason: "cannot read the machine's mount table: " + err.Error()}
 			}
 			mounts := ParseMounts(data)
 			var out audit.Outcome
