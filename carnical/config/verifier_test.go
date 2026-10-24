@@ -164,6 +164,9 @@ func TestTamperingWithAnyFieldIsRefused(t *testing.T) {
 		{"upper-case key id", "key_id", `"0123456789ABCDEF"`, ErrMalformed},
 		{"payload changed", "payload", flipped, ErrBadSignature},
 		{"payload with padding", "payload", payloadText[:len(payloadText)-1] + `="`, ErrMalformed},
+		// Go's base64 decoder skips line breaks, so these are the same bytes in another spelling too.
+		{"payload with a line break", "payload", payloadText[:5] + `\n` + payloadText[5:], ErrMalformed},
+		{"payload with a carriage return at the end", "payload", payloadText[:len(payloadText)-1] + `\r"`, ErrMalformed},
 		{"payload not base64", "payload", `"!!!!"`, ErrMalformed},
 		{"payload not JSON", "payload", `"` + b64.EncodeToString([]byte("not json")) + `"`, ErrMalformed},
 		{"payload empty", "payload", `""`, ErrMalformed},
@@ -171,6 +174,7 @@ func TestTamperingWithAnyFieldIsRefused(t *testing.T) {
 		{"signature truncated", "sig", sigText[:len(sigText)-5] + `"`, ErrMalformed},
 		{"signature removed", "sig", ``, ErrMalformed},
 		{"signature with a spare bit set (the same bytes in another spelling)", "sig", spareBits, ErrMalformed},
+		{"signature with line breaks", "sig", sigText[:1] + `\r\n` + sigText[1:], ErrMalformed},
 		{"a field the format does not have", "extra", `1`, ErrMalformed},
 		{"a nested value", "extra", `{"a":1}`, ErrMalformed},
 	}

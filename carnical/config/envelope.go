@@ -26,6 +26,7 @@ import (
 	"io"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 	"unicode/utf8"
 )
@@ -146,6 +147,15 @@ type wire struct {
 
 var b64 = base64.RawURLEncoding.Strict()
 
+// decodeB64 decodes base64 in its one canonical spelling. Strict refuses spare bits that are set, and the decoder also
+// skips line breaks, so those are refused here.
+func decodeB64(s string) ([]byte, error) {
+	if strings.ContainsAny(s, "\r\n") {
+		return nil, ErrMalformed
+	}
+	return b64.DecodeString(s)
+}
+
 // Marshal writes the JSON form of the envelope: one object with exactly the fields v, tenant, audience, seq,
 // not_before, not_after, key_id, payload and sig. Times are written as 2026-10-05T08:00:00Z; the payload and the
 // signature are base64url without padding. It refuses an envelope that Decode would refuse.
@@ -238,10 +248,10 @@ func Decode(raw []byte) (*Envelope, error) {
 	if base64.RawURLEncoding.DecodedLen(len(payload)) > MaxPayloadBytes {
 		return nil, ErrOversize
 	}
-	if e.Payload, err = b64.DecodeString(payload); err != nil {
+	if e.Payload, err = decodeB64(payload); err != nil {
 		return nil, ErrMalformed
 	}
-	if e.Signature, err = b64.DecodeString(sig); err != nil {
+	if e.Signature, err = decodeB64(sig); err != nil {
 		return nil, ErrMalformed
 	}
 	e.Tenant, e.Audience, e.KeyID, e.Sequence = tenant, audience, keyID, seq

@@ -117,6 +117,8 @@ func TestKeyListRefusals(t *testing.T) {
 		{"the good list", good, t0, nil},
 		{"signature changed", flip(good, "sig"), t0, ErrBadSignature},
 		{"payload changed", flip(good, "payload"), t0, ErrBadSignature},
+		{"payload with a line break", []byte(strings.Replace(string(good), `"payload":"`, `"payload":"\n`, 1)), t0, ErrMalformed},
+		{"signature with a carriage return", []byte(strings.Replace(string(good), `"sig":"`, `"sig":"\r`, 1)), t0, ErrMalformed},
 		{"signed by a key that is not pinned", func() []byte { raw, _ := SignKeySet(otherRoot, goodSet(t)); return raw }(), t0, ErrUnknownKey},
 		{"naming a pinned root but signed by another", func() []byte {
 			var w map[string]json.RawMessage
@@ -152,6 +154,7 @@ func TestKeyListRefusals(t *testing.T) {
 		{"an id that is not the key's hash", withPayload(t, func(p map[string]any) { listed(p)["id"] = hexID(1) }), t0, ErrMalformed},
 		{"a public key of the wrong length", withPayload(t, func(p map[string]any) { listed(p)["pub"] = b64.EncodeToString(make([]byte, 31)) }), t0, ErrMalformed},
 		{"a public key with padding", withPayload(t, func(p map[string]any) { listed(p)["pub"] = listed(p)["pub"].(string) + "=" }), t0, ErrMalformed},
+		{"a public key with a line break", withPayload(t, func(p map[string]any) { listed(p)["pub"] = "\n" + listed(p)["pub"].(string) }), t0, ErrMalformed},
 		{"a key that ends before it starts", withPayload(t, func(p map[string]any) { listed(p)["not_after"] = "2020-01-01T00:00:00Z" }), t0, ErrMalformed},
 		{"the same key twice", withPayload(t, func(p map[string]any) { p["keys"] = []any{listed(p), listed(p)} }), t0, ErrMalformed},
 		{"the root key as a signing key", withPayload(t, func(p map[string]any) {

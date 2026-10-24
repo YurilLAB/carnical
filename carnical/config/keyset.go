@@ -154,11 +154,11 @@ func VerifyKeySet(raw []byte, roots []ed25519.PublicKey, now time.Time) (*KeySet
 	if len(fields) != 4 || !keyIDRe.MatchString(w.KeyID) {
 		return nil, ErrMalformed
 	}
-	payload, err := b64.DecodeString(payloadText)
+	payload, err := decodeB64(payloadText)
 	if err != nil {
 		return nil, ErrMalformed
 	}
-	sig, err := b64.DecodeString(sigText)
+	sig, err := decodeB64(sigText)
 	if err != nil || len(sig) != ed25519.SignatureSize {
 		return nil, ErrMalformed
 	}
@@ -268,7 +268,7 @@ func parseKeySet(payload []byte, rootID string, roots []ed25519.PublicKey) (*Key
 	ks := &KeySet{RootID: rootID, Seq: p.Seq, Issued: issued, Expires: expires}
 	seen := map[string]bool{}
 	for _, e := range p.Keys {
-		pub, err := b64.DecodeString(e.Pub)
+		pub, err := decodeB64(e.Pub)
 		nb, ok1 := parseTime(e.NotBefore)
 		na, ok2 := parseTime(e.NotAfter)
 		if err != nil || len(pub) != ed25519.PublicKeySize || e.Alg != "ed25519" || !ok1 || !ok2 || !na.After(nb) ||
