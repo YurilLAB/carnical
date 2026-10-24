@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -614,6 +615,30 @@ func TestIntrusionAlertsYieldToAttacks(t *testing.T) {
 	}
 	if d := r.messages()[3].msg; d.IntrusionsDropped != 9 || !strings.Contains(d.Text, "9 not sent here") || s.lostAlerts.Load() != 9 {
 		t.Fatalf("the alerts of the messages that gave way: %d said dropped (%q), %d counted lost; want 9", d.IntrusionsDropped, d.Text, s.lostAlerts.Load())
+	}
+}
+
+// TestEveryCloseReportsTheSame is a race between callers, so it is rounds of concurrent calls rather than a table row.
+func TestEveryCloseReportsTheSame(t *testing.T) {
+	u, _ := ParseURL("https://example.com/hook")
+	dial := func(context.Context, string, string) (net.Conn, error) { return nil, errors.New("not dialled") }
+	for round := 0; round < 2000; round++ {
+		s, err := New(Config{URL: u, Secret: testSecret, Dial: dial})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var wg sync.WaitGroup
+		got := make([]bool, 8)
+		for i := range got {
+			wg.Add(1)
+			go func() { defer wg.Done(); got[i] = s.Close(time.Second) }()
+		}
+		wg.Wait()
+		for i, ok := range got {
+			if !ok {
+				t.Fatalf("round %d: Close %d of %d reported a failure on an empty queue", round, i+1, len(got))
+			}
+		}
 	}
 }
 

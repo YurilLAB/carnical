@@ -187,7 +187,7 @@ type Sender struct {
 	queue   []Message
 	size    int
 	closing bool
-	closeOK bool   // what the first Close reported
+	closeOK bool   // what the first Close reported, once closed is closed
 	unsent  uint64 // drops not yet reported in a message
 	// unsentAlerts counts the intrusion alerts in messages that were dropped or not delivered, with the drops those
 	// messages were to report, until a message of intrusion alerts reports them (see lose).
@@ -195,6 +195,7 @@ type Sender struct {
 	wake         chan struct{}
 	stop         chan struct{} // closed when Close stops waiting: the attempt in flight is cancelled
 	done         chan struct{}
+	closed       chan struct{} // closed when the first Close has its result
 
 	sent, failed, dropped, retries atomic.Uint64
 	lostAlerts                     atomic.Uint64 // intrusion alerts in messages dropped or not delivered
@@ -253,6 +254,7 @@ func New(cfg Config) (*Sender, error) {
 		}},
 		timeout: timeout, now: now, log: cfg.Log, retryWait: []time.Duration{time.Second, 3 * time.Second},
 		gap: MinGap, size: size, wake: make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{}),
+		closed: make(chan struct{}),
 	}
 	go s.run()
 	return s, nil
@@ -341,7 +343,7 @@ func (s *Sender) Close(wait time.Duration) bool {
 	s.signal()
 	s.mu.Unlock()
 	if already {
-		<-s.done
+		<-s.closed
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		return s.closeOK
@@ -359,6 +361,7 @@ func (s *Sender) Close(wait time.Duration) bool {
 	s.mu.Lock()
 	s.closeOK = ok
 	s.mu.Unlock()
+	close(s.closed)
 	return ok
 }
 
