@@ -238,6 +238,17 @@ func buildFilter(allowExec, noListen bool) ([]unix.SockFilter, error) {
 		a.label("after-listen")
 	}
 
+	// ioctl TIOCSTI and TIOCLINUX put bytes in the input of the terminal the process was started from, which the shell
+	// there runs as typed once the process ends: a program started without execve. The request is an unsigned int, so
+	// the kernel reads only the low half of the argument.
+	a.jeq(unix.SYS_IOCTL, "check-ioctl", "after-ioctl")
+	a.label("check-ioctl")
+	a.load(offArg0 + 8)
+	a.jeq(unix.TIOCSTI, "no-tty-input", "ioctl-linux")
+	a.label("ioctl-linux")
+	a.jeq(unix.TIOCLINUX, "no-tty-input", "allow")
+	a.label("after-ioctl")
+
 	// sendto, sendmsg and sendmmsg with MSG_FASTOPEN: on a new TCP socket that connects, sending the SYN itself, without
 	// the connect(2) that Landlock's port rule is checked on. Go never sets the flag. Refuse it with the error a kernel
 	// with client Fast Open switched off gives.
@@ -260,6 +271,8 @@ func buildFilter(allowExec, noListen bool) ([]unix.SockFilter, error) {
 	a.ret(seccompRetErrnoBase | uint32(unix.ENOSYS))
 	a.label("no-listen")
 	a.ret(seccompRetErrnoBase | uint32(unix.EACCES))
+	a.label("no-tty-input")
+	a.ret(seccompRetErrnoBase | uint32(unix.EPERM))
 	a.label("no-fastopen")
 	a.ret(seccompRetErrnoBase | uint32(unix.EOPNOTSUPP))
 	a.label("no-proto")

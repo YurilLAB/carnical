@@ -91,6 +91,7 @@ func TestTheFilterDecidesEachCallAsIntended(t *testing.T) {
 		noFastOpen = seccompRetErrnoBase | uint32(unix.EOPNOTSUPP)
 		noClone3   = seccompRetErrnoBase | uint32(unix.ENOSYS)
 		refused    = seccompRetErrnoBase | uint32(unix.EACCES)
+		noTTYInput = seccompRetErrnoBase | uint32(unix.EPERM)
 	)
 	tests := []struct {
 		name string
@@ -161,6 +162,13 @@ func TestTheFilterDecidesEachCallAsIntended(t *testing.T) {
 		{"listen when ports may be listened on", block, seccompData(auditArch, unix.SYS_LISTEN, 3, 16), allow},
 		{"execve when no port may be listened on", noListen, seccompData(auditArch, unix.SYS_EXECVE), kill},
 		{"socket when no port may be listened on", noListen, seccompData(auditArch, unix.SYS_SOCKET, unix.AF_INET, unix.SOCK_STREAM, 0), allow},
+		// Bytes put in the terminal's input are run by the shell there once the process ends.
+		{"ioctl TIOCSTI", block, seccompData(auditArch, unix.SYS_IOCTL, 0, unix.TIOCSTI, 0), noTTYInput},
+		{"ioctl TIOCSTI with high bits the kernel ignores", block, seccompData(auditArch, unix.SYS_IOCTL, 0, 1<<32|unix.TIOCSTI, 0), noTTYInput},
+		{"ioctl TIOCLINUX", block, seccompData(auditArch, unix.SYS_IOCTL, 0, unix.TIOCLINUX, 0), noTTYInput},
+		{"ioctl TIOCSTI when starting programs is allowed", allowExec, seccompData(auditArch, unix.SYS_IOCTL, 0, unix.TIOCSTI, 0), noTTYInput},
+		{"ioctl TCGETS", block, seccompData(auditArch, unix.SYS_IOCTL, 0, unix.TCGETS, 0), allow},
+		{"ioctl TIOCGWINSZ", block, seccompData(auditArch, unix.SYS_IOCTL, 1, unix.TIOCGWINSZ, 0), allow},
 		{"socketpair: UNIX", block, seccompData(auditArch, unix.SYS_SOCKETPAIR, unix.AF_UNIX, unix.SOCK_STREAM, 0), allow},
 		{"socketpair: INET", block, seccompData(auditArch, unix.SYS_SOCKETPAIR, unix.AF_INET, unix.SOCK_STREAM, 0), kill},
 		{"a different architecture", block, seccompData(0x40000003, unix.SYS_READ), kill},
