@@ -771,6 +771,17 @@ func TestOwnership(t *testing.T) {
 	if r := run(Ownership(good, rules)); r.Status != audit.Pass {
 		t.Fatalf("%+v", r)
 	}
+	// directories above that only root can change, ones its group or anyone (with the sticky bit) may write to, and the
+	// service's own above its data
+	for p, i := range map[string]Info{"/": {Mode: fs.ModeDir | 0o755}, "/usr": {Mode: fs.ModeDir | 0o755}, "/usr/local": {Mode: fs.ModeDir | fs.ModeSetgid | 0o775},
+		"/usr/local/bin": {Mode: fs.ModeDir | 0o755}, "/var": {Mode: fs.ModeDir | 0o755}, "/var/lib": {Mode: fs.ModeDir | fs.ModeSticky | 0o777},
+		"/var/lib/carnical": {Mode: fs.ModeDir | 0o711}} {
+		good.stats[p] = i
+	}
+	good.stats["/var/lib/carnical/edge/uploads"] = Info{Mode: fs.ModeDir | 0o700, UID: 990}
+	if r := run(Ownership(good, append(rules, FileRule{"/var/lib/carnical/edge/uploads", "carnical-edge", 0o700}))); r.Status != audit.Pass {
+		t.Fatalf("with the directories above: %+v", r)
+	}
 	bad := &fake{files: map[string]string{"/etc/passwd": passwd}, stats: map[string]Info{
 		"/usr/local/bin/carnical": {Mode: 0o775, UID: 990}, // the service owns, and can rewrite, its own program
 		"/var/lib/carnical/edge":  {Mode: fs.ModeDir | 0o755, UID: 990},
@@ -794,6 +805,9 @@ func TestOwnership(t *testing.T) {
 		{"setuid root program", fs.ModeSetuid | 0o755, "", "/usr/local/bin/carnical has mode 4755, more than 0755"},
 		{"setgid program", fs.ModeSetgid | 0o755, "", "has mode 2755"},
 		{"a link in place of the program", 0o755, "/home/someone/carnical", "/usr/local/bin/carnical is a symbolic link (to /home/someone/carnical)"},
+		// a file can be replaced through any directory above it
+		{"a directory above the program anyone can write to", 0o755, "", "the directory /usr/local/bin above it has mode 0777, so anyone can replace it"},
+		{"a directory above the program owned by a service", 0o755, "", "the directory /usr/local above it is owned by uid 990, who can replace it"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f := &fake{files: map[string]string{"/etc/passwd": passwd}, links: map[string]string{}, stats: map[string]Info{
@@ -801,6 +815,12 @@ func TestOwnership(t *testing.T) {
 			}}
 			if tt.link != "" {
 				f.links["/usr/local/bin/carnical"] = tt.link
+			}
+			switch tt.name {
+			case "a directory above the program anyone can write to":
+				f.stats["/usr/local/bin"] = Info{Mode: fs.ModeDir | 0o777}
+			case "a directory above the program owned by a service":
+				f.stats["/usr/local"] = Info{Mode: fs.ModeDir | 0o755, UID: 990}
 			}
 			if r := run(Ownership(f, rules)); r.Status != audit.Fail || !strings.Contains(strings.Join(r.Problems, "\n"), tt.contains) {
 				t.Fatalf("%+v", r)

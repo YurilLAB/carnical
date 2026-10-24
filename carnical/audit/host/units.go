@@ -6,7 +6,9 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
+	"path"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -264,7 +266,7 @@ func unixMode(m fs.FileMode) uint32 {
 func Ownership(src Source, rules []FileRule) audit.Check {
 	return audit.Check{
 		Name: "host-ownership", Zone: "",
-		What: "Each service's program is owned by root and cannot be written by the service, and each service's data can be read by that service only.",
+		What: "Each service's program is owned by root and cannot be written or replaced by the service, and each service's data can be read by that service only.",
 		Run: func(ctx context.Context) audit.Outcome {
 			if why := linux(); why != "" {
 				return audit.Outcome{SkipReason: why}
@@ -297,10 +299,34 @@ func Ownership(src Source, rules []FileRule) audit.Check {
 				if mode := unixMode(info.Mode); mode&^uint32(r.MaxMode) != 0 {
 					out.Problems = append(out.Problems, fmt.Sprintf("%s has mode %04o, more than %04o", r.Path, mode, r.MaxMode))
 				}
+				if known {
+					out.Problems = append(out.Problems, replaceable(src, r.Path, want)...)
+				}
 			}
 			sort.Strings(out.Problems)
+			out.Problems = slices.Compact(out.Problems)
 			return out
 		},
+	}
+}
+
+// replaceable reports the directories above file through which someone other than root and its owner could put another
+// file in its place: one they own, or one everyone may write to without the sticky bit. A directory its group may write to
+// is left to the system's own policy: /var/log is one on Ubuntu.
+func replaceable(src Source, file string, owner int) []string {
+	var out []string
+	for dir := path.Dir(file); ; dir = path.Dir(dir) {
+		if info, err := src.Stat(dir); err == nil {
+			switch {
+			case info.UID != 0 && info.UID != owner:
+				out = append(out, fmt.Sprintf("%s: the directory %s above it is owned by uid %d, who can replace it", file, dir, info.UID))
+			case info.Mode&fs.ModeSticky == 0 && info.Mode.Perm()&0o002 != 0:
+				out = append(out, fmt.Sprintf("%s: the directory %s above it has mode %04o, so anyone can replace it", file, dir, unixMode(info.Mode)))
+			}
+		}
+		if dir == path.Dir(dir) {
+			return out
+		}
 	}
 }
 
