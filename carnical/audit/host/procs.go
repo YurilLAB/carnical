@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -53,6 +54,26 @@ func isInterpreter(exe string) bool {
 }
 
 var writableDirs = []string{"/tmp/", "/var/tmp/", "/dev/shm/", "/run/user/"}
+
+// inWritableDir reports whether a program's file is in, or below, a directory anyone can write to, where anyone could have
+// put it: the usual ones by name (another mount namespace can hide them from the audit), and any other by its mode.
+func inWritableDir(src Source, exe string) bool {
+	for _, dir := range writableDirs {
+		if strings.HasPrefix(exe, dir) {
+			return true
+		}
+	}
+	for dir := path.Dir(exe); strings.HasPrefix(dir, "/") && dir != "/"; dir = path.Dir(dir) {
+		if info, err := src.Stat(dir); err == nil && info.Mode&0o002 != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// loaderName is the dynamic loader's file: ld-linux-x86-64.so.2, ld-musl-x86_64.so.1, ld64.so.2, and ld-2.31.so on older
+// C libraries. Run as a program, it loads and runs another file, which /proc then does not name.
+var loaderName = regexp.MustCompile(`^(ld-linux.*|ld-musl.*|ld64)\.so(\.[0-9]+)*$|^ld-[0-9]+(\.[0-9]+)*\.so$|^ld\.so(\.[0-9]+)*$`)
 
 // Process is one running program, as /proc shows it.
 type Process struct {
@@ -136,10 +157,11 @@ func Running(src Source, policy ProcPolicy) audit.Check {
 				case strings.HasSuffix(p.Exe, " (deleted)"):
 					out.Problems = append(out.Problems, who+": its program file has been deleted or replaced while it runs")
 				}
-				for _, dir := range writableDirs {
-					if strings.HasPrefix(p.Exe, dir) {
-						out.Problems = append(out.Problems, who+": it runs from a directory anyone can write to")
-					}
+				if inWritableDir(src, strings.TrimSuffix(p.Exe, " (deleted)")) {
+					out.Problems = append(out.Problems, who+": it runs from a directory anyone can write to")
+				}
+				if loaderName.MatchString(path.Base(strings.TrimSuffix(p.Exe, " (deleted)"))) {
+					out.Problems = append(out.Problems, who+": the dynamic loader runs another program, which /proc does not name")
 				}
 				if name, ok := byUID[p.UID]; ok {
 					allowed := false

@@ -1145,8 +1145,12 @@ func TestRunning(t *testing.T) {
 		f.files[dir+"/status"] = fmt.Sprintf("Name:\tx\nUid:\t%d\t%d\t%d\t%d\n", uid, uid, uid, uid)
 		f.links[dir+"/exe"] = exe
 	}
+	dir := func(mode fs.FileMode) Info { return Info{Mode: fs.ModeDir | mode} }
 	newMachine := func() *fake {
-		f := &fake{files: map[string]string{"/etc/passwd": passwd}, links: map[string]string{}, globs: map[string][]string{}}
+		f := &fake{files: map[string]string{"/etc/passwd": passwd}, links: map[string]string{}, globs: map[string][]string{},
+			stats: map[string]Info{"/usr": dir(0o755), "/usr/lib": dir(0o755), "/usr/lib/systemd": dir(0o755), "/usr/local": dir(0o755),
+				"/usr/local/bin": dir(0o755), "/run": dir(0o755), "/run/lock": dir(fs.ModeSticky | 0o777), "/run/lock/x": dir(0o755),
+				"/var": dir(0o755), "/var/lib": dir(0o755), "/var/lib/php": dir(0o755), "/var/lib/php/sessions": dir(fs.ModeSticky | 0o733)}}
 		proc(1, 0, "/usr/lib/systemd/systemd", f)
 		proc(100, 990, "/usr/local/bin/carnical", f)
 		return f
@@ -1162,6 +1166,11 @@ func TestRunning(t *testing.T) {
 		{"a program deleted while it runs", func(f *fake) { proc(200, 0, "/usr/bin/sleep (deleted)", f) }, "pid 200 (uid 0) runs /usr/bin/sleep (deleted): its program file has been deleted"},
 		{"a program from memory", func(f *fake) { proc(201, 33, "/memfd:payload (deleted)", f) }, "runs from memory"},
 		{"a program from /tmp", func(f *fake) { proc(202, 1000, "/tmp/.x/miner", f) }, "runs from a directory anyone can write to"},
+		// a directory anyone can write to that is not one of the usual names, and a directory someone made inside one
+		{"a program from another directory anyone can write to", func(f *fake) { proc(206, 33, "/var/lib/php/sessions/kworker", f) }, "pid 206 (uid 33) runs /var/lib/php/sessions/kworker: it runs from a directory anyone can write to"},
+		{"a program below a directory anyone can write to", func(f *fake) { proc(207, 33, "/run/lock/x/kworker", f) }, "pid 207 (uid 33) runs /run/lock/x/kworker: it runs from a directory anyone can write to"},
+		{"a program run through the dynamic loader", func(f *fake) { proc(208, 33, "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2", f) }, "the dynamic loader runs another program"},
+		{"a program run through an older C library's loader", func(f *fake) { proc(209, 33, "/lib/x86_64-linux-gnu/ld-2.31.so", f) }, "the dynamic loader runs another program"},
 		{"a shell run by the edge user", func(f *fake) { proc(203, 990, "/usr/bin/bash", f) }, "a shell, interpreter or network tool"},
 		{"python run by the edge user", func(f *fake) { proc(204, 990, "/usr/bin/python3.12", f) }, "a shell, interpreter or network tool"},
 		{"another program run by the edge user", func(f *fake) { proc(205, 990, "/opt/other", f) }, "which is not its program"},
