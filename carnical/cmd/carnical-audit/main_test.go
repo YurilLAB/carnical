@@ -270,7 +270,7 @@ type planted struct{ name string }
 
 func (p planted) ReadFile(path string) ([]byte, error) {
 	switch path {
-	case "/proc/self/mounts":
+	case "/proc/1/mounts": // the machine's mount table
 		return []byte("/dev/vda / ext4 rw,relatime 0 0\n"), nil
 	case p.name:
 		return nil, errors.New("larger than the checks read")
