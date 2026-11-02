@@ -111,6 +111,10 @@ func compilePattern(p string) (*regexp.Regexp, error) {
 	if p == "" || len(p) > maxPatternBytes {
 		return nil, errPattern
 	}
+	p, ok := ecmaPattern(p)
+	if !ok {
+		return nil, errPattern
+	}
 	tree, err := syntax.Parse(p, syntax.Perl)
 	if err != nil {
 		return nil, errPattern
@@ -123,6 +127,64 @@ func compilePattern(p string) (*regexp.Regexp, error) {
 		return nil, errPattern
 	}
 	return re, nil
+}
+
+// ecmaSpace is what ECMA-262's \s matches: its WhiteSpace and LineTerminator characters. RE2's \s is [\t\n\f\r ] only.
+const ecmaSpace = `\t\n\v\f\r \x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}`
+
+// ecmaPattern rewrites an OpenAPI pattern, which is ECMA-262, into RE2 where the two spell the same thing with different
+// meanings: "." does not match CR, U+2028 or U+2029 in ECMA-262, its \s takes in the Unicode spaces, and \uHHHH is a code
+// point. It is false for what RE2 cannot say the same way (\S inside a class, and "[]" or "[^]", which RE2 reads as a class
+// holding "]"); such a pattern is not checked.
+func ecmaPattern(p string) (string, bool) {
+	var b strings.Builder
+	inClass := false
+	for i := 0; i < len(p); i++ {
+		c := p[i]
+		switch {
+		case c == '\\' && i+1 < len(p):
+			i++
+			switch d := p[i]; {
+			case d == 's' && inClass:
+				b.WriteString(ecmaSpace)
+			case d == 's':
+				b.WriteString("[" + ecmaSpace + "]")
+			case d == 'S' && inClass:
+				return "", false
+			case d == 'S':
+				b.WriteString("[^" + ecmaSpace + "]")
+			case d == 'u' && i+4 < len(p) && isHex4(p[i+1:i+5]):
+				b.WriteString(`\x{` + p[i+1:i+5] + `}`)
+				i += 4
+			default:
+				b.WriteByte('\\')
+				b.WriteByte(d)
+			}
+		case c == '[' && !inClass:
+			inClass = true
+			b.WriteByte(c)
+			if strings.HasPrefix(p[i+1:], "]") || strings.HasPrefix(p[i+1:], "^]") {
+				return "", false
+			}
+		case c == ']' && inClass:
+			inClass = false
+			b.WriteByte(c)
+		case c == '.' && !inClass:
+			b.WriteString(`[^\n\r\x{2028}\x{2029}]`)
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String(), true
+}
+
+func isHex4(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') {
+			return false
+		}
+	}
+	return len(s) == 4
 }
 
 // estimateProgram guesses how many instructions the pattern compiles to, multiplying out repeat counts, and stops counting once it
@@ -159,6 +221,7 @@ func estimateProgram(re *syntax.Regexp, depth int) int {
 // pattern's counted repeats can keep alive at once. RE2 compiles x{0,300} as 300 copies of x, each live for every byte of a
 // subject of the right shape; a star or a small count costs nothing extra.
 func patternWeight(p string) int {
+	p, _ = ecmaPattern(p)
 	tree, err := syntax.Parse(p, syntax.Perl)
 	if err != nil {
 		return 1
