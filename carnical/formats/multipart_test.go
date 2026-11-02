@@ -72,8 +72,14 @@ var multipartRows = register("multipart", []row{
 	{name: "repeated name is recorded", ct: mpType, body: mp(field("a", "1"), field("a", "2")), also: []int{idMPDupName}},
 	{name: "repeated name in two spellings Go reads alike is recorded", ct: mpType,
 		body: mp(part("1", `Content-Disposition: form-data; name="a\b"`), part("2", `Content-Disposition: form-data; name="a\\b"`)), also: []int{idMPDupName}},
-	{name: "repeated name refused when the rule is set to block", ct: mpType, body: mp(field("a", "1"), field("A", "2")), want: idMPDupName,
+	{name: "repeated name refused when the rule is set to block", ct: mpType, body: mp(field("a", "1"), field("a", "2")), want: idMPDupName,
 		tweak: func(p *Policy) { p.Rules = map[string]Action{"multipart-duplicate-name": Block} }},
+	// PHP mangles a part's name as it does a form field's, so the form rules for such names apply to parts too.
+	{name: "one name in two capitals", ct: mpType, body: mp(field("role", "user"), field("Role", "admin")), want: idFormAlias},
+	{name: "a name PHP mangles into another", ct: mpType, body: mp(field("is_admin", "0"), field("is.admin", "1")), want: 5002608},
+	{name: "a name after a space PHP drops", ct: mpType, body: mp(field("role", "user"), field(" role", "admin")), want: 5002608},
+	{name: "a prototype name", ct: mpType, body: mp(field("a[__proto__][x]", "1")), want: idFormProto},
+	{name: "a list of files", ct: mpType, body: mp(field("files[]", "1"), field("files[]", "2"), field("files[0]", "3"))},
 	{name: "multipart/mixed when the site allows it", ct: "multipart/mixed; boundary=" + bnd, body: mp(part("x", "Content-Type: text/plain")),
 		tweak: func(p *Policy) { p.AllowedTypes = []string{"multipart/mixed"} }},
 

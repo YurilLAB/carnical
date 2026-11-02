@@ -45,7 +45,8 @@ type mpScanner struct {
 	// formData is true for multipart/form-data, where every part must say it is form data and name itself.
 	formData bool
 	delim    []byte
-	names    map[string]struct{}
+	names    map[string]string // a name case-folded, and how it was first spelt
+	shapes   map[string]*parameterNode
 	fold     []byte
 	// inOps says the part being read is a form field named operations, which the GraphQL multipart request spec makes the
 	// request itself; ops holds the content of each such field.
@@ -80,8 +81,11 @@ func (in *Inspector) checkMultipart(f *finder, body []byte, boundary string, sub
 		}
 	}
 	s := &mpScanner{f: f, body: body, lim: lim, in: in, formData: subtype == "form-data", delim: []byte("--" + boundary)}
-	if f.active(rMPDupName) {
-		s.names = map[string]struct{}{}
+	if f.active(rMPDupName) || f.active(rFormAlias) {
+		s.names = map[string]string{}
+	}
+	if f.active(rFormShape) {
+		s.shapes = map[string]*parameterNode{}
 	}
 	ok := s.run()
 	return s.ops, ok
@@ -376,14 +380,26 @@ func (s *mpScanner) disposition(value string, at int) bool {
 			f.hitLimit(rMPLimit, dNameTooLong, s.lim.MaxNameLen, at)
 			return false
 		}
+		// A part's name reaches PHP as a form field's does, mangled the same way (see ambiguousParameter), so the form
+		// rules for names that PHP and the rules read differently apply to it too.
+		if protoName([]byte(name)) && f.hit(rFormProto, at, dNone) {
+			return false
+		}
+		if s.shapes != nil && ambiguousParameter(s.shapes, name) && f.hit(rFormShape, at, dNone) {
+			return false
+		}
 		if s.names != nil && !strings.HasSuffix(name, "[]") {
 			s.fold = appendFolded(s.fold[:0], []byte(name), false)
-			if _, dup := s.names[string(s.fold)]; dup {
-				if f.hit(rMPDupName, at, dNone) {
+			if first, dup := s.names[string(s.fold)]; dup {
+				found := rMPDupName
+				if first != name && f.active(rFormAlias) {
+					found = rFormAlias // Role beside role: a value hidden from whatever matches the text of a name
+				}
+				if f.hit(found, at, dNone) {
 					return false
 				}
 			} else {
-				s.names[string(s.fold)] = struct{}{}
+				s.names[string(s.fold)] = name
 			}
 		}
 	}
