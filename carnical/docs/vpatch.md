@@ -136,7 +136,9 @@ header or cookie can be repeated, and one copy that matched would switch the neg
 copy that does not, so such a rule is skipped and reported (`negated-on-many-values`). A Suricata
 `http.header` content that is not a whole header line is matched against header values only, while
 Suricata also searches the names, so the report counts it as an approximation
-(`header-content-values-only`). YAML rule
+(`header-content-values-only`). Suricata's `http.host` is the host lower-cased and without its port; the
+converted condition lower-cases the Host but keeps any port, which the report counts as an approximation
+(`http-host-port-kept`); `http.host.raw` is matched as sent. YAML rule
 files that nest flow collections more than 24 deep, counted across lines, are refused as
 `yaml-unsafe` before they are parsed.
 

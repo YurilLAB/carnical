@@ -27,6 +27,9 @@ func (c *cvt) groupConds(g *group) ([]vpatch.Condition, error) {
 	if spec.header {
 		return c.headerConds(g)
 	}
+	if g.buf == "http.host" {
+		c.approximate("http-host-port-kept")
+	}
 	xf := append(append([]string(nil), spec.base...), g.xforms...)
 	var out []vpatch.Condition
 	var seg []*atom

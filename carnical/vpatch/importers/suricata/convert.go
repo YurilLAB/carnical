@@ -49,7 +49,9 @@ type bufSpec struct {
 	header  bool     // the buffer is the whole header block, which needs the header-line handling in headerConds
 }
 
-// buffers are the request buffers this converter can express. http.uri is Suricata's normalised URI, which the model reaches as the
+// buffers are the request buffers this converter can express. http.host is Suricata's normalised host name, lower-cased and
+// without its port; the model reaches it as the Host lower-cased, with the port still on, which the report counts as an
+// approximation (http-host-port-kept). http.uri is Suricata's normalised URI, which the model reaches as the
 // URI as received plus one round of percent-decoding. A content with no buffer at all is matched against the raw request, so it
 // is looked for in the URI, the header values and the body.
 var buffers = map[string]bufSpec{
@@ -59,7 +61,7 @@ var buffers = map[string]bufSpec{
 	"http.request_body": {targets: []string{vpatch.TargetBody}},
 	"http.cookie":       {targets: []string{"header:cookie"}},
 	"http.user_agent":   {targets: []string{"header:user-agent"}},
-	"http.host":         {targets: []string{"header:host"}},
+	"http.host":         {targets: []string{"header:host"}, base: []string{"lowercase"}},
 	"http.host.raw":     {targets: []string{"header:host"}},
 	"http.referer":      {targets: []string{"header:referer"}},
 	"http.content_type": {targets: []string{"header:content-type"}},
