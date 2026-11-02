@@ -188,6 +188,8 @@ func TestParseCredentials(t *testing.T) {
 		{"an upper-case fingerprint", edit(func(r *CredentialRecord) { r.CertSPKI = []string{strings.ToUpper(r.CertSPKI[0])} }), false},
 		{"a bad signing key", edit(func(r *CredentialRecord) { r.SigningKey = key[:20] }), false},
 		{"a signing key with padding", edit(func(r *CredentialRecord) { r.SigningKey = key + "=" }), false},
+		{"a signing key with a line break inside", edit(func(r *CredentialRecord) { r.SigningKey = key[:20] + "\n" + key[20:] }), false},
+		{"a signing key with a line break after it", edit(func(r *CredentialRecord) { r.SigningKey = key + "\r\n" }), false},
 		{"tenants as a number", edit(func(r *CredentialRecord) { r.Tenants = json.RawMessage(`5`) }), false},
 		{"tenants as another word", edit(func(r *CredentialRecord) { r.Tenants = json.RawMessage(`"everything"`) }), false},
 		{"tenants missing", edit(func(r *CredentialRecord) { r.Tenants = nil }), false},

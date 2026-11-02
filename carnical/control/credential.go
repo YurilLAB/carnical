@@ -20,6 +20,7 @@ import (
 	"regexp"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -345,8 +346,9 @@ func (r CredentialRecord) Credential() (Credential, error) {
 		}
 		c.Certs = append(c.Certs, f)
 	}
+	// The decoder skips line breaks, which would give one key more than one spelling.
 	key, err := base64.RawURLEncoding.Strict().DecodeString(r.SigningKey)
-	if err != nil || len(key) != ed25519.PublicKeySize {
+	if err != nil || len(key) != ed25519.PublicKeySize || strings.ContainsAny(r.SigningKey, "\r\n") {
 		return Credential{}, errors.New("signing_key must be 43 characters of base64url (an Ed25519 public key)")
 	}
 	c.SigningKey = ed25519.PublicKey(key)
