@@ -10,20 +10,65 @@ permissions: {}
 
 jobs:
   fuzz:
-    name: Fuzz tests
+    name: Fuzz tests (${{ matrix.name }})
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
       contents: read
       issues: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Coraza's own operators and transformations, 3 minutes per target.
+          - name: coraza
+            packages: ""
+            fuzz-time: 3m
+          # Carnical's parsers and request paths: every Fuzz target the packages define, 1 minute each.
+          - name: carnical formats
+            packages: ./formats
+            fuzz-time: 1m
+          - name: carnical apiguard
+            packages: ./apiguard
+            fuzz-time: 1m
+          - name: carnical control and config
+            packages: ./control/... ./config ./notify
+            fuzz-time: 1m
+          - name: carnical policy, vpatch and proxy
+            packages: ./policy ./vpatch/... ./netwatch ./proxy ./cmd/carnical
+            fuzz-time: 1m
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: '1.26.10'
       - run: go run mage.go fuzz
+        env:
+          FUZZ_PACKAGES: ${{ matrix.packages }}
+          FUZZ_TIME: ${{ matrix.fuzz-time }}
+      # A failing target writes the input that broke it under testdata/fuzz; keep those so the crash can be replayed.
+      - name: Collect failing inputs
+        if: failure()
+        run: |
+          mkdir -p build/fuzz-failures
+          git ls-files --others --exclude-standard -- '**/testdata/fuzz/**' | while read -r f; do
+            mkdir -p "build/fuzz-failures/$(dirname "$f")"
+            cp "$f" "build/fuzz-failures/$f"
+          done
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: fuzz-failures-${{ strategy.job-index }}
+          path: build/fuzz-failures
+          if-no-files-found: ignore
+          retention-days: 14
       - run: |
-          gh issue create --title "$GITHUB_WORKFLOW #$GITHUB_RUN_NUMBER failed" \
+          gh issue create --title "$GITHUB_WORKFLOW ($MATRIX_NAME) #$GITHUB_RUN_NUMBER failed" \
                           --body "See [$GITHUB_WORKFLOW #$GITHUB_RUN_NUMBER](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)."
         if: failure() && github.run_attempt == 1
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          MATRIX_NAME: ${{ matrix.name }}

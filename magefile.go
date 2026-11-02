@@ -199,8 +199,18 @@ func Coverage() error {
 	return sh.RunV("go", "tool", "cover", "-html=build/coverage.txt", "-o", "build/coverage.html")
 }
 
-// Fuzz runs fuzz tests.
+// Fuzz runs fuzz tests. FUZZ_TIME sets how long each target runs (3m by default). FUZZ_PACKAGES, a space-separated list
+// of package patterns in the carnical module (such as "./formats ./control/..."), fuzzes every target in those packages
+// instead of Coraza's own. Every target runs even after one fails, so one crash does not hide another.
 func Fuzz() error {
+	fuzzTime := os.Getenv("FUZZ_TIME")
+	if fuzzTime == "" {
+		fuzzTime = "3m"
+	}
+	if patterns := strings.Fields(os.Getenv("FUZZ_PACKAGES")); len(patterns) > 0 {
+		return fuzzCarnical(fuzzTime, patterns)
+	}
+
 	// Go must be run once per test when fuzzing
 	tests := []struct {
 		pkg   string
@@ -223,16 +233,59 @@ func Fuzz() error {
 		},
 	}
 
+	var failed []string
 	for _, pkgTests := range tests {
 		for _, test := range pkgTests.tests {
 			fmt.Println("Running", test)
-			if err := sh.RunV("go", "test", "-fuzz="+test, "-fuzztime=3m", pkgTests.pkg); err != nil {
-				return err
+			if err := sh.RunV("go", "test", "-run", "^$", "-fuzz="+test, "-fuzztime="+fuzzTime, pkgTests.pkg); err != nil {
+				failed = append(failed, pkgTests.pkg+" "+test)
 			}
 		}
 	}
+	return fuzzFailures(failed)
+}
 
-	return nil
+// fuzzCarnical fuzzes every Fuzz target that go test lists in the given carnical packages.
+func fuzzCarnical(fuzzTime string, patterns []string) error {
+	out, err := sh.Output("go", append([]string{"-C", "carnical", "test", "-list", "^Fuzz"}, patterns...)...)
+	if err != nil {
+		return fmt.Errorf("listing fuzz targets: %w", err)
+	}
+	type target struct{ pkg, name string }
+	var targets []target
+	var pending []string
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		switch {
+		case len(fields) == 1 && strings.HasPrefix(fields[0], "Fuzz"):
+			pending = append(pending, fields[0])
+		case len(fields) >= 2 && fields[0] == "ok":
+			for _, name := range pending {
+				targets = append(targets, target{pkg: fields[1], name: name})
+			}
+			pending = nil
+		default:
+			pending = nil
+		}
+	}
+	if len(targets) == 0 {
+		return fmt.Errorf("no fuzz targets in %s", strings.Join(patterns, " "))
+	}
+	var failed []string
+	for _, tg := range targets {
+		fmt.Println("Running", tg.pkg, tg.name)
+		if err := sh.RunV("go", "-C", "carnical", "test", "-run", "^$", "-fuzz", "^"+tg.name+"$", "-fuzztime", fuzzTime, tg.pkg); err != nil {
+			failed = append(failed, tg.pkg+" "+tg.name)
+		}
+	}
+	return fuzzFailures(failed)
+}
+
+func fuzzFailures(failed []string) error {
+	if len(failed) == 0 {
+		return nil
+	}
+	return fmt.Errorf("fuzz targets failed:\n  %s", strings.Join(failed, "\n  "))
 }
 
 // Doc runs godoc, access at http://localhost:6060.
