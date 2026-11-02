@@ -31,8 +31,10 @@ var (
 	// value is read as most parsers read it, double-quoted up to the next quote or bare up to a ';', a space or a
 	// quote; executablePHPName reads it again as PHP does.
 	filenameRe = regexp.MustCompile(`(?i)filename(\*[0-9]*\*?)?[ \t]*=[ \t]*(?:"([^"\r\n]*)"|([^;\s"]*))`)
-	// Opening tags of server-side scripts. <?xml is not one.
-	scriptRe = regexp.MustCompile(`(?i)<\?php|<\?=|<%@|<%=|<script\s+language\s*=\s*["']?php`)
+	// Opening tags of server-side scripts. <?xml is not one. The long ones are taken as they are; a short one (submatch 1)
+	// is three bytes that compressed data holds about once in 5 MB, so it counts only where script source follows it
+	// (see scriptFollows).
+	scriptRe = regexp.MustCompile(`(?i)<\?php|<script\s+language\s*=\s*["']?php|<script\s+runat\s*=\s*["']?server|<jsp:(?:scriptlet|declaration|expression)|(<\?[=\s]|<%[@=!\s])`)
 	phpExt   = regexp.MustCompile(`^php[0-9]?$`)
 	// A parameter whose name starts with filename*, extended (filename*=) or continued (filename*0=), which Go reads
 	// and PHP does not; and any file name at all, without which no part is a file to anyone.
@@ -43,6 +45,7 @@ var (
 var executableExt = map[string]bool{
 	"phtml": true, "pht": true, "phps": true, "phar": true, "pgif": true, "shtml": true, "shtm": true, "inc": false,
 	"asp": true, "aspx": true, "ashx": true, "asmx": true, "asa": true, "cer": true, "cdx": true,
+	"cshtml": true, "vbhtml": true, "svc": true, "asax": true, "cfm": true, "cfml": true, "cfc": true,
 	"jsp": true, "jspx": true, "jspa": true, "jsw": true, "jsv": true, "jspf": true,
 	"cgi": true, "pl": true, "py": true, "sh": true, "bash": true, "exe": true, "dll": true, "bat": true, "cmd": true,
 }
@@ -415,7 +418,7 @@ func scriptInFile(body, delim []byte) bool {
 				end = e + 2 // up to the delimiter itself
 			}
 			if content >= to {
-				if scriptRe.Match(body[from:to]) {
+				if holdsScript(body[from:to]) {
 					return true
 				}
 				from = content
@@ -423,7 +426,80 @@ func scriptInFile(body, delim []byte) bool {
 			to = max(to, end)
 		}
 	}
-	return scriptRe.Match(body[from:to])
+	return holdsScript(body[from:to])
+}
+
+// holdsScript reports a server-side script opening tag in a file's content. Short tags inside a long string could each have
+// what follows them read again, so the reading is bounded by the content's size; content that runs out of it is taken for a
+// script, which no file reaches by chance (random data reads about eight bytes a tag).
+func holdsScript(b []byte) bool {
+	budget := 4*len(b) + 1<<16
+	for _, m := range scriptRe.FindAllSubmatchIndex(b, -1) {
+		if m[2] < 0 {
+			return true
+		}
+		script, read := scriptFollows(b[m[1]:])
+		if budget -= read; script || budget < 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// scriptFollows reports whether the bytes after a short opening tag could be the script it opens. Outside its strings,
+// comments and heredocs, PHP refuses a control character other than tab, CR and LF, and so does Java (JSP) and
+// VBScript (ASP): those bytes, which random data is full of, mean the tag is not one. Anything goes inside a string or a
+// comment, so they are skipped, as is whatever follows a closing tag. Script source reaches 64 bytes without such a
+// byte, or a closing tag, or the end; random data almost never does.
+func scriptFollows(b []byte) (script bool, read int) {
+	const want, most = 64, 4096
+	b = b[:min(len(b), most)]
+	clean := 0
+	for i := 0; i < len(b); {
+		c := b[i]
+		next := byte(0)
+		if i+1 < len(b) {
+			next = b[i+1]
+		}
+		switch {
+		case (c == '?' || c == '%') && next == '>':
+			return true, i
+		case c == '"' || c == '\'' || c == '`':
+			j := i + 1
+			for j < len(b) && b[j] != c {
+				if b[j] == '\\' {
+					j++
+				}
+				j++
+			}
+			i = j + 1
+			continue
+		case c == '#' || c == '/' && next == '/':
+			j := bytes.IndexByte(b[i:], '\n')
+			if j < 0 {
+				return true, len(b)
+			}
+			i += j + 1
+			continue
+		case c == '/' && next == '*':
+			j := bytes.Index(b[i+2:], []byte("*/"))
+			if j < 0 {
+				return true, len(b)
+			}
+			i += j + 4
+			continue
+		case c == '<' && bytes.HasPrefix(b[i:], []byte("<<<")):
+			return true, i
+		case c < 0x20 && c != '\t' && c != '\n' && c != '\r' || c == 0x7f:
+			return false, i
+		}
+		clean++
+		if clean >= want {
+			return true, i
+		}
+		i++
+	}
+	return true, len(b)
 }
 
 // seeker finds where a pattern next is, for places asked about in increasing order, so that the body is searched once
