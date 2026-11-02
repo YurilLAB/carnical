@@ -1521,6 +1521,7 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 				// The health listener must be given a port (it refuses port 0), so the test names one.
 				network, host := "tcp", "127.0.0.1"
 				if tc.healthAlias == "ipv6-expanded" {
+					needIPv6(t)
 					network, host = "tcp6", "::1"
 				}
 				port := quietPort(t, network, host)
@@ -2594,6 +2595,16 @@ func quietPort(t *testing.T, network, host string) string {
 	}
 	t.Fatal("found no free port below the range the system gives out")
 	return ""
+}
+
+// needIPv6 skips a test on a machine without an IPv6 loopback, such as a container started with IPv6 off.
+func needIPv6(t *testing.T) {
+	t.Helper()
+	ln, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Skipf("no IPv6 loopback: %v", err)
+	}
+	ln.Close()
 }
 
 // listeningAddress waits for a proxy that was started on port 0 to say in its log which address it took.

@@ -88,6 +88,9 @@ func TestTheProxyServesOnASocketSystemdHandsOver(t *testing.T) {
 	defer client.CloseIdleConnections()
 	for _, tc := range []struct{ name, host string }{{"IPv4", "127.0.0.1"}, {"IPv6", "::1"}} {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.name == "IPv6" {
+				needIPv6(t)
+			}
 			deadline := time.Now().Add(20 * time.Second)
 			for {
 				resp, err := client.Get("http://" + net.JoinHostPort(tc.host, fmt.Sprint(ln.Addr().(*net.TCPAddr).Port)) + "/page")
