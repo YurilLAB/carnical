@@ -164,19 +164,33 @@ func isUnreserved(b byte) bool {
 	return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' || b == '-' || b == '.' || b == '_' || b == '~'
 }
 
-// normHost reduces a Host header to the name it carries: lower case, no port, no trailing dot.
+// normHost reduces a Host header to the name it carries: lower case, no port, no trailing dot. A Host whose port is
+// not digits (RFC 3986: port = *DIGIT) carries no name: shop.example:.evil.example is not shop.example, and is
+// forwarded as it was sent.
 func normHost(h string) string {
 	h = strings.ToLower(strings.TrimSpace(h))
 	if strings.HasPrefix(h, "[") {
-		if end := strings.Index(h, "]"); end > 0 {
-			return h[:end+1]
+		end := strings.Index(h, "]")
+		if end < 0 {
+			return h
 		}
-		return h
+		if rest := h[end+1:]; rest != "" && (rest[0] != ':' || !digits(rest[1:])) {
+			return ""
+		}
+		return h[:end+1]
 	}
-	if host, _, err := net.SplitHostPort(h); err == nil {
+	if host, port, err := net.SplitHostPort(h); err == nil {
+		if !digits(port) {
+			return ""
+		}
 		h = host
 	}
 	return strings.TrimSuffix(h, ".")
+}
+
+// digits reports a port as RFC 3986 spells one: digits only, at most five; empty is allowed.
+func digits(port string) bool {
+	return len(port) <= 5 && strings.Trim(port, "0123456789") == ""
 }
 
 // headersThatSteerTheApplication are control headers some frameworks trust. A client may send them to skip a
