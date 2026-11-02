@@ -460,7 +460,7 @@ func wpRestRouteMultipart(rv *reqView) (value string, arr, found bool) {
 		if part.FileName() != "" {
 			continue // a file goes to $_FILES
 		}
-		n, isArr := phpName(part.FormName())
+		n, isArr := phpName(partName(part))
 		if n != "rest_route" {
 			continue
 		}
@@ -473,6 +473,16 @@ func wpRestRouteMultipart(rv *reqView) (value string, arr, found bool) {
 		}
 		value, arr, found = string(b), isArr, true
 	}
+}
+
+// partName is a part's name as PHP reads it: the name parameter of its Content-Disposition, whatever the disposition type.
+// Go's FormName gives one only for form-data, and PHP files attachment; name="rest_route" in $_POST all the same.
+func partName(p *multipart.Part) string {
+	_, params, err := mime.ParseMediaType(p.Header.Get("Content-Disposition"))
+	if err != nil {
+		return ""
+	}
+	return params["name"]
 }
 
 // wpIndexPath maps a path under /index.php/wp-json, which WordPress serves as the REST route after it, to that route.

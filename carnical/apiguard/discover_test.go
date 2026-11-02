@@ -339,6 +339,7 @@ func TestDiscoveryReadsTheWordPressRESTIndex(t *testing.T) {
 		{"a known route in rest_route", mk("GET", "/?rest_route=/wp/v2/posts/7"), false},
 		{"rest_route given twice", mk("GET", "/?rest_route=/wp/v2/unknown&rest_route=/wp/v2/posts/7"), true},
 		{"rest_route in a multipart body", mk("POST", "/", withBody("multipart/form-data; boundary=XX", mpBody)), true},
+		{"rest_route in a multipart part that is not form-data", mk("POST", "/", withBody("multipart/form-data; boundary=XX", strings.Replace(mpBody, "form-data;", "attachment;", 1))), true},
 		{"an unknown route under index.php", mk("GET", "/index.php/wp-json/wp/v2/unknown"), true},
 		{"a known route under index.php", mk("GET", "/index.php/wp-json/wp/v2/posts/7"), false},
 	} {
