@@ -584,6 +584,25 @@ func TestCredentialBackoffNeverLocksOutTheRealCaller(t *testing.T) {
 	if w := h.do(reqOpts{target: status}); w.Code != 200 {
 		t.Fatalf("the real caller was locked out: %d %s", w.Code, w.Body.String())
 	}
+	// each failure extends the wait, so a trickle of them keeps it going for hours; a failure of another kind during it,
+	// such as the real key used after it was revoked, is still audited, once
+	for i := 0; i < 12; i++ {
+		h.clock.advance(10 * time.Minute)
+		h.do(reqOpts{target: status, keyAs: "ui-b", remote: "203.0.113." + strconv.Itoa(30+i) + ":4000"})
+	}
+	h.setCred("ui-a", func(c *Credential) { c.Revoked = true })
+	before := len(h.audit.all())
+	h.do(reqOpts{target: status, remote: "192.0.2.77:5000"})
+	h.do(reqOpts{target: status, remote: "192.0.2.78:5000"})
+	revoked := 0
+	for _, e := range h.audit.all()[before:] {
+		if e.Credential == "ui-a" && e.Outcome == "auth_failed" && e.Detail == "revoked" {
+			revoked++
+		}
+	}
+	if revoked != 1 {
+		t.Fatalf("%d audit lines for the revoked credential's uses during the wait, want 1", revoked)
+	}
 }
 
 // An unknown credential id is treated exactly like a known one, so the sequence of answers cannot tell them apart.

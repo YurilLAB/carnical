@@ -418,8 +418,8 @@ func (s *Server) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 		var credWait time.Duration
 		quiet := false
 		if ar.claimed != "" {
-			// A failure for a credential id that is already waiting is not audited: the one that started the wait was.
-			quiet = s.fails.wait("cred:"+ar.claimed, now) > 0
+			// A failure for a credential id that is already waiting is not audited if one with the same reason was.
+			quiet = !s.fails.audit("cred:"+ar.claimed, ar.reason, now)
 			s.fails.fail("cred:"+ar.claimed, now)
 			credWait = s.fails.wait("cred:"+ar.claimed, now)
 		}

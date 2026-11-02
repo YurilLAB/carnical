@@ -6,6 +6,7 @@ import (
 	"container/heap"
 	"crypto/sha256"
 	"runtime"
+	"slices"
 	"sync"
 	"time"
 )
@@ -148,6 +149,8 @@ type failState struct {
 	last  time.Time
 	until time.Time
 	noted bool
+	// reasons are the failure reasons already audited since the key began waiting.
+	reasons []string
 }
 
 func newFailureLimiter(maxKeys, threshold int, base, max, decay time.Duration) *failureLimiter {
@@ -163,6 +166,28 @@ func (l *failureLimiter) wait(key string, now time.Time) time.Duration {
 		return 0
 	}
 	return s.until.Sub(now)
+}
+
+// audit reports whether a failure for key with this reason gets its own audit line: always while the key is not
+// waiting, and while it waits, once for each reason. Each failure during a wait extends it, so a trickle of failures
+// keeps a key waiting for good; one line per reason means a failure of a new kind, such as the use of a revoked
+// credential, is still recorded however long the wait has run. Call it before fail records the same failure.
+func (l *failureLimiter) audit(key, reason string, now time.Time) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	s := l.m[key]
+	if s == nil {
+		return true
+	}
+	if !s.until.After(now) {
+		s.reasons = append(s.reasons[:0], reason)
+		return true
+	}
+	if slices.Contains(s.reasons, reason) {
+		return false
+	}
+	s.reasons = append(s.reasons, reason)
+	return true
 }
 
 // fail records a failure and returns the wait it earned (0 below the threshold).

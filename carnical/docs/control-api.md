@@ -99,7 +99,8 @@ Failures are rate limited, and the two limits are deliberately different:
 * **Per source address** (an IPv6 address counts as its /64): after 3 failures the source waits 1 second, then doubling to a
   maximum of 15 minutes. While it waits, even a perfectly good request from it is refused unread (`429 too_many_failures`).
 * **Per credential id, as the request claimed it** (known or not, so this is not an oracle): from the same threshold a failing
-  request for that id gets `429` instead of `401`, and the failure is not audited one by one. But **a request that
+  request for that id gets `429` instead of `401`, and the failure is not audited one by one: while the id waits, each
+  reason (`bad_signature`, `revoked`, ...) has one line, however long further failures keep the wait going. But **a request that
   authenticates is never refused because of this counter.** If it were, anyone holding a stolen client certificate could lock
   the real UI out of its own credential by failing on its behalf.
 
