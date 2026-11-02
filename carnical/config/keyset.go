@@ -201,13 +201,28 @@ func AcceptKeySet(raw []byte, roots []ed25519.PublicKey, now time.Time, store Se
 	if err != nil {
 		return nil, err
 	}
-	if ks.Seq <= floor {
+	if ks.Seq < floor {
 		return nil, ErrRollback
 	}
-	if err := store.Advance(KeySetAnyRoot, ks.Seq); err != nil {
+	// The root's own record is written first, then KeySetAnyRoot. A store failure between the two leaves this list's
+	// number in its root's record only; offered again, the same list finishes the accept rather than being refused as
+	// not newer, which would leave the edge with no list it may load.
+	own, err := store.Last(KeySetStream(ks.RootID))
+	if err != nil {
 		return nil, err
 	}
-	if err := store.Advance(KeySetStream(ks.RootID), ks.Seq); err != nil {
+	if ks.Seq == floor {
+		anyRoot, err := store.Last(KeySetAnyRoot)
+		if err != nil {
+			return nil, err
+		}
+		if own != ks.Seq || anyRoot >= ks.Seq {
+			return nil, ErrRollback
+		}
+	} else if err := store.Advance(KeySetStream(ks.RootID), ks.Seq); err != nil {
+		return nil, err
+	}
+	if err := store.Advance(KeySetAnyRoot, ks.Seq); err != nil {
 		return nil, err
 	}
 	return ks, nil

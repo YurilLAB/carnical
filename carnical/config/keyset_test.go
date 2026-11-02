@@ -307,6 +307,30 @@ func TestAnOlderKeyListCannotBringBackARevokedKey(t *testing.T) {
 			t.Fatalf("loading an older list after the other root was unpinned: %v", err)
 		}
 	})
+	for _, failing := range []string{KeySetStream(KeyID(rootPub)), KeySetAnyRoot} {
+		t.Run("an accept cut short writing "+failing+" can be offered again", func(t *testing.T) {
+			store := &failingStream{MemSeqStore: NewMemSeqStore()}
+			if _, err := AcceptKeySet(raw1, roots, t0, store); err != nil {
+				t.Fatal(err)
+			}
+			store.fail = failing
+			if _, err := AcceptKeySet(raw2, roots, t0, store); !errors.Is(err, ErrStore) {
+				t.Fatalf("a store failure: %v", err)
+			}
+			store.fail = ""
+			if _, err := AcceptKeySet(raw2, roots, t0, store); err != nil {
+				t.Fatalf("the same list once the store works again: %v", err)
+			}
+			if _, err := LoadKeySet(raw2, roots, t0, store); err != nil {
+				t.Fatalf("loading it at start-up: %v", err)
+			}
+			for _, raw := range [][]byte{raw1, raw2} {
+				if _, err := AcceptKeySet(raw, roots, t0, store); !errors.Is(err, ErrRollback) {
+					t.Fatalf("a list no newer than the accepted one: %v", err)
+				}
+			}
+		})
+	}
 	t.Run("a rejected list does not use up its sequence number", func(t *testing.T) {
 		store := NewMemSeqStore()
 		bad := flipOneByte(raw1)
@@ -320,6 +344,19 @@ func TestAnOlderKeyListCannotBringBackARevokedKey(t *testing.T) {
 			t.Fatalf("the good list after the bad one: %v", err)
 		}
 	})
+}
+
+// failingStream is a store whose writes to one stream fail, as a full disk would make them.
+type failingStream struct {
+	*MemSeqStore
+	fail string
+}
+
+func (f *failingStream) Advance(stream string, seq uint64) error {
+	if stream == f.fail {
+		return storeFailure(errors.New("disk full"))
+	}
+	return f.MemSeqStore.Advance(stream, seq)
 }
 
 func flipOneByte(raw []byte) []byte {
