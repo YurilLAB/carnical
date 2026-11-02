@@ -502,12 +502,17 @@ func jsDecode(s string) string {
 			b = appendCP(b, 0x10000+(hi-0xD800)<<10+(lo-0xDC00), false)
 			i += 11
 		case d == 'u' && len(rest) >= 3 && rest[0] == '{' && isHex(rest[1]):
-			k := 1
-			for k < len(rest) && k <= 6 && isHex(rest[k]) {
+			// JavaScript takes any number of leading zeros, so only the digits after them are counted.
+			z := 1
+			for z < len(rest) && rest[z] == '0' {
+				z++
+			}
+			k := z
+			for k < len(rest) && k-z < 6 && isHex(rest[k]) {
 				k++
 			}
 			if k < len(rest) && rest[k] == '}' {
-				b = appendCP(b, hexVal(rest[1:k]), true)
+				b = appendCP(b, hexVal(rest[z:k]), true)
 				i += 2 + k
 				break
 			}
