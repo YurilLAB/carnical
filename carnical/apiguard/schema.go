@@ -617,7 +617,7 @@ func (s *Schema) validObject(o map[string]any, c *vctx, depth int) bool {
 		}
 		// A required read-only property is only required in a response.
 		if c.request {
-			if ps := s.Properties[name]; ps != nil && ps.ReadOnly {
+			if ps := s.Properties[name]; ps.readOnly(0) {
 				continue
 			}
 		}
@@ -682,12 +682,29 @@ func (s *Schema) validObject(o map[string]any, c *vctx, depth int) bool {
 	return true
 }
 
+// readOnly reports a schema that is read-only itself or through a member of its allOf, all of which apply to the value: OpenAPI
+// 3.0 can put nothing beside a $ref, so a property is often written {"allOf":[{"$ref": ...}]}, with readOnly on what it refers to.
+func (s *Schema) readOnly(depth int) bool {
+	if s == nil || depth > 16 {
+		return false
+	}
+	if s.ReadOnly {
+		return true
+	}
+	for _, sub := range s.AllOf {
+		if sub.readOnly(depth + 1) {
+			return true
+		}
+	}
+	return false
+}
+
 // validProp checks the value a request or a response gives a declared property. A read-only property must not be in a request at
 // all. The path names the property as the schema spells it, never as the value's key does.
 func (s *Schema) validProp(name string, val any, c *vctx, depth int) bool {
 	ps := s.Properties[name]
 	c.path = append(c.path, name)
-	if c.request && ps != nil && ps.ReadOnly {
+	if c.request && ps.readOnly(0) {
 		ok := c.fail(vkReadOnly)
 		c.path = c.path[:len(c.path)-1]
 		return ok

@@ -79,6 +79,9 @@ func TestSchemaValidation(t *testing.T) {
 		{"pattern match", `{"type":"string","pattern":"^[a-z]+$"}`, `"abc"`, true, vkNone},
 		{"pattern mismatch", `{"type":"string","pattern":"^[a-z]+$"}`, `"abc1"`, true, vkPattern},
 		{"a pattern is not anchored unless it says so", `{"type":"string","pattern":"b"}`, `"abc"`, true, vkNone},
+		{"a property read-only through its allOf", `{"type":"object","properties":{"id":{"allOf":[{"type":"string","readOnly":true}]}}}`, `{"id":"x"}`, true, vkReadOnly},
+		{"a property whose allOf is not read-only", `{"type":"object","properties":{"id":{"allOf":[{"type":"string"}]}}}`, `{"id":"x"}`, true, vkNone},
+		{"a required property read-only through its allOf", `{"type":"object","required":["id"],"properties":{"id":{"allOf":[{"readOnly":true}]}}}`, `{}`, true, vkNone},
 		// A pattern means what ECMA-262 says, not what RE2 reads the same text as.
 		{"an ECMA dot does not match CR", `{"type":"string","pattern":"^.+$"}`, `"a\rb"`, true, vkPattern},
 		{"an ECMA dot does not match a line separator", `{"type":"string","pattern":"^.+$"}`, `"a\u2028b"`, true, vkPattern},
