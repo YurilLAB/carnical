@@ -370,7 +370,7 @@ func (s *mpScanner) disposition(value string, at int) bool {
 	if s.formData && !hasName && f.hit(rMPDisp, at, dNoName) {
 		return false
 	}
-	s.inOps = s.formData && name == "operations" && !hasFile && !hasStar
+	s.inOps = s.formData && strings.TrimLeft(name, " ") == "operations" && !hasFile && !hasStar // PHP drops leading spaces
 	if hasName {
 		if len(name) > s.lim.MaxNameLen {
 			f.hitLimit(rMPLimit, dNameTooLong, s.lim.MaxNameLen, at)

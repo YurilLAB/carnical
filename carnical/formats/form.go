@@ -24,11 +24,13 @@ type gqlParams struct {
 func (g *gqlParams) present() bool { return g.hasQuery || g.hasVars || g.hasOp || g.hasExt }
 
 func (g *gqlParams) set(name, value string) {
-	if methodOverrideParam(name) {
+	// PHP drops the spaces in front of a form or query name, so " query" is the query to a PHP server.
+	php := strings.TrimLeft(name, " ")
+	if methodOverrideParam(php) {
 		g.override = true
 		return
 	}
-	canonical := graphQLParamName(name)
+	canonical := graphQLParamName(php)
 	g.caseAlias = g.caseAlias || canonical != "" && name != canonical
 	switch canonical {
 	case "query":
@@ -174,7 +176,7 @@ func (fs *formScanner) pair(pair []byte, at int) bool {
 			fs.seen[string(fs.fold)] = nameRaw
 		}
 	}
-	if fs.capture != nil && (graphQLParamName(string(fs.name)) != "" || methodOverrideParam(string(fs.name))) {
+	if php := strings.TrimLeft(string(fs.name), " "); fs.capture != nil && (graphQLParamName(php) != "" || methodOverrideParam(php)) {
 		fs.capture.set(string(fs.name), string(fs.val))
 	}
 	return true
