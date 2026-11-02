@@ -183,6 +183,9 @@ type yamlWalker struct {
 	dup   bool
 	nodes int
 	fold  []byte
+	// anchors are the nodes the document's anchors name so far, so that a key given as an alias is compared as the key
+	// it stands for.
+	anchors map[string]ast.Node
 }
 
 // node counts the nodes under n and checks depth and duplicate keys. Aliases are counted as one node and never followed.
@@ -211,6 +214,12 @@ func (w *yamlWalker) node(n ast.Node, depth int) bool {
 			}
 		}
 	case *ast.AnchorNode:
+		if w.dup && x.Name != nil && x.Name.GetToken() != nil {
+			if w.anchors == nil {
+				w.anchors = map[string]ast.Node{}
+			}
+			w.anchors[x.Name.GetToken().Value] = x.Value
+		}
 		return w.node(x.Value, depth)
 	case *ast.TagNode:
 		return !w.f.hit(rYAMLTag, -1, dNone) && w.node(x.Value, depth)
@@ -218,6 +227,41 @@ func (w *yamlWalker) node(n ast.Node, depth int) bool {
 		return w.node(x.Value, depth)
 	}
 	return true
+}
+
+// keyText is the text of a mapping key as a parser reads it: what an explicit "? key", an anchor or an alias stands for,
+// and a quoted or block scalar's value rather than its first token.
+func (w *yamlWalker) keyText(n ast.Node) (string, bool) {
+	for range 8 { // an alias names an anchor that may itself hold one
+		switch x := n.(type) {
+		case nil:
+			return "", false
+		case *ast.MappingKeyNode:
+			n = x.Value
+		case *ast.AnchorNode:
+			n = x.Value
+		case *ast.TagNode:
+			n = x.Value
+		case *ast.AliasNode:
+			if x.Value == nil || x.Value.GetToken() == nil {
+				return "", false
+			}
+			n = w.anchors[x.Value.GetToken().Value]
+		case *ast.StringNode:
+			return x.Value, true
+		case *ast.LiteralNode:
+			if x.Value == nil {
+				return "", false
+			}
+			return x.Value.Value, true
+		default:
+			if t := n.GetToken(); t != nil {
+				return t.Value, true
+			}
+			return "", false
+		}
+	}
+	return "", false
 }
 
 func (w *yamlWalker) mapping(values []*ast.MappingValueNode, depth int) bool {
@@ -229,12 +273,18 @@ func (w *yamlWalker) mapping(values []*ast.MappingValueNode, depth int) bool {
 	if w.dup && len(values) > 1 {
 		seen = make(map[string]struct{}, len(values))
 	}
+	merges := 0
 	for _, v := range values {
 		if v == nil {
 			continue
 		}
-		if seen != nil && v.Key != nil && v.Key.GetToken() != nil && !v.Key.IsMergeKey() {
-			w.fold = appendFolded(w.fold[:0], []byte(v.Key.GetToken().Value), false)
+		if seen != nil && v.Key != nil && v.Key.IsMergeKey() {
+			// A second merge key in one mapping: parsers that allow it let the later one's keys win.
+			if merges++; merges > 1 && w.f.hit(rYAMLDup, -1, dNone) {
+				return false
+			}
+		} else if key, ok := w.keyText(v.Key); seen != nil && ok {
+			w.fold = appendFolded(w.fold[:0], []byte(key), false)
 			if _, dup := seen[string(w.fold)]; dup {
 				if w.f.hit(rYAMLDup, -1, dNone) {
 					return false
