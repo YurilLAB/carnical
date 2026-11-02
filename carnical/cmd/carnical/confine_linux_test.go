@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -38,6 +39,31 @@ func TestTheConfinedProxyStillDoesItsJob(t *testing.T) {
 		t.Fatalf("build: %v\n%s", err, out)
 	}
 
+	// Run as root, the proxy would keep root's capabilities, which the host audit rightly reports; so it runs as an
+	// unprivileged account with an empty bounding set, as the service unit starts it, and the root-only audit below then
+	// has a real service to look at.
+	var runAs *user.User
+	var cred *syscall.Credential
+	var wrap []string
+	if os.Geteuid() == 0 {
+		setpriv, err := exec.LookPath("setpriv")
+		if err != nil {
+			t.Skip("running as root with no setpriv to start the proxy as the service would be")
+		}
+		if runAs, err = user.Lookup("nobody"); err != nil {
+			t.Skipf("running as root with no unprivileged account to run the proxy as: %v", err)
+		}
+		uid, _ := strconv.ParseUint(runAs.Uid, 10, 32)
+		gid, _ := strconv.ParseUint(runAs.Gid, 10, 32)
+		cred = &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)}
+		wrap = []string{setpriv, "--reuid=" + runAs.Uid, "--regid=" + runAs.Gid, "--clear-groups", "--inh-caps=-all", "--bounding-set=-all", "--", bin}
+		for _, dir := range []string{filepath.Dir(bin), filepath.Dir(filepath.Dir(bin))} {
+			if err := os.Chmod(dir, 0o755); err != nil { // #nosec G302 -- a test directory the unprivileged proxy must reach
+				t.Fatal(err)
+			}
+		}
+	}
+
 	app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		io.Copy(io.Discard, r.Body)
 		fmt.Fprint(w, "reached the application")
@@ -57,12 +83,20 @@ func TestTheConfinedProxyStillDoesItsJob(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer os.RemoveAll(uploads)
+			if cred != nil {
+				if err := os.Chown(uploads, int(cred.Uid), int(cred.Gid)); err != nil {
+					t.Fatal(err)
+				}
+			}
 			args := []string{"-listen", addr, "-upstream", app.URL, "-origin-allow", "127.0.0.0/8", "-mode", "block", "-upload-dir", uploads, "-max-conns-per-ip", "-1"}
 			if confined {
 				args = append(args, "-confine", "-confine-connect", fmt.Sprint(appPort))
 			}
 			var logs lockedLog // written by the child while the test reads it
 			cmd := exec.Command(bin, args...)
+			if wrap != nil {
+				cmd = exec.Command(wrap[0], append(wrap[1:], args...)...)
+			}
 			cmd.Stdout, cmd.Stderr = &logs, &logs
 			if err := cmd.Start(); err != nil {
 				t.Fatal(err)
@@ -160,9 +194,11 @@ func TestTheConfinedProxyStillDoesItsJob(t *testing.T) {
 			}
 			// The host audit's own view of the same process: it must pass for the confined proxy and fail for the control, or
 			// it is not telling them apart.
-			me, err := user.Current()
-			if err != nil {
-				t.Fatal(err)
+			me := runAs
+			if me == nil {
+				if me, err = user.Current(); err != nil {
+					t.Fatal(err)
+				}
 			}
 			res := audit.Run(context.Background(), []audit.Check{host.Confined(host.OS{}, host.EdgeSpec{Exe: bin, User: me.Username})}, 10*time.Second).Results[0]
 			switch {
