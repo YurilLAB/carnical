@@ -642,7 +642,9 @@ SecRule REQUEST_HEADERS:X-CRS-Test "@rx ^.*$" \
 		t.Fatal(err)
 	}
 	runnerCfg := config.NewRunnerConfiguration(cfg)
-	runnerCfg.ReadTimeout = 3 * time.Second // Defaults to 1s but looks to be not enough in the CI
+	// This is a transport guard, not a parser cost assertion. Valid 64 KiB PL4
+	// fixtures can spend about three seconds in rule evaluation on Windows.
+	runnerCfg.ReadTimeout = 10 * time.Second
 	if err := runnerCfg.LoadPlatformOverrides(".ftw-overrides.yml"); err != nil {
 		t.Fatal(err)
 	}

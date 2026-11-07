@@ -37,7 +37,12 @@ const timeout = 500 * time.Millisecond
 // ```
 type rbl struct {
 	service  string
-	resolver *net.Resolver
+	resolver rblResolver
+}
+
+type rblResolver interface {
+	LookupHost(context.Context, string) ([]string, error)
+	LookupTXT(context.Context, string) ([]string, error)
 }
 
 var _ plugintypes.Operator = (*rbl)(nil)

@@ -6,7 +6,7 @@
 package operators
 
 import (
-	"errors"
+	"context"
 	"net"
 	"testing"
 
@@ -16,11 +16,16 @@ import (
 	"github.com/corazawaf/coraza/v3/internal/corazawaf"
 )
 
-type testLogger struct{ t *testing.T }
+type rblTestResolver struct{ mockdns.Resolver }
 
-func (l *testLogger) Printf(format string, v ...any) {
-	l.t.Helper()
-	l.t.Logf(format, v...)
+// net.Resolver treats a DNS answer with no TXT records as not found; mockdns's
+// in-process resolver instead returns an empty successful result.
+func (r *rblTestResolver) LookupTXT(ctx context.Context, name string) ([]string, error) {
+	txt, err := r.Resolver.LookupTXT(ctx, name)
+	if err == nil && len(txt) == 0 {
+		return nil, &net.DNSError{Err: "no such host", Name: name, IsNotFound: true}
+	}
+	return txt, err
 }
 
 func TestRbl(t *testing.T) {
@@ -31,8 +36,6 @@ func TestRbl(t *testing.T) {
 	if err != nil {
 		t.Fatal("Cannot init rbl operator")
 	}
-
-	logger := &testLogger{t}
 
 	zones := map[string]mockdns.Zone{
 		"valid_no_txt.xbl.spamhaus.org.": {
@@ -47,23 +50,9 @@ func TestRbl(t *testing.T) {
 			TXT: []string{"blocked"},
 		},
 	}
-	// mockdns takes a free TCP port and then binds UDP on the same number, which can be taken or reserved (Windows
-	// excludes UDP port ranges); each attempt gets a new TCP port.
-	var srv *mockdns.Server
-	for attempt := 0; attempt < 5; attempt++ {
-		srv, err = mockdns.NewServerWithLogger(zones, logger, false)
-		var bind *net.OpError
-		if err == nil || !errors.As(err, &bind) || bind.Op != "listen" {
-			break
-		}
-	}
-	if err != nil {
-		t.Fatalf("Cannot start mockdns server: %v", err)
-	}
-	defer srv.Close()
-
-	srv.PatchNet(op.(*rbl).resolver)
-	defer mockdns.UnpatchNet(op.(*rbl).resolver)
+	// Exercise the operator's DNS results without requiring one port number to
+	// be free for both TCP and UDP, or changing the process-wide default resolver.
+	op.(*rbl).resolver = &rblTestResolver{mockdns.Resolver{Zones: zones}}
 
 	t.Run("Valid hostname with no TXT record", func(t *testing.T) {
 		if op.Evaluate(nil, "valid_no_txt") {
