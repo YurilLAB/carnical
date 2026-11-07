@@ -263,7 +263,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p ../build/security-reports
-          go test -race ./crowdsec ./proxy -run 'TestStreamTransactions|TestBanExpiryAndOutages|TestSecureTransport|TestConcurrentReloadAndShutdown|TestRefusalsHold' -count=1 \
+          go test -race ./crowdsec ./proxy -run '^Test(StreamTransactions|BanExpiryAndOutages|SecureTransport|ConcurrentReloadAndShutdown|RefusalsHoldWithTheRuleSetOffAndAreRecorded|PersonCheckBudgets|ThePersonCheckIsOfferedEachRequest|MatchesAreReportedWithoutWhatTheVisitorSentUnlessAsked)$' -count=1 \
             | tee ../build/security-reports/crowdsec-races.log
           CGO_ENABLED=0 go build -o ../build/carnical-crowdsec ./cmd/carnical
       - name: Run real CrowdSec with mixed WAF traffic and outage controls

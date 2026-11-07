@@ -44,8 +44,33 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: '1.26.10'
-      - run: go run mage.go fuzz
+      - name: Run bounded fuzz workers and preserve diagnostics
+        shell: bash
+        run: |
+          mkdir -p build/fuzz-reports
+          # Go's ordinary test timeout does not bound fuzzing. Leave time in this job to retain evidence.
+          set +e
+          { time -p timeout --kill-after=30s 55m go run mage.go fuzz; } 2>&1 | tee build/fuzz-reports/run.log
+          pipeline=("${PIPESTATUS[@]}")
+          status=${pipeline[0]}
+          set -e
+          if [[ ${pipeline[1]} -ne 0 ]]; then
+            echo '[CARNICAL_FUZZ_REPORT_FAILED] could not retain the run log' >&2
+            exit "${pipeline[1]}"
+          fi
+          case "$status" in
+            0) code=CARNICAL_FUZZ_PASSED ;;
+            124) code=CARNICAL_FUZZ_TIMEOUT ;;
+            137|143) code=CARNICAL_FUZZ_TERMINATED ;;
+            *) code=CARNICAL_FUZZ_FAILED ;;
+          esac
+          if ! printf '%s exit=%s\n' "$code" "$status" | tee build/fuzz-reports/result.txt; then
+            echo '[CARNICAL_FUZZ_REPORT_FAILED] could not retain the result' >&2
+            exit 1
+          fi
+          exit "$status"
         env:
+          GOMAXPROCS: '2'
           FUZZ_PACKAGES: ${{ matrix.packages }}
           FUZZ_TIME: ${{ matrix.fuzz-time }}
       # A failing target writes the input that broke it under testdata/fuzz; keep those so the crash can be replayed.
@@ -58,11 +83,13 @@ jobs:
             cp "$f" "build/fuzz-failures/$f"
           done
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: failure()
+        if: ${{ !cancelled() }}
         with:
           name: fuzz-failures-${{ strategy.job-index }}
-          path: build/fuzz-failures
-          if-no-files-found: ignore
+          path: |
+            build/fuzz-failures
+            build/fuzz-reports
+          if-no-files-found: error
           retention-days: 14
       - run: |
           gh issue create --title "$GITHUB_WORKFLOW ($MATRIX_NAME) #$GITHUB_RUN_NUMBER failed" \

@@ -237,7 +237,7 @@ func Fuzz() error {
 	for _, pkgTests := range tests {
 		for _, test := range pkgTests.tests {
 			fmt.Println("Running", test)
-			if err := sh.RunV("go", "test", "-run", "^$", "-fuzz="+test, "-fuzztime="+fuzzTime, pkgTests.pkg); err != nil {
+			if err := sh.RunV("go", "test", "-run", "^$", "-parallel=2", "-fuzz="+test, "-fuzztime="+fuzzTime, pkgTests.pkg); err != nil {
 				failed = append(failed, pkgTests.pkg+" "+test)
 			}
 		}
@@ -249,7 +249,7 @@ func Fuzz() error {
 func fuzzCarnical(fuzzTime string, patterns []string) error {
 	out, err := sh.Output("go", append([]string{"-C", "carnical", "test", "-list", "^Fuzz"}, patterns...)...)
 	if err != nil {
-		return fmt.Errorf("listing fuzz targets: %w", err)
+		return fmt.Errorf("[CARNICAL_FUZZ_DISCOVERY_FAILED] listing fuzz targets: %w", err)
 	}
 	type target struct{ pkg, name string }
 	var targets []target
@@ -269,12 +269,12 @@ func fuzzCarnical(fuzzTime string, patterns []string) error {
 		}
 	}
 	if len(targets) == 0 {
-		return fmt.Errorf("no fuzz targets in %s", strings.Join(patterns, " "))
+		return fmt.Errorf("[CARNICAL_FUZZ_NO_TARGETS] no fuzz targets in %s", strings.Join(patterns, " "))
 	}
 	var failed []string
 	for _, tg := range targets {
 		fmt.Println("Running", tg.pkg, tg.name)
-		if err := sh.RunV("go", "-C", "carnical", "test", "-run", "^$", "-fuzz", "^"+tg.name+"$", "-fuzztime", fuzzTime, tg.pkg); err != nil {
+		if err := sh.RunV("go", "-C", "carnical", "test", "-run", "^$", "-parallel=2", "-fuzz", "^"+tg.name+"$", "-fuzztime", fuzzTime, tg.pkg); err != nil {
 			failed = append(failed, tg.pkg+" "+tg.name)
 		}
 	}
@@ -285,7 +285,7 @@ func fuzzFailures(failed []string) error {
 	if len(failed) == 0 {
 		return nil
 	}
-	return fmt.Errorf("fuzz targets failed:\n  %s", strings.Join(failed, "\n  "))
+	return fmt.Errorf("[CARNICAL_FUZZ_TARGET_FAILED] fuzz targets failed:\n  %s", strings.Join(failed, "\n  "))
 }
 
 // Doc runs godoc, access at http://localhost:6060.

@@ -174,3 +174,20 @@ Findings failed the source/dependency jobs and the aggregate check; artifact upl
 subsequent workflow maintenance change pins `upload-artifact` v7.0.1 to remove the deprecated Node
 20 action warning. These results validate the tooling and its failure behavior, not a clean security
 audit of the code.
+
+## Fuzz diagnostics and critical races — 7 November 2026
+
+Scheduled fuzzing limits each Go target to two worker processes. The Linux fuzz step also has a
+55-minute process-group deadline with a 30-second forced-termination grace period, leaving time
+within the 60-minute job for diagnostics. Go's ordinary `-timeout` does not bound coverage-guided
+fuzzing. The existing target durations, input limits and failure criteria remain unchanged.
+
+Fuzz artifacts retain the run log, elapsed/CPU time and a result code on successful and failed
+runs. `CARNICAL_FUZZ_TIMEOUT` means the outer deadline expired; `CARNICAL_FUZZ_TERMINATED` means
+exit 137 or 143, which alone does not establish an out-of-memory failure. Mage reports separate
+`CARNICAL_FUZZ_DISCOVERY_FAILED`, `CARNICAL_FUZZ_NO_TARGETS` and `CARNICAL_FUZZ_TARGET_FAILED`
+errors. A hard runner shutdown can still prevent artifact upload. These diagnostics do not establish
+or fix the cause of the historical runner shutdowns during YAML fuzzing.
+
+The Linux proxy race gate also exercises the existing person-check callback budget, cancellation,
+handoff and cleanup tests, and the upstream failure classification/redaction regression.
