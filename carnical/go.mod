@@ -9,7 +9,7 @@ require (
 )
 
 require (
-	github.com/corazawaf/libinjection-go v0.3.3 // indirect
+	github.com/corazawaf/libinjection-go v0.3.5 // indirect
 	github.com/goccy/go-json v0.10.5 // indirect
 	github.com/goccy/go-yaml v1.19.2
 	github.com/gotnospirit/makeplural v0.0.0-20180622080156-a5f48d94d976 // indirect

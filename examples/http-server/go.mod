@@ -5,7 +5,7 @@ go 1.26.10
 require github.com/corazawaf/coraza/v3 v3.8.1
 
 require (
-	github.com/corazawaf/libinjection-go v0.3.3 // indirect
+	github.com/corazawaf/libinjection-go v0.3.5 // indirect
 	github.com/foxcpp/go-mockdns v1.3.0 // indirect
 	github.com/goccy/go-json v0.10.5 // indirect
 	github.com/goccy/go-yaml v1.19.2 // indirect
