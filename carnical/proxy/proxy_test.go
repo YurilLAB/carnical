@@ -15,12 +15,14 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"net/url"
+	"os"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -545,6 +547,38 @@ func TestAttacksAreStoppedAndTheApplicationNeverHearsOfThem(t *testing.T) {
 }
 
 func TestMatchesAreReportedWithoutWhatTheVisitorSentUnlessAsked(t *testing.T) {
+	t.Run("upstream error classification", func(t *testing.T) {
+		for _, tt := range []struct {
+			name  string
+			err   error
+			want  string
+			kind  string
+			code  string
+			errno uint64
+		}{
+			{"unknown", errors.New("private-origin.example secret-token"), "upstream request failed", "unknown", "upstream_failed", 0},
+			{"network", &os.SyscallError{Syscall: "connect", Err: syscall.ECONNREFUSED}, fmt.Sprintf("upstream network failure (errno %d)", syscall.ECONNREFUSED), "network", "upstream_network_error", uint64(syscall.ECONNREFUSED)},
+			{"zero errno", syscall.Errno(0), "upstream network failure (errno 0)", "network", "upstream_network_error", 0},
+			{"wrapped timeout", &net.OpError{Op: "dial", Net: "tcp", Err: &os.SyscallError{Syscall: "connect", Err: syscall.ETIMEDOUT}}, "upstream request timed out", "timeout", "upstream_timeout", uint64(syscall.ETIMEDOUT)},
+			{"deadline", context.DeadlineExceeded, "upstream request timed out", "timeout", "upstream_timeout", 0},
+			{"canceled", context.Canceled, "upstream request canceled", "canceled", "upstream_canceled", 0},
+			{"EOF", io.EOF, "upstream connection ended before a response", "connection_closed", "upstream_connection_closed", 0},
+			{"partial EOF", io.ErrUnexpectedEOF, "upstream connection ended before a response", "connection_closed", "upstream_connection_closed", 0},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				m := upstreamFailure(fmt.Errorf("private-origin.example secret-token: %w", tt.err))
+				if m.Message != tt.want {
+					t.Fatalf("message %q, want %q", m.Message, tt.want)
+				}
+				if m.Failure == nil || *m.Failure != (Failure{Category: "upstream", Type: tt.kind, Code: tt.code, Errno: tt.errno}) {
+					t.Fatalf("failure %+v", m.Failure)
+				}
+				if m.RuleID != idUpstreamFailed || !m.Disruptive || strings.Contains(fmt.Sprintf("%+v %+v", m, m.Failure), "secret-token") {
+					t.Fatalf("incorrect or unsafe operational match: %+v", m)
+				}
+			})
+		}
+	})
 	var mu sync.Mutex
 	var plain, detailed []Match
 	collect := func(into *[]Match) func(Match) {
@@ -652,6 +686,9 @@ func TestMatchesAreReportedWithoutWhatTheVisitorSentUnlessAsked(t *testing.T) {
 	defer mu.Unlock()
 	if len(quiet) != 1 || quiet[0].RuleID != idUpstreamFailed {
 		t.Errorf("with NoRuleMatches: %+v", quiet)
+	}
+	if len(quiet) == 1 && (quiet[0].Failure == nil || quiet[0].Failure.Category != "upstream" || quiet[0].Failure.Code != "upstream_network_error") {
+		t.Errorf("closed origin has no structured network failure: %+v", quiet[0].Failure)
 	}
 	if n := len(capped); n != maxRequestLines+2 || capped[n-2].RuleID != 10100 || !capped[n-2].Disruptive || capped[n-1].RuleID != idLinesHeld ||
 		capped[n-1].TransactionID != capped[0].TransactionID || !strings.HasSuffix(capped[n-1].Message, " more rule matches not logged") {

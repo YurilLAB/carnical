@@ -397,6 +397,12 @@ func runFlags(usage, logs io.Writer, args []string, private map[string]string) e
 		OnMatch: func(m proxy.Match) {
 			attrs := []any{"rule", m.RuleID, "severity", m.Severity, "rule_msg", m.Message, "tx", m.TransactionID, "disruptive", m.Disruptive,
 				"category", m.Category, "risk", m.Risk}
+			if m.Failure != nil {
+				attrs = append(attrs, "error_category", m.Failure.Category, "error_type", m.Failure.Type, "error_code", m.Failure.Code)
+				if m.Failure.Errno != 0 {
+					attrs = append(attrs, "error_errno", m.Failure.Errno)
+				}
+			}
 			if *details {
 				attrs = append(attrs, "client", m.ClientIP, "uri", m.URI, "data", m.Data, "expanded_msg", m.ExpandedMessage)
 			}

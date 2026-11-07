@@ -202,6 +202,8 @@ type Match struct {
 	// score, from its severity; for an inspector's verdict, from its severity and whether it refused; otherwise the
 	// catalog's.
 	Category, Risk string
+	// Failure describes an operational upstream failure. It is nil for attack findings.
+	Failure *Failure
 	// Set only with Config.LogDetails.
 	ClientIP, URI, Data, ExpandedMessage string
 	// verdict marks the line of a check that decides on the request on its own, whether it refused it or, in detection or
@@ -215,6 +217,15 @@ type Match struct {
 	would, engine bool
 	cats          alert.Categories
 	score         int
+}
+
+// Failure identifies an operational error using bounded, request-independent values.
+// Category names the failing component, Type names the error kind and Code is a
+// stable identifier. Errno is the numeric OS error when one is present in the cause.
+// Raw cause text is available only through Match.ExpandedMessage with LogDetails.
+type Failure struct {
+	Category, Type, Code string
+	Errno                uint64
 }
 
 // Edge is the proxy. It is an http.Handler.
@@ -954,6 +965,33 @@ func checkTarget(r *http.Request) error {
 	return nil
 }
 
+// upstreamFailure describes an operational error without addresses or request data.
+func upstreamFailure(err error) Match {
+	m := Match{RuleID: idUpstreamFailed, Severity: "ERROR", Message: "upstream request failed", Disruptive: true,
+		Failure: &Failure{Category: "upstream", Type: "unknown", Code: "upstream_failed"}}
+	var errno syscall.Errno
+	var networkError net.Error
+	hasErrno := errors.As(err, &errno)
+	if hasErrno {
+		m.Failure.Errno = uint64(errno)
+	}
+	switch {
+	case errors.As(err, &networkError) && networkError.Timeout():
+		m.Message = "upstream request timed out"
+		m.Failure.Type, m.Failure.Code = "timeout", "upstream_timeout"
+	case hasErrno:
+		m.Message = fmt.Sprintf("upstream network failure (errno %d)", errno)
+		m.Failure.Type, m.Failure.Code = "network", "upstream_network_error"
+	case errors.Is(err, context.Canceled):
+		m.Message = "upstream request canceled"
+		m.Failure.Type, m.Failure.Code = "canceled", "upstream_canceled"
+	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
+		m.Message = "upstream connection ended before a response"
+		m.Failure.Type, m.Failure.Code = "connection_closed", "upstream_connection_closed"
+	}
+	return m
+}
+
 // forward sends a request that has passed inspection to the upstream.
 func (e *Edge) forward() http.Handler {
 	target := e.cfg.Upstream
@@ -1138,19 +1176,7 @@ func (e *Edge) forward() http.Handler {
 				// Operational failure, not an attack finding. Error strings can
 				// contain addresses or request data; default logs get only a class
 				// and (when present) the numeric OS error code.
-				m := Match{RuleID: idUpstreamFailed, Severity: "ERROR", Message: "upstream request failed", Disruptive: true}
-				var errno syscall.Errno
-				var networkError net.Error
-				switch {
-				case errors.As(err, &errno):
-					m.Message = fmt.Sprintf("upstream network failure (errno %d)", errno)
-				case errors.As(err, &networkError) && networkError.Timeout():
-					m.Message = "upstream request timed out"
-				case errors.Is(err, context.Canceled):
-					m.Message = "upstream request canceled"
-				case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
-					m.Message = "upstream connection ended before a response"
-				}
+				m := upstreamFailure(err)
 				if e.cfg.LogDetails {
 					m.ExpandedMessage = err.Error()
 				}

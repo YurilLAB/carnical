@@ -82,6 +82,126 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 		t.Fatalf("build: %v\n%s", err, out)
 	}
 
+	t.Run("structured upstream failure", func(t *testing.T) {
+		origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) }))
+		defer origin.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		logPath := filepath.Join(t.TempDir(), "proxy.log")
+		logs, err := os.Create(logPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer logs.Close()
+		cmd := exec.CommandContext(ctx, bin, "-listen", "127.0.0.1:0", "-upstream", origin.URL, "-origin-allow", "127.0.0.1/32",
+			"-mode", "off", "-ddos", "off", "-hosts", "shop.example", "-formats-stats-interval", "0", "-vpatch-stats-interval", "0")
+		cmd.Stdout, cmd.Stderr = logs, logs
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		stopped := false
+		stop := func() {
+			if !stopped {
+				cancel()
+				_ = cmd.Wait()
+				stopped = true
+			}
+		}
+		defer stop()
+		address := listeningAddress(ctx, t, logPath)
+		transport := &http.Transport{}
+		defer transport.CloseIdleConnections()
+		client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
+		const secret = "private-request-canary"
+		for _, tt := range []struct {
+			host string
+			want int
+		}{{"other.example", 421}, {"shop.example", 502}} {
+			if tt.want == 502 {
+				origin.Close()
+			}
+			req, err := http.NewRequestWithContext(ctx, "GET", "http://"+address+"/ordinary?token="+secret, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Host = tt.host
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err != nil || resp.StatusCode != tt.want || strings.Contains(string(body), secret) {
+				t.Fatalf("status %d, want %d; body=%q err=%v", resp.StatusCode, tt.want, body, err)
+			}
+		}
+		// Match logging is asynchronous. Wait for both persisted events before ending
+		// the process; a forced Windows process stop cannot drain its log queue.
+		var data []byte
+		tick := time.NewTicker(5 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			data, err = os.ReadFile(logPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var operational, other bool
+			complete := data[:bytes.LastIndexByte(data, '\n')+1]
+			for _, line := range bytes.Split(bytes.TrimSpace(complete), []byte{'\n'}) {
+				var event map[string]any
+				if json.Unmarshal(line, &event) == nil && event["msg"] == "rule matched" {
+					if event["rule"] == float64(5000050) {
+						operational = true
+					} else {
+						other = true
+					}
+				}
+			}
+			if operational && other {
+				data = complete
+				break
+			}
+			select {
+			case <-ctx.Done():
+				t.Fatalf("operational/refusal events were not persisted: %s", data)
+			case <-tick.C:
+			}
+		}
+		stop()
+		var upstream, refusal bool
+		for _, line := range bytes.Split(bytes.TrimSpace(data), []byte{'\n'}) {
+			var event map[string]any
+			if err := json.Unmarshal(line, &event); err != nil {
+				t.Fatalf("not JSON: %v", err)
+			}
+			if event["msg"] != "rule matched" {
+				continue
+			}
+			if bytes.Contains(line, []byte(secret)) {
+				t.Fatalf("request data reached default logs: %s", line)
+			}
+			if event["rule"] == float64(5000050) {
+				upstream = true
+				if event["error_category"] != "upstream" || event["error_type"] != "network" || event["error_code"] != "upstream_network_error" {
+					t.Fatalf("missing operational error fields: %s", line)
+				}
+				if errno, ok := event["error_errno"].(float64); !ok || errno <= 0 {
+					t.Fatalf("missing numeric OS error: %s", line)
+				}
+			} else {
+				refusal = true
+				for key := range event {
+					if strings.HasPrefix(key, "error_") {
+						t.Fatalf("attack finding has operational fields: %s", line)
+					}
+				}
+			}
+		}
+		if !upstream || !refusal {
+			t.Fatalf("missing upstream/refusal events: %t/%t", upstream, refusal)
+		}
+	})
+
 	t.Run("local policy and virtual patch", func(t *testing.T) { testSiteProtectionCLI(t, bin) })
 	t.Run("site configuration parser", func(t *testing.T) {
 		tests := []struct {

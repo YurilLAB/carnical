@@ -256,6 +256,13 @@ hexadecimal digits made when the request arrives; the rule set's transaction is 
 so the lines of the rule set, the proxy's own checks, the inspectors and the rate rules about one
 request all carry it and can be read together. It joins lines; it is not a secret.
 
+Operational match lines for rule `5000050` also include `error_category=upstream`, `error_type` and a stable
+`error_code`. The codes are `upstream_timeout`, `upstream_network_error`, `upstream_canceled`,
+`upstream_connection_closed` and `upstream_failed` (unknown cause). `error_errno` records a nonzero
+numeric OS error when available, including wrapped timeouts. These fields do not change the rule's
+attack category, rule ID or HTTP response. Raw cause text remains restricted to detailed logging.
+Response-body copy errors reported by the HTTP server use its separate connection-error log.
+
 `category` and `risk` come from the alert catalog. The category is a kind such as `sqli`, `protocol`
 or `rate` (several are joined with commas, and a rule the catalog gives none has an empty one). The
 risk is `info`, `low`, `medium` or `high`: a rule set rule that only adds to the anomaly score is
