@@ -72,13 +72,17 @@ jobs:
           cache-dependency-path: '**/go.sum'
       - name: Install verified scanner
         run: python3 .github/security/install.py osv-scanner
-      - name: Enforce the scoped OpenPGP exception
+      - name: Prohibit unmaintained OpenPGP imports
         run: |
           mkdir -p build/security-reports
           for target in linux windows; do
-            (cd testing/coreruleset && GOOS="$target" CGO_ENABLED=0 GOWORK=off \
-              go list -mod=readonly -deps -test ./...) > "build/security-reports/imports-$target.txt"
-            python3 .github/security/check_imports.py "build/security-reports/imports-$target.txt"
+            for module in . carnical examples/http-server testing/coreruleset; do
+              name=$(echo "$module" | tr '/.' '__')
+              inventory="build/security-reports/imports-$name-$target.txt"
+              (cd "$module" && GOOS="$target" CGO_ENABLED=0 GOWORK=off \
+                go list -mod=readonly -deps -test ./...) > "$inventory"
+              python3 .github/security/check_imports.py "$inventory"
+            done
           done
       - name: Audit all five dependency manifests
         run: |

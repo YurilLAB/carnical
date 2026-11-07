@@ -97,6 +97,9 @@ is imported, or if Go cannot generate the dependency inventory. Other modules an
 fully scanned. The exception uses OSV's documented [directory scope and
 expiration](https://google.github.io/osv-scanner/configuration/).
 
+This historical exception was removed on 7 November 2026 after OpenPGP was split out of the parent
+module. See the dependency audit follow-up below; the separate OpenPGP module remains unmaintained.
+
 ## Live validation and limits
 
 The local Windows run sends 10,000 requests through a newly built Carnical process and an
@@ -608,3 +611,21 @@ pinned Go 1.26.9 standard library. Go 1.26.10 and 1.27.3 add a denylist for comp
 certificates in cases where the system trust store has not been updated. The engine, Carnical, HTTP
 example and CRS harness now require Go 1.26.10; workspace, CI and the digest-pinned container builder
 use that patch. This updates the toolchain without changing Go minor versions or module dependencies.
+
+## Dependency audit follow-up — 7 November 2026
+
+The dependency audit rejected x/net v0.60.0 for
+[GO-2026-6860](https://pkg.go.dev/vuln/GO-2026-6860) and
+[GO-2026-6866](https://pkg.go.dev/vuln/GO-2026-6866). The four manifests that require x/net now
+use v0.62.0, the first fixed release, with its required dependency updates. These advisories concern
+HTML parsing and rendering; a manifest finding alone does not establish reachable exploitation in
+Carnical.
+
+The CRS harness's OpenPGP exception expired on 5 November. The updated
+[GO-2026-5932 record](https://pkg.go.dev/vuln/GO-2026-5932) identifies x/crypto
+v0.58.1-0.20261009181718-2f1f834330b2 as the first module version without those packages. The harness
+now uses that version and the expired exception is removed. The Linux and Windows import prohibition
+now covers the default package and test graphs of the engine, Carnical, HTTP example and CRS
+harness: importing the separate, unmaintained OpenPGP module must still fail CI. This does not assert
+that x/crypto is absent from every module graph or cover custom tags, Darwin or the optional
+ModSecurity package graph. The dependency audit retains `--all-vulns` and scans all five manifests.

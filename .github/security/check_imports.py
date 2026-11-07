@@ -1,4 +1,4 @@
-"""Enforce the package-level justification for the scoped OpenPGP exception."""
+"""Prohibit the unmaintained OpenPGP packages in dependency inventories."""
 
 import pathlib
 import sys
