@@ -1175,6 +1175,7 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 		statuses                                                                    []int
 		targets, forwarding, extraArgs                                              []string
 		name, mode, policy, method, target, ct, body, encoding, logRule, originBody string
+		failureType, failureCode                                                    string
 		says                                                                        string // what the log of a failure or a preflight must say
 		allowEncoding, fails, policyDir                                             bool
 		status                                                                      int
@@ -1240,7 +1241,7 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 		{name: "a response within -write-timeout is answered", extraArgs: []string{"-read-timeout", "1s", "-write-timeout", "5s", "-upstream-timeout", "3s"}, method: "GET", target: "/__cli_test_slow", status: 200},
 		// The application starts its answer after two seconds: past an -upstream-timeout of one, the visitor gets a 502.
 		{name: "an answer slower than -upstream-timeout is a 502", extraArgs: []string{"-upstream-timeout", "1s"}, method: "GET", target: "/__cli_test_slow", status: 502,
-			logRule: `"rule":5000050`},
+			logRule: `"rule":5000050`, failureType: "timeout", failureCode: "upstream_timeout"},
 		{name: "an upstream timeout over a day refuses startup", extraArgs: []string{"-check", "-upstream-timeout", "25h"}, fails: true, says: "-upstream-timeout must be 0 (30s) or from 1s to 24h"},
 		{name: "an upstream timeout under a second refuses startup", extraArgs: []string{"-check", "-upstream-timeout", "1ns"}, fails: true, says: "-upstream-timeout must be 0 (30s) or from 1s to 24h"},
 		{name: "an upstream timeout within the default write timeout refuses startup", extraArgs: []string{"-check", "-upstream-timeout", "5m"}, fails: true,
@@ -1909,12 +1910,19 @@ func TestRequestFormatsAtCLI(t *testing.T) {
 					matches := 0
 					for _, line := range bytes.Split(data, []byte("\n")) {
 						var event struct {
-							Msg        string
-							Rule       int
-							Disruptive bool
+							Msg           string
+							Rule          int
+							Disruptive    bool
+							ErrorCategory string  `json:"error_category"`
+							ErrorType     string  `json:"error_type"`
+							ErrorCode     string  `json:"error_code"`
+							ErrorErrno    *uint64 `json:"error_errno"`
 						}
 						if json.Unmarshal(line, &event) == nil && event.Msg == "rule matched" && event.Rule == id {
 							matches++
+							if tc.failureCode != "" && (event.ErrorCategory != "upstream" || event.ErrorType != tc.failureType || event.ErrorCode != tc.failureCode || event.ErrorErrno != nil) {
+								t.Fatalf("incorrect operational error fields: %s", line)
+							}
 							if event.Disruptive != (blocked && !scores) {
 								t.Fatal("finding logged with incorrect enforcement outcome")
 							}
