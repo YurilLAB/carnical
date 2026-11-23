@@ -23,7 +23,7 @@ require (
 	github.com/jcchavezs/mergefs v0.1.1
 	github.com/kaptinlin/jsonschema v0.4.6
 	github.com/magefile/mage v1.17.2
-	github.com/mccutchen/go-httpbin/v2 v2.25.0
+	github.com/mccutchen/go-httpbin/v2 v2.26.0
 	github.com/petar-dambovaliev/aho-corasick v0.0.0-20250424160509-463d218d4745
 	github.com/tidwall/gjson v1.20.0
 	github.com/valllabh/ocsf-schema-golang v1.0.3
