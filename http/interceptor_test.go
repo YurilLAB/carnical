@@ -883,10 +883,7 @@ func TestResponseBody(t *testing.T) {
 			content:                   contentWithoutDataLeak,
 			responseBodyRelativeLimit: 0,
 			responseBodyLimitAction:   limitActionReject,
-			// NOTE: According to https://coraza.io/docs/seclang/directives/#secresponsebodylimit
-			// expectedStatusCode should be http.StatusOK, but actually it is http.StatusInternalServerError.
-			// Coraza should be fixed.
-			expectedStatusCode: http.StatusInternalServerError,
+			expectedStatusCode:        http.StatusOK,
 		},
 		{
 			name:                      "OneByteShorterThanLimitAndAccepts",
@@ -899,6 +896,13 @@ func TestResponseBody(t *testing.T) {
 			name:                      "DataLeakAndRejects",
 			content:                   contentWithDataLeak,
 			responseBodyRelativeLimit: 1,
+			responseBodyLimitAction:   limitActionReject,
+			expectedStatusCode:        http.StatusForbidden,
+		},
+		{
+			name:                      "DataLeakAtExactLimitAndRejects",
+			content:                   contentWithDataLeak,
+			responseBodyRelativeLimit: 0,
 			responseBodyLimitAction:   limitActionReject,
 			expectedStatusCode:        http.StatusForbidden,
 		},
@@ -930,12 +934,19 @@ func TestResponseBody(t *testing.T) {
 			bodyLenThird := len(testCase.content) / 3
 			bodyChunks := map[string][]string{
 				"BodyInOneShot":     {testCase.content},
+				"BodyViaReaderFrom": {testCase.content},
+				"BodyThenEmpty":     {testCase.content, ""},
 				"BodyInThreeChunks": {testCase.content[0:bodyLenThird], testCase.content[bodyLenThird : 2*bodyLenThird], testCase.content[2*bodyLenThird:]},
+			}
+			if limit := len(testCase.content) + testCase.responseBodyRelativeLimit; limit < len(testCase.content) {
+				bodyChunks["ExactFillThenExtra"] = []string{testCase.content[:limit], testCase.content[limit:]}
 			}
 
 			for name, chunks := range bodyChunks {
 				t.Run(name, func(t *testing.T) {
-					directives := fmt.Sprintf(`
+					for _, h2 := range []bool{false, true} {
+						t.Run(fmt.Sprintf("HTTP2=%t", h2), func(t *testing.T) {
+							directives := fmt.Sprintf(`
 						SecRuleEngine On
 						SecResponseBodyAccess On
 						SecResponseBodyMimeType text/plain
@@ -944,49 +955,81 @@ func TestResponseBody(t *testing.T) {
 						SecRule RESPONSE_BODY "SQL Error" "id:100,phase:4,deny"
 					`, len(testCase.content)+testCase.responseBodyRelativeLimit, testCase.responseBodyLimitAction)
 
-					waf, err := coraza.NewWAF(coraza.NewWAFConfig().WithDirectives(directives))
-					if err != nil {
-						t.Fatal(err)
-					}
-
-					handler := WrapHandler(waf, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-						if len(chunks) == 1 {
-							w.Header().Set("Content-Length", strconv.Itoa(len(testCase.content)))
-						}
-						w.Header().Set("Content-Type", "text/plain")
-						for _, chunk := range chunks {
-							if n, err := fmt.Fprint(w, chunk); err != nil {
-								t.Logf("failed to write response: %s", err)
-							} else if got, want := n, len(chunk); got != want {
-								t.Errorf("written response byte count mismatch, got=%d, want=%d", got, want)
+							waf, err := coraza.NewWAF(coraza.NewWAFConfig().WithDirectives(directives))
+							if err != nil {
+								t.Fatal(err)
 							}
-							if f, ok := w.(http.Flusher); ok && len(chunks) > 1 {
-								f.Flush()
+
+							handler := WrapHandler(waf, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+								if len(chunks) == 1 {
+									w.Header().Set("Content-Length", strconv.Itoa(len(testCase.content)))
+								}
+								w.Header().Set("Content-Type", "text/plain")
+								w.Header().Set("X-Origin-Sensitive", "must-not-leak-on-refusal")
+								for _, chunk := range chunks {
+									var n int
+									var err error
+									if name == "BodyViaReaderFrom" {
+										written, copyErr := io.Copy(w, struct{ io.Reader }{strings.NewReader(chunk)})
+										n, err = int(written), copyErr
+									} else {
+										n, err = fmt.Fprint(w, chunk)
+									}
+									if err != nil {
+										t.Errorf("failed to write response: %s", err)
+									} else if got, want := n, len(chunk); got != want {
+										t.Errorf("written response byte count mismatch, got=%d, want=%d", got, want)
+									}
+									if f, ok := w.(http.Flusher); ok && len(chunks) > 1 {
+										f.Flush()
+									}
+								}
+							}))
+
+							ts := httptest.NewUnstartedServer(handler)
+							ts.EnableHTTP2 = h2
+							if h2 {
+								ts.StartTLS()
+							} else {
+								ts.Start()
 							}
-						}
-					}))
+							t.Cleanup(ts.Close)
 
-					ts := httptest.NewServer(handler)
-					t.Cleanup(ts.Close)
+							client := ts.Client()
+							client.Timeout = 5 * time.Second
+							t.Cleanup(client.CloseIdleConnections)
+							res, err := client.Get(ts.URL)
+							if err != nil {
+								t.Fatalf("unexpected error performing request: %v", err)
+							}
+							defer res.Body.Close()
+							wantProto := 1
+							if h2 {
+								wantProto = 2
+							}
+							if res.ProtoMajor != wantProto {
+								t.Fatalf("protocol %s", res.Proto)
+							}
 
-					res, err := http.Get(ts.URL)
-					if err != nil {
-						t.Fatalf("unexpected error performing request: %v", err)
-					}
-					defer res.Body.Close()
+							if got, want := res.StatusCode, testCase.expectedStatusCode; got != want {
+								t.Errorf("unexpected status code, got=%d, want=%d", got, want)
+							}
 
-					if got, want := res.StatusCode, testCase.expectedStatusCode; got != want {
-						t.Errorf("unexpected status code, got=%d, want=%d", got, want)
-					}
-
-					if testCase.expectedStatusCode == http.StatusOK {
-						body, err := io.ReadAll(res.Body)
-						if err != nil {
-							t.Fatalf("failed to read response body: %v", err)
-						}
-						if got, want := string(body), testCase.content; got != want {
-							t.Errorf("unexpected response body, got=%q, want=%q", got, want)
-						}
+							body, err := io.ReadAll(res.Body)
+							if err != nil {
+								t.Fatalf("failed to read response body: %v", err)
+							}
+							wantBody := testCase.content
+							if testCase.expectedStatusCode != http.StatusOK {
+								wantBody = ""
+								if res.Header.Get("X-Origin-Sensitive") != "" || res.ContentLength != 0 {
+									t.Errorf("refusal leaked origin headers: %v", res.Header)
+								}
+							}
+							if got, want := string(body), wantBody; got != want {
+								t.Errorf("unexpected response body, got=%q, want=%q", got, want)
+							}
+						})
 					}
 				})
 			}

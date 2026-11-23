@@ -78,6 +78,13 @@ KiB for one plain-text workload, with 300 KiB taking 1.8s on one core. A 5ms eva
 reduced that measured request to 48ms. These are workload-specific measurements, not latency
 guarantees.
 
+The CLI's inspected response body uses `ProcessPartial` with a 524288-byte prefix. It has no
+response-limit action override. Embedders configuring Coraza's `SecResponseBodyLimitAction Reject`
+may buffer a response exactly equal to `SecResponseBodyLimit`; an extra byte refuses it with 500.
+An unknown-length reader requires a one-byte EOF decision at that boundary, so its caller must
+apply read deadlines. Accepted bodies retain all their bytes. Partial inspection still runs when
+the prefix fills and does not wait for EOF.
+
 `-wordpress` adds upload/cache script restrictions, disables XML-RPC and limits login attempts. It
 also lets the block editor save:
 

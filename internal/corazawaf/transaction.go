@@ -1315,23 +1315,24 @@ func (tx *Transaction) WriteResponseBody(b []byte) (*types.Interruption, int, er
 		return nil, 0, nil
 	}
 
-	if tx.ResponseBodyLimit == tx.responseBodyBuffer.length {
-		// tx.ResponseBodyLimit will never be zero so if this happened, we have an
-		// interruption for sure.
-		if tx.WAF.ResponseBodyLimitAction == types.BodyLimitActionReject {
-			return tx.interruption, 0, nil
-		}
-
-		if tx.WAF.ResponseBodyLimitAction == types.BodyLimitActionProcessPartial {
-			return nil, 0, nil
-		}
+	reject := tx.WAF.ResponseBodyLimitAction == types.BodyLimitActionReject
+	if reject && tx.interruption != nil {
+		return tx.interruption, 0, nil
+	}
+	if reject && tx.responseBodyBuffer.length > tx.ResponseBodyLimit {
+		tx.variables.outboundDataError.Set("1")
+		return setAndReturnBodyLimitInterruption(tx, 500)
+	}
+	if tx.ResponseBodyLimit == tx.responseBodyBuffer.length && tx.WAF.ResponseBodyLimitAction == types.BodyLimitActionProcessPartial {
+		return nil, 0, nil
 	}
 
 	var (
 		writingBytes           = int64(len(b))
 		runProcessResponseBody = false
 	)
-	if tx.responseBodyBuffer.length+writingBytes >= tx.ResponseBodyLimit {
+	if reject && writingBytes > tx.ResponseBodyLimit-tx.responseBodyBuffer.length ||
+		!reject && tx.responseBodyBuffer.length+writingBytes >= tx.ResponseBodyLimit {
 		tx.variables.outboundDataError.Set("1")
 		if tx.WAF.ResponseBodyLimitAction == types.BodyLimitActionReject {
 			// We interrupt this transaction in case ResponseBodyLimitAction is Reject
@@ -1366,23 +1367,30 @@ func (tx *Transaction) ReadResponseBodyFrom(r io.Reader) (*types.Interruption, i
 		return nil, 0, nil
 	}
 
-	if tx.ResponseBodyLimit == tx.responseBodyBuffer.length {
-		if tx.WAF.ResponseBodyLimitAction == types.BodyLimitActionReject {
-			return tx.interruption, 0, nil
-		}
-
-		if tx.WAF.ResponseBodyLimitAction == types.BodyLimitActionProcessPartial {
-			return nil, 0, nil
-		}
+	reject := tx.WAF.ResponseBodyLimitAction == types.BodyLimitActionReject
+	if reject && tx.interruption != nil {
+		return tx.interruption, 0, nil
+	}
+	if reject && tx.responseBodyBuffer.length > tx.ResponseBodyLimit {
+		tx.variables.outboundDataError.Set("1")
+		return setAndReturnBodyLimitInterruption(tx, 500)
+	}
+	if tx.ResponseBodyLimit == tx.responseBodyBuffer.length && tx.WAF.ResponseBodyLimitAction == types.BodyLimitActionProcessPartial {
+		return nil, 0, nil
 	}
 
 	var (
 		writingBytes           int64
 		runProcessResponseBody = false
 	)
-	if l, ok := r.(ByteLenger); ok {
+	l, knownLength := r.(ByteLenger)
+	if knownLength {
 		writingBytes = int64(l.Len())
-		if tx.responseBodyBuffer.length+writingBytes >= tx.ResponseBodyLimit {
+		if reject && writingBytes < 0 {
+			return nil, 0, errors.New("negative response body length")
+		}
+		if reject && writingBytes > tx.ResponseBodyLimit-tx.responseBodyBuffer.length ||
+			!reject && tx.responseBodyBuffer.length+writingBytes >= tx.ResponseBodyLimit {
 			tx.variables.outboundDataError.Set("1")
 			if tx.WAF.ResponseBodyLimitAction == types.BodyLimitActionReject {
 				return setAndReturnBodyLimitInterruption(tx, 500)
@@ -1403,13 +1411,36 @@ func (tx *Transaction) ReadResponseBodyFrom(r io.Reader) (*types.Interruption, i
 	}
 
 	if tx.responseBodyBuffer.length == tx.ResponseBodyLimit {
-		tx.variables.outboundDataError.Set("1")
-		if tx.WAF.ResponseBodyLimitAction == types.BodyLimitActionReject {
-			return setAndReturnBodyLimitInterruption(tx, 500)
-		}
-
-		if tx.WAF.ResponseBodyLimitAction == types.BodyLimitActionProcessPartial {
-			runProcessResponseBody = true
+		if reject {
+			if !knownLength {
+				// The limited copy cannot distinguish equality from overflow. Only Reject probes:
+				// any extra byte refuses the response, so accepted bodies lose no bytes.
+				var probe [1]byte
+				for emptyReads := 0; ; emptyReads++ {
+					if emptyReads == 100 {
+						return nil, int(w), io.ErrNoProgress
+					}
+					n, probeErr := r.Read(probe[:])
+					if n < 0 || n > len(probe) {
+						return nil, int(w), errors.New("invalid read count at response body limit")
+					}
+					if n > 0 {
+						tx.variables.outboundDataError.Set("1")
+						return setAndReturnBodyLimitInterruption(tx, 500)
+					}
+					if probeErr == io.EOF {
+						break
+					}
+					if probeErr != nil {
+						return nil, int(w), probeErr
+					}
+				}
+			}
+		} else {
+			tx.variables.outboundDataError.Set("1")
+			if tx.WAF.ResponseBodyLimitAction == types.BodyLimitActionProcessPartial {
+				runProcessResponseBody = true
+			}
 		}
 	}
 

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"reflect"
@@ -802,6 +803,17 @@ func TestWriteResponseBody(t *testing.T) {
 			limitReached:            true,
 		},
 		{
+			name:                    "ExactLimitAndRejectAccepts",
+			responseBodyLimit:       urlencodedBodyLen,
+			responseBodyLimitAction: types.BodyLimitActionReject,
+		},
+		{
+			name:                    "ExactLimitAndPartialProcessing",
+			responseBodyLimit:       urlencodedBodyLen,
+			responseBodyLimitAction: types.BodyLimitActionProcessPartial,
+			limitReached:            true,
+		},
+		{
 			name:                    "LimitReachedAndPartialProcessing",
 			responseBodyLimit:       urlencodedBodyLen - 3,
 			responseBodyLimitAction: types.BodyLimitActionProcessPartial,
@@ -848,20 +860,37 @@ func TestWriteResponseBody(t *testing.T) {
 							}
 
 							var err error
+							written := 0
 
 							for _, c := range chunks {
-								if it, _, err = writeResponseBody(tx, c); err != nil {
+								var n int
+								if it, n, err = writeResponseBody(tx, c); err != nil {
 									t.Fatalf("Failed to write body buffer: %s", err.Error())
 								}
+								written += n
 							}
-							if testCase.limitReached && tx.variables.outboundDataError.Get() != "1" {
-								t.Fatalf("Expected OUTBOUND_DATA_ERROR to be set")
+							wantFlag := "0"
+							if testCase.limitReached {
+								wantFlag = "1"
+							}
+							if got := tx.variables.outboundDataError.Get(); got != wantFlag {
+								t.Fatalf("OUTBOUND_DATA_ERROR = %q, want %q", got, wantFlag)
+							}
+							wantPhase := types.PhaseResponseHeaders
+							if waf.ResponseBodyLimitAction == types.BodyLimitActionProcessPartial && testCase.limitReached {
+								wantPhase = types.PhaseResponseBody
+							}
+							if tx.lastPhase != wantPhase {
+								t.Fatalf("phase after ingestion = %v, want %v", tx.lastPhase, wantPhase)
 							}
 							if testCase.shouldInterrupt {
 								if it == nil {
 									t.Fatal("Expected interruption, got nil")
 								}
 							} else {
+								if want := min(urlencodedBodyLen, testCase.responseBodyLimit); written != want {
+									t.Fatalf("wrote %d bytes, want %d", written, want)
+								}
 								it, err := tx.ProcessResponseBody()
 								if err != nil {
 									t.Fatal(err)
@@ -891,19 +920,45 @@ func TestWriteResponseBody(t *testing.T) {
 }
 
 func TestWriteResponseBodyOnLimitReached(t *testing.T) {
-	testCases := map[string]struct {
+	type bodyLimitCase struct {
 		responseBodyLimitAction types.BodyLimitAction
 		preexistingInterruption *types.Interruption
-	}{
+		prefix                  string
+		prefillWriter           string
+		body                    string
+		freshInterruption       bool
+		initialLimit            int64
+		limitOverride           int64
+	}
+	testCases := map[string]bodyLimitCase{
 		"reject": {
 			responseBodyLimitAction: types.BodyLimitActionReject,
+			body:                    "c",
 			preexistingInterruption: &types.Interruption{
 				RuleID: 123,
 			},
 		},
 		"partial processing": {
 			responseBodyLimitAction: types.BodyLimitActionProcessPartial,
+			body:                    "c",
 		},
+		"reject already interrupted below limit": {
+			responseBodyLimitAction: types.BodyLimitActionReject,
+			preexistingInterruption: &types.Interruption{RuleID: 123},
+			prefix:                  "a", body: "c",
+		},
+		"reject limit lowered below buffered body": {
+			responseBodyLimitAction: types.BodyLimitActionReject,
+			prefix:                  "abc", initialLimit: 3, freshInterruption: true,
+		},
+		"reject limit lowered to minimum integer": {
+			responseBodyLimitAction: types.BodyLimitActionReject,
+			prefix:                  "a", body: "b", initialLimit: 3, limitOverride: math.MinInt64, freshInterruption: true,
+		},
+	}
+	for name := range responseBodyWriters {
+		testCases["exact via "+name+" then empty"] = bodyLimitCase{responseBodyLimitAction: types.BodyLimitActionReject, prefillWriter: name}
+		testCases["exact via "+name+" then extra"] = bodyLimitCase{responseBodyLimitAction: types.BodyLimitActionReject, prefillWriter: name, body: "c", freshInterruption: true}
 	}
 
 	for tName, tCase := range testCases {
@@ -911,24 +966,53 @@ func TestWriteResponseBodyOnLimitReached(t *testing.T) {
 		waf.RuleEngine = types.RuleEngineOn
 		waf.ResponseBodyAccess = true
 		waf.ResponseBodyLimit = 2
+		if tCase.initialLimit != 0 {
+			waf.ResponseBodyLimit = tCase.initialLimit
+		}
 		waf.ResponseBodyLimitAction = tCase.responseBodyLimitAction
 
 		t.Run(tName, func(t *testing.T) {
 			for wName, writer := range responseBodyWriters {
 				t.Run(wName, func(t *testing.T) {
 					tx := waf.NewTransaction()
-					_, err := tx.responseBodyBuffer.Write([]byte("ab"))
+					prefix := tCase.prefix
+					if prefix == "" {
+						prefix = "ab"
+					}
+					var err error
+					if tCase.prefillWriter != "" {
+						var it *types.Interruption
+						var n int
+						it, n, err = responseBodyWriters[tCase.prefillWriter](tx, prefix)
+						if it != nil || n != len(prefix) {
+							t.Fatalf("exact prefill: interruption %v, bytes %d", it, n)
+						}
+					} else {
+						_, err = tx.responseBodyBuffer.Write([]byte(prefix))
+					}
 					if err != nil {
 						t.Fatalf("unexpected error when writing to body buffer directly: %s", err.Error())
 					}
 					tx.interruption = tCase.preexistingInterruption
+					tx.ResponseBodyLimit = 2
+					if tCase.limitOverride != 0 {
+						tx.ResponseBodyLimit = tCase.limitOverride
+					}
 
-					it, n, err := writer(tx, "c")
+					it, n, err := writer(tx, tCase.body)
 					if err != nil {
 						t.Fatalf("unexpected error: %s", err.Error())
 					}
 
-					if it != tCase.preexistingInterruption {
+					if tCase.freshInterruption {
+						if it == nil || it.Status != 500 || tx.variables.outboundDataError.Get() != "1" {
+							t.Fatalf("expected fresh body-limit refusal, got %v", it)
+						}
+						again, n, err := writer(tx, "more")
+						if again != it || n != 0 || err != nil {
+							t.Fatalf("refusal changed on repeated write: %v, %d, %v", again, n, err)
+						}
+					} else if it != tCase.preexistingInterruption {
 						t.Fatalf("unexpected interruption")
 					}
 
@@ -940,6 +1024,115 @@ func TestWriteResponseBodyOnLimitReached(t *testing.T) {
 						t.Fatalf("Failed to close transaction: %s", err.Error())
 					}
 				})
+			}
+		})
+	}
+	// Reader behavior and transaction state are Go API contracts, not SecLang profiles.
+	for _, tc := range []struct {
+		name             string
+		n                int
+		err              error
+		emptyReads       int
+		wantInterruption bool
+		wantError        error
+		invalidCount     bool
+		interrupted      bool
+		known            bool
+		length           int
+		copyError        bool
+	}{
+		{name: "EOF", err: io.EOF},
+		{name: "temporary empty then EOF", emptyReads: 2, err: io.EOF},
+		{name: "no progress", emptyReads: 100, wantError: io.ErrNoProgress},
+		{name: "extra byte", n: 1, wantInterruption: true},
+		{name: "extra byte and EOF", n: 1, err: io.EOF, wantInterruption: true},
+		{name: "extra byte and error", n: 1, err: io.ErrUnexpectedEOF, wantInterruption: true},
+		{name: "reader error", err: io.ErrUnexpectedEOF, wantError: io.ErrUnexpectedEOF},
+		{name: "negative count", n: -1, invalidCount: true},
+		{name: "oversized count", n: 2, invalidCount: true},
+		{name: "already interrupted unknown", interrupted: true},
+		{name: "already interrupted known", interrupted: true, known: true},
+		{name: "known empty", known: true},
+		{name: "known negative length", known: true, length: -1, invalidCount: true},
+		{name: "known maximum length", known: true, length: int(^uint(0) >> 1), wantInterruption: true},
+		{name: "final allowed byte and error", copyError: true, n: 1, err: io.ErrUnexpectedEOF, wantError: io.ErrUnexpectedEOF},
+	} {
+		t.Run("reader/"+tc.name, func(t *testing.T) {
+			waf := NewWAF()
+			waf.RuleEngine, waf.ResponseBodyAccess, waf.ResponseBodyLimit = types.RuleEngineOn, true, 2
+			waf.ResponseBodyLimitAction = types.BodyLimitActionReject
+			tx := waf.NewTransaction()
+			t.Cleanup(func() {
+				if err := tx.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			prefix := "ab"
+			if tc.interrupted || tc.copyError || tc.known && tc.length != 0 {
+				prefix = "a"
+			}
+			if tc.interrupted {
+				tx.interruption = &types.Interruption{RuleID: 123}
+			}
+			if _, err := tx.responseBodyBuffer.Write([]byte(prefix)); err != nil {
+				t.Fatal(err)
+			}
+			calls := 0
+			var reader io.Reader = bodyLimitReadFunc(func(p []byte) (int, error) {
+				calls++
+				if tc.interrupted || tc.known {
+					t.Fatal("reader should not be called")
+				}
+				if len(p) != 1 {
+					t.Fatalf("read length %d, want 1", len(p))
+				}
+				if calls <= tc.emptyReads {
+					return 0, nil
+				}
+				if tc.n == 1 {
+					p[0] = 'c'
+				}
+				return tc.n, tc.err
+			})
+			if tc.known {
+				reader = bodyLimitLenReader{Reader: reader, length: func() int {
+					if tc.interrupted {
+						t.Fatal("Len after interruption")
+					}
+					return tc.length
+				}}
+			}
+			it, n, err := tx.ReadResponseBodyFrom(reader)
+			if tc.invalidCount {
+				if err == nil {
+					t.Fatal("invalid reader accepted")
+				}
+			} else if !errors.Is(err, tc.wantError) {
+				t.Fatalf("error %v, want %v", err, tc.wantError)
+			}
+			wantFlag := "0"
+			switch {
+			case tc.interrupted:
+				if it != tx.interruption || it == nil || it.RuleID != 123 {
+					t.Fatal("interruption replaced")
+				}
+			case tc.wantInterruption:
+				wantFlag = "1"
+				if it == nil || it.Status != 500 {
+					t.Fatalf("expected500, got %v", it)
+				}
+			case it != nil:
+				t.Fatalf("unexpected interruption %v", it)
+			}
+			wantCalls, wantWritten := min(tc.emptyReads+1, 100), 0
+			if tc.interrupted || tc.known {
+				wantCalls = 0
+			}
+			if tc.copyError {
+				wantWritten = 1
+			}
+			if calls != wantCalls || n != wantWritten || tx.responseBodyBuffer.length != int64(len(prefix)+wantWritten) || tx.variables.outboundDataError.Get() != wantFlag {
+				t.Fatalf("calls=%d written=%d buffered=%d flag=%q", calls, n, tx.responseBodyBuffer.length, tx.variables.outboundDataError.Get())
 			}
 		})
 	}

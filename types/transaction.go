@@ -140,6 +140,8 @@ type Transaction interface {
 	// returns an interruption if the body is bigger than the limit and the action is to
 	// reject. This is specially convenient to resolve an interruption before copying
 	// the body into the response body buffer.
+	// Reject accepts equality; a subsequent nonempty append exceeds the limit.
+	// ProcessPartial still processes the buffered prefix automatically when the limit is reached.
 	//
 	// It returns the corresponding interruption, the number of bytes written an error if any.
 	WriteResponseBody(b []byte) (*Interruption, int, error)
@@ -148,6 +150,10 @@ type Transaction interface {
 	// returns an interruption if the body is bigger than the limit and the action is to
 	// reject. This is specially convenient to resolve an interruption before copying
 	// the body into the response body buffer.
+	// Reject accepts equality. Len, if provided, must report the remaining byte count accurately.
+	// Without Len, Reject may consume one extra byte to distinguish EOF from overflow; any such
+	// byte interrupts the response. Its EOF probe bounds empty reads, but blocking Read calls
+	// still require caller deadlines. ProcessPartial processes at the limit without probing EOF.
 	//
 	// It returns the corresponding interruption, the number of bytes written an error if any.
 	ReadResponseBodyFrom(io.Reader) (*Interruption, int, error)
