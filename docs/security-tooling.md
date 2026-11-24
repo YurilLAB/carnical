@@ -96,6 +96,7 @@ python .github/security/install.py osv-scanner
 python .github/security/install.py gitleaks
 python .github/security/install.py actionlint
 python .github/security/test_install.py
+python .github/security/test_fuzz.py
 ```
 
 The installer supports x64 Linux/Windows. Hashes in `.github/security/tools.json` are verified
@@ -191,3 +192,13 @@ or fix the cause of the historical runner shutdowns during YAML fuzzing.
 
 The Linux proxy race gate also exercises the existing person-check callback budget, cancellation,
 handoff and cleanup tests, and the upstream failure classification/redaction regression.
+
+## Core fuzz coverage — 25 November 2026
+
+The fuzz workflow uses Go 1.27.4, which includes the upstream coordinator correction for
+[Go issue 75804](https://github.com/golang/go/issues/75804). Production builds, static checks,
+runtime regressions and TinyGo validation remain on Go 1.26.11.
+
+The core fuzz lane includes JSON iterator parity and both regexp prefilter property targets.
+The security regression job compares actual Mage invocations with compiler-discovered internal
+fuzz targets, verifies worker and duration arguments, and checks failure continuation and reporting.

@@ -155,6 +155,9 @@ jobs:
         with:
           go-version: '1.26.11'
           cache-dependency-path: '**/go.sum'
+      - name: Verify core fuzz target scheduling
+        timeout-minutes: 5
+        run: python3 .github/security/test_fuzz.py
       - name: Test Coraza and every pure Go application module
         shell: bash
         run: |

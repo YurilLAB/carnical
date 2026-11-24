@@ -20,7 +20,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Coraza's own operators and transformations, 3 minutes per target.
+          # Core body processors, operators and transformations, 3 minutes per target.
           - name: coraza
             packages: ""
             fuzz-time: 3m
@@ -43,7 +43,8 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.26.11'
+          # Includes the upstream fuzz coordinator fix for go.dev/issue/75804.
+          go-version: '1.27.4'
       - name: Run bounded fuzz workers and preserve diagnostics
         shell: bash
         run: |

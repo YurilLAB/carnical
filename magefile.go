@@ -221,6 +221,8 @@ func Fuzz() error {
 			tests: []string{
 				"FuzzSQLi",
 				"FuzzXSS",
+				"FuzzPrefilterNoFalseNegatives",
+				"FuzzPrefilterFixedCRSPatterns",
 			},
 		},
 		{
@@ -229,6 +231,12 @@ func Fuzz() error {
 				"FuzzB64Decode$",
 				"FuzzB64DecodeExt",
 				"FuzzCMDLine",
+			},
+		},
+		{
+			pkg: "./internal/bodyprocessors",
+			tests: []string{
+				"FuzzJSONIterMatchesForEach",
 			},
 		},
 	}
